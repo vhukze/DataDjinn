@@ -1,0 +1,26 @@
+{
+  "connections": [
+    {
+      "connection_id": "dc8e1e331b484339826f1783962cd564",
+      "name": "MySQL",
+      "database_type": "mysql",
+      "host": "192.168.108.100",
+      "port": 3306,
+      "username": "root",
+      "encrypted_password": "AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAAelSzOYFq2UWwZgTCANUwegAAAAACAAAAAAAQZgAAAAEAACAAAAChGR/ROEnzYAwNJIJCIsvupTAqIisMR1kK/UL8tU1MPwAAAAAOgAAAAAIAACAAAADJ8rVvTwGHDIWYEelaCcrYSuqDK5msIC5UBg84X2O9ZRAAAABeCeha13dH1Jh6n/1W9aJ9QAAAAEXd7T1W+jxM0IzQ4QE1b9b0JW1Nqq7cWhjNitS4W5lFhm4iQTAAfW/PWsDlpYnkrA/DEY4ukOHdqqkzSc9Wfj0=",
+      "database": null,
+      "sqlite_path": null
+    },
+    {
+      "connection_id": "c267584ae20949f5bdf72eeb70e77e96",
+      "name": "PostgreSQL",
+      "database_type": "postgresql",
+      "host": "192.168.108.100",
+      "port": 5432,
+      "username": "postgres",
+      "encrypted_password": "AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAAelSzOYFq2UWwZgTCANUwegAAAAACAAAAAAAQZgAAAAEAACAAAADNjKp2wIexQwJ/xrZc6b+qNUZzdBoHh466lnBsIiyOkwAAAAAOgAAAAAIAACAAAABwsgEWt9WVH3VvpQ3vZqDMl2hOS+vaaft9h5yE/hSb0BAAAAAMkJ2ENFo/nwvu4SG7o0oYQAAAAPWj4XvzpOM18BJ5V+5+SPFgYuVy+S42IX+beg81L0NwBZJGpILgKytHKcSI0tawe8WzKExSZoxN36WaLK1/ijc=",
+      "database": "postgres",
+      "sqlite_path": null
+    }
+  ]
+}

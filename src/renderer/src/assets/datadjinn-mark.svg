@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="DataDjinn mark">
+  <defs>
+    <linearGradient id="markBg" x1="18" y1="12" x2="112" y2="118" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#172033"/>
+      <stop offset="1" stop-color="#0B1020"/>
+    </linearGradient>
+    <linearGradient id="markD" x1="24" y1="30" x2="94" y2="100" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#38BDF8"/>
+      <stop offset="0.55" stop-color="#22D3EE"/>
+      <stop offset="1" stop-color="#8B5CF6"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="30" fill="url(#markBg)"/>
+  <path d="M32 25h32c25 0 43 16 43 39s-18 39-43 39H32V25Zm21 20v38h11c12 0 21-8 21-19s-9-19-21-19H53Z" fill="url(#markD)"/>
+  <ellipse cx="66" cy="57" rx="16" ry="6" fill="#0B1020" opacity="0.9"/>
+  <path d="M50 57v20c0 6 7 11 16 11s16-5 16-11V57" fill="none" stroke="#0B1020" stroke-width="8" stroke-linecap="round" opacity="0.82"/>
+  <path d="M99 21l5 11 11 5-11 5-5 11-5-11-11-5 11-5 5-11Z" fill="#22D3EE"/>
+  <circle cx="104" cy="67" r="4" fill="#8B5CF6"/>
+</svg>

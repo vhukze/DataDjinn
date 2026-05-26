@@ -1,0 +1,878 @@
+import hashlib
+import json
+from collections.abc import Iterator
+from typing import Any, Literal
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+from uuid import uuid4
+
+import sqlparse
+from openai import OpenAI
+from pydantic import BaseModel, Field
+from sqlalchemy import Engine, text
+
+from app.db.metadata import list_columns, list_tables
+from app.db.readonly_query import execute_readonly_query, preview_table
+from app.schemas.query import QueryResponse
+
+
+class AIConfig(BaseModel):
+    provider: Literal["openai-compatible", "anthropic"] = "openai-compatible"
+    base_url: str = Field(min_length=1)
+    api_key: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+
+
+class AIMessage(BaseModel):
+    role: Literal["system", "user", "assistant", "tool"]
+    content: str | None = None
+    tool_call_id: str | None = None
+    tool_calls: list[dict[str, Any]] | None = None
+
+
+class AgentContextSource(BaseModel):
+    id: str
+    type: Literal["database", "schema"]
+    connectionId: str
+    connectionName: str
+    dbType: str
+    database: str | None = None
+    schema: str | None = None
+    pgDatabase: str | None = None
+    sizeDisplay: str | None = None
+    sizeBytes: int | None = None
+    storageSizeDisplay: str | None = None
+    storageSizeBytes: int | None = None
+
+
+class AgentWorkspaceContext(BaseModel):
+    active_sql: str | None = None
+    selected_table: str | None = None
+    recent_queries: list[str] = Field(default_factory=list)
+    visible_result_columns: list[str] = Field(default_factory=list)
+    visible_result_sample: list[dict[str, Any]] = Field(default_factory=list)
+    context_sources: list[AgentContextSource] = Field(default_factory=list)
+
+
+class AgentTaskStep(BaseModel):
+    id: str
+    title: str
+    description: str | None = None
+    status: Literal["pending", "running", "completed", "failed", "skipped"] = "pending"
+    tool_name: str | None = None
+    arguments: dict[str, Any] | None = None
+    result: dict[str, Any] | None = None
+    risk_level: Literal["safe", "review", "dangerous"] = "safe"
+
+
+class AgentPlan(BaseModel):
+    goal: str
+    summary: str
+    steps: list[AgentTaskStep]
+    requires_confirmation: bool = False
+    risk_level: Literal["safe", "review", "dangerous"] = "safe"
+
+
+class AgentConfirmation(BaseModel):
+    id: str
+    title: str
+    risk_level: Literal["review", "dangerous"]
+    sql: str | None = None
+    explanation: str
+    estimated_impact: dict[str, Any] | None = None
+
+
+class PendingConfirmation(BaseModel):
+    id: str
+    connection_id: str
+    database: str | None = None
+    pg_database: str | None = None
+    sql: str
+    sql_hash: str
+    statement_type: str
+    risk_level: Literal["review", "dangerous"]
+
+
+class AgentConfirmRequest(BaseModel):
+    connection_id: str
+    confirmation_id: str
+    approved: bool
+    database: str | None = None
+    pg_database: str | None = None
+
+
+class AIChatRequest(BaseModel):
+    messages: list[AIMessage]
+    config: AIConfig
+    connection_id: str
+    database: str | None = None
+    pg_database: str | None = None
+    workspace: AgentWorkspaceContext | None = None
+
+
+class AIPingRequest(BaseModel):
+    config: AIConfig
+
+
+class AICompactRequest(BaseModel):
+    messages: list[AIMessage]
+    config: AIConfig
+    workspace: AgentWorkspaceContext | None = None
+
+
+class AICompactResponse(BaseModel):
+    summary: str
+
+
+class AIPingResponse(BaseModel):
+    success: bool
+    message: str
+
+
+MAX_AGENT_TURNS = 8
+MAX_TABLES_IN_TOOL_RESULT = 200
+MAX_COLUMNS_IN_TOOL_RESULT = 200
+MAX_ROWS_IN_TOOL_RESULT = 20
+MAX_QUERY_ROWS_FOR_AGENT = 200
+MAX_SAMPLE_ROWS_FOR_AGENT = 50
+MAX_CELL_CHARS_IN_TOOL_RESULT = 500
+WRITE_SQL_TYPES = {"INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP", "TRUNCATE", "REPLACE", "MERGE"}
+READONLY_SQL_TYPES = {"SELECT", "WITH"}
+PENDING_CONFIRMATIONS: dict[str, PendingConfirmation] = {}
+ANTHROPIC_VERSION = "2023-06-01"
+
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "create_agent_plan",
+            "description": "为复杂数据库任务创建可见执行计划。复杂分析、排查、写操作前应先调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "goal": {"type": "string", "description": "用户目标"},
+                    "summary": {"type": "string", "description": "计划摘要"},
+                    "steps": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string", "description": "步骤标题"},
+                                "description": {"type": "string", "description": "步骤说明"},
+                                "risk_level": {"type": "string", "enum": ["safe", "review", "dangerous"], "default": "safe"},
+                            },
+                            "required": ["title"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "requires_confirmation": {"type": "boolean", "description": "是否包含需要用户确认的操作", "default": False},
+                    "risk_level": {"type": "string", "enum": ["safe", "review", "dangerous"], "default": "safe"},
+                },
+                "required": ["goal", "summary", "steps"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "validate_sql",
+            "description": "校验 SQL 类型、是否多语句、只读状态和风险等级。执行 SQL 前应先调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sql": {"type": "string", "description": "要校验的 SQL"},
+                    "readonly": {"type": "boolean", "description": "是否按只读模式校验", "default": True},
+                },
+                "required": ["sql"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_tables",
+            "description": "列出当前数据库中的所有表名。",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "describe_table",
+            "description": "返回指定表的字段结构。",
+            "parameters": {
+                "type": "object",
+                "properties": {"table_name": {"type": "string", "description": "表名"}},
+                "required": ["table_name"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "execute_query",
+            "description": "执行 SQL。readonly=true 时只允许 SELECT/WITH 单条只读查询。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sql": {"type": "string", "description": "要执行的 SQL"},
+                    "readonly": {"type": "boolean", "description": "是否只读执行", "default": True},
+                },
+                "required": ["sql"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_sample_data",
+            "description": "读取指定表的样本数据。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "table_name": {"type": "string", "description": "表名"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 10},
+                },
+                "required": ["table_name"],
+                "additionalProperties": False,
+            },
+        },
+    },
+]
+
+
+def _extra_value(value: Any, key: str) -> Any:
+    dumped = value.model_dump(exclude_none=True) if hasattr(value, "model_dump") else {}
+    if key in dumped:
+        return dumped[key]
+    return getattr(value, key, None)
+
+
+def _truncate_value(value: Any) -> Any:
+    if isinstance(value, str) and len(value) > MAX_CELL_CHARS_IN_TOOL_RESULT:
+        return f"{value[:MAX_CELL_CHARS_IN_TOOL_RESULT]}... [已截断，原长度 {len(value)}]"
+    if isinstance(value, dict):
+        return {key: _truncate_value(next_value) for key, next_value in value.items()}
+    if isinstance(value, list):
+        return [_truncate_value(next_value) for next_value in value]
+    return value
+
+
+def sql_hash(sql: str) -> str:
+    return hashlib.sha256(sql.strip().encode("utf-8")).hexdigest()
+
+
+def _anthropic_url(base_url: str) -> str:
+    normalized = base_url.rstrip("/")
+    return normalized if normalized.endswith("/v1/messages") else f"{normalized}/v1/messages"
+
+
+def _anthropic_tools() -> list[dict[str, Any]]:
+    return [
+        {
+            "name": tool["function"]["name"],
+            "description": tool["function"].get("description", ""),
+            "input_schema": tool["function"].get("parameters", {"type": "object", "properties": {}}),
+        }
+        for tool in TOOLS
+    ]
+
+
+def _content_blocks(content: str | None) -> list[dict[str, Any]]:
+    return [{"type": "text", "text": content}] if content else []
+
+
+def _anthropic_messages(messages: list[dict[str, Any]]) -> tuple[str | None, list[dict[str, Any]]]:
+    system: str | None = None
+    converted: list[dict[str, Any]] = []
+    pending_tool_results: list[dict[str, Any]] = []
+
+    for message in messages:
+        role = message.get("role")
+        if role == "system":
+            system = str(message.get("content") or "")
+            continue
+
+        if role == "tool":
+            pending_tool_results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": str(message.get("tool_call_id") or ""),
+                    "content": str(message.get("content") or ""),
+                }
+            )
+            continue
+
+        if pending_tool_results:
+            converted.append({"role": "user", "content": pending_tool_results})
+            pending_tool_results = []
+
+        if role == "user":
+            converted.append({"role": "user", "content": _content_blocks(str(message.get("content") or ""))})
+            continue
+
+        if role == "assistant":
+            content = _content_blocks(str(message.get("content") or ""))
+            if isinstance(message.get("content"), list):
+                content = message["content"]
+            for tool_call in message.get("tool_calls") or []:
+                function = tool_call.get("function") or {}
+                try:
+                    tool_input = json.loads(function.get("arguments") or "{}")
+                except json.JSONDecodeError:
+                    tool_input = {}
+                content.append(
+                    {
+                        "type": "tool_use",
+                        "id": str(tool_call.get("id") or ""),
+                        "name": str(function.get("name") or ""),
+                        "input": tool_input,
+                    }
+                )
+            converted.append({"role": "assistant", "content": content})
+
+    if pending_tool_results:
+        converted.append({"role": "user", "content": pending_tool_results})
+
+    return system, converted
+
+
+class AnthropicMessagesClient:
+    def __init__(self, config: AIConfig) -> None:
+        self.url = _anthropic_url(config.base_url)
+        self.api_key = config.api_key
+        self.model = config.model
+
+    def create(self, messages: list[dict[str, Any]], *, tools: bool = True, max_tokens: int = 4096, temperature: float | None = None) -> dict[str, Any]:
+        system, converted_messages = _anthropic_messages(messages)
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": converted_messages,
+            "max_tokens": max_tokens,
+        }
+        if system:
+            payload["system"] = system
+        if tools:
+            payload["tools"] = _anthropic_tools()
+        if temperature is not None:
+            payload["temperature"] = temperature
+
+        request = Request(
+            self.url,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "content-type": "application/json",
+                "accept": "application/json",
+                "x-api-key": self.api_key,
+                "anthropic-version": ANTHROPIC_VERSION,
+            },
+            method="POST",
+        )
+
+        try:
+            with urlopen(request, timeout=120) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="ignore")
+            raise RuntimeError(f"Anthropic 请求失败：HTTP {exc.code} {detail}") from exc
+        except URLError as exc:
+            raise RuntimeError(f"Anthropic 请求失败：{exc.reason}") from exc
+
+
+def _anthropic_text(response: dict[str, Any]) -> str:
+    return "".join(block.get("text", "") for block in response.get("content", []) if block.get("type") == "text")
+
+
+def _anthropic_tool_uses(response: dict[str, Any]) -> list[dict[str, Any]]:
+    return [block for block in response.get("content", []) if block.get("type") == "tool_use"]
+
+
+def _anthropic_assistant_message(response: dict[str, Any]) -> dict[str, Any]:
+    return {"role": "assistant", "content": response.get("content", [])}
+
+
+def _summarize_query_response(response: QueryResponse, requested_limit: int | None = None) -> dict[str, Any]:
+    rows = response.rows[:MAX_ROWS_IN_TOOL_RESULT]
+    visible_limit = requested_limit if requested_limit is not None else len(response.rows)
+    truncated = response.limited or len(response.rows) > len(rows)
+    return {
+        "columns": response.columns,
+        "row_count": response.row_count,
+        "returned_row_count": len(rows),
+        "requested_limit": visible_limit,
+        "truncated": truncated,
+        "sample_rows": [_truncate_value(row) for row in rows],
+        "budget": {
+            "max_rows_returned_to_agent": MAX_ROWS_IN_TOOL_RESULT,
+            "max_cell_chars": MAX_CELL_CHARS_IN_TOOL_RESULT,
+        },
+        "next_step_hint": "结果已截断。需要更完整分析时，请使用聚合 SQL、过滤条件、分页或更小范围的查询。" if truncated else None,
+    }
+
+
+class DatabaseAgent:
+    def __init__(
+        self,
+        engine: Engine,
+        config: AIConfig,
+        connection_id: str = "",
+        database: str | None = None,
+        pg_database: str | None = None,
+        workspace: AgentWorkspaceContext | None = None,
+    ) -> None:
+        self.engine = engine
+        self.connection_id = connection_id
+        self.database = database
+        self.pg_database = pg_database
+        self.workspace = workspace
+        self.provider = config.provider
+        self.client = AnthropicMessagesClient(config) if config.provider == "anthropic" else OpenAI(base_url=config.base_url, api_key=config.api_key)
+        self.model = config.model
+
+    def chat(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        if self.provider == "anthropic":
+            return self._chat_anthropic(messages)
+
+        conversation = [*messages]
+
+        for _ in range(MAX_AGENT_TURNS):
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=conversation,
+                tools=TOOLS,
+                tool_choice="auto",
+            )
+            choice = response.choices[0]
+            message = choice.message
+            assistant_message = message.model_dump(exclude_none=True)
+            reasoning_content = _extra_value(message, "reasoning_content")
+            if reasoning_content:
+                assistant_message["reasoning_content"] = reasoning_content
+            conversation.append(assistant_message)
+
+            if choice.finish_reason != "tool_calls":
+                return response.model_dump()
+
+            for tool_call in message.tool_calls or []:
+                result = self.call_tool(tool_call.function.name, json.loads(tool_call.function.arguments or "{}"))
+                conversation.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": json.dumps(result, ensure_ascii=False, default=str),
+                    }
+                )
+
+        raise RuntimeError("Agent 执行轮次超过上限，请缩小任务范围后重试")
+
+    def stream_chat(self, messages: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+        if self.provider == "anthropic":
+            yield from self._stream_chat_anthropic(messages)
+            return
+
+        conversation = [*messages]
+
+        for _ in range(MAX_AGENT_TURNS):
+            stream = self.client.chat.completions.create(
+                model=self.model,
+                messages=conversation,
+                tools=TOOLS,
+                tool_choice="auto",
+                stream=True,
+            )
+            content_parts: list[str] = []
+            reasoning_parts: list[str] = []
+            tool_calls: dict[int, dict[str, Any]] = {}
+            finish_reason = None
+
+            for chunk in stream:
+                choice = chunk.choices[0] if chunk.choices else None
+                if choice is None:
+                    continue
+
+                delta = choice.delta
+                reasoning_content = _extra_value(delta, "reasoning_content")
+                if reasoning_content:
+                    reasoning_parts.append(str(reasoning_content))
+                if delta.content:
+                    content_parts.append(delta.content)
+                    yield {"type": "token", "content": delta.content}
+
+                for tool_call in delta.tool_calls or []:
+                    index = tool_call.index
+                    current = tool_calls.setdefault(index, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+
+                    if tool_call.id:
+                        current["id"] = tool_call.id
+                    if tool_call.function:
+                        if tool_call.function.name:
+                            current["function"]["name"] += tool_call.function.name
+                        if tool_call.function.arguments:
+                            current["function"]["arguments"] += tool_call.function.arguments
+
+                if choice.finish_reason:
+                    finish_reason = choice.finish_reason
+
+            assistant_message: dict[str, Any] = {"role": "assistant", "content": "".join(content_parts)}
+            reasoning_content = "".join(reasoning_parts)
+            if reasoning_content:
+                assistant_message["reasoning_content"] = reasoning_content
+
+            if tool_calls:
+                ordered_tool_calls = [tool_calls[index] for index in sorted(tool_calls)]
+                for index, tool_call in enumerate(ordered_tool_calls):
+                    if not tool_call["id"]:
+                        tool_call["id"] = f"call_{index}"
+
+                assistant_message["tool_calls"] = ordered_tool_calls
+                conversation.append(assistant_message)
+
+                for tool_call in ordered_tool_calls:
+                    name = tool_call["function"]["name"]
+                    arguments_json = tool_call["function"].get("arguments") or "{}"
+                    try:
+                        args = json.loads(arguments_json)
+                    except json.JSONDecodeError as exc:
+                        args = {}
+                        result = {"error": f"工具参数 JSON 解析失败：{exc.msg}", "arguments": arguments_json}
+                        yield {"type": "tool_start", "tool_call_id": tool_call["id"], "name": name, "arguments": args}
+                        yield {"type": "tool_result", "tool_call_id": tool_call["id"], "name": name, "result": result}
+                        conversation.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call["id"],
+                                "content": json.dumps(result, ensure_ascii=False, default=str),
+                            }
+                        )
+                        continue
+                    tool_call["function"]["arguments"] = arguments_json
+                    step_id = f"step_{tool_call['id']}"
+                    yield {"type": "step_start", "step_id": step_id}
+                    yield {"type": "tool_start", "tool_call_id": tool_call["id"], "name": name, "arguments": args}
+                    result = self.call_tool(name, args)
+                    yield {"type": "tool_result", "tool_call_id": tool_call["id"], "name": name, "result": result}
+                    if result.get("type") == "plan":
+                        yield {"type": "plan", "plan": result["plan"]}
+                    if result.get("type") == "confirmation_required":
+                        yield {"type": "confirmation_required", "confirmation": result["confirmation"]}
+                        return
+                    yield {"type": "step_result", "step_id": step_id, "result": result}
+                    conversation.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call["id"],
+                            "content": json.dumps(result, ensure_ascii=False, default=str),
+                        }
+                    )
+                yield {"type": "tool_done"}
+                continue
+
+            conversation.append(assistant_message)
+            yield {"type": "done", "finish_reason": finish_reason or "stop"}
+            return
+
+        yield {"type": "error", "message": "Agent 执行轮次超过上限，请缩小任务范围后重试"}
+
+    def _chat_anthropic(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        conversation = [*messages]
+
+        for _ in range(MAX_AGENT_TURNS):
+            response = self.client.create(conversation)
+            conversation.append(_anthropic_assistant_message(response))
+            tool_uses = _anthropic_tool_uses(response)
+
+            if not tool_uses:
+                return {
+                    "choices": [
+                        {
+                            "message": {"role": "assistant", "content": _anthropic_text(response)},
+                            "finish_reason": response.get("stop_reason") or "stop",
+                        }
+                    ],
+                    "usage": response.get("usage", {}),
+                }
+
+            for tool_use in tool_uses:
+                result = self.call_tool(str(tool_use["name"]), tool_use.get("input") or {})
+                conversation.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_use["id"],
+                        "content": json.dumps(result, ensure_ascii=False, default=str),
+                    }
+                )
+
+        raise RuntimeError("Agent 执行轮次超过上限，请缩小任务范围后重试")
+
+    def _stream_chat_anthropic(self, messages: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+        conversation = [*messages]
+
+        for _ in range(MAX_AGENT_TURNS):
+            response = self.client.create(conversation)
+            conversation.append(_anthropic_assistant_message(response))
+            content = _anthropic_text(response)
+            if content:
+                yield {"type": "token", "content": content}
+
+            tool_uses = _anthropic_tool_uses(response)
+            if not tool_uses:
+                yield {"type": "done", "finish_reason": response.get("stop_reason") or "stop"}
+                return
+
+            for tool_use in tool_uses:
+                tool_call_id = str(tool_use["id"])
+                name = str(tool_use["name"])
+                args = tool_use.get("input") or {}
+                step_id = f"step_{tool_call_id}"
+                yield {"type": "step_start", "step_id": step_id}
+                yield {"type": "tool_start", "tool_call_id": tool_call_id, "name": name, "arguments": args}
+                result = self.call_tool(name, args)
+                yield {"type": "tool_result", "tool_call_id": tool_call_id, "name": name, "result": result}
+                if result.get("type") == "plan":
+                    yield {"type": "plan", "plan": result["plan"]}
+                if result.get("type") == "confirmation_required":
+                    yield {"type": "confirmation_required", "confirmation": result["confirmation"]}
+                    return
+                yield {"type": "step_result", "step_id": step_id, "result": result}
+                conversation.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": json.dumps(result, ensure_ascii=False, default=str),
+                    }
+                )
+            yield {"type": "tool_done"}
+
+        yield {"type": "error", "message": "Agent 执行轮次超过上限，请缩小任务范围后重试"}
+
+    def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        try:
+            if name == "create_agent_plan":
+                plan = self._create_agent_plan(arguments)
+                return {"type": "plan", "plan": plan.model_dump()}
+
+            if name == "validate_sql":
+                sql = str(arguments["sql"])
+                readonly = bool(arguments.get("readonly", True))
+                validation = self._validate_sql(sql, readonly)
+                if validation.get("requires_confirmation") and validation.get("statement_type") in WRITE_SQL_TYPES and validation.get("sql"):
+                    return self._confirmation_required_result(str(validation["sql"]), validation)
+                return validation
+
+            if name == "list_tables":
+                tables = [table.model_dump() for table in list_tables(self.engine, self.database, self.pg_database)]
+                visible_tables = tables[:MAX_TABLES_IN_TOOL_RESULT]
+                large_tables = [table for table in visible_tables if (table.get("size_bytes") or table.get("storage_size_bytes") or 0) >= 1024 * 1024 * 1024]
+                return {
+                    "tables": visible_tables,
+                    "table_count": len(tables),
+                    "returned_table_count": len(visible_tables),
+                    "truncated": len(tables) > len(visible_tables),
+                    "large_table_count": len(large_tables),
+                    "next_step_hint": "表数量较多或存在大表，查询前应优先 describe_table，并使用聚合、过滤条件和 LIMIT。" if len(tables) > len(visible_tables) or large_tables else None,
+                }
+
+            if name == "describe_table":
+                table_name = str(arguments["table_name"])
+                table_info = next((table for table in list_tables(self.engine, self.database, self.pg_database) if table.name == table_name), None)
+                columns = [column.model_dump() for column in list_columns(self.engine, table_name, self.database, self.pg_database)]
+                visible_columns = columns[:MAX_COLUMNS_IN_TOOL_RESULT]
+                table_size_bytes = table_info.size_bytes if table_info else None
+                storage_size_bytes = table_info.storage_size_bytes if table_info else None
+                size_for_risk = table_size_bytes or storage_size_bytes or 0
+                return {
+                    "table_name": table_name,
+                    "table_size_bytes": table_size_bytes,
+                    "table_size_display": table_info.size_display if table_info else None,
+                    "storage_size_bytes": storage_size_bytes,
+                    "storage_size_display": table_info.storage_size_display if table_info else None,
+                    "row_count": table_info.row_count if table_info else None,
+                    "is_large_table": size_for_risk >= 1024 * 1024 * 1024,
+                    "columns": visible_columns,
+                    "column_count": len(columns),
+                    "returned_column_count": len(visible_columns),
+                    "truncated": len(columns) > len(visible_columns),
+                    "next_step_hint": "字段数量较多或表体积较大，避免 SELECT *，优先使用聚合、过滤条件、索引字段和 LIMIT。" if len(columns) > len(visible_columns) or size_for_risk >= 1024 * 1024 * 1024 else None,
+                }
+
+            if name == "execute_query":
+                sql = str(arguments["sql"])
+                readonly = bool(arguments.get("readonly", True))
+                validation = self._validate_sql(sql, readonly)
+                if validation["risk_level"] == "dangerous" and validation["statement_type"] not in WRITE_SQL_TYPES:
+                    return validation
+                if validation["risk_level"] == "dangerous":
+                    return self._confirmation_required_result(sql, validation)
+                result = self._execute_query(sql, readonly)
+                summarized = _summarize_query_response(result, MAX_QUERY_ROWS_FOR_AGENT)
+                summarized["executed"] = True
+                return summarized
+
+            if name == "get_sample_data":
+                table_name = str(arguments["table_name"])
+                limit = max(1, min(int(arguments.get("limit", 10)), MAX_SAMPLE_ROWS_FOR_AGENT))
+                result = preview_table(self.engine, table_name, limit, 0, self.database, self.pg_database)
+                return {"table_name": table_name, **_summarize_query_response(result, limit)}
+
+            raise ValueError(f"未知工具：{name}")
+        except Exception as exc:
+            return {"error": str(exc)}
+
+    def _confirmation_required_result(self, sql: str, validation: dict[str, Any]) -> dict[str, Any]:
+        confirmation_id = f"confirm_{uuid4().hex}"
+        PENDING_CONFIRMATIONS[confirmation_id] = PendingConfirmation(
+            id=confirmation_id,
+            connection_id=self.connection_id,
+            database=self.database,
+            pg_database=self.pg_database,
+            sql=sql,
+            sql_hash=sql_hash(sql),
+            statement_type=validation["statement_type"],
+            risk_level="dangerous",
+        )
+        confirmation = AgentConfirmation(
+            id=confirmation_id,
+            title="需要确认数据库写操作",
+            risk_level="dangerous",
+            sql=sql,
+            explanation="该 SQL 不是只读查询。为避免误修改数据，已暂停执行。确认后后端会重新校验 SQL hash 和风险等级，再执行同一条 SQL。",
+            estimated_impact={"statement_type": validation["statement_type"], "sql_hash": sql_hash(sql), "executed": False},
+        )
+        return {"type": "confirmation_required", "confirmation": confirmation.model_dump(), "validation": validation, "executed": False}
+
+    def _create_agent_plan(self, arguments: dict[str, Any]) -> AgentPlan:
+        raw_steps = arguments.get("steps") or []
+        steps = [
+            AgentTaskStep(
+                id=f"plan_step_{index + 1}",
+                title=str(step.get("title", f"步骤 {index + 1}")),
+                description=str(step["description"]) if step.get("description") else None,
+                risk_level=step.get("risk_level", "safe") if step.get("risk_level") in {"safe", "review", "dangerous"} else "safe",
+            )
+            for index, step in enumerate(raw_steps)
+            if isinstance(step, dict)
+        ]
+        return AgentPlan(
+            goal=str(arguments["goal"]),
+            summary=str(arguments["summary"]),
+            steps=steps,
+            requires_confirmation=bool(arguments.get("requires_confirmation", False)),
+            risk_level=arguments.get("risk_level", "safe") if arguments.get("risk_level") in {"safe", "review", "dangerous"} else "safe",
+        )
+
+    def _validate_sql(self, sql: str, readonly: bool) -> dict[str, Any]:
+        statements = [statement for statement in sqlparse.parse(sql) if str(statement).strip()]
+        if len(statements) != 1:
+            return {
+                "valid": False,
+                "readonly": readonly,
+                "statement_type": "UNKNOWN",
+                "risk_level": "dangerous",
+                "executed": False,
+                "requires_confirmation": True,
+                "message": "只允许单条 SQL。多个建表或写操作必须拆成单条 SQL，逐条请求用户确认。",
+            }
+
+        statement = statements[0]
+        statement_type = statement.get_type().upper()
+        normalized_sql = str(statement).strip().rstrip(";")
+        has_limit = any(token.normalized == "LIMIT" for token in statement.flatten())
+
+        if readonly and statement_type not in READONLY_SQL_TYPES:
+            return {
+                "valid": False,
+                "readonly": readonly,
+                "statement_type": statement_type,
+                "risk_level": "dangerous",
+                "executed": False,
+                "requires_confirmation": True,
+                "message": "只读模式下禁止执行写操作或 DDL。该 SQL 尚未执行，必须通过 execute_query(readonly=false) 触发用户确认后才可能执行。",
+                "sql": normalized_sql,
+            }
+
+        if statement_type in WRITE_SQL_TYPES:
+            return {
+                "valid": not readonly,
+                "readonly": readonly,
+                "statement_type": statement_type,
+                "risk_level": "dangerous",
+                "executed": False,
+                "requires_confirmation": True,
+                "message": "该 SQL 会修改数据库，当前仅完成校验，尚未执行；必须通过 execute_query(readonly=false) 触发用户确认后才可能执行。",
+                "sql": normalized_sql,
+            }
+
+        risk_level = "review" if statement_type in READONLY_SQL_TYPES and not has_limit else "safe"
+        return {
+            "valid": statement_type in READONLY_SQL_TYPES or not readonly,
+            "readonly": readonly,
+            "statement_type": statement_type,
+            "risk_level": risk_level,
+            "executed": False,
+            "requires_confirmation": False,
+            "message": "SQL 校验通过，但 validate_sql 只校验不执行" if risk_level == "safe" else "只读查询未显式 LIMIT，validate_sql 只校验不执行；真正执行时会由后端限制返回行数",
+            "sql": normalized_sql,
+            "has_limit": has_limit,
+        }
+
+    def _execute_query(self, sql: str, readonly: bool) -> QueryResponse:
+        if readonly:
+            return execute_readonly_query(self.engine, sql, MAX_QUERY_ROWS_FOR_AGENT, 0, self.database, self.pg_database)
+
+        with self.engine.begin() as connection:
+            if self.database and self.engine.dialect.name == "mysql":
+                preparer = self.engine.dialect.identifier_preparer
+                connection.execute(text(f"USE {preparer.quote(self.database)}"))
+            result = connection.execute(text(sql))
+            if not result.returns_rows:
+                return QueryResponse(columns=[], rows=[], row_count=result.rowcount if result.rowcount >= 0 else 0, limited=False)
+            columns = list(result.keys())
+            rows = [dict(row) for row in result.mappings().fetchmany(MAX_QUERY_ROWS_FOR_AGENT + 1)]
+            limited = len(rows) > MAX_QUERY_ROWS_FOR_AGENT
+            visible_rows = rows[:MAX_QUERY_ROWS_FOR_AGENT]
+            return QueryResponse(columns=columns, rows=visible_rows, row_count=len(visible_rows), limited=limited)
+
+
+def build_system_prompt(db_type: str, db_name: str, workspace: AgentWorkspaceContext | None = None) -> str:
+    workspace_lines: list[str] = []
+    if workspace:
+        if workspace.selected_table:
+            workspace_lines.append(f"当前选中表：{workspace.selected_table}")
+        if workspace.active_sql:
+            workspace_lines.append(f"当前 SQL 编辑器内容：\n{workspace.active_sql}")
+        if workspace.visible_result_columns:
+            workspace_lines.append(f"当前结果列：{', '.join(workspace.visible_result_columns)}")
+        if workspace.visible_result_sample:
+            workspace_lines.append(f"当前结果样本：{json.dumps(workspace.visible_result_sample[:5], ensure_ascii=False, default=str)}")
+        if workspace.context_sources:
+            workspace_lines.append(f"AI 上下文数据源列表（第一个为当前执行上下文）：{json.dumps([source.model_dump(exclude_none=True) for source in workspace.context_sources], ensure_ascii=False, default=str)}")
+        if workspace.recent_queries:
+            workspace_lines.append(f"最近查询：{json.dumps(workspace.recent_queries[-5:], ensure_ascii=False)}")
+
+    workspace_context = "\n".join(workspace_lines) if workspace_lines else "暂无额外工作区上下文。"
+    return (
+        f"你是 DataDjinn 内置数据库 Agent，当前连接的是 {db_type} 数据库 {db_name}。\n"
+        "你的职责是帮助用户理解数据库结构、生成安全 SQL、分析查询结果、执行可控数据库操作。\n"
+        "规则：\n"
+        "1. 涉及真实表、字段或数据内容时，必须先调用工具获取真实信息。\n"
+        "2. 复杂分析、排查或包含多步动作时，先调用 create_agent_plan 生成可见计划。\n"
+        "3. 执行 SQL 前先调用 validate_sql；validate_sql 只做校验，永远不代表 SQL 已执行。\n"
+        "4. SELECT/WITH 只读查询可以通过 execute_query(readonly=true) 自动执行，后端会限制返回行数。\n"
+        "5. UPDATE/DELETE/INSERT/DDL 等写操作必须触发工具级 confirmation_required，由界面显示确认/取消按钮；不要只用自然语言要求用户输入确认。\n"
+        "6. 写操作可调用 validate_sql 或 execute_query(readonly=false) 触发 confirmation_required；只有确认接口返回 executed=true 后才能说执行成功。\n"
+        "7. 不确定表结构时不要猜字段名，先 describe_table。\n"
+        "8. 对大表查询优先使用聚合条件或 LIMIT。\n"
+        "9. 工具返回的数据可能是摘要或样本；看到 truncated=true 时，必须说明只分析了样本/摘要，并优先继续使用聚合、过滤或分页查询缩小范围。\n"
+        "10. 不要要求工具读取全量大表；需要趋势、分布、异常时，用 COUNT、GROUP BY、MIN/MAX、DISTINCT 等 SQL 在数据库侧聚合。\n"
+        "11. list_tables 和 describe_table 会返回 size_bytes/size_display 作为估算数据大小，并可能返回 storage_size_bytes/storage_size_display 作为物理占用；对大库、大模式、大表必须先评估体积，再决定是否只做抽样、聚合或要求用户确认。\n"
+        "12. 多个建表、DDL 或写操作必须拆成多条单 SQL，逐条触发 confirmation_required、逐条等待用户点击确认按钮，不允许一次声明全部完成。\n"
+        "13. 如果工具结果没有 executed=true，必须明确说明尚未执行，不能说创建、修改或删除成功。\n"
+        "14. AI 上下文数据源列表的第一个是当前执行上下文，后续是用户添加的其他库或模式；跨数据源任务应先说明分析范围。\n"
+        "15. PostgreSQL 查询必须在当前 pg_database 内使用 schema.table 或只使用当前 schema 下的表名，不要生成 database.table 形式。\n\n"
+        f"工作区上下文：\n{workspace_context}"
+    )

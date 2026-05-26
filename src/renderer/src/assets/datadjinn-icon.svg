@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="DataDjinn app icon">
+  <defs>
+    <linearGradient id="bg" x1="130" y1="90" x2="870" y2="930" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#101827"/>
+      <stop offset="1" stop-color="#0B1020"/>
+    </linearGradient>
+    <linearGradient id="lamp" x1="226" y1="656" x2="818" y2="690" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#38BDF8"/>
+      <stop offset="0.55" stop-color="#22D3EE"/>
+      <stop offset="1" stop-color="#8B5CF6"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="338" y1="176" x2="710" y2="610" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8B5CF6"/>
+      <stop offset="1" stop-color="#38BDF8"/>
+    </linearGradient>
+    <filter id="softGlow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="24" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.13 0 0 0 0 0.83 0 0 0 0 0.93 0 0 0 0.75 0"/>
+      <feBlend in="SourceGraphic" mode="screen"/>
+    </filter>
+  </defs>
+  <rect width="1024" height="1024" rx="226" fill="url(#bg)"/>
+  <circle cx="512" cy="440" r="310" fill="#172033" opacity="0.42"/>
+  <path d="M384 568c40-32 80-50 128-50s88 18 128 50" fill="none" stroke="#38BDF8" stroke-width="34" stroke-linecap="round" opacity="0.62"/>
+  <path d="M314 630c118 58 278 58 396 0 16 42-2 96-44 126-78 54-230 54-308 0-42-30-60-84-44-126Z" fill="#101827" stroke="url(#lamp)" stroke-width="36" stroke-linejoin="round"/>
+  <path d="M296 636c-76-8-124 16-154 64 88 10 142 2 192-40" fill="none" stroke="url(#lamp)" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M710 646c76-26 124-78 154-142 20 70 4 140-44 188-34 34-80 42-128 24" fill="none" stroke="url(#lamp)" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+  <ellipse cx="512" cy="624" rx="156" ry="46" fill="#0B1020" stroke="#38BDF8" stroke-width="28"/>
+  <path d="M358 632v72c0 28 69 52 154 52s154-24 154-52v-72" fill="none" stroke="#38BDF8" stroke-width="26" opacity="0.82"/>
+  <path d="M460 520c-36-112-10-206 82-284 0 72 86 80 78 160-4 42-36 72-84 94" fill="none" stroke="url(#glow)" stroke-width="34" stroke-linecap="round" stroke-linejoin="round" filter="url(#softGlow)"/>
+  <path d="M574 286c70 24 118 76 134 146" fill="none" stroke="#8B5CF6" stroke-width="24" stroke-linecap="round" opacity="0.75"/>
+  <circle cx="426" cy="264" r="13" fill="#22D3EE"/>
+  <circle cx="664" cy="248" r="18" fill="#8B5CF6"/>
+  <circle cx="724" cy="376" r="12" fill="#38BDF8"/>
+  <path d="M334 382l18 40 40 18-40 18-18 40-18-40-40-18 40-18 18-40Z" fill="#22D3EE" opacity="0.92"/>
+  <path d="M762 286l12 26 26 12-26 12-12 26-12-26-26-12 26-12 12-26Z" fill="#38BDF8" opacity="0.85"/>
+</svg>
