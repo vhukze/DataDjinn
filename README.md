@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/electron-39.x-9feaf9?logo=electron" alt="Electron" />
   <img src="https://img.shields.io/badge/react-19.x-61dafb?logo=react" alt="React" />
   <img src="https://img.shields.io/badge/python-3.13+-3776AB?logo=python" alt="Python" />
-  <img src="https://img.shields.io/badge/license-MIT-green" alt="License" />
+  <img src="https://img.shields.io/badge/license-Apache%202.0-blue?logo=apache" alt="License" />
 </p>
 
 ---
@@ -217,7 +217,7 @@ DataDjinn/
 
 ## 📄 License
 
-MIT
+[Apache-2.0](LICENSE)
 
 ---
 
