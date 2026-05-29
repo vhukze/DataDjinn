@@ -2,9 +2,6 @@
   <img src="resources/logo-horizontal.svg" alt="DataDjinn" width="360" />
 </p>
 
-
-<h1 align="center">DataDjinn</h1>
-
 <p align="center">
   <strong>AI 驱动的桌面数据库管理工具</strong>
 </p>
