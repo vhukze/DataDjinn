@@ -136,6 +136,22 @@ npm run build:win:all
 - `DataDjinn-x.x.x-setup.exe` — NSIS 安装包
 - `DataDjinn-x.x.x-win.zip` — 解压版
 
+### 自动发布 Release
+
+推送 `v*.*.*` 格式的 tag 会触发 GitHub Actions 自动构建 Windows 安装包和解压版，并创建 GitHub Release。
+
+```bash
+# 1. 修改 package.json 中的 version，例如 0.1.1
+# 2. 提交版本改动
+git add package.json package-lock.json
+git commit -m "chore: release v0.1.1"
+
+# 3. 创建并推送 tag
+git tag v0.1.1
+git push origin main
+git push origin v0.1.1
+```
+
 ---
 
 ## 🏗️ 技术架构
