@@ -39,7 +39,8 @@ export interface SqlCompletionContext {
 interface SqlEditorProps {
   value: string
   onChange: (value: string) => void
-  onExecute?: () => void
+  onExecute?: (sql?: string) => void
+  onSelectionChange?: (sql: string) => void
   theme: 'dark' | 'light'
   completionContext?: SqlCompletionContext
 }
@@ -195,12 +196,13 @@ const getDotQualifier = (text: string): string | undefined => {
   return match?.[1]?.replace(/^`|`$/g, '').replace(/^"|"$/g, '')
 }
 
-function SqlEditor({ value, onChange, onExecute, theme, completionContext }: SqlEditorProps): React.JSX.Element {
+function SqlEditor({ value, onChange, onExecute, onSelectionChange, theme, completionContext }: SqlEditorProps): React.JSX.Element {
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null)
   const monacoRef = useRef<typeof Monaco | null>(null)
   const completionDisposableRef = useRef<Monaco.IDisposable | null>(null)
   const contextRef = useRef<SqlCompletionContext | undefined>(completionContext)
-  const executeRef = useRef<(() => void) | undefined>(onExecute)
+  const executeRef = useRef<((sql?: string) => void) | undefined>(onExecute)
+  const selectionChangeRef = useRef<((sql: string) => void) | undefined>(onSelectionChange)
 
   useEffect(() => {
     contextRef.current = completionContext
@@ -209,6 +211,10 @@ function SqlEditor({ value, onChange, onExecute, theme, completionContext }: Sql
   useEffect(() => {
     executeRef.current = onExecute
   }, [onExecute])
+
+  useEffect(() => {
+    selectionChangeRef.current = onSelectionChange
+  }, [onSelectionChange])
 
   useEffect(() => {
     return () => {
@@ -280,16 +286,30 @@ function SqlEditor({ value, onChange, onExecute, theme, completionContext }: Sql
     })
   }
 
+  const getSelectedSql = (editor: Monaco.editor.IStandaloneCodeEditor): string => {
+    const selection = editor.getSelection()
+    const model = editor.getModel()
+    if (!selection || !model || selection.isEmpty()) {
+      return ''
+    }
+
+    return model.getValueInRange(selection).trim()
+  }
+
   const handleMount: OnMount = (editor, monaco) => {
     editorRef.current = editor
     monacoRef.current = monaco
     registerCompletionProvider(monaco)
 
+    editor.onDidChangeCursorSelection(() => {
+      selectionChangeRef.current?.(getSelectedSql(editor))
+    })
+
     editor.addAction({
       id: 'execute-query',
       label: 'Execute Query',
       keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter],
-      run: () => executeRef.current?.()
+      run: () => executeRef.current?.(getSelectedSql(editor) || undefined)
     })
   }
 

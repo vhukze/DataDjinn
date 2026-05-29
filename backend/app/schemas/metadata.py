@@ -20,6 +20,16 @@ class TableInfo(BaseModel):
     row_count: int | None = None
 
 
+class DbObjectInfo(BaseModel):
+    name: str
+    type: str
+    size_bytes: int | None = None
+    size_display: str | None = None
+    storage_size_bytes: int | None = None
+    storage_size_display: str | None = None
+    row_count: int | None = None
+
+
 class ColumnInfo(BaseModel):
     name: str
     type: str
@@ -64,6 +74,10 @@ class DatabasesResponse(BaseModel):
 
 class TablesResponse(BaseModel):
     tables: list[TableInfo]
+
+
+class DbObjectsResponse(BaseModel):
+    objects: list[DbObjectInfo]
 
 
 class ColumnsResponse(BaseModel):

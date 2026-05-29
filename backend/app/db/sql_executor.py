@@ -24,6 +24,7 @@ def execute_sql_file(engine: Engine, sql: str, database: str | None = None, pg_d
     try:
         try:
             with engine.begin() as connection:
+                mysql_foreign_key_checks_disabled = False
                 if database:
                     preparer = engine.dialect.identifier_preparer
                     quoted = preparer.quote(database)
@@ -34,14 +35,20 @@ def execute_sql_file(engine: Engine, sql: str, database: str | None = None, pg_d
                         connection.execute(text(f"SET SCHEMA {quoted}"))
                     elif engine.dialect.name == "mysql":
                         connection.execute(text(f"USE {quoted}"))
+                        connection.execute(text("SET FOREIGN_KEY_CHECKS=0"))
+                        mysql_foreign_key_checks_disabled = True
 
-                for statement in statements:
-                    try:
-                        connection.execute(text(statement))
-                    except Exception as exc:
-                        errors.append(str(exc))
-                        rolled_back = True
-                        raise
+                try:
+                    for statement in statements:
+                        try:
+                            connection.execute(text(statement))
+                        except Exception as exc:
+                            errors.append(str(exc))
+                            rolled_back = True
+                            raise
+                finally:
+                    if mysql_foreign_key_checks_disabled:
+                        connection.execute(text("SET FOREIGN_KEY_CHECKS=1"))
         except Exception:
             pass
     finally:

@@ -2,7 +2,7 @@ import re
 
 from sqlalchemy import Engine, inspect, text
 
-from app.schemas.metadata import ColumnInfo, DatabaseInfo, TableDataChangeRequest, TableInfo, TableUpdateColumn
+from app.schemas.metadata import ColumnInfo, DatabaseInfo, DbObjectInfo, TableDataChangeRequest, TableInfo, TableUpdateColumn
 
 COLUMN_TYPE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_ (),]*$")
 
@@ -164,17 +164,18 @@ def list_schemas(engine: Engine, database_name: str | None = None) -> list[Datab
 
 
 def create_database(engine: Engine, database_name: str) -> DatabaseInfo:
-    if engine.dialect.name == "postgresql":
-        raise ValueError("PostgreSQL 新建数据库将在后续支持，请先通过外部工具创建")
-
-    if engine.dialect.name != "mysql":
+    if engine.dialect.name not in {"mysql", "postgresql"}:
         raise ValueError("SQLite 请通过新增文件连接创建数据库")
 
     preparer = engine.dialect.identifier_preparer
     quoted = preparer.quote(database_name)
 
-    with engine.begin() as connection:
-        connection.execute(text(f"CREATE DATABASE {quoted}"))
+    if engine.dialect.name == "postgresql":
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
+            connection.execute(text(f"CREATE DATABASE {quoted}"))
+    else:
+        with engine.begin() as connection:
+            connection.execute(text(f"CREATE DATABASE {quoted}"))
 
     return DatabaseInfo(name=database_name)
 
@@ -304,6 +305,94 @@ def list_tables(engine: Engine, database_name: str | None = None, pg_database: s
 
     inspector = inspect(engine)
     return [TableInfo(name=table_name) for table_name in inspector.get_table_names(schema=database_name)]
+
+
+def list_db_objects(engine: Engine, database_name: str | None = None, pg_database: str | None = None, object_type: str | None = None) -> list[DbObjectInfo]:
+    objects: list[DbObjectInfo] = []
+
+    if object_type in {None, "table"}:
+        objects.extend(DbObjectInfo(type="table", **table.model_dump()) for table in list_tables(engine, database_name, pg_database))
+
+    if object_type not in {None, "view", "trigger", "procedure", "function", "sequence", "index"}:
+        return objects
+
+    if pg_database and engine.dialect.name == "postgresql":
+        engine = _pg_engine(engine, pg_database)
+
+    schema_name = database_name
+
+    if engine.dialect.name == "mysql":
+        target_db = database_name or engine.url.database
+        with engine.connect() as connection:
+            if object_type in {None, "view"}:
+                rows = connection.execute(text("SELECT TABLE_NAME FROM information_schema.VIEWS WHERE TABLE_SCHEMA = :db ORDER BY TABLE_NAME"), {"db": target_db}).fetchall()
+                objects.extend(DbObjectInfo(name=row[0], type="view") for row in rows)
+            if object_type in {None, "trigger"}:
+                rows = connection.execute(text("SELECT TRIGGER_NAME FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = :db ORDER BY TRIGGER_NAME"), {"db": target_db}).fetchall()
+                objects.extend(DbObjectInfo(name=row[0], type="trigger") for row in rows)
+            if object_type in {None, "procedure"}:
+                rows = connection.execute(text("SELECT ROUTINE_NAME FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = :db AND ROUTINE_TYPE = 'PROCEDURE' ORDER BY ROUTINE_NAME"), {"db": target_db}).fetchall()
+                objects.extend(DbObjectInfo(name=row[0], type="procedure") for row in rows)
+            if object_type in {None, "function"}:
+                rows = connection.execute(text("SELECT ROUTINE_NAME FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = :db AND ROUTINE_TYPE = 'FUNCTION' ORDER BY ROUTINE_NAME"), {"db": target_db}).fetchall()
+                objects.extend(DbObjectInfo(name=row[0], type="function") for row in rows)
+            if object_type in {None, "index"}:
+                rows = connection.execute(text("SELECT INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = :db AND INDEX_NAME <> 'PRIMARY' GROUP BY INDEX_NAME ORDER BY INDEX_NAME"), {"db": target_db}).fetchall()
+                objects.extend(DbObjectInfo(name=row[0], type="index") for row in rows)
+        return objects
+
+    if engine.dialect.name == "postgresql":
+        target_schema = schema_name or "public"
+        with engine.connect() as connection:
+            if object_type in {None, "view"}:
+                rows = connection.execute(text("SELECT table_name FROM information_schema.views WHERE table_schema = :schema ORDER BY table_name"), {"schema": target_schema}).fetchall()
+                objects.extend(DbObjectInfo(name=row[0], type="view") for row in rows)
+            if object_type in {None, "trigger"}:
+                rows = connection.execute(text("SELECT trigger_name FROM information_schema.triggers WHERE trigger_schema = :schema ORDER BY trigger_name"), {"schema": target_schema}).fetchall()
+                objects.extend(DbObjectInfo(name=row[0], type="trigger") for row in rows)
+            if object_type in {None, "procedure", "function"}:
+                rows = connection.execute(text("SELECT p.proname, CASE WHEN p.prokind = 'p' THEN 'procedure' ELSE 'function' END FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = :schema AND p.prokind IN ('p', 'f') ORDER BY p.proname"), {"schema": target_schema}).fetchall()
+                objects.extend(DbObjectInfo(name=row[0], type=row[1]) for row in rows if object_type is None or row[1] == object_type)
+            if object_type in {None, "sequence"}:
+                rows = connection.execute(text("SELECT sequence_name FROM information_schema.sequences WHERE sequence_schema = :schema ORDER BY sequence_name"), {"schema": target_schema}).fetchall()
+                objects.extend(DbObjectInfo(name=row[0], type="sequence") for row in rows)
+            if object_type in {None, "index"}:
+                rows = connection.execute(text("SELECT indexname FROM pg_indexes WHERE schemaname = :schema ORDER BY indexname"), {"schema": target_schema}).fetchall()
+                objects.extend(DbObjectInfo(name=row[0], type="index") for row in rows)
+        return objects
+
+    if engine.dialect.name in {"dm", "dmPython"}:
+        target_schema = (schema_name or engine.url.username or "SYSDBA").upper()
+        with engine.connect() as connection:
+            if object_type in {None, "view"}:
+                rows = connection.execute(text("SELECT VIEW_NAME FROM ALL_VIEWS WHERE OWNER = :schema ORDER BY VIEW_NAME"), {"schema": target_schema}).fetchall()
+                objects.extend(DbObjectInfo(name=row[0], type="view") for row in rows)
+            if object_type in {None, "trigger"}:
+                rows = connection.execute(text("SELECT TRIGGER_NAME FROM ALL_TRIGGERS WHERE OWNER = :schema ORDER BY TRIGGER_NAME"), {"schema": target_schema}).fetchall()
+                objects.extend(DbObjectInfo(name=row[0], type="trigger") for row in rows)
+            if object_type in {None, "procedure", "function"}:
+                rows = connection.execute(text("SELECT OBJECT_NAME, OBJECT_TYPE FROM ALL_OBJECTS WHERE OWNER = :schema AND OBJECT_TYPE IN ('PROCEDURE', 'FUNCTION') ORDER BY OBJECT_NAME"), {"schema": target_schema}).fetchall()
+                objects.extend(DbObjectInfo(name=row[0], type=str(row[1]).lower()) for row in rows if object_type is None or str(row[1]).lower() == object_type)
+            if object_type in {None, "sequence"}:
+                rows = connection.execute(text("SELECT SEQUENCE_NAME FROM ALL_SEQUENCES WHERE SEQUENCE_OWNER = :schema ORDER BY SEQUENCE_NAME"), {"schema": target_schema}).fetchall()
+                objects.extend(DbObjectInfo(name=row[0], type="sequence") for row in rows)
+            if object_type in {None, "index"}:
+                rows = connection.execute(text("SELECT INDEX_NAME FROM ALL_INDEXES WHERE OWNER = :schema ORDER BY INDEX_NAME"), {"schema": target_schema}).fetchall()
+                objects.extend(DbObjectInfo(name=row[0], type="index") for row in rows)
+        return objects
+
+    inspector = inspect(engine)
+    if object_type in {None, "view"}:
+        objects.extend(DbObjectInfo(name=name, type="view") for name in inspector.get_view_names(schema=schema_name))
+    if object_type in {None, "trigger"}:
+        with engine.connect() as connection:
+            rows = connection.execute(text("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")).fetchall()
+            objects.extend(DbObjectInfo(name=row[0], type="trigger") for row in rows)
+    if object_type in {None, "index"}:
+        with engine.connect() as connection:
+            rows = connection.execute(text("SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%' ORDER BY name")).fetchall()
+            objects.extend(DbObjectInfo(name=row[0], type="index") for row in rows)
+    return objects
 
 
 def list_columns(engine: Engine, table_name: str, database_name: str | None = None, pg_database: str | None = None) -> list[ColumnInfo]:

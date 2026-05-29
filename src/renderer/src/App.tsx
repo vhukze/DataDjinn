@@ -2,8 +2,9 @@ import {
   BranchesOutlined,
   CheckCircleOutlined,
   CloseCircleOutlined,
-  CodeOutlined,
   DatabaseOutlined,
+  FileAddOutlined,
+  FunctionOutlined,
   MessageOutlined,
   EditOutlined,
   DeleteOutlined,
@@ -17,7 +18,8 @@ import {
   ReloadOutlined,
   RobotOutlined,
   SunOutlined,
-  TableOutlined
+  TableOutlined,
+  ThunderboltOutlined
 } from '@ant-design/icons'
 import {
   Alert,
@@ -55,6 +57,7 @@ import mysqlIcon from './assets/icons/mysql.png'
 import postgresIcon from './assets/icons/postgres.png'
 import sqliteIcon from './assets/icons/sqllite.png'
 import dmIcon from './assets/icons/dm.svg'
+import appIcon from '../../../resources/icon.svg'
 
 type BackendStatus = {
   state: 'starting' | 'online' | 'failed' | 'stopped' | 'crashed'
@@ -95,6 +98,11 @@ const filterPersistedValues = (persisted: string[], available: string[]): string
   return filtered.length > 0 ? filtered : available
 }
 
+const defaultSelectedDatabases = (connection: ConnectionInfo, available: string[]): string[] => {
+  const configured = connection.database?.split('@')[0]
+  return configured && available.includes(configured) ? [configured] : available
+}
+
 const COMMON_TYPES = [
   'INT', 'INTEGER', 'BIGINT', 'SMALLINT',
   'VARCHAR(50)', 'VARCHAR(100)', 'VARCHAR(255)', 'TEXT',
@@ -122,6 +130,7 @@ type ConnectionFormValues = {
   password?: string
   database?: string
   sqlite_path?: string
+  dm_driver_path?: string
 }
 
 type ConnectionInfo = {
@@ -154,6 +163,10 @@ type TableInfo = {
   storage_size_bytes?: number | null
   storage_size_display?: string | null
   row_count?: number | null
+}
+
+type DbObjectInfo = TableInfo & {
+  type: DbObjectType
 }
 
 type ColumnInfo = {
@@ -199,6 +212,11 @@ type WorkspaceTab = {
   editRows?: EditableRow[]
   selectedRowKeys?: React.Key[]
   selectedRowKeyMap?: Record<string, true>
+  selectedColumns?: string[]
+  selectedColumnMap?: Record<string, true>
+  columnOrder?: string[]
+  dragSelection?: { type: 'row'; anchor: string }
+  draggingColumn?: string
   editingCell?: { rowKey: string; column: string }
   error?: string
 }
@@ -211,7 +229,33 @@ type ColumnDef = {
   primaryKey: boolean
 }
 
-type TreeNodeKind = 'connection' | 'database' | 'pg-schema' | 'tables-root' | 'table' | 'column'
+type DbObjectType = 'table' | 'view' | 'trigger' | 'procedure' | 'function' | 'sequence' | 'index'
+type TreeNodeKind = 'connection' | 'database' | 'pg-schema' | 'object-group' | 'table' | 'db-object' | 'column'
+
+type DbObjectGroupMeta = {
+  type: DbObjectType
+  title: string
+  icon: React.ReactNode
+}
+
+const DB_OBJECT_GROUPS: DbObjectGroupMeta[] = [
+  { type: 'table', title: '表', icon: <TableOutlined /> },
+  { type: 'view', title: '视图', icon: <EyeOutlined /> },
+  { type: 'trigger', title: '触发器', icon: <ThunderboltOutlined /> },
+  { type: 'procedure', title: '存储过程', icon: <FunctionOutlined /> },
+  { type: 'function', title: '函数', icon: <FunctionOutlined /> },
+  { type: 'sequence', title: '序列', icon: <DatabaseOutlined /> },
+  { type: 'index', title: '索引', icon: <BranchesOutlined /> }
+]
+
+const DB_OBJECT_GROUP_BY_TYPE = Object.fromEntries(DB_OBJECT_GROUPS.map((group) => [group.type, group])) as Record<DbObjectType, DbObjectGroupMeta>
+
+const DB_OBJECT_TYPES_BY_DATABASE: Record<DatabaseType, DbObjectType[]> = {
+  sqlite: ['table', 'view', 'trigger', 'index'],
+  mysql: ['table', 'view', 'trigger', 'procedure', 'function', 'index'],
+  postgresql: ['table', 'view', 'trigger', 'procedure', 'function', 'sequence', 'index'],
+  dm: ['table', 'view', 'trigger', 'procedure', 'function', 'sequence', 'index']
+}
 
 type AIContextSource = {
   id: string
@@ -234,12 +278,19 @@ type AIActiveContext = {
   pgDatabaseName?: string
 }
 
+type AIWorkspaceAction = {
+  type: 'append_query_sql'
+  sql: string
+  title?: string
+}
+
 type DatabaseTreeNode = DataNode & {
   kind: TreeNodeKind
   connectionId?: string
   databaseName?: string
   pgDatabaseName?: string
   tableName?: string
+  objectType?: DbObjectType
   sizeDisplay?: string | null
   sizeBytes?: number | null
   storageSizeDisplay?: string | null
@@ -280,10 +331,22 @@ function App(): React.JSX.Element {
   const [form] = Form.useForm<ConnectionFormValues>()
   const databaseType = Form.useWatch('database_type', form) ?? 'sqlite'
   const [messageApi, contextHolder] = message.useMessage()
+  const showError = (error: unknown, fallback = '操作失败'): void => {
+    const content = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
+    Modal.error({
+      title: '操作失败',
+      centered: true,
+      okText: '确认',
+      width: 720,
+      content: (
+        <Space direction="vertical" className="full-width">
+          <Input.TextArea value={content} autoSize={{ minRows: 4, maxRows: 12 }} readOnly />
+        </Space>
+      )
+    })
+  }
   const [backendStatus, setBackendStatus] = useState<BackendStatus>({ state: 'starting', message: '后端状态初始化中' })
-  const [health, setHealth] = useState<HealthStatus | null>(null)
   const [healthLoading, setHealthLoading] = useState(false)
-  const [healthError, setHealthError] = useState<string | null>(null)
   const [connections, setConnections] = useState<ConnectionInfo[]>([])
   const [selectedConnectionId, setSelectedConnectionId] = useState<string>()
   const [treeData, setTreeData] = useState<DatabaseTreeNode[]>([])
@@ -295,11 +358,13 @@ function App(): React.JSX.Element {
   const [testingConnection, setTestingConnection] = useState(false)
   const [workspaceTabs, setWorkspaceTabs] = useState<WorkspaceTab[]>([])
   const [activeTabKey, setActiveTabKey] = useState<string>()
+  const [selectedSqlByTab, setSelectedSqlByTab] = useState<Record<string, string>>({})
   const [resourcePanelSize, setResourcePanelSize] = useState(340)
   const [aiPanelSize, setAiPanelSize] = useState(360)
   const [aiPanelOpen, setAiPanelOpen] = useState(true)
   const [aiContextSources, setAiContextSources] = useState<AIContextSource[]>([])
   const [aiActiveContext, setAiActiveContext] = useState<AIActiveContext | undefined>()
+  const [focusedTreeNode, setFocusedTreeNode] = useState<DatabaseTreeNode | undefined>()
   const [queryCounter, setQueryCounter] = useState(1)
   const [tableEditorOpen, setTableEditorOpen] = useState(false)
   const [tableEditorLoading, setTableEditorLoading] = useState(false)
@@ -325,6 +390,27 @@ function App(): React.JSX.Element {
   const [sqlFilePgDatabase, setSqlFilePgDatabase] = useState<string>('')
   const [sqlFileLoading, setSqlFileLoading] = useState(false)
   const [sqlFileResult, setSqlFileResult] = useState<SqlFileRunResponse | null>(null)
+  const [exportModalOpen, setExportModalOpen] = useState(false)
+  const [exportConnectionId, setExportConnectionId] = useState<string>('')
+  const [exportDatabase, setExportDatabase] = useState<string>('')
+  const [exportPgDatabase, setExportPgDatabase] = useState<string>('')
+  const [exportTable, setExportTable] = useState<string>('')
+  const [exportScope, setExportScope] = useState<'database' | 'schema' | 'table'>('database')
+  const [exportFormat, setExportFormat] = useState<'sql' | 'csv'>('sql')
+  const [exportContent, setExportContent] = useState<'schema' | 'data' | 'schema_data'>('schema_data')
+  const [exportLoading, setExportLoading] = useState(false)
+  const [importModalOpen, setImportModalOpen] = useState(false)
+  const [importConnectionId, setImportConnectionId] = useState<string>('')
+  const [importDatabase, setImportDatabase] = useState<string>('')
+  const [importPgDatabase, setImportPgDatabase] = useState<string>('')
+  const [importTable, setImportTable] = useState<string>('')
+  const [importPath, setImportPath] = useState<string>('')
+  const [importLoading, setImportLoading] = useState(false)
+  const [backupRestoreModalOpen, setBackupRestoreModalOpen] = useState(false)
+  const [backupRestoreConnectionId, setBackupRestoreConnectionId] = useState<string>('')
+  const [backupRestoreDatabase, setBackupRestoreDatabase] = useState<string>('')
+  const [backupRestorePgDatabase, setBackupRestorePgDatabase] = useState<string>('')
+  const [backupRestoreLoading, setBackupRestoreLoading] = useState(false)
   const [createTableModalOpen, setCreateTableModalOpen] = useState(false)
   const [createTableConnectionId, setCreateTableConnectionId] = useState<string>('')
   const [createTableDatabaseName, setCreateTableDatabaseName] = useState<string>('')
@@ -348,7 +434,10 @@ function App(): React.JSX.Element {
   const [allSchemas, setAllSchemas] = useState<Record<string, string[]>>({})
   const [activeSelector, setActiveSelector] = useState<string | null>(null)
   const [draftSelectedDatabases, setDraftSelectedDatabases] = useState<Record<string, string[]>>({})
+  const [draftSelectedSchemas, setDraftSelectedSchemas] = useState<Record<string, string[]>>({})
   const [completionTables, setCompletionTables] = useState<Record<string, string[]>>({})
+  const [tableBodyHeight, setTableBodyHeight] = useState(320)
+  const tableBodyRef = useRef<HTMLDivElement>(null)
 
   const { theme, toggleTheme } = useTheme()
 
@@ -484,7 +573,7 @@ function App(): React.JSX.Element {
           }
           if (key === 'new-database') {
             if (connection.database_type === 'sqlite') {
-              openConnectionModal('sqlite')
+              void openConnectionModal('sqlite')
             } else {
               setCreatingDatabaseConnectionId(connection.connection_id)
               setCreatingSchemaDatabaseName('')
@@ -556,6 +645,23 @@ function App(): React.JSX.Element {
     </Dropdown>
   )
 
+  const buildObjectGroupNodes = (connectionId: string, databaseName?: string, pgDatabaseName?: string, databaseType?: DatabaseType): DatabaseTreeNode[] => {
+    const connection = getConnection(connectionId)
+    const objectTypes = DB_OBJECT_TYPES_BY_DATABASE[databaseType ?? connection?.database_type ?? 'sqlite']
+
+    return DB_OBJECT_GROUPS.filter((group) => objectTypes.includes(group.type)).map((group) => ({
+      key: `object-group:${connectionId}:${pgDatabaseName ?? ''}:${databaseName ?? ''}:${group.type}`,
+      title: group.title,
+      icon: group.icon,
+      kind: 'object-group',
+      connectionId,
+      databaseName,
+      pgDatabaseName,
+      objectType: group.type,
+      isLeaf: false
+    }))
+  }
+
   const buildConnectionNode = (connection: ConnectionInfo): DatabaseTreeNode => ({
     key: `connection:${connection.connection_id}`,
     title: connection.name,
@@ -571,19 +677,7 @@ function App(): React.JSX.Element {
       ),
     kind: 'connection',
     connectionId: connection.connection_id,
-    children:
-      connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm'
-        ? undefined
-        : [
-            {
-              key: `tables:${connection.connection_id}`,
-              title: '表',
-              icon: <TableOutlined />,
-              kind: 'tables-root',
-              connectionId: connection.connection_id,
-              isLeaf: false
-            }
-          ],
+    children: connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm' ? undefined : buildObjectGroupNodes(connection.connection_id, undefined, undefined, connection.database_type),
     className: connection.is_open ? undefined : 'tree-node-closed',
     closed: !connection.is_open,
     isLeaf: !connection.is_open
@@ -617,7 +711,7 @@ function App(): React.JSX.Element {
             const selected = selectedDatabasesRef.current[connectionId] ?? allDatabases[connectionId] ?? []
             return selected.includes(dbName)
           }
-          return k.startsWith(`pg-schema:${connectionId}:`) || k.startsWith(`table:${connectionId}:`)
+          return k.startsWith(`pg-schema:${connectionId}:`) || k.startsWith(`object-group:${connectionId}:`) || k.startsWith(`table:${connectionId}:`)
         })
 
         if (stillExpanded.length > 0) {
@@ -675,10 +769,22 @@ function App(): React.JSX.Element {
     setWorkspaceTabs((current) => current.map((tab) => (tab.key === key ? { ...tab, ...patch } : tab)))
   }
 
-  const getTableScrollY = (): number => {
-    const windowHeight = typeof window === 'undefined' ? 720 : window.innerHeight
-    return Math.max(220, windowHeight - 430)
-  }
+  useEffect(() => {
+    const element = tableBodyRef.current
+    if (!element) {
+      return
+    }
+
+    const updateTableBodyHeight = (): void => {
+      setTableBodyHeight(Math.max(160, element.clientHeight - 39))
+    }
+
+    updateTableBodyHeight()
+    const observer = new ResizeObserver(updateTableBodyHeight)
+    observer.observe(element)
+
+    return () => observer.disconnect()
+  }, [activeTabKey, workspaceTabs.length])
 
   const closeWorkspaceTab = (key: string): void => {
     setWorkspaceTabs((current) => {
@@ -752,7 +858,7 @@ function App(): React.JSX.Element {
     try {
       await navigator.clipboard.writeText(tableName)
     } catch {
-      messageApi.error('复制失败')
+      showError('复制失败')
     }
   }
 
@@ -860,7 +966,7 @@ function App(): React.JSX.Element {
       const data = await requestJson<{ columns: ColumnInfo[] }>(withDatabaseQuery(`/connections/${connectionId}/tables/${encodeURIComponent(tableName)}/columns`, databaseName))
       setEditingColumns(data.columns)
     } catch (err) {
-      messageApi.error(err instanceof Error ? err.message : '加载字段失败')
+      showError(err instanceof Error ? err.message : '加载字段失败')
     } finally {
       setTableEditorLoading(false)
     }
@@ -885,7 +991,7 @@ function App(): React.JSX.Element {
       setEditingColumns(data.columns)
       setTableEditorOpen(false)
     } catch (err) {
-      messageApi.error(err instanceof Error ? err.message : '保存表结构失败')
+      showError(err instanceof Error ? err.message : '保存表结构失败')
     } finally {
       setTableEditorLoading(false)
     }
@@ -920,28 +1026,39 @@ function App(): React.JSX.Element {
           }
         }}
         content={
-          <div style={{ maxHeight: 260, overflowY: 'auto', minWidth: 160 }}>
-            <Checkbox.Group
-              value={draftSelected}
-              onChange={(values) => {
-                if (values.length === 0) {
-                  return
-                }
-
+          <div style={{ maxHeight: 260, overflowY: 'auto', minWidth: 180 }}>
+            <Flex vertical gap={6}>
+              <Button size="small" type="link" onClick={(event) => {
+                event.stopPropagation()
                 setDraftSelectedDatabases((current) => ({
                   ...current,
-                  [connectionId]: values as string[]
+                  [connectionId]: draftSelected.length === dbList.length ? [dbList[0]] : dbList
                 }))
-              }}
-            >
-              <Flex vertical gap={4}>
-                {dbList.map((dbName) => (
-                  <Checkbox key={dbName} value={dbName}>
-                    {dbName}
-                  </Checkbox>
-                ))}
-              </Flex>
-            </Checkbox.Group>
+              }}>
+                {draftSelected.length === dbList.length ? '取消全选' : '全选'}
+              </Button>
+              <Checkbox.Group
+                value={draftSelected}
+                onChange={(values) => {
+                  if (values.length === 0) {
+                    return
+                  }
+
+                  setDraftSelectedDatabases((current) => ({
+                    ...current,
+                    [connectionId]: values as string[]
+                  }))
+                }}
+              >
+                <Flex vertical gap={4}>
+                  {dbList.map((dbName) => (
+                    <Checkbox key={dbName} value={dbName}>
+                      {dbName}
+                    </Checkbox>
+                  ))}
+                </Flex>
+              </Checkbox.Group>
+            </Flex>
           </div>
         }
       >
@@ -986,8 +1103,11 @@ function App(): React.JSX.Element {
       const pgDbName = node.pgDatabaseName
       const isPgDb = node.kind === 'database' && getConnection(connectionId)?.database_type === 'postgresql'
       const selKey = `${connectionId}:${databaseName}`
-      const schemaCount = (selectedSchemas[selKey] ?? allSchemas[selKey] ?? []).length
-      const selectedCount = (selectedSchemas[selKey] ?? []).length
+      const schemas = allSchemas[selKey] ?? []
+      const selectedSchemaList = selectedSchemas[selKey] ?? schemas
+      const draftSelectedSchemaList = draftSelectedSchemas[selKey] ?? selectedSchemaList
+      const schemaCount = schemas.length
+      const selectedCount = selectedSchemaList.length
 
       return (
         <Flex align="center" justify="space-between" className="tree-title-row">
@@ -999,7 +1119,11 @@ function App(): React.JSX.Element {
                   { key: 'refresh', label: '刷新', icon: <ReloadOutlined /> },
                   ...(isPgDb ? [{ key: 'new-schema', label: '新建模式', icon: <PlusOutlined /> }] : []),
                   ...(!isPgDb ? [{ key: 'new-table', label: '新建表', icon: <PlusOutlined /> }] : []),
-                  { key: 'run-sql', label: '运行 SQL 文件', icon: <PlayCircleOutlined /> }
+                  { key: 'run-sql', label: '运行 SQL 文件', icon: <PlayCircleOutlined /> },
+                  { type: 'divider' },
+                  { key: 'backup', label: '备份', icon: <SaveOutlined /> },
+                  { key: 'export', label: '导出', icon: <FileAddOutlined /> },
+                  { key: 'import', label: '导入', icon: <PlayCircleOutlined /> }
                 ],
                 onClick: ({ key }) => {
                   if (key === 'refresh') {
@@ -1026,6 +1150,15 @@ function App(): React.JSX.Element {
                   if (key === 'run-sql') {
                     void openSqlFileDialog(connectionId, databaseName, pgDbName)
                   }
+                  if (key === 'backup') {
+                    openBackupRestoreModal(connectionId, isPgDb ? undefined : databaseName, pgDbName)
+                  }
+                  if (key === 'export') {
+                    openExportModal(connectionId, isPgDb ? undefined : databaseName, pgDbName)
+                  }
+                  if (key === 'import') {
+                    openImportModal(connectionId, isPgDb ? undefined : databaseName, pgDbName)
+                  }
                 }
               }}
             >
@@ -1042,36 +1175,52 @@ function App(): React.JSX.Element {
               open={activeSelector === selKey}
               onOpenChange={(open) => {
                 if (open) {
+                  setDraftSelectedSchemas((current) => ({
+                    ...current,
+                    [selKey]: selectedSchemaList
+                  }))
                   setActiveSelector(selKey)
                 } else {
+                  const nextSelected = draftSelectedSchemas[selKey] ?? selectedSchemaList
+                  setSelectedSchemas((current) => ({ ...current, [selKey]: nextSelected }))
                   setActiveSelector(null)
                   refreshDatabaseNode(connectionId, databaseName)
                 }
               }}
               content={
-                <div style={{ maxHeight: 260, overflowY: 'auto', minWidth: 160 }}>
-                  <Checkbox.Group
-                    value={selectedSchemas[selKey] ?? []}
-                    onChange={(values) => {
-                      if (values.length === 0) {
-                        return
-                      }
-
-                      setSelectedSchemas((current) => ({
+                <div style={{ maxHeight: 260, overflowY: 'auto', minWidth: 180 }}>
+                  <Flex vertical gap={6}>
+                    <Button size="small" type="link" onClick={(event) => {
+                      event.stopPropagation()
+                      setDraftSelectedSchemas((current) => ({
                         ...current,
-                        [selKey]: values as string[]
+                        [selKey]: draftSelectedSchemaList.length === schemas.length ? [schemas[0]] : schemas
                       }))
-                      setTimeout(() => refreshDatabaseNode(connectionId, databaseName), 0)
-                    }}
-                  >
-                    <Flex vertical gap={4}>
-                      {(allSchemas[selKey] ?? []).map((schemaName) => (
-                        <Checkbox key={schemaName} value={schemaName}>
-                          {schemaName}
-                        </Checkbox>
-                      ))}
-                    </Flex>
-                  </Checkbox.Group>
+                    }}>
+                      {draftSelectedSchemaList.length === schemas.length ? '取消全选' : '全选'}
+                    </Button>
+                    <Checkbox.Group
+                      value={draftSelectedSchemaList}
+                      onChange={(values) => {
+                        if (values.length === 0) {
+                          return
+                        }
+
+                        setDraftSelectedSchemas((current) => ({
+                          ...current,
+                          [selKey]: values as string[]
+                        }))
+                      }}
+                    >
+                      <Flex vertical gap={4}>
+                        {schemas.map((schemaName) => (
+                          <Checkbox key={schemaName} value={schemaName}>
+                            {schemaName}
+                          </Checkbox>
+                        ))}
+                      </Flex>
+                    </Checkbox.Group>
+                  </Flex>
                 </div>
               }
             >
@@ -1087,7 +1236,7 @@ function App(): React.JSX.Element {
       )
     }
 
-    if (node.kind !== 'table' || !node.connectionId || !node.tableName) {
+    if ((node.kind !== 'table' && node.kind !== 'db-object') || !node.connectionId || !node.tableName) {
       return node.title as React.ReactNode
     }
 
@@ -1095,16 +1244,22 @@ function App(): React.JSX.Element {
     const databaseName = node.databaseName
     const pgDbName = node.pgDatabaseName
     const tableName = node.tableName
+    const objectType = node.objectType ?? 'table'
+    const canPreview = objectType === 'table' || objectType === 'view'
 
     return (
       <Dropdown
         trigger={['contextMenu']}
         menu={{
           items: [
-            { key: 'preview', label: '预览数据' },
-            { key: 'select', label: '生成 SELECT 查询' },
-            { key: 'edit', label: '修改表' },
-            { key: 'copy', label: '复制表名' }
+            ...(canPreview ? [{ key: 'preview', label: '预览数据' }, { key: 'select', label: '生成 SELECT 查询' }] : []),
+            ...(objectType === 'table' ? [{ key: 'edit', label: '修改表' }] : []),
+            { key: 'copy', label: '复制对象名' },
+            { type: 'divider' },
+            ...(canPreview ? [
+              { key: 'export', label: '导出', icon: <FileAddOutlined /> },
+            ] : []),
+            { key: 'import', label: '导入', icon: <PlayCircleOutlined /> }
           ],
           onClick: ({ key }) => {
             if (key === 'preview') {
@@ -1118,6 +1273,12 @@ function App(): React.JSX.Element {
             }
             if (key === 'copy') {
               void copyTableName(tableName)
+            }
+            if (key === 'export') {
+              openExportModal(connectionId, databaseName, pgDbName, tableName)
+            }
+            if (key === 'import') {
+              openImportModal(connectionId, databaseName, pgDbName, tableName)
             }
           }
         }}
@@ -1256,9 +1417,9 @@ function App(): React.JSX.Element {
   const renderResultTable = (tab: WorkspaceTab): React.ReactNode => {
     const tableRows: EditableRow[] = tab.kind === 'preview' ? (tab.editRows ?? []) : (tab.result?.rows.map((row, index) => ({ ...row, __rowKey: `query:${index}` })) ?? [])
     const selectedRowKeyMap = tab.selectedRowKeyMap ?? Object.fromEntries((tab.selectedRowKeys ?? []).map((key) => [String(key), true]))
-    const selectedRowKeys = Object.keys(selectedRowKeyMap)
-    const allCurrentRowKeys = tableRows.map((row) => row.__rowKey)
-    const allCurrentRowsSelected = allCurrentRowKeys.length > 0 && allCurrentRowKeys.every((key) => selectedRowKeyMap[key])
+    const selectedColumnMap = tab.selectedColumnMap ?? Object.fromEntries((tab.selectedColumns ?? []).map((column) => [column, true]))
+    const resultColumns = tab.result?.columns ?? []
+    const orderedColumns = [...(tab.columnOrder ?? []).filter((column) => resultColumns.includes(column)), ...resultColumns.filter((column) => !(tab.columnOrder ?? []).includes(column))]
     const rowNumberOffset = ((tab.page ?? 1) - 1) * (tab.limit ?? 1000)
 
     const updateSelectedRows = (nextSelectedRowKeys: React.Key[]): void => {
@@ -1268,40 +1429,65 @@ function App(): React.JSX.Element {
       })
     }
 
-    const toggleCurrentRow = (rowKey: string): void => {
-      const nextSelected = new Set(selectedRowKeys)
-      if (nextSelected.has(rowKey)) {
-        nextSelected.delete(rowKey)
-      } else {
-        nextSelected.add(rowKey)
-      }
-      updateSelectedRows([...nextSelected])
+    const selectCurrentRow = (rowKey: string): void => {
+      updateSelectedRows([rowKey])
     }
 
-    const toggleAllCurrentRows = (): void => {
-      if (allCurrentRowsSelected) {
-        const currentRowKeySet = new Set(allCurrentRowKeys)
-        updateSelectedRows(selectedRowKeys.filter((key) => !currentRowKeySet.has(String(key))))
+    const selectCurrentColumn = (column: string): void => {
+      updateWorkspaceTab(tab.key, {
+        selectedColumns: [column],
+        selectedColumnMap: { [column]: true },
+        editingCell: undefined
+      })
+    }
+
+    const updateDragRowSelection = (rowKey: string): void => {
+      if (tab.dragSelection?.type !== 'row') {
         return
       }
+      const keys = tableRows.map((row) => row.__rowKey)
+      const start = keys.indexOf(tab.dragSelection.anchor)
+      const end = keys.indexOf(rowKey)
+      if (start < 0 || end < 0) {
+        return
+      }
+      updateSelectedRows(keys.slice(Math.min(start, end), Math.max(start, end) + 1))
+    }
 
-      updateSelectedRows([...new Set([...selectedRowKeys, ...allCurrentRowKeys])])
+    const moveColumn = (fromColumn: string, toColumn: string): void => {
+      if (fromColumn === toColumn) {
+        return
+      }
+      const nextOrder = [...orderedColumns]
+      const fromIndex = nextOrder.indexOf(fromColumn)
+      const toIndex = nextOrder.indexOf(toColumn)
+      if (fromIndex < 0 || toIndex < 0) {
+        return
+      }
+      const [moved] = nextOrder.splice(fromIndex, 1)
+      nextOrder.splice(toIndex, 0, moved)
+      updateWorkspaceTab(tab.key, { columnOrder: nextOrder, draggingColumn: undefined })
     }
 
     const rowNumberColumn: ColumnsType<EditableRow>[number] = {
-      title: (
-        <button type="button" className={`row-number-select-all${allCurrentRowsSelected ? ' selected' : ''}`} title="选中当前页全部数据" onClick={toggleAllCurrentRows}>
-          #
-        </button>
-      ),
+      title: <span className="row-number-header">#</span>,
       key: '__rowNumber',
-      width: 46,
+      width: 34,
       fixed: 'left',
       className: 'row-number-cell',
       render: (_value: unknown, row: EditableRow, index: number) => {
         const selected = Boolean(selectedRowKeyMap[row.__rowKey])
         return (
-          <button type="button" className={`row-number-button${selected ? ' selected' : ''}`} title="选中当前行" onClick={() => toggleCurrentRow(row.__rowKey)}>
+          <button
+            type="button"
+            className={`row-number-button${selected ? ' selected' : ''}`}
+            title="选中当前行，拖动可选择多行"
+            onMouseDown={() => {
+              selectCurrentRow(row.__rowKey)
+              updateWorkspaceTab(tab.key, { dragSelection: { type: 'row', anchor: row.__rowKey } })
+            }}
+            onMouseEnter={() => updateDragRowSelection(row.__rowKey)}
+          >
             {rowNumberOffset + index + 1}
           </button>
         )
@@ -1309,16 +1495,43 @@ function App(): React.JSX.Element {
     }
 
     const dataColumns: ColumnsType<EditableRow> =
-      tab.result?.columns.map((column) => ({
-        title: column,
+      orderedColumns.map((column) => ({
+        title: tab.kind === 'preview'
+          ? (
+            <button
+              type="button"
+              className={`column-select-button${selectedColumnMap[column] ? ' selected' : ''}${tab.draggingColumn === column ? ' dragging' : ''}`}
+              title="点击选中当前列，拖动可调整列顺序"
+              draggable
+              onClick={() => selectCurrentColumn(column)}
+              onDragStart={(event) => {
+                event.dataTransfer.effectAllowed = 'move'
+                event.dataTransfer.setData('text/plain', column)
+                updateWorkspaceTab(tab.key, { draggingColumn: column })
+              }}
+              onDragOver={(event) => {
+                event.preventDefault()
+                event.dataTransfer.dropEffect = 'move'
+              }}
+              onDrop={(event) => {
+                event.preventDefault()
+                moveColumn(event.dataTransfer.getData('text/plain') || tab.draggingColumn || column, column)
+              }}
+              onDragEnd={() => updateWorkspaceTab(tab.key, { draggingColumn: undefined })}
+            >
+              {column}
+            </button>
+          )
+          : column,
         dataIndex: column,
         key: column,
         width: 180,
         ellipsis: true,
+        className: selectedColumnMap[column] ? 'column-selected-cell' : undefined,
         render: (value: unknown, row: EditableRow) => (tab.kind === 'preview' ? renderEditableCell(tab, row, column, value) : <span className="table-cell-text">{value === null || value === undefined ? 'NULL' : String(value)}</span>)
       })) ?? []
     const tableColumns: ColumnsType<EditableRow> = tab.kind === 'preview' ? [rowNumberColumn, ...dataColumns] : dataColumns
-    const tableScrollX = Math.max((tab.result?.columns.length ?? 0) * 180 + (tab.kind === 'preview' ? 46 : 0), 720)
+    const tableScrollX = Math.max((tab.result?.columns.length ?? 0) * 180 + (tab.kind === 'preview' ? 34 : 0), 720)
 
     return (
       <div className="result-table-shell">
@@ -1326,7 +1539,7 @@ function App(): React.JSX.Element {
         {renderTableToolbar(tab)}
         {tab.error && <Alert message="执行失败" description={tab.error} type="error" showIcon />}
         {tab.result?.limited && <Alert message="还有更多数据，可点击下一页继续查看" type="warning" showIcon />}
-        <div className="result-table-body">
+        <div ref={tableBodyRef} className="result-table-body" onMouseUp={() => updateWorkspaceTab(tab.key, { dragSelection: undefined })} onMouseLeave={() => updateWorkspaceTab(tab.key, { dragSelection: undefined })}>
           <Table
             className="result-table"
             rowClassName={(row) => [
@@ -1339,7 +1552,7 @@ function App(): React.JSX.Element {
             dataSource={tableRows}
             rowKey="__rowKey"
             pagination={false}
-            scroll={{ x: tableScrollX, y: getTableScrollY() }}
+            scroll={{ x: tableScrollX, y: tableBodyHeight }}
             tableLayout="fixed"
             virtual={tableRows.length > 80}
             locale={{ emptyText: tab.kind === 'query' ? '暂无查询结果' : '暂无表数据' }}
@@ -1500,20 +1713,27 @@ function App(): React.JSX.Element {
                 options={schemaOptions.map((name) => ({ label: name, value: name }))}
               />
             )}
-            <Button type="primary" icon={<PlayCircleOutlined />} loading={tab.loading} onClick={() => void runQuery(tab)}>
+            <Button type="primary" icon={<PlayCircleOutlined />} loading={tab.loading} onClick={() => void runQuery(tab, selectedSqlByTab[tab.key])}>
               执行
             </Button>
           </Space>
-          <div className="sql-editor-container">
-            <SqlEditor
-              value={tab.sql}
-              onChange={(sql) => updateWorkspaceTab(tab.key, { sql })}
-              onExecute={() => void runQuery(tab)}
-              theme={theme}
-              completionContext={buildSqlCompletionContext(tab)}
-            />
-          </div>
-          {renderResultTable(tab)}
+          <Splitter className="query-body-splitter" layout="vertical">
+            <Splitter.Panel defaultSize={280} min={160} max="75%" className="sql-editor-panel">
+              <div className="sql-editor-container">
+                <SqlEditor
+                  value={tab.sql}
+                  onChange={(sql) => updateWorkspaceTab(tab.key, { sql })}
+                  onExecute={(selectedSql) => void runQuery(tab, selectedSql)}
+                  onSelectionChange={(selectedSql) => setSelectedSqlByTab((current) => ({ ...current, [tab.key]: selectedSql }))}
+                  theme={theme}
+                  completionContext={buildSqlCompletionContext(tab)}
+                />
+              </div>
+            </Splitter.Panel>
+            <Splitter.Panel min={120}>
+              {renderResultTable(tab)}
+            </Splitter.Panel>
+          </Splitter>
         </div>
       )
     }
@@ -1523,13 +1743,11 @@ function App(): React.JSX.Element {
 
   const checkHealth = async (): Promise<void> => {
     setHealthLoading(true)
-    setHealthError(null)
 
     try {
-      setHealth(await requestJson<HealthStatus>('/health'))
+      await requestJson<HealthStatus>('/health')
     } catch (err) {
-      setHealth(null)
-      setHealthError(err instanceof Error ? err.message : '无法连接后端服务')
+      showError(err instanceof Error ? err.message : '无法连接后端服务')
     } finally {
       setHealthLoading(false)
     }
@@ -1555,7 +1773,7 @@ function App(): React.JSX.Element {
                 }
               }
 
-              return { ...current, [connection.connection_id]: dbNames }
+              return { ...current, [connection.connection_id]: defaultSelectedDatabases(connection, dbNames) }
             }
 
             const filtered = filterPersistedValues(current[connection.connection_id], dbNames)
@@ -1586,7 +1804,7 @@ function App(): React.JSX.Element {
       const dbNames = data.databases.map((d) => d.name)
 
       const currentSelected = selectedDatabasesRef.current[node.connectionId!]
-      const nextSelected = currentSelected ? filterPersistedValues(currentSelected, dbNames) : dbNames
+      const nextSelected = currentSelected ? filterPersistedValues(currentSelected, dbNames) : defaultSelectedDatabases(connection, dbNames)
 
       setAllDatabases((current) => ({ ...current, [node.connectionId!]: dbNames }))
       setSelectedDatabases((current) => ({ ...current, [node.connectionId!]: nextSelected }))
@@ -1634,30 +1852,38 @@ function App(): React.JSX.Element {
           isLeaf: false
         }))
       }
+
+      return buildObjectGroupNodes(node.connectionId, node.databaseName)
     }
 
-    if ((node.kind === 'tables-root' || node.kind === 'database' || node.kind === 'pg-schema') && node.connectionId) {
-      const pgDb = node.kind === 'pg-schema' ? node.pgDatabaseName : undefined
-      const queryPath = pgDb
-        ? withPgDatabase(`/connections/${node.connectionId}/tables`, node.databaseName, pgDb)
-        : withDatabaseQuery(`/connections/${node.connectionId}/tables`, node.databaseName)
-      const data = await requestJson<{ tables: TableInfo[] }>(queryPath)
-      return data.tables.map<DatabaseTreeNode>((table) => ({
-        key: `table:${node.connectionId}:${node.databaseName ?? 'main'}:${table.name}`,
-        title: table.name,
-        icon: <TableOutlined />,
-        kind: 'table',
-        connectionId: node.connectionId,
-        databaseName: node.databaseName,
-        pgDatabaseName: pgDb,
-        tableName: table.name,
-        sizeDisplay: table.size_display,
-        sizeBytes: table.size_bytes,
-        storageSizeDisplay: table.storage_size_display,
-        storageSizeBytes: table.storage_size_bytes,
-        rowCount: table.row_count,
-        isLeaf: false
-      }))
+    if (node.kind === 'pg-schema' && node.connectionId && node.databaseName) {
+      return buildObjectGroupNodes(node.connectionId, node.databaseName, node.pgDatabaseName)
+    }
+
+    if (node.kind === 'object-group' && node.connectionId && node.objectType) {
+      const data = await requestJson<{ objects: DbObjectInfo[] }>(`${withPgDatabase(`/connections/${node.connectionId}/objects`, node.databaseName, node.pgDatabaseName)}${node.databaseName || node.pgDatabaseName ? '&' : '?'}type=${node.objectType}`)
+      return data.objects.map<DatabaseTreeNode>((object) => {
+        const kind = object.type === 'table' ? 'table' : 'db-object'
+        const group = DB_OBJECT_GROUP_BY_TYPE[object.type]
+
+        return {
+          key: `${kind}:${node.connectionId}:${node.pgDatabaseName ?? ''}:${node.databaseName ?? ''}:${object.type}:${object.name}`,
+          title: object.name,
+          icon: group.icon,
+          kind,
+          connectionId: node.connectionId,
+          databaseName: node.databaseName,
+          pgDatabaseName: node.pgDatabaseName,
+          tableName: object.name,
+          objectType: object.type,
+          sizeDisplay: object.size_display,
+          sizeBytes: object.size_bytes,
+          storageSizeDisplay: object.storage_size_display,
+          storageSizeBytes: object.storage_size_bytes,
+          rowCount: object.row_count,
+          isLeaf: object.type !== 'table'
+        }
+      })
     }
 
     if (node.kind === 'table' && node.connectionId && node.tableName) {
@@ -1676,7 +1902,7 @@ function App(): React.JSX.Element {
   const reloadExpandedDescendants = async (connectionId: string, expandedSnapshot: string[]): Promise<void> => {
     const descendants = expandedSnapshot
       .filter((k) => {
-        return k.startsWith(`database:${connectionId}:`) || k.startsWith(`pg-schema:${connectionId}:`) || k.startsWith(`table:${connectionId}:`)
+        return k.startsWith(`database:${connectionId}:`) || k.startsWith(`pg-schema:${connectionId}:`) || k.startsWith(`object-group:${connectionId}:`) || k.startsWith(`table:${connectionId}:`)
       })
       .sort((a, b) => a.split(':').length - b.split(':').length)
 
@@ -1701,40 +1927,41 @@ function App(): React.JSX.Element {
           pgDatabaseName: parts[2],
           isLeaf: false
         })
+      } else if (kind === 'object-group') {
+        await reloadNodeChildren({
+          key,
+          kind: 'object-group',
+          connectionId,
+          pgDatabaseName: parts[2] || undefined,
+          databaseName: parts[3] || undefined,
+          objectType: parts[4] as DbObjectType,
+          isLeaf: false
+        })
       } else if (kind === 'table') {
-        let pgDatabaseName: string | undefined
-
-        for (const k of expandedSnapshot) {
-          if (k.startsWith(`pg-schema:${connectionId}:`)) {
-            const ps = k.split(':')
-            if (ps[3] === parts[2]) {
-              pgDatabaseName = ps[2]
-              break
-            }
-          }
-        }
-
         await reloadNodeChildren({
           key,
           kind: 'table',
           connectionId,
-          databaseName: parts[2],
-          pgDatabaseName,
-          tableName: parts.slice(3).join(':'),
+          pgDatabaseName: parts[2] || undefined,
+          databaseName: parts[3] || undefined,
+          objectType: 'table',
+          tableName: parts.slice(5).join(':'),
           isLeaf: false
         })
       }
     }
   }
 
-  const reloadNodeChildren = async (node: DatabaseTreeNode): Promise<void> => {
+  const reloadNodeChildren = async (node: DatabaseTreeNode, expand = true): Promise<void> => {
     const children = await loadChildrenForNode(node)
     setTreeData((current) => updateTreeNode(current, node.key, children))
-    setExpandedKeys((current) => current.includes(node.key) ? current : [...current, node.key])
+    if (expand) {
+      setExpandedKeys((current) => current.includes(node.key) ? current : [...current, node.key])
+    }
   }
 
   const isLoadableTreeNode = (node: DatabaseTreeNode): boolean =>
-    node.kind === 'connection' || node.kind === 'database' || node.kind === 'pg-schema' || node.kind === 'tables-root'
+    node.kind === 'connection' || node.kind === 'database' || node.kind === 'pg-schema' || node.kind === 'object-group' || node.kind === 'table'
 
   const collectDescendantKeys = (node: DatabaseTreeNode): Set<React.Key> => {
     const keys = new Set<React.Key>()
@@ -1794,14 +2021,14 @@ function App(): React.JSX.Element {
       const data = await requestJson<{ password: string }>(`/connections/${connection.connection_id}/password`)
       setVisiblePassword(data.password)
     } catch (err) {
-      messageApi.error(err instanceof Error ? err.message : '读取密码失败')
+      showError(err instanceof Error ? err.message : '读取密码失败')
       setPasswordModalOpen(false)
     } finally {
       setPasswordLoading(false)
     }
   }
 
-  const openConnectionModal = (nextDatabaseType: DatabaseType): void => {
+  const openConnectionModal = async (nextDatabaseType: DatabaseType): Promise<void> => {
     setConnectionMode('create')
     setEditingConnectionInfoId(undefined)
     form.resetFields()
@@ -1826,7 +2053,8 @@ function App(): React.JSX.Element {
         name: '达梦',
         host: '127.0.0.1',
         port: 5236,
-        username: 'SYSDBA'
+        username: 'SYSDBA',
+        dm_driver_path: await window.api.getDmDriverPath() ?? undefined
       })
     } else {
       form.setFieldsValue({
@@ -1850,7 +2078,7 @@ function App(): React.JSX.Element {
       const data = await requestJson<ConnectionFormValues>(`/connections/${connection.connection_id}`)
       form.setFieldsValue(data)
     } catch (err) {
-      messageApi.error(err instanceof Error ? err.message : '加载连接信息失败')
+      showError(err instanceof Error ? err.message : '加载连接信息失败')
       setConnectionModalOpen(false)
     } finally {
       setConnectionLoading(false)
@@ -1864,7 +2092,7 @@ function App(): React.JSX.Element {
       { key: 'postgresql', label: 'PostgreSQL', icon: <img src={postgresIcon} alt="" style={{ width: 16, height: 16 }} /> },
       { key: 'dm', label: '达梦', icon: <img src={dmIcon} alt="" style={{ width: 16, height: 16 }} /> }
     ],
-    onClick: ({ key }: { key: string }) => openConnectionModal(key as DatabaseType)
+    onClick: ({ key }: { key: string }) => void openConnectionModal(key as DatabaseType)
   }
 
   const cleanFormValues = (values: ConnectionFormValues): ConnectionFormValues => {
@@ -1896,7 +2124,8 @@ function App(): React.JSX.Element {
         port: values.port,
         username: values.username,
         password: values.password,
-        database: values.database
+        database: values.database,
+        dm_driver_path: values.dm_driver_path
       }
     }
 
@@ -1908,6 +2137,14 @@ function App(): React.JSX.Element {
       username: values.username,
       password: values.password,
       database: values.database
+    }
+  }
+
+  const selectDmDriverFile = async (): Promise<void> => {
+    const filePath = await window.api.selectDmDriverFile()
+
+    if (filePath) {
+      form.setFieldValue('dm_driver_path', filePath)
     }
   }
 
@@ -1924,10 +2161,10 @@ function App(): React.JSX.Element {
       if (result.success) {
         messageApi.success(result.message || '数据库连接测试成功')
       } else {
-        messageApi.error(result.message || '数据库连接测试失败')
+        showError(result.message || '数据库连接测试失败')
       }
     } catch (err) {
-      messageApi.error(err instanceof Error ? err.message : '测试连接失败')
+      showError(err instanceof Error ? err.message : '测试连接失败')
     } finally {
       setTestingConnection(false)
     }
@@ -1961,7 +2198,7 @@ function App(): React.JSX.Element {
       setTreeData((current) => [...current, buildConnectionNode(connection)])
       setConnectionModalOpen(false)
     } catch (err) {
-      messageApi.error(err instanceof Error ? err.message : connectionMode === 'edit' ? '更新连接失败' : '创建连接失败')
+      showError(err instanceof Error ? err.message : connectionMode === 'edit' ? '更新连接失败' : '创建连接失败')
     } finally {
       setConnectionLoading(false)
     }
@@ -1984,7 +2221,7 @@ function App(): React.JSX.Element {
       }
 
     } catch (err) {
-      messageApi.error(err instanceof Error ? err.message : '打开连接失败')
+      showError(err instanceof Error ? err.message : '打开连接失败')
     }
   }
 
@@ -1995,7 +2232,7 @@ function App(): React.JSX.Element {
       setExpandedKeys((keys) => keys.filter((k) => !String(k).startsWith(`connection:${connectionId}`) && !String(k).includes(`:${connectionId}:`)))
       setTreeData((current) => replaceConnectionNode(current, connection))
     } catch (err) {
-      messageApi.error(err instanceof Error ? err.message : '关闭连接失败')
+      showError(err instanceof Error ? err.message : '关闭连接失败')
     }
   }
 
@@ -2083,7 +2320,7 @@ function App(): React.JSX.Element {
         refreshConnectionNode(connId)
       }
     } catch (err) {
-      messageApi.error(err instanceof Error ? err.message : isSchema ? '创建模式失败' : '创建数据库失败')
+      showError(err instanceof Error ? err.message : isSchema ? '创建模式失败' : '创建数据库失败')
     } finally {
       setDatabaseCreateLoading(false)
     }
@@ -2144,7 +2381,7 @@ function App(): React.JSX.Element {
       })
 
       if (result.failed_count > 0) {
-        messageApi.error(result.errors[0] ?? '创建表失败')
+        showError(result.errors[0] ?? '创建表失败')
         return
       }
 
@@ -2169,7 +2406,7 @@ function App(): React.JSX.Element {
         })
       }
     } catch (err) {
-      messageApi.error(err instanceof Error ? err.message : '创建表失败')
+      showError(err instanceof Error ? err.message : '创建表失败')
     } finally {
       setCreateTableLoading(false)
     }
@@ -2187,7 +2424,7 @@ function App(): React.JSX.Element {
     }
 
     if (result.content.length > 5 * 1024 * 1024) {
-      messageApi.error('SQL 文件大小超过 5MB 限制')
+      showError('SQL 文件大小超过 5MB 限制')
       return
     }
 
@@ -2235,19 +2472,133 @@ function App(): React.JSX.Element {
       })
       setSqlFileResult(result)
 
-      if (result.failed_count > 0) {
-        messageApi.error(`执行完成：${result.success_count} 条成功，${result.failed_count} 条失败`)
-      }
-
       refreshConnectionNode(sqlFileConnectionId)
 
       if (sqlFileDatabase) {
         refreshDatabaseNode(sqlFileConnectionId, sqlFileDatabase)
       }
     } catch (err) {
-      messageApi.error(err instanceof Error ? err.message : '执行 SQL 文件失败')
+      showError(err instanceof Error ? err.message : '执行 SQL 文件失败')
     } finally {
       setSqlFileLoading(false)
+    }
+  }
+
+  const openExportModal = (connectionId: string, database?: string, pgDatabase?: string, table?: string): void => {
+    setExportConnectionId(connectionId)
+    setExportDatabase(database ?? '')
+    setExportPgDatabase(pgDatabase ?? '')
+    setExportTable(table ?? '')
+    setExportScope(table ? 'table' : pgDatabase ? 'schema' : 'database')
+    setExportFormat('sql')
+    setExportContent('schema_data')
+    setExportModalOpen(true)
+  }
+
+  const runExport = async (): Promise<void> => {
+    setExportLoading(true)
+    try {
+      const defaultName = exportTable || exportPgDatabase || exportDatabase || 'export'
+      const extension = exportFormat === 'csv' ? 'csv' : 'sql'
+      const outputPath = await window.api.selectExportPath(exportFormat, `${defaultName}.${extension}`)
+      if (!outputPath) {
+        return
+      }
+      const result = await requestJson<{ success: boolean; message: string; file_path?: string }>('/backup/export', {
+        method: 'POST',
+        body: JSON.stringify({
+          connection_id: exportConnectionId,
+          database: exportDatabase || undefined,
+          pg_database: exportPgDatabase || undefined,
+          table: exportTable || undefined,
+          scope: exportScope,
+          format: exportFormat,
+          content: exportContent,
+          output_path: outputPath
+        })
+      })
+      messageApi.success(result.message)
+      setExportModalOpen(false)
+    } catch (err) {
+      showError(err instanceof Error ? err.message : '导出失败')
+    } finally {
+      setExportLoading(false)
+    }
+  }
+
+  const openImportModal = (connectionId: string, database?: string, pgDatabase?: string, table?: string): void => {
+    setImportConnectionId(connectionId)
+    setImportDatabase(database ?? '')
+    setImportPgDatabase(pgDatabase ?? '')
+    setImportTable(table ?? '')
+    setImportPath('')
+    setImportModalOpen(true)
+  }
+
+  const selectImportFilePath = async (): Promise<void> => {
+    const filePath = await window.api.selectImportFile()
+    if (filePath) {
+      setImportPath(filePath)
+    }
+  }
+
+  const runImport = async (): Promise<void> => {
+    if (!importPath) {
+      messageApi.warning('请先选择导入文件')
+      return
+    }
+    setImportLoading(true)
+    try {
+      const result = await requestJson<{ success: boolean; message: string }>('/backup/import', {
+        method: 'POST',
+        body: JSON.stringify({
+          connection_id: importConnectionId,
+          input_path: importPath,
+          database: importDatabase || undefined,
+          pg_database: importPgDatabase || undefined,
+          table: importTable || undefined
+        })
+      })
+      messageApi.success(result.message)
+      refreshConnectionNode(importConnectionId)
+      setImportModalOpen(false)
+    } catch (err) {
+      showError(err instanceof Error ? err.message : '导入失败')
+    } finally {
+      setImportLoading(false)
+    }
+  }
+
+  const openBackupRestoreModal = (connectionId: string, database?: string, pgDatabase?: string): void => {
+    setBackupRestoreConnectionId(connectionId)
+    setBackupRestoreDatabase(database ?? '')
+    setBackupRestorePgDatabase(pgDatabase ?? '')
+    setBackupRestoreModalOpen(true)
+  }
+
+  const runBackup = async (): Promise<void> => {
+    setBackupRestoreLoading(true)
+    try {
+      const defaultName = `${backupRestorePgDatabase || backupRestoreDatabase || 'backup'}.sql`
+      const outputPath = await window.api.selectExportPath('sql', defaultName)
+      if (!outputPath) {
+        return
+      }
+      const result = await requestJson<{ success: boolean; message: string; file_path?: string }>('/backup/create', {
+        method: 'POST',
+        body: JSON.stringify({
+          connection_id: backupRestoreConnectionId,
+          database: backupRestoreDatabase || undefined,
+          pg_database: backupRestorePgDatabase || undefined,
+          output_path: outputPath
+        })
+      })
+      messageApi.success(result.file_path ? `${result.message}：${result.file_path}` : result.message)
+      setBackupRestoreModalOpen(false)
+    } catch (err) {
+      showError(err instanceof Error ? err.message : '备份失败')
+    } finally {
+      setBackupRestoreLoading(false)
     }
   }
 
@@ -2324,7 +2675,7 @@ function App(): React.JSX.Element {
       updateWorkspaceTab(tab.key, { result, editRows: buildEditableRows(result.rows), selectedRowKeys: [], selectedRowKeyMap: {}, editingCell: undefined, loading: false, error: undefined })
     } catch (err) {
       updateWorkspaceTab(tab.key, { loading: false, error: err instanceof Error ? err.message : '提交表数据失败' })
-      messageApi.error(err instanceof Error ? err.message : '提交表数据失败')
+      showError(err instanceof Error ? err.message : '提交表数据失败')
     }
   }
 
@@ -2367,11 +2718,11 @@ function App(): React.JSX.Element {
       updateWorkspaceTab(tabKey, { result, editRows: buildEditableRows(result.rows), selectedRowKeys: [], selectedRowKeyMap: {}, editingCell: undefined, loading: false, error: undefined })
     } catch (err) {
       updateWorkspaceTab(tabKey, { loading: false, error: err instanceof Error ? err.message : '加载表数据失败' })
-      messageApi.error(err instanceof Error ? err.message : '加载表数据失败')
+      showError(err instanceof Error ? err.message : '加载表数据失败')
     }
   }
 
-  const openQueryWorkspace = (initialSql = 'select * from users;', title?: string, connectionId?: string, databaseName?: string, pgDatabaseName?: string): void => {
+  const openQueryWorkspace = (initialSql = 'select * from users;', title?: string, connectionId?: string, databaseName?: string, pgDatabaseName?: string): string => {
     const nextIndex = queryCounter
     const tabKey = `query:${Date.now()}:${nextIndex}`
     const connId = connectionId ?? selectedConnectionId
@@ -2429,6 +2780,24 @@ function App(): React.JSX.Element {
         })
       }
     }
+
+    return tabKey
+  }
+
+  const appendSqlToQueryWorkspace = (sql: string, title?: string): void => {
+    const nextSql = sql.trimEnd()
+    if (!nextSql) {
+      return
+    }
+
+    const activeTab = workspaceTabs.find((tab) => tab.key === activeTabKey)
+    if (activeTab?.kind === 'query') {
+      const separator = activeTab.sql.trim() ? '\n\n' : ''
+      updateWorkspaceTab(activeTab.key, { sql: `${activeTab.sql}${separator}${nextSql}` })
+      return
+    }
+
+    openQueryWorkspace(nextSql, title ?? 'AI 生成 SQL', aiActiveContext?.connectionId, aiActiveContext?.databaseName, aiActiveContext?.pgDatabaseName)
   }
 
   const changeTabLimit = async (tab: WorkspaceTab, limit: number): Promise<void> => {
@@ -2458,7 +2827,9 @@ function App(): React.JSX.Element {
     }
   }
 
-  const runQuery = async (tab: WorkspaceTab): Promise<void> => {
+  const runQuery = async (tab: WorkspaceTab, selectedSql?: string): Promise<void> => {
+    const sqlToExecute = selectedSql?.trim() || tab.sql
+
     if (!tab.connectionId) {
       return
     }
@@ -2489,7 +2860,7 @@ function App(): React.JSX.Element {
         method: 'POST',
         body: JSON.stringify({
           connection_id: tab.connectionId,
-          sql: tab.sql,
+          sql: sqlToExecute,
           limit: tab.limit ?? 1000,
           offset: Math.max(0, (tab.page ?? 1) - 1) * (tab.limit ?? 1000),
           database: connection?.database_type === 'mysql' ? (tab.databaseName || undefined) : undefined,
@@ -2499,18 +2870,17 @@ function App(): React.JSX.Element {
       updateWorkspaceTab(tab.key, { result, page: tab.page ?? 1, loading: false, error: undefined })
     } catch (err) {
       updateWorkspaceTab(tab.key, { loading: false, error: err instanceof Error ? err.message : '查询失败' })
-      messageApi.error(err instanceof Error ? err.message : '查询失败')
+      showError(err instanceof Error ? err.message : '查询失败')
     }
   }
 
   const restartBackend = async (): Promise<void> => {
     setHealthLoading(true)
-    setHealthError(null)
 
     try {
       setBackendStatus(await window.api.restartBackend())
     } catch (err) {
-      messageApi.error(err instanceof Error ? err.message : '重启后端失败')
+      showError(err instanceof Error ? err.message : '重启后端失败')
     } finally {
       setHealthLoading(false)
     }
@@ -2536,7 +2906,6 @@ function App(): React.JSX.Element {
 
   useEffect(() => {
     if (backendStatus.state !== 'online' || !backendStatus.apiBaseUrl) {
-      setHealth(null)
       return
     }
 
@@ -2562,7 +2931,6 @@ function App(): React.JSX.Element {
 
   const backendReady = backendStatus.state === 'online'
   const backendStatusIcon = backendReady ? <CheckCircleOutlined /> : <CloseCircleOutlined />
-  const activeConnection = getConnection(selectedConnectionId)
   const activeTab = workspaceTabs.find((tab) => tab.key === activeTabKey)
   const activeAIConnection = getConnection(aiActiveContext?.connectionId)
   const aiContextConnection = activeAIConnection?.is_open ? activeAIConnection : undefined
@@ -2596,6 +2964,31 @@ function App(): React.JSX.Element {
   const effectiveAIContextSources = primaryAIContextSource
     ? [primaryAIContextSource, ...aiContextSources.filter((source) => source.id !== primaryAIContextSource.id)]
     : aiContextSources
+  const focusedConnection = getConnection(focusedTreeNode?.connectionId)
+  const focusedResource = focusedTreeNode
+    ? {
+        kind: focusedTreeNode.kind,
+        connectionId: focusedTreeNode.connectionId,
+        connectionName: focusedConnection?.name,
+        dbType: focusedConnection?.database_type,
+        database: focusedConnection?.database_type === 'postgresql' ? focusedTreeNode.pgDatabaseName : focusedTreeNode.databaseName,
+        schema: focusedConnection?.database_type === 'postgresql' ? focusedTreeNode.databaseName : undefined,
+        pgDatabase: focusedTreeNode.pgDatabaseName,
+        table: focusedTreeNode.tableName,
+        objectType: focusedTreeNode.objectType,
+        name: String(focusedTreeNode.title ?? focusedTreeNode.tableName ?? focusedTreeNode.databaseName ?? focusedConnection?.name ?? ''),
+        sizeDisplay: focusedTreeNode.sizeDisplay,
+        rowCount: focusedTreeNode.rowCount
+      }
+    : undefined
+  const connectionSummaries = connections.map((connection) => ({
+    connectionId: connection.connection_id,
+    name: connection.name,
+    dbType: connection.database_type,
+    database: connection.database,
+    isOpen: connection.is_open,
+    serverVersion: connection.server_version
+  }))
 
   return (
     <ConfigProvider
@@ -2624,18 +3017,12 @@ function App(): React.JSX.Element {
       <Layout.Header className="app-header">
         <Flex align="center" justify="space-between" className="app-toolbar">
           <Space size="middle">
-            <div className="brand-mark"><DatabaseOutlined /></div>
-            <div>
-              <Typography.Title level={4} className="brand-title">DataDjinn</Typography.Title>
-              <Typography.Text className="brand-subtitle">Database Workspace</Typography.Text>
-            </div>
+            <div className="brand-mark"><img src={appIcon} alt="" /></div>
+            <Typography.Title level={4} className="brand-title">DataDjinn</Typography.Title>
           </Space>
           <div className="titlebar-spacer" />
           <Space className="toolbar-actions titlebar-no-drag" size={4}>
-            <Dropdown menu={connectionCreateMenu} trigger={['click']}>
-              <Button type="text" size="small" icon={<PlusOutlined />} title="新建连接" aria-label="新建连接" />
-            </Dropdown>
-            <Button type="text" size="small" icon={<CodeOutlined />} onClick={() => openQueryWorkspace()} title="新建查询" aria-label="新建查询" />
+            <Button type="text" size="small" icon={<FileAddOutlined />} onClick={() => openQueryWorkspace()} title="新建查询" aria-label="新建查询" />
             <Button type="text" size="small" icon={<ReloadOutlined />} loading={healthLoading} onClick={() => void checkHealth()} title="同步状态" aria-label="同步状态" />
             {backendStatus.state !== 'starting' && backendStatus.state !== 'online' && <Button type="text" size="small" icon={<ReloadOutlined />} loading={healthLoading} onClick={() => void restartBackend()} title="重启后端" aria-label="重启后端" />}
             <Button type={aiPanelOpen ? 'primary' : 'text'} size="small" icon={<MessageOutlined />} onClick={() => setAiPanelOpen((open) => !open)} title={aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'} aria-label={aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'} />
@@ -2672,36 +3059,37 @@ function App(): React.JSX.Element {
                 <Tree
                   showIcon
                   blockNode
-                  virtual={false}
+                  virtual
                   treeData={treeData}
                   expandedKeys={expandedKeys}
                   onExpand={(keys, info) => {
                     const node = info.node as DatabaseTreeNode
-                    if (info.expanded && (!node.children || node.children.length === 0) && isLoadableTreeNode(node)) {
-                      void reloadNodeChildren({ ...node, isLeaf: false })
-                      return
-                    }
                     if (!info.expanded) {
                       collapseTreeNode(node)
                       return
                     }
                     setExpandedKeys(keys)
+                    if ((!node.children || node.children.length === 0) && isLoadableTreeNode(node)) {
+                      void reloadNodeChildren({ ...node, isLeaf: false }, false)
+                    }
                   }}
                   loadData={(node) => loadTreeData(node as DatabaseTreeNode)}
                   titleRender={(node) => renderTreeTitle(node as DatabaseTreeNode)}
                   selectedKeys={selectedConnectionId ? [`connection:${selectedConnectionId}`] : []}
                   onSelect={(_, info) => {
                     const node = info.node as DatabaseTreeNode
+                    setFocusedTreeNode(node)
                     if (node.connectionId) {
                       setSelectedConnectionId(node.connectionId)
                     }
                   }}
                   onDoubleClick={(_, node) => {
                     const treeNode = node as DatabaseTreeNode
+                    setFocusedTreeNode(treeNode)
                     if (treeNode.kind === 'database' || treeNode.kind === 'pg-schema') {
                       activateAIContextFromNode(treeNode)
                     }
-                    if (treeNode.kind === 'table' && treeNode.connectionId && treeNode.tableName) {
+                    if ((treeNode.kind === 'table' || treeNode.kind === 'db-object') && treeNode.connectionId && treeNode.tableName && (treeNode.objectType === 'table' || treeNode.objectType === 'view')) {
                       void previewTable(treeNode.connectionId, treeNode.tableName, treeNode.databaseName, treeNode.pgDatabaseName)
                       return
                     }
@@ -2728,7 +3116,7 @@ function App(): React.JSX.Element {
                 <Splitter.Panel>
                   <div className="editor-placeholder">
                     {workspaceTabs.length === 0 ? (
-                      <div className="empty-workspace"><CodeOutlined /><Typography.Text type="secondary">连接数据库后，可浏览库表结构、预览数据、编写 SQL，并让 Djinn Agent 辅助分析与执行受控操作。</Typography.Text><Space><Dropdown menu={connectionCreateMenu} trigger={['click']}><Button icon={<PlusOutlined />}>创建连接</Button></Dropdown></Space></div>
+                      <div className="empty-workspace"><FileAddOutlined /><Typography.Text type="secondary">连接数据库后，可浏览库表结构、预览数据、编写 SQL，并让 Djinn Agent 辅助分析与执行受控操作。</Typography.Text><Space><Dropdown menu={connectionCreateMenu} trigger={['click']}><Button icon={<PlusOutlined />}>创建连接</Button></Dropdown></Space></div>
                     ) : (
                       <Tabs className="workspace-tabs" type="editable-card" hideAdd activeKey={activeTabKey} onChange={setActiveTabKey} onEdit={(targetKey, action) => { if (action === 'remove' && typeof targetKey === 'string') { closeWorkspaceTab(targetKey) } }} items={workspaceTabs.map((tab) => ({ key: tab.key, label: tab.title, closable: true, children: renderWorkspaceTab(tab) }))} />
                     )}
@@ -2743,11 +3131,21 @@ function App(): React.JSX.Element {
                         dbType: aiContextConnection?.database_type,
                         dbName: aiDbName,
                         database: aiDatabase,
-                        pgDatabase: aiPgDatabase
+                        pgDatabase: aiPgDatabase,
+                        connectionName: aiContextConnection?.name,
+                        serverVersion: aiContextConnection?.server_version
                       }}
                       workspace={{
                         active_sql: activeTab?.sql,
+                        active_tab_kind: activeTab?.kind,
                         selected_table: activeTab?.tableName,
+                        current_connection_name: aiContextConnection?.name,
+                        current_db_type: aiContextConnection?.database_type,
+                        current_server_version: aiContextConnection?.server_version,
+                        current_database: aiDatabase,
+                        current_pg_database: aiPgDatabase,
+                        focused_resource: focusedResource,
+                        connections: connectionSummaries,
                         recent_queries: workspaceTabs.filter((tab) => tab.kind === 'query' && tab.sql.trim()).slice(-5).map((tab) => tab.sql),
                         visible_result_columns: activeTab?.result?.columns ?? [],
                         visible_result_sample: activeTab?.result?.rows.slice(0, 5) ?? [],
@@ -2756,6 +3154,11 @@ function App(): React.JSX.Element {
                       contextSources={effectiveAIContextSources}
                       primaryContextSourceId={primaryAIContextSource?.id}
                       onRemoveContextSource={removeAIContextSource}
+                      onWorkspaceAction={(action: AIWorkspaceAction) => {
+                        if (action.type === 'append_query_sql') {
+                          appendSqlToQueryWorkspace(action.sql, action.title)
+                        }
+                      }}
                     />
                   </Splitter.Panel>
                 )}
@@ -2764,14 +3167,6 @@ function App(): React.JSX.Element {
           </Splitter.Panel>
         </Splitter>
       </Layout.Content>
-      <Layout.Footer className="app-statusbar">
-        <Space split={<span className="status-separator" />}>
-          <span>{backendReady ? `Backend ${health?.version ?? ''}` : healthError ?? backendStatus.message ?? 'Backend offline'}</span>
-          {backendStatus.logPath && <span>{backendStatus.logPath}</span>}
-          <span>{activeConnection ? `${activeConnection.database_type.toUpperCase()} · ${activeConnection.database}` : 'No connection selected'}</span>
-          <span>{workspaceTabs.length} tabs</span>
-        </Space>
-      </Layout.Footer>
       <Modal title={editingTableName ? `修改表：${editingTableName}` : '修改表'} open={tableEditorOpen} okText="保存" cancelText="取消" confirmLoading={tableEditorLoading} onOk={() => void saveTableEditor()} onCancel={() => setTableEditorOpen(false)} width={760}>
         <Alert message="支持 SQLite/MySQL 修改已有字段的类型、可空和单字段主键；当前不支持新增、删除或重命名字段。" type="warning" showIcon />
         <Table className="table-editor-grid" size="small" loading={tableEditorLoading} rowKey="name" pagination={false} dataSource={editingColumns} columns={[{ title: '字段名', dataIndex: 'name', key: 'name', render: (value: string) => <Input value={value} disabled /> }, { title: '类型', dataIndex: 'type', key: 'type', render: (value: string, column: ColumnInfo) => <Input value={value} onChange={(event) => { setEditingColumns((current) => current.map((item) => (item.name === column.name ? { ...item, type: event.target.value } : item))) }} /> }, { title: '可空', dataIndex: 'nullable', key: 'nullable', width: 90, render: (value: boolean, column: ColumnInfo) => <Switch checked={value} disabled={column.primary_key} onChange={(checked) => { setEditingColumns((current) => current.map((item) => (item.name === column.name ? { ...item, nullable: checked } : item))) }} /> }, { title: '主键', dataIndex: 'primary_key', key: 'primary_key', width: 90, render: (value: boolean, column: ColumnInfo) => <Switch checked={value} onChange={(checked) => { setEditingColumns((current) => current.map((item) => ({ ...item, primary_key: item.name === column.name ? checked : false }))) }} /> }]} />
@@ -2792,7 +3187,12 @@ function App(): React.JSX.Element {
         {sqlFileResult ? (
           <Space direction="vertical" className="full-width">
             <Alert type={sqlFileResult.failed_count === 0 ? 'success' : 'warning'} message={`执行完成：${sqlFileResult.success_count} 条成功，${sqlFileResult.failed_count} 条失败`} showIcon />
-            {sqlFileResult.errors.length > 0 && (<div className="sql-file-errors"><Typography.Text strong>错误信息：</Typography.Text>{sqlFileResult.errors.map((err, index) => (<Alert key={index} type="error" message={err} />))}</div>)}
+            {sqlFileResult.errors.length > 0 && (
+              <Space direction="vertical" className="full-width sql-file-errors">
+                <Typography.Text strong>错误信息：</Typography.Text>
+                <Input.TextArea value={sqlFileResult.errors.join('\n\n')} autoSize={{ minRows: 4, maxRows: 12 }} readOnly />
+              </Space>
+            )}
             <Button type="default" block onClick={() => setSqlFileModalOpen(false)}>关闭</Button>
           </Space>
         ) : (
@@ -2831,9 +3231,51 @@ function App(): React.JSX.Element {
               <Form.Item name="username" label="用户名" rules={[{ required: true, message: '请输入用户名' }]}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'dm' ? 'SYSDBA' : undefined} /></Form.Item>
               <Form.Item name="password" label="密码"><Input.Password /></Form.Item>
               <Form.Item name="database" label={databaseType === 'postgresql' ? '数据库名' : databaseType === 'dm' ? '默认 Schema（可选）' : '默认数据库（可选）'} rules={databaseType === 'postgresql' ? [{ required: true, message: '请输入数据库名' }] : undefined}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'dm' ? '不填则使用默认 Schema' : '不填则连接服务器并加载全部数据库'} /></Form.Item>
+              {databaseType === 'dm' && (
+                <Form.Item name="dm_driver_path" label="达梦驱动文件" rules={[{ required: true, message: '请选择达梦驱动文件' }]}>
+                  <Input readOnly placeholder="请选择 dmPython .pyd 或达梦 .dll 文件" addonAfter={<Button type="link" size="small" onClick={() => void selectDmDriverFile()}>选择</Button>} />
+                </Form.Item>
+              )}
             </>
           )}
         </Form>
+      </Modal>
+      <Modal title="备份" open={backupRestoreModalOpen} okText="选择路径并备份" cancelText="取消" confirmLoading={backupRestoreLoading} onOk={() => void runBackup()} onCancel={() => setBackupRestoreModalOpen(false)}>
+        <Space direction="vertical" className="full-width">
+          <Typography.Text><Typography.Text strong>连接：</Typography.Text>{getConnection(backupRestoreConnectionId)?.name}</Typography.Text>
+          <Typography.Text><Typography.Text strong>数据库：</Typography.Text>{backupRestorePgDatabase || backupRestoreDatabase || '默认'}</Typography.Text>
+          <Alert type="info" message="备份将生成 SQL 脚本（含建表语句和数据），可随时通过导入功能恢复。" showIcon />
+        </Space>
+      </Modal>
+      <Modal title="导出" open={exportModalOpen} okText="选择路径并导出" cancelText="取消" confirmLoading={exportLoading} onOk={() => void runExport()} onCancel={() => setExportModalOpen(false)}>
+        <Space direction="vertical" className="full-width">
+          <Typography.Text><Typography.Text strong>连接：</Typography.Text>{getConnection(exportConnectionId)?.name}</Typography.Text>
+          <Typography.Text><Typography.Text strong>范围：</Typography.Text>{exportScope === 'table' ? `表 ${exportTable}` : exportScope === 'schema' ? `模式 ${exportPgDatabase}` : `数据库 ${exportDatabase || '默认'}`}</Typography.Text>
+          <Form layout="vertical">
+            <Form.Item label="导出格式">
+              <Select value={exportFormat} onChange={(value) => setExportFormat(value)} options={[{ label: 'SQL 脚本', value: 'sql' }, { label: 'CSV', value: 'csv' }]} />
+            </Form.Item>
+            {exportFormat === 'sql' && (
+              <Form.Item label="导出内容">
+                <Select value={exportContent} onChange={(value) => setExportContent(value)} options={[{ label: '结构 + 数据', value: 'schema_data' }, { label: '仅结构', value: 'schema' }, { label: '仅数据', value: 'data' }]} />
+              </Form.Item>
+            )}
+          </Form>
+          {exportFormat === 'csv' && exportScope !== 'table' && <Alert type="info" message="CSV 多表导出将创建目录，每表一个 CSV 文件" showIcon />}
+          {exportFormat === 'sql' && <Alert type="info" message="SQL 导出用于迁移或查看，可选择仅结构、仅数据或结构+数据；完整可恢复请使用备份。" showIcon />}
+        </Space>
+      </Modal>
+      <Modal title="导入" open={importModalOpen} okText="导入" cancelText="取消" confirmLoading={importLoading} onOk={() => void runImport()} onCancel={() => setImportModalOpen(false)} okButtonProps={{ disabled: !importPath }}>
+        <Space direction="vertical" className="full-width">
+          <Typography.Text><Typography.Text strong>连接：</Typography.Text>{getConnection(importConnectionId)?.name}</Typography.Text>
+          <Typography.Text><Typography.Text strong>目标：</Typography.Text>{importTable ? `表 ${importTable}` : importPgDatabase ? `模式 ${importPgDatabase}` : `数据库 ${importDatabase || '默认'}`}</Typography.Text>
+          <Form layout="vertical">
+            <Form.Item label="导入文件 (SQL/CSV，自动按扩展名识别)" required>
+              <Input readOnly placeholder="请选择导入文件" value={importPath} addonAfter={<Button type="link" size="small" onClick={() => void selectImportFilePath()}>选择</Button>} />
+            </Form.Item>
+          </Form>
+          <Alert type="warning" message="导入 SQL 会逐条执行文件内所有语句；导入 CSV 会 INSERT 到目标表，需确保表结构与 CSV 表头一致。" showIcon />
+        </Space>
       </Modal>
       </Layout>
     </ConfigProvider>

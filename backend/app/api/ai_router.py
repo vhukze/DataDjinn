@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 from openai import OpenAI
 
 from app.ai.agent import AIChatRequest, AICompactRequest, AICompactResponse, AIConfig, AIMessage, AIPingRequest, AIPingResponse, AgentConfirmRequest, AnthropicMessagesClient, DatabaseAgent, PENDING_CONFIRMATIONS, build_system_prompt, sql_hash
+from app.db.backup_manager import backup_manager
 from app.db.connection_manager import connection_manager
 from app.db.error_utils import friendly_error
 
@@ -14,6 +15,9 @@ router = APIRouter(prefix="/ai", tags=["ai"])
 
 
 def _agent_for_request(request: AIChatRequest) -> DatabaseAgent:
+    if not request.connection_id:
+        return DatabaseAgent(None, request.config, workspace=request.workspace)
+
     engine = connection_manager.get_engine(request.connection_id)
 
     if engine is None:
@@ -23,9 +27,9 @@ def _agent_for_request(request: AIChatRequest) -> DatabaseAgent:
 
 
 def _messages_with_system(request: AIChatRequest) -> list[dict[str, Any]]:
-    connection = connection_manager._connections.get(request.connection_id)
-    db_type = connection.database_type if connection else "unknown"
-    db_name = request.pg_database or request.database or (connection.database if connection else "unknown")
+    connection = connection_manager._connections.get(request.connection_id) if request.connection_id else None
+    db_type = connection.database_type if connection else "none"
+    db_name = request.pg_database or request.database or (connection.database if connection else "未选择上下文")
     messages = [AIMessage(role="system", content=build_system_prompt(db_type, db_name, request.workspace)).model_dump(exclude_none=True)]
     messages.extend(message.model_dump(exclude_none=True) for message in request.messages if message.role != "system")
     return messages
@@ -109,6 +113,15 @@ def confirm_agent_action(request: AgentConfirmRequest) -> dict[str, Any]:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="连接已关闭，请先打开连接")
 
     try:
+        if pending.action == "restore_backup":
+            if not pending.backup_id:
+                raise ValueError("恢复备份确认内容缺少备份 ID")
+            result = backup_manager.restore_backup(pending.backup_id)
+            PENDING_CONFIRMATIONS.pop(request.confirmation_id, None)
+            return {"approved": True, "message": "恢复完成", "executed": True, "action": "restore_backup", "backup": result.model_dump(mode="json")}
+
+        if not pending.sql or not pending.sql_hash:
+            raise ValueError("确认内容缺少 SQL")
         agent = DatabaseAgent(engine, AIConfig(base_url="http://localhost", api_key="confirm", model="confirm"), request.connection_id, request.database or pending.database, request.pg_database or pending.pg_database)
         validation = agent._validate_sql(pending.sql, readonly=False)
         if validation["risk_level"] != pending.risk_level or sql_hash(pending.sql) != pending.sql_hash:

@@ -2,10 +2,10 @@ from fastapi import APIRouter, HTTPException, status
 
 from app.db.connection_manager import connection_manager
 from app.db.error_utils import friendly_error
-from app.db.metadata import apply_table_data_changes, create_database, create_schema, list_columns, list_databases, list_schemas, list_tables, update_table_columns
+from app.db.metadata import apply_table_data_changes, create_database, create_schema, list_columns, list_databases, list_db_objects, list_schemas, list_tables, update_table_columns
 from app.db.readonly_query import preview_table
 from app.db.sql_executor import execute_sql_file
-from app.schemas.metadata import ColumnsResponse, DatabaseCreateRequest, DatabaseCreateResponse, DatabasesResponse, TableDataChangeRequest, TableUpdateRequest, TablesResponse
+from app.schemas.metadata import ColumnsResponse, DatabaseCreateRequest, DatabaseCreateResponse, DatabasesResponse, DbObjectsResponse, TableDataChangeRequest, TableUpdateRequest, TablesResponse
 from app.schemas.query import QueryResponse, SqlFileRunRequest, SqlFileRunResponse
 
 router = APIRouter(prefix="/connections", tags=["metadata"])
@@ -73,6 +73,16 @@ def get_tables(connection_id: str, database: str | None = None, pg_database: str
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="连接已关闭，请先打开连接")
 
     return TablesResponse(tables=list_tables(engine, database, pg_database))
+
+
+@router.get("/{connection_id}/objects", response_model=DbObjectsResponse)
+def get_objects(connection_id: str, database: str | None = None, pg_database: str | None = None, type: str | None = None) -> DbObjectsResponse:
+    engine = connection_manager.get_engine(connection_id)
+
+    if engine is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="连接已关闭，请先打开连接")
+
+    return DbObjectsResponse(objects=list_db_objects(engine, database, pg_database, type))
 
 
 @router.get("/{connection_id}/tables/{table_name}/columns", response_model=ColumnsResponse)

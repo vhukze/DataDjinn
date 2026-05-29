@@ -11,6 +11,7 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 from sqlalchemy import Engine, text
 
+from app.db.backup_manager import backup_manager
 from app.db.metadata import list_columns, list_tables
 from app.db.readonly_query import execute_readonly_query, preview_table
 from app.schemas.query import QueryResponse
@@ -45,9 +46,47 @@ class AgentContextSource(BaseModel):
     storageSizeBytes: int | None = None
 
 
+class AgentConnectionSummary(BaseModel):
+    connectionId: str
+    name: str
+    dbType: str
+    database: str | None = None
+    isOpen: bool = False
+    serverVersion: str | None = None
+
+
+class AgentFocusedResource(BaseModel):
+    kind: str
+    connectionId: str | None = None
+    connectionName: str | None = None
+    dbType: str | None = None
+    database: str | None = None
+    schema: str | None = None
+    pgDatabase: str | None = None
+    table: str | None = None
+    objectType: str | None = None
+    name: str | None = None
+    sizeDisplay: str | None = None
+    rowCount: int | None = None
+
+
+class AgentWorkspaceAction(BaseModel):
+    type: Literal["append_query_sql"]
+    sql: str
+    title: str | None = None
+
+
 class AgentWorkspaceContext(BaseModel):
     active_sql: str | None = None
+    active_tab_kind: str | None = None
     selected_table: str | None = None
+    current_connection_name: str | None = None
+    current_db_type: str | None = None
+    current_server_version: str | None = None
+    current_database: str | None = None
+    current_pg_database: str | None = None
+    focused_resource: AgentFocusedResource | None = None
+    connections: list[AgentConnectionSummary] = Field(default_factory=list)
     recent_queries: list[str] = Field(default_factory=list)
     visible_result_columns: list[str] = Field(default_factory=list)
     visible_result_sample: list[dict[str, Any]] = Field(default_factory=list)
@@ -87,10 +126,12 @@ class PendingConfirmation(BaseModel):
     connection_id: str
     database: str | None = None
     pg_database: str | None = None
-    sql: str
-    sql_hash: str
+    sql: str | None = None
+    sql_hash: str | None = None
     statement_type: str
     risk_level: Literal["review", "dangerous"]
+    action: Literal["sql", "restore_backup"] = "sql"
+    backup_id: str | None = None
 
 
 class AgentConfirmRequest(BaseModel):
@@ -104,7 +145,7 @@ class AgentConfirmRequest(BaseModel):
 class AIChatRequest(BaseModel):
     messages: list[AIMessage]
     config: AIConfig
-    connection_id: str
+    connection_id: str | None = None
     database: str | None = None
     pg_database: str | None = None
     workspace: AgentWorkspaceContext | None = None
@@ -142,7 +183,7 @@ PENDING_CONFIRMATIONS: dict[str, PendingConfirmation] = {}
 ANTHROPIC_VERSION = "2023-06-01"
 
 
-TOOLS = [
+DATABASE_TOOLS = [
     {
         "type": "function",
         "function": {
@@ -243,7 +284,65 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_database_backup",
+            "description": "备份当前连接下指定数据库。SQLite 使用文件备份；MySQL 需要 mysqldump；PostgreSQL 需要 pg_dump；达梦暂不支持。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "database": {"type": "string", "description": "要备份的数据库名；不传则使用当前上下文数据库"},
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_database_backups",
+            "description": "列出当前连接的备份记录，用于恢复前确认可用备份。",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "restore_database_backup",
+            "description": "恢复指定备份。恢复会覆盖/回滚当前数据库数据，必须触发用户确认按钮后才执行。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "backup_id": {"type": "string", "description": "要恢复的备份记录 ID"},
+                },
+                "required": ["backup_id"],
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
+
+WORKSPACE_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "append_query_sql",
+            "description": "把生成的 SQL 追加写入 DataDjinn 查询窗口。用户要求生成 SQL 到查询窗口时必须调用该工具；如果当前没有查询窗口，前端会自动新建查询窗口。该工具只写入编辑器，不执行 SQL。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sql": {"type": "string", "description": "要追加到查询窗口的 SQL 内容"},
+                    "title": {"type": "string", "description": "需要新建查询窗口时使用的标题"},
+                },
+                "required": ["sql"],
+                "additionalProperties": False,
+            },
+        },
+    }
+]
+
+TOOLS = [*DATABASE_TOOLS, *WORKSPACE_TOOLS]
 
 
 def _extra_value(value: Any, key: str) -> Any:
@@ -272,14 +371,14 @@ def _anthropic_url(base_url: str) -> str:
     return normalized if normalized.endswith("/v1/messages") else f"{normalized}/v1/messages"
 
 
-def _anthropic_tools() -> list[dict[str, Any]]:
+def _anthropic_tools(tools: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     return [
         {
             "name": tool["function"]["name"],
             "description": tool["function"].get("description", ""),
             "input_schema": tool["function"].get("parameters", {"type": "object", "properties": {}}),
         }
-        for tool in TOOLS
+        for tool in (tools or TOOLS)
     ]
 
 
@@ -348,7 +447,7 @@ class AnthropicMessagesClient:
         self.api_key = config.api_key
         self.model = config.model
 
-    def create(self, messages: list[dict[str, Any]], *, tools: bool = True, max_tokens: int = 4096, temperature: float | None = None) -> dict[str, Any]:
+    def create(self, messages: list[dict[str, Any]], *, tools: bool | list[dict[str, Any]] = True, max_tokens: int = 4096, temperature: float | None = None) -> dict[str, Any]:
         system, converted_messages = _anthropic_messages(messages)
         payload: dict[str, Any] = {
             "model": self.model,
@@ -358,7 +457,7 @@ class AnthropicMessagesClient:
         if system:
             payload["system"] = system
         if tools:
-            payload["tools"] = _anthropic_tools()
+            payload["tools"] = _anthropic_tools(tools if isinstance(tools, list) else None)
         if temperature is not None:
             payload["temperature"] = temperature
 
@@ -418,7 +517,7 @@ def _summarize_query_response(response: QueryResponse, requested_limit: int | No
 class DatabaseAgent:
     def __init__(
         self,
-        engine: Engine,
+        engine: Engine | None,
         config: AIConfig,
         connection_id: str = "",
         database: str | None = None,
@@ -434,6 +533,9 @@ class DatabaseAgent:
         self.client = AnthropicMessagesClient(config) if config.provider == "anthropic" else OpenAI(base_url=config.base_url, api_key=config.api_key)
         self.model = config.model
 
+    def _tools(self) -> list[dict[str, Any]]:
+        return TOOLS if self.engine is not None else WORKSPACE_TOOLS
+
     def chat(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         if self.provider == "anthropic":
             return self._chat_anthropic(messages)
@@ -444,7 +546,7 @@ class DatabaseAgent:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=conversation,
-                tools=TOOLS,
+                tools=self._tools(),
                 tool_choice="auto",
             )
             choice = response.choices[0]
@@ -481,7 +583,7 @@ class DatabaseAgent:
             stream = self.client.chat.completions.create(
                 model=self.model,
                 messages=conversation,
-                tools=TOOLS,
+                tools=self._tools(),
                 tool_choice="auto",
                 stream=True,
             )
@@ -556,6 +658,8 @@ class DatabaseAgent:
                     yield {"type": "tool_start", "tool_call_id": tool_call["id"], "name": name, "arguments": args}
                     result = self.call_tool(name, args)
                     yield {"type": "tool_result", "tool_call_id": tool_call["id"], "name": name, "result": result}
+                    if result.get("type") == "workspace_action":
+                        yield {"type": "workspace_action", "action": result["action"]}
                     if result.get("type") == "plan":
                         yield {"type": "plan", "plan": result["plan"]}
                     if result.get("type") == "confirmation_required":
@@ -582,7 +686,7 @@ class DatabaseAgent:
         conversation = [*messages]
 
         for _ in range(MAX_AGENT_TURNS):
-            response = self.client.create(conversation)
+            response = self.client.create(conversation, tools=self._tools())
             conversation.append(_anthropic_assistant_message(response))
             tool_uses = _anthropic_tool_uses(response)
 
@@ -613,7 +717,7 @@ class DatabaseAgent:
         conversation = [*messages]
 
         for _ in range(MAX_AGENT_TURNS):
-            response = self.client.create(conversation)
+            response = self.client.create(conversation, tools=self._tools())
             conversation.append(_anthropic_assistant_message(response))
             content = _anthropic_text(response)
             if content:
@@ -633,6 +737,8 @@ class DatabaseAgent:
                 yield {"type": "tool_start", "tool_call_id": tool_call_id, "name": name, "arguments": args}
                 result = self.call_tool(name, args)
                 yield {"type": "tool_result", "tool_call_id": tool_call_id, "name": name, "result": result}
+                if result.get("type") == "workspace_action":
+                    yield {"type": "workspace_action", "action": result["action"]}
                 if result.get("type") == "plan":
                     yield {"type": "plan", "plan": result["plan"]}
                 if result.get("type") == "confirmation_required":
@@ -663,6 +769,13 @@ class DatabaseAgent:
                 if validation.get("requires_confirmation") and validation.get("statement_type") in WRITE_SQL_TYPES and validation.get("sql"):
                     return self._confirmation_required_result(str(validation["sql"]), validation)
                 return validation
+
+            if name == "append_query_sql":
+                action = AgentWorkspaceAction(type="append_query_sql", sql=str(arguments["sql"]), title=str(arguments["title"]) if arguments.get("title") else None)
+                return {"type": "workspace_action", "action": action.model_dump(), "executed": False, "message": "SQL 已发送到查询窗口，尚未执行。"}
+
+            if self.engine is None:
+                return {"error": "当前未选择数据库上下文，不能执行数据库工具。可以回答通用问题、总结连接信息，或把生成的 SQL 写入查询窗口。"}
 
             if name == "list_tables":
                 tables = [table.model_dump() for table in list_tables(self.engine, self.database, self.pg_database)]
@@ -719,6 +832,18 @@ class DatabaseAgent:
                 result = preview_table(self.engine, table_name, limit, 0, self.database, self.pg_database)
                 return {"table_name": table_name, **_summarize_query_response(result, limit)}
 
+            if name == "create_database_backup":
+                database = str(arguments["database"]) if arguments.get("database") else self.pg_database or self.database
+                record = backup_manager.create_backup(self.connection_id, database)
+                return {"executed": True, "backup": record.model_dump(mode="json"), "message": "备份完成"}
+
+            if name == "list_database_backups":
+                backups = [backup.model_dump(mode="json") for backup in backup_manager.list_backups(self.connection_id)]
+                return {"backups": backups, "backup_count": len(backups)}
+
+            if name == "restore_database_backup":
+                return self._restore_backup_confirmation_required(str(arguments["backup_id"]))
+
             raise ValueError(f"未知工具：{name}")
         except Exception as exc:
             return {"error": str(exc)}
@@ -744,6 +869,32 @@ class DatabaseAgent:
             estimated_impact={"statement_type": validation["statement_type"], "sql_hash": sql_hash(sql), "executed": False},
         )
         return {"type": "confirmation_required", "confirmation": confirmation.model_dump(), "validation": validation, "executed": False}
+
+    def _restore_backup_confirmation_required(self, backup_id: str) -> dict[str, Any]:
+        record = next((backup for backup in backup_manager.list_backups(self.connection_id) if backup.id == backup_id), None)
+        if record is None:
+            raise ValueError("备份记录不存在或不属于当前连接")
+
+        confirmation_id = f"confirm_{uuid4().hex}"
+        PENDING_CONFIRMATIONS[confirmation_id] = PendingConfirmation(
+            id=confirmation_id,
+            connection_id=self.connection_id,
+            database=record.database,
+            pg_database=self.pg_database,
+            statement_type="RESTORE_BACKUP",
+            risk_level="dangerous",
+            action="restore_backup",
+            backup_id=backup_id,
+        )
+        confirmation = AgentConfirmation(
+            id=confirmation_id,
+            title="需要确认恢复备份",
+            risk_level="dangerous",
+            sql=None,
+            explanation=f"恢复备份会用备份 {backup_id} 回滚/覆盖数据库 {record.database} 的当前数据。确认前请确保当前操作可以回退。",
+            estimated_impact={"action": "restore_backup", "backup_id": backup_id, "database": record.database, "file_path": record.file_path, "executed": False},
+        )
+        return {"type": "confirmation_required", "confirmation": confirmation.model_dump(), "executed": False}
 
     def _create_agent_plan(self, arguments: dict[str, Any]) -> AgentPlan:
         raw_steps = arguments.get("steps") or []
@@ -841,6 +992,20 @@ class DatabaseAgent:
 def build_system_prompt(db_type: str, db_name: str, workspace: AgentWorkspaceContext | None = None) -> str:
     workspace_lines: list[str] = []
     if workspace:
+        current_context = {
+            "connectionName": workspace.current_connection_name,
+            "dbType": workspace.current_db_type or db_type,
+            "serverVersion": workspace.current_server_version,
+            "database": workspace.current_database,
+            "pgDatabase": workspace.current_pg_database,
+        }
+        workspace_lines.append(f"当前执行上下文：{json.dumps({key: value for key, value in current_context.items() if value}, ensure_ascii=False, default=str)}")
+        if workspace.connections:
+            workspace_lines.append(f"当前所有连接概要：{json.dumps([connection.model_dump(exclude_none=True) for connection in workspace.connections], ensure_ascii=False, default=str)}")
+        if workspace.focused_resource:
+            workspace_lines.append(f"当前焦点资源：{json.dumps(workspace.focused_resource.model_dump(exclude_none=True), ensure_ascii=False, default=str)}")
+        if workspace.active_tab_kind:
+            workspace_lines.append(f"当前工作页类型：{workspace.active_tab_kind}")
         if workspace.selected_table:
             workspace_lines.append(f"当前选中表：{workspace.selected_table}")
         if workspace.active_sql:
@@ -855,11 +1020,12 @@ def build_system_prompt(db_type: str, db_name: str, workspace: AgentWorkspaceCon
             workspace_lines.append(f"最近查询：{json.dumps(workspace.recent_queries[-5:], ensure_ascii=False)}")
 
     workspace_context = "\n".join(workspace_lines) if workspace_lines else "暂无额外工作区上下文。"
+    context_label = f"当前连接的是 {db_type} 数据库 {db_name}" if db_type != "none" else "当前未选择数据库上下文"
     return (
-        f"你是 DataDjinn 内置数据库 Agent，当前连接的是 {db_type} 数据库 {db_name}。\n"
+        f"你是 DataDjinn 内置数据库 Agent，{context_label}。\n"
         "你的职责是帮助用户理解数据库结构、生成安全 SQL、分析查询结果、执行可控数据库操作。\n"
         "规则：\n"
-        "1. 涉及真实表、字段或数据内容时，必须先调用工具获取真实信息。\n"
+        "1. 未选择数据库上下文时，不得执行 list_tables、describe_table、execute_query、get_sample_data 等数据库任务；只能做通用问答、整理工作区已有连接概要，或调用 append_query_sql 把 SQL 写入查询窗口。\n"
         "2. 复杂分析、排查或包含多步动作时，先调用 create_agent_plan 生成可见计划。\n"
         "3. 执行 SQL 前先调用 validate_sql；validate_sql 只做校验，永远不代表 SQL 已执行。\n"
         "4. SELECT/WITH 只读查询可以通过 execute_query(readonly=true) 自动执行，后端会限制返回行数。\n"
@@ -871,8 +1037,12 @@ def build_system_prompt(db_type: str, db_name: str, workspace: AgentWorkspaceCon
         "10. 不要要求工具读取全量大表；需要趋势、分布、异常时，用 COUNT、GROUP BY、MIN/MAX、DISTINCT 等 SQL 在数据库侧聚合。\n"
         "11. list_tables 和 describe_table 会返回 size_bytes/size_display 作为估算数据大小，并可能返回 storage_size_bytes/storage_size_display 作为物理占用；对大库、大模式、大表必须先评估体积，再决定是否只做抽样、聚合或要求用户确认。\n"
         "12. 多个建表、DDL 或写操作必须拆成多条单 SQL，逐条触发 confirmation_required、逐条等待用户点击确认按钮，不允许一次声明全部完成。\n"
-        "13. 如果工具结果没有 executed=true，必须明确说明尚未执行，不能说创建、修改或删除成功。\n"
-        "14. AI 上下文数据源列表的第一个是当前执行上下文，后续是用户添加的其他库或模式；跨数据源任务应先说明分析范围。\n"
-        "15. PostgreSQL 查询必须在当前 pg_database 内使用 schema.table 或只使用当前 schema 下的表名，不要生成 database.table 形式。\n\n"
+        "13. 如果工具结果没有 executed=true，必须明确说明尚未执行，不能说创建、修改、删除、备份或恢复成功。\n"
+        "14. 用户要求备份数据库时调用 create_database_backup；用户要求恢复备份时先调用 list_database_backups 找到备份记录，再调用 restore_database_backup 触发确认，确认返回 executed=true 后才能说恢复完成。\n"
+        "15. AI 上下文数据源列表的第一个是当前执行上下文，后续是用户添加的其他库或模式；跨数据源任务应先说明分析范围。\n"
+        "16. PostgreSQL 查询必须在当前 pg_database 内使用 schema.table 或只使用当前 schema 下的表名，不要生成 database.table 形式。\n"
+        "17. 生成 SQL 必须优先匹配当前执行上下文里的 dbType 和 serverVersion；不确定版本是否支持某个语法时，使用该数据库更保守、更通用的写法。\n"
+        "18. 用户说“当前连接/当前库/当前模式/当前表”时，优先使用工作区里的当前焦点资源；如果没有焦点资源，再使用 AI 上下文数据源列表的第一个。\n"
+        "19. 用户要求生成 SQL 到查询窗口、写入编辑器、放到当前 SQL 窗口时，必须调用 append_query_sql，并按当前执行上下文的数据库方言生成；该工具只写入编辑器，不代表执行成功。\n\n"
         f"工作区上下文：\n{workspace_context}"
     )

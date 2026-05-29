@@ -4,6 +4,9 @@ import { electronAPI } from '@electron-toolkit/preload'
 // Custom APIs for renderer
 const api = {
   selectSqlFile: (): Promise<{ name: string; content: string } | null> => ipcRenderer.invoke('select-sql-file'),
+  selectImportFile: (): Promise<string | null> => ipcRenderer.invoke('select-import-file'),
+  selectExportPath: (format: 'sql' | 'csv', defaultName?: string): Promise<string | null> => ipcRenderer.invoke('select-export-path', format, defaultName),
+  selectDmDriverFile: (): Promise<string | null> => ipcRenderer.invoke('select-dm-driver-file'),
   requestJson: (path: string, options?: { method?: string; headers?: Record<string, string>; body?: string }) => ipcRenderer.invoke('api:request', path, options),
   streamRequest: (
     streamId: string,
@@ -57,6 +60,7 @@ const api = {
   setAIConfigs: (configs: unknown) => ipcRenderer.invoke('ai-configs:set', configs),
   getAISessions: () => ipcRenderer.invoke('ai-sessions:get'),
   setAISessions: (sessions: unknown) => ipcRenderer.invoke('ai-sessions:set', sessions),
+  getDmDriverPath: () => ipcRenderer.invoke('settings:get-dm-driver-path'),
   getBackendStatus: () => ipcRenderer.invoke('backend:get-status'),
   restartBackend: () => ipcRenderer.invoke('backend:restart'),
   minimizeWindow: () => ipcRenderer.invoke('window:minimize'),

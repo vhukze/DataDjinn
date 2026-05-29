@@ -3,7 +3,7 @@ import { join } from 'path'
 import { readFile } from 'fs/promises'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import StoreModule from 'electron-store'
-import icon from '../../resources/icon.png?asset'
+import icon from '../../resources/icon.ico?asset'
 import { backendManager } from './backend'
 
 type AIConfig = {
@@ -27,8 +27,12 @@ type AISession = {
   messages: unknown[]
 }
 
+type AppSettings = {
+  dmDriverPath?: string
+}
+
 const Store = ('default' in StoreModule ? StoreModule.default : StoreModule) as typeof StoreModule
-const store = new Store<{ aiConfig?: AIConfig; aiConfigs?: AIConfigItem[]; aiSessions?: AISession[] }>()
+const store = new Store<{ aiConfig?: AIConfig; aiConfigs?: AIConfigItem[]; aiSessions?: AISession[]; appSettings?: AppSettings }>()
 const streamControllers = new Map<string, AbortController>()
 
 function createWindow(): void {
@@ -41,9 +45,10 @@ function createWindow(): void {
     height: Math.min(windowHeight, height),
     show: false,
     frame: false,
+    title: 'DataDjinn',
     titleBarStyle: 'hidden',
     autoHideMenuBar: true,
-    ...(process.platform === 'linux' ? { icon } : {}),
+    icon,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
@@ -77,7 +82,8 @@ function createWindow(): void {
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(() => {
   // Set app user model id for windows
-  electronApp.setAppUserModelId('com.electron')
+  app.setName('DataDjinn')
+  electronApp.setAppUserModelId('com.datadjinn.app')
 
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.
@@ -113,6 +119,78 @@ app.whenReady().then(() => {
     return { name, content }
   })
 
+  ipcMain.handle('select-dm-driver-file', async () => {
+    const window = BrowserWindow.getFocusedWindow()
+
+    if (!window) {
+      return null
+    }
+
+    const result = await dialog.showOpenDialog(window, {
+      title: '选择达梦驱动文件',
+      filters: [
+        { name: '达梦驱动文件', extensions: ['pyd', 'dll'] },
+        { name: '所有文件', extensions: ['*'] }
+      ],
+      properties: ['openFile']
+    })
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return null
+    }
+
+    const filePath = result.filePaths[0]
+    store.set('appSettings.dmDriverPath', filePath)
+    return filePath
+  })
+
+  ipcMain.handle('select-import-file', async () => {
+    const window = BrowserWindow.getFocusedWindow()
+
+    if (!window) {
+      return null
+    }
+
+    const result = await dialog.showOpenDialog(window, {
+      title: '选择导入文件',
+      filters: [
+        { name: 'SQL / CSV 文件', extensions: ['sql', 'csv'] },
+        { name: '所有文件', extensions: ['*'] }
+      ],
+      properties: ['openFile']
+    })
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return null
+    }
+
+    return result.filePaths[0]
+  })
+
+  ipcMain.handle('select-export-path', async (_event, format: string, defaultName?: string) => {
+    const window = BrowserWindow.getFocusedWindow()
+
+    if (!window) {
+      return null
+    }
+
+    const filters: Electron.FileFilter[] = format === 'csv'
+      ? [{ name: 'CSV 文件', extensions: ['csv'] }]
+      : [{ name: 'SQL 文件', extensions: ['sql'] }]
+
+    const result = await dialog.showSaveDialog(window, {
+      title: '选择导出路径',
+      defaultPath: defaultName,
+      filters: [...filters, { name: '所有文件', extensions: ['*'] }]
+    })
+
+    if (result.canceled || !result.filePath) {
+      return null
+    }
+
+    return result.filePath
+  })
+
   ipcMain.handle('window:minimize', (event) => BrowserWindow.fromWebContents(event.sender)?.minimize())
   ipcMain.handle('window:maximize-toggle', (event) => {
     const window = BrowserWindow.fromWebContents(event.sender)
@@ -127,6 +205,7 @@ app.whenReady().then(() => {
     return true
   })
   ipcMain.handle('window:close', (event) => BrowserWindow.fromWebContents(event.sender)?.close())
+  ipcMain.handle('settings:get-dm-driver-path', () => store.get('appSettings.dmDriverPath') ?? null)
   ipcMain.handle('backend:get-status', () => backendManager.getStatus())
   ipcMain.handle('backend:restart', () => backendManager.restart())
   ipcMain.handle('ai-config:get', () => store.get('aiConfig') ?? null)

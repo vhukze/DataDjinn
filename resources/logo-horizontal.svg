@@ -1,0 +1,51 @@
+<svg width="580" height="140" viewBox="0 0 580 140" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- DataDjinn Horizontal Logo · Chrome Minimal -->
+
+  <!-- Icon scaled to ~110px tall, translated to left -->
+  <g transform="translate(10, 14) scale(0.245)">
+    <!-- Back shape -->
+    <path
+      d="M 80,60 L 80,300
+         Q 80,430 196,430
+         Q 312,430 312,300
+         Q 312,178 196,178
+         L 152,178"
+      fill="none" stroke="#BBBBBB" stroke-width="48"
+      stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- Front shape -->
+    <path
+      d="M 160,60 L 160,300
+         Q 160,430 276,430
+         Q 392,430 392,300
+         Q 392,178 276,178
+         L 232,178"
+      fill="none" stroke="#1a1a1a" stroke-width="20"
+      stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- Dots -->
+    <circle cx="416" cy="76"  r="18"  fill="#1a1a1a"/>
+    <circle cx="450" cy="102" r="10"  fill="#1a1a1a" opacity="0.38"/>
+    <circle cx="438" cy="132" r="7.5" fill="#1a1a1a" opacity="0.22"/>
+  </g>
+
+  <!-- Divider -->
+  <line x1="138" y1="30" x2="138" y2="108" stroke="#1a1a1a" stroke-width="1" opacity="0.13"/>
+
+  <!-- Wordmark: Data bold, Djinn light -->
+  <text
+    x="156" y="87"
+    font-family="-apple-system,'SF Pro Display','Segoe UI',Helvetica,Arial,sans-serif"
+    font-size="52"
+    font-weight="700"
+    letter-spacing="-2"
+    fill="#1a1a1a">Data<tspan font-weight="300" opacity="0.55">Djinn</tspan></text>
+
+  <!-- Tagline -->
+  <text
+    x="158" y="112"
+    font-family="-apple-system,'SF Pro Text','Segoe UI',Helvetica,Arial,sans-serif"
+    font-size="11"
+    font-weight="400"
+    letter-spacing="4.5"
+    fill="#1a1a1a"
+    opacity="0.3">AI DATABASE CLIENT</text>
+</svg>

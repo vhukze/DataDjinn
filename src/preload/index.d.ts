@@ -32,6 +32,9 @@ type AISession = {
 
 interface DataDjinnAPI {
   selectSqlFile: () => Promise<SqlFileResult>
+  selectImportFile: () => Promise<string | null>
+  selectExportPath: (format: 'sql' | 'csv', defaultName?: string) => Promise<string | null>
+  selectDmDriverFile: () => Promise<string | null>
   requestJson: <T>(path: string, options?: { method?: string; headers?: Record<string, string>; body?: string }) => Promise<T>
   streamRequest: (streamId: string, path: string, options: { method?: string; headers?: Record<string, string>; body?: string }, onChunk: (chunk: string) => void | Promise<void>) => Promise<void>
   cancelStreamRequest: (streamId: string) => Promise<void>
@@ -41,6 +44,7 @@ interface DataDjinnAPI {
   setAIConfigs: (configs: AIConfigItem[]) => Promise<AIConfigItem[]>
   getAISessions: () => Promise<AISession[]>
   setAISessions: (sessions: AISession[]) => Promise<AISession[]>
+  getDmDriverPath: () => Promise<string | null>
   getBackendStatus: () => Promise<BackendStatus>
   restartBackend: () => Promise<BackendStatus>
   minimizeWindow: () => Promise<void>

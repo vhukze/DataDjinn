@@ -40,9 +40,6 @@
   --dj-editor-gutter-bg:     #f1f5fb;
   --dj-editor-line-highlight: rgba(47, 124, 246, 0.06);
 
-  --dj-statusbar-bg:         #111827;
-  --dj-statusbar-text:       #dbeafe;
-  --dj-statusbar-border:     rgba(255, 255, 255, 0.08);
 
   --dj-scrollbar-thumb:      rgba(81, 96, 112, 0.28);
   --dj-scrollbar-track:      transparent;
@@ -99,9 +96,6 @@
   --dj-editor-gutter-bg:     #2d3138;
   --dj-editor-line-highlight: rgba(79, 140, 255, 0.08);
 
-  --dj-statusbar-bg:         #30343b;
-  --dj-statusbar-text:       #d7dde6;
-  --dj-statusbar-border:     rgba(128, 148, 178, 0.14);
 
   --dj-scrollbar-thumb:      rgba(168, 179, 199, 0.22);
   --dj-scrollbar-track:      transparent;
@@ -206,6 +200,24 @@ body[data-theme="dark"] {
 .ant-collapse,
 .ant-popover-inner {
   border-radius: var(--dj-radius-md) !important;
+}
+
+.ai-config-collapse .ai-config-panel-enabled {
+  overflow: hidden;
+  background: var(--dj-accent-soft);
+  border-color: color-mix(in srgb, var(--dj-accent) 45%, transparent) !important;
+}
+
+.ai-config-collapse .ai-config-panel-enabled > .ant-collapse-header {
+  background: var(--dj-accent-soft);
+}
+
+.ai-config-collapse .ai-config-panel-enabled .ant-typography {
+  color: var(--dj-accent) !important;
+}
+
+.ai-config-switch.ant-switch-checked {
+  background: var(--dj-accent) !important;
 }
 
 .ant-modal-content {
@@ -893,12 +905,12 @@ body[data-theme="dark"] .ant-popover-message {
   width: 26px;
   height: 26px;
   place-items: center;
-  color: #fff;
-  font-size: 14px;
-  background: linear-gradient(135deg, var(--dj-accent), #22c55e);
-  border: 1px solid rgba(255, 255, 255, 0.20);
-  border-radius: 9px;
-  box-shadow: 0 8px 18px rgba(47, 124, 246, 0.24);
+}
+
+.brand-mark img {
+  display: block;
+  width: 26px;
+  height: 26px;
 }
 
 .brand-title.ant-typography {
@@ -1436,6 +1448,15 @@ body[data-theme="dark"] .ant-popover-message {
   background: var(--dj-bg-surface);
 }
 
+.query-body-splitter {
+  flex: 1;
+  min-height: 0;
+}
+
+.sql-editor-panel {
+  min-height: 0;
+}
+
 .result-table-shell {
   flex: 1;
   min-height: 0;
@@ -1450,7 +1471,7 @@ body[data-theme="dark"] .ant-popover-message {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  padding: 0 10px 10px;
+  padding: 0;
 }
 
 .result-table {
@@ -1486,7 +1507,6 @@ body[data-theme="dark"] .ant-popover-message {
 .result-table .ant-table-body,
 .result-table .ant-table-tbody-virtual-holder {
   flex: 1;
-  height: auto !important;
   min-height: 0;
   overflow: auto !important;
 }
@@ -1506,15 +1526,22 @@ body[data-theme="dark"] .ant-popover-message {
   border-right: 1px solid var(--dj-grid-border) !important;
 }
 
+.row-number-header {
+  display: block;
+  color: var(--dj-text-tertiary);
+  font-size: 10px;
+  text-align: center;
+}
+
 .row-number-button,
 .row-number-select-all {
   width: 100%;
   height: 100%;
-  min-height: 26px;
+  min-height: 24px;
   padding: 0;
-  color: var(--dj-text-secondary);
-  font-size: 11px;
-  line-height: 26px;
+  color: var(--dj-text-tertiary);
+  font-size: 10px;
+  line-height: 24px;
   text-align: center;
   border: 0;
   background: transparent;
@@ -1525,8 +1552,36 @@ body[data-theme="dark"] .ant-popover-message {
 .row-number-select-all:hover,
 .row-number-button.selected,
 .row-number-select-all.selected {
-  color: var(--dj-accent);
+  color: var(--dj-text-secondary);
   background: var(--dj-accent-soft);
+}
+
+.column-select-button {
+  width: 100%;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  cursor: grab;
+}
+
+.column-select-button:active {
+  cursor: grabbing;
+}
+
+.column-select-button.selected,
+.column-select-button:hover {
+  color: var(--dj-text-primary);
+}
+
+.column-select-button.dragging {
+  opacity: 0.55;
+}
+
+.column-selected-cell {
+  background: var(--dj-accent-soft) !important;
 }
 
 .table-cell-text {
@@ -1580,13 +1635,18 @@ body[data-theme="dark"] .ant-popover-message {
   background: var(--dj-bg-elevated);
 }
 
+.query-toolbar .ant-btn-primary,
+.query-toolbar .ant-btn-primary:hover {
+  color: var(--dj-accent-text);
+  background: var(--dj-accent);
+}
+
 .sql-editor-container {
   position: relative;
-  flex: 0 0 280px;
-  min-height: 240px;
+  height: 100%;
+  min-height: 0;
   overflow: visible !important;
   border: 0;
-  border-bottom: 1px solid var(--dj-border-default);
   border-radius: 0;
   background: var(--dj-editor-bg);
 }
@@ -1898,21 +1958,6 @@ body[data-theme="dark"] .ant-popover-message {
   color: var(--dj-text-tertiary);
   text-decoration: line-through;
   background: rgba(197, 15, 31, 0.04) !important;
-}
-
-/* ===== Status Bar ===== */
-.app-statusbar {
-  height: 22px;
-  padding: 0 12px;
-  color: var(--dj-statusbar-text);
-  font-size: 11px;
-  line-height: 22px;
-  background: var(--dj-statusbar-bg);
-  border-top: 1px solid var(--dj-statusbar-border);
-}
-
-.status-separator {
-  color: rgba(255, 255, 255, 0.4);
 }
 
 /* ===== Utilities ===== */

@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="resources/icon.png" alt="DataDjinn" width="128" />
+  <img src="resources/logo-horizontal.svg" alt="DataDjinn" width="360" />
+</p>
+
+<p align="center">
+  <img src="resources/icon.svg" alt="DataDjinn icon" width="96" />
 </p>
 
 <h1 align="center">DataDjinn</h1>
@@ -27,6 +31,8 @@ DataDjinn 是一款**跨时代**的本地数据库桌面客户端，将传统数
 - 🧠 **AI 对话式数据库操作** —— 接入任意 OpenAI 兼容 API，AI 深度理解 Schema 上下文，支持自然语言查数据、建表、修改表结构
 - 🔗 **多数据库支持** —— SQLite / MySQL / PostgreSQL / 达梦 DM
 - ✍️ **专业 SQL 编辑器** —— 基于 Monaco Editor，语法高亮、智能补全、多标签页
+- 🧭 **连接树与数据预览** —— 支持连接、库、模式、表、视图等对象浏览，表格预览支持行列选择、列顺序拖拽和单元格编辑
+- 📦 **备份 / 导出 / 导入** —— 备份用于完整恢复，导出用于数据交换；SQL 导出支持结构、数据、结构 + 数据三种内容
 - 🔐 **密码安全存储** —— Windows DPAPI 加密，仅当前用户可解密
 - 🎨 **深色 / 浅色主题** —— 自适应系统主题，手动切换也支持
 - 🪶 **无边框窗口** —— 自定义标题栏，简洁沉浸
@@ -66,10 +72,25 @@ DataDjinn 内置 AI 对话面板，接入 **OpenAI 兼容 API**（如 OpenAI、D
 
 ### 特色设计
 
+- **全局问答** —— 未选择上下文时也可提问，AI 可读取当前连接概览并整理回答
+- **焦点上下文** —— 当前选中的连接、库、模式、表可直接作为 AI 分析对象
+- **查询窗口联动** —— AI 可读取当前 SQL 编辑器内容，也可把生成的 SQL 追加写入查询窗口
 - **Schema 感知** —— AI 自动获取当前数据库的表结构作为上下文
 - **自动压缩** —— 长对话自动总结压缩，突破 token 上限
 - **Plan-Execute 模式** —— 复杂操作先生成执行计划，确认后逐步执行
 - **工具调用** —— AI 通过内置工具执行 SQL、预览数据、读取 Schema
+
+---
+
+## 📦 备份、导出与导入
+
+| 功能 | 用途 | 说明 |
+|------|------|------|
+| 备份 | 完整恢复 | 生成可恢复当前数据库的 SQL 备份文件，适合回滚或迁移前留档 |
+| 导出 | 数据交换 | 支持按数据库、模式或表导出 SQL / CSV，SQL 可选择仅结构、仅数据或结构 + 数据 |
+| 导入 | 数据写入 | 支持执行 SQL 文件和导入 CSV 文件，执行结果会展示成功、失败与可复制错误信息 |
+
+MySQL SQL 备份和导入会在执行期间临时关闭外键检查，避免因表依赖顺序导致恢复失败。
 
 ---
 
@@ -188,10 +209,12 @@ DataDjinn/
 │       │   ├── connections.py # 连接管理
 │       │   ├── query.py      # SQL 执行
 │       │   ├── metadata.py   # Schema 读取
+│       │   ├── backup.py     # 备份、导出、导入接口
 │       │   └── ai_router.py  # AI 对话接口
 │       ├── db/               # 数据库层
 │       │   ├── connection_manager.py  # 连接池 + 密码加密
 │       │   ├── sql_executor.py        # SQL 执行器
+│       │   ├── backup_manager.py      # 备份、导出、导入管理
 │       │   ├── readonly_query.py      # 只读查询
 │       │   └── metadata.py            # 元数据读取
 │       └── ai/               # AI Agent

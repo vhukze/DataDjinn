@@ -23,6 +23,8 @@ export type AIConnectionContext = {
   dbName?: string
   database?: string
   pgDatabase?: string
+  connectionName?: string
+  serverVersion?: string | null
 }
 
 type ChatMessage = {
@@ -92,9 +94,47 @@ export type AIContextSource = {
   storageSizeBytes?: number | null
 }
 
+type AgentConnectionSummary = {
+  connectionId: string
+  name: string
+  dbType: string
+  database?: string
+  isOpen: boolean
+  serverVersion?: string | null
+}
+
+type AgentFocusedResource = {
+  kind: string
+  connectionId?: string
+  connectionName?: string
+  dbType?: string
+  database?: string
+  schema?: string
+  pgDatabase?: string
+  table?: string
+  objectType?: string
+  name?: string
+  sizeDisplay?: string | null
+  rowCount?: number | null
+}
+
+type AgentWorkspaceAction = {
+  type: 'append_query_sql'
+  sql: string
+  title?: string
+}
+
 type AgentWorkspace = {
   active_sql?: string
+  active_tab_kind?: string
   selected_table?: string
+  current_connection_name?: string
+  current_db_type?: string
+  current_server_version?: string | null
+  current_database?: string
+  current_pg_database?: string
+  focused_resource?: AgentFocusedResource
+  connections?: AgentConnectionSummary[]
   recent_queries?: string[]
   visible_result_columns?: string[]
   visible_result_sample?: Record<string, unknown>[]
@@ -109,6 +149,7 @@ type StreamEvent =
   | { type: 'confirmation_required'; confirmation: AgentConfirmationView }
   | { type: 'tool_start'; tool_call_id: string; name: string; arguments: unknown }
   | { type: 'tool_result'; tool_call_id: string; name: string; result: unknown }
+  | { type: 'workspace_action'; action: AgentWorkspaceAction }
   | { type: 'tool_done' }
   | { type: 'done'; finish_reason: string }
   | { type: 'error'; message: string }
@@ -120,6 +161,7 @@ interface AIPanelProps {
   contextSources?: AIContextSource[]
   primaryContextSourceId?: string
   onRemoveContextSource?: (sourceId: string) => void
+  onWorkspaceAction?: (action: AgentWorkspaceAction) => void
 }
 
 const createAIConfigItem = (config?: Partial<AIConfigItem>): AIConfigItem => ({
@@ -188,8 +230,22 @@ const parseSseLines = (buffer: string): { events: StreamEvent[]; rest: string } 
   return { events, rest }
 }
 
-export default function AIPanel({ requestJson, connectionContext, workspace, contextSources = [], primaryContextSourceId, onRemoveContextSource }: AIPanelProps): React.JSX.Element {
+export default function AIPanel({ requestJson, connectionContext, workspace, contextSources = [], primaryContextSourceId, onRemoveContextSource, onWorkspaceAction }: AIPanelProps): React.JSX.Element {
   const [messageApi, contextHolder] = message.useMessage()
+  const showError = (error: unknown, fallback = '操作失败'): void => {
+    const content = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
+    Modal.error({
+      title: '操作失败',
+      centered: true,
+      okText: '确认',
+      width: 720,
+      content: (
+        <Space direction="vertical" className="full-width">
+          <Input.TextArea value={content} autoSize={{ minRows: 4, maxRows: 12 }} readOnly />
+        </Space>
+      )
+    })
+  }
   const [configs, setConfigs] = useState<AIConfigItem[]>([])
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -206,7 +262,8 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
   const config = activeAIConfig(configs)
   const activeConfigItem = configs.find((item) => item.enabled)
   const ready = Boolean(config)
-  const canChat = ready && Boolean(connectionContext.connectionId)
+  const hasDatabaseContext = Boolean(connectionContext.connectionId)
+  const canChat = ready
   const activeSession = sessions.find((session) => session.id === activeSessionId)
   const messages = activeSession?.messages ?? []
 
@@ -299,7 +356,7 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
       setActiveSessionId(compactedSession.id)
       return true
     } catch (err) {
-      messageApi.error(err instanceof Error ? err.message : '上下文压缩失败')
+      showError(err instanceof Error ? err.message : '上下文压缩失败')
       return false
     } finally {
       setCompacting(false)
@@ -346,12 +403,12 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
       if (result.success) {
         messageApi.success(nextResult.message)
       } else {
-        messageApi.error(nextResult.message)
+        showError(nextResult.message)
       }
     } catch (err) {
       const nextResult = { success: false, message: err instanceof Error ? err.message : '测试连接失败' }
       setTestResult(nextResult)
-      messageApi.error(nextResult.message)
+      showError(nextResult.message)
     } finally {
       setTesting(false)
     }
@@ -404,7 +461,7 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
     } catch (err) {
       const error = err instanceof Error ? err.message : 'AI 请求失败'
       updateActiveSession((session) => ({ ...session, updatedAt: Date.now(), messages: session.messages.map((item) => (item.id === assistantId ? { ...item, content: item.content || error } : item)) }))
-      messageApi.error(error)
+      showError(error)
     } finally {
       streamIdRef.current = null
       setSending(false)
@@ -452,6 +509,11 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
   }
 
   const applyStreamEvent = (assistantId: string, event: StreamEvent): void => {
+    if (event.type === 'workspace_action') {
+      onWorkspaceAction?.(event.action)
+      return
+    }
+
     updateActiveSession((session) => {
       const messages = session.messages.map((item) => {
         if (item.id !== assistantId) {
@@ -487,12 +549,12 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
 
   const confirmAction = async (confirmation: AgentConfirmationView, approved: boolean): Promise<void> => {
     if (!connectionContext.connectionId) {
-      messageApi.error('请先选择已打开的数据库连接')
+      showError('请先选择已打开的数据库连接')
       return
     }
     setConfirmingId(confirmation.id)
     try {
-      const result = await requestJson<{ message: string; executed?: boolean; sql?: string; result?: unknown }>('/ai/confirm', {
+      const result = await requestJson<{ message: string; executed?: boolean; sql?: string; result?: unknown; action?: string; backup?: unknown }>('/ai/confirm', {
         method: 'POST',
         body: JSON.stringify({
           connection_id: connectionContext.connectionId,
@@ -502,7 +564,8 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
           pg_database: connectionContext.pgDatabase
         })
       })
-      const resultContent = approved ? `确认执行结果：${result.message}\n\n\`\`\`json\n${JSON.stringify(result.result ?? {}, null, 2)}\n\`\`\`` : result.message
+      const resultPayload = result.action === 'restore_backup' ? result.backup : result.result
+      const resultContent = approved ? `确认执行结果：${result.message}\n\n\`\`\`json\n${JSON.stringify(resultPayload ?? {}, null, 2)}\n\`\`\`` : result.message
       const resultMessage: ChatMessage = { id: crypto.randomUUID(), role: 'assistant', content: resultContent }
 
       if (!approved) {
@@ -519,7 +582,9 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
       }
 
       const assistantId = crypto.randomUUID()
-      const continuationContent = `用户已确认并执行 SQL，后端返回 executed=${result.executed === true ? 'true' : 'false'}，SQL 和执行结果如下。只有 executed=true 才能认为该 SQL 执行成功；请基于该结果继续完成原计划的后续步骤，不要重复执行已完成 SQL。如果还需要创建其他表，必须继续逐条调用 execute_query(readonly=false) 并等待用户确认。\n\nSQL:\n${result.sql ?? confirmation.sql ?? ''}\n\nResult:\n${JSON.stringify(result.result ?? {}, null, 2)}`
+      const continuationContent = result.action === 'restore_backup'
+        ? `用户已确认并恢复备份，后端返回 executed=${result.executed === true ? 'true' : 'false'}，备份恢复结果如下。只有 executed=true 才能认为恢复成功；请基于该结果继续完成原计划的后续步骤，不要重复恢复已完成备份。\n\nBackup:\n${JSON.stringify(result.backup ?? {}, null, 2)}`
+        : `用户已确认并执行 SQL，后端返回 executed=${result.executed === true ? 'true' : 'false'}，SQL 和执行结果如下。只有 executed=true 才能认为该 SQL 执行成功；请基于该结果继续完成原计划的后续步骤，不要重复执行已完成 SQL。如果还需要创建其他表，必须继续逐条调用 execute_query(readonly=false) 并等待用户确认。\n\nSQL:\n${result.sql ?? confirmation.sql ?? ''}\n\nResult:\n${JSON.stringify(result.result ?? {}, null, 2)}`
       updateActiveSession((session) => ({
         ...session,
         updatedAt: Date.now(),
@@ -545,13 +610,13 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
           updatedAt: Date.now(),
           messages: session.messages.map((item) => item.id === assistantId ? { ...item, content: item.content || error } : item)
         }))
-        messageApi.error(error)
+        showError(error)
       } finally {
         streamIdRef.current = null
         setSending(false)
       }
     } catch (err) {
-      messageApi.error(err instanceof Error ? err.message : '确认操作失败')
+      showError(err instanceof Error ? err.message : '确认操作失败')
     } finally {
       setConfirmingId(null)
     }
@@ -705,7 +770,8 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
         </Space>
       </Flex>
       <Space direction="vertical" className="full-width ai-panel" size="middle">
-        {!canChat && <Alert type="warning" showIcon message="请先选择已打开的数据库连接，并配置 AI 接口" />}
+        {!ready && <Alert type="warning" showIcon message="请先配置并启用 AI 接口" />}
+        {ready && !hasDatabaseContext && <Alert type="info" showIcon message="未选择上下文" description="当前仅支持 AI 问答、整理连接信息和生成 SQL 到查询窗口，不能执行数据库查询或结构读取任务。" />}
         {renderContextSources()}
         <div ref={scrollRef} className="ai-message-list">
           <List
@@ -749,7 +815,7 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
           {sending ? (
             <Button danger icon={<StopOutlined />} onClick={stopMessage}>停止</Button>
           ) : (
-            <Button type="primary" disabled={!canChat || !input.trim() || !activeSessionId} onClick={() => void sendMessage()}>发送</Button>
+            <Button type="primary" disabled={!ready || !input.trim() || !activeSessionId} onClick={() => void sendMessage()}>发送</Button>
           )}
         </Flex>
         <Flex justify="space-between" align="center" className="ai-model-hint">
@@ -779,12 +845,14 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
           ) : (
             <Collapse
               accordion={false}
+              className="ai-config-collapse"
               items={configs.map((item, index) => ({
                 key: item.id,
+                className: item.enabled ? 'ai-config-panel-enabled' : undefined,
                 label: <Space><Typography.Text strong>{item.name || `AI 配置 ${index + 1}`}</Typography.Text><Tag>{item.provider === 'anthropic' ? 'Anthropic 兼容接口' : 'OpenAI 兼容接口'}</Tag>{item.enabled && <Tag color="success">已启用</Tag>}</Space>,
                 extra: (
                   <Space onClick={(event) => event.stopPropagation()}>
-                    <Switch size="small" checked={item.enabled} onChange={(checked) => toggleConfig(item.id, checked)} />
+                    <Switch className="ai-config-switch" size="small" checked={item.enabled} onChange={(checked) => toggleConfig(item.id, checked)} />
                     <Button type="text" danger size="small" icon={<DeleteOutlined />} onClick={() => removeConfig(item.id)} />
                   </Space>
                 ),

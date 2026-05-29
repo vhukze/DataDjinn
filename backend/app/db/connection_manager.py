@@ -2,6 +2,7 @@ import base64
 import ctypes
 import json
 import os
+import sys
 from ctypes import wintypes
 from pathlib import Path
 from uuid import uuid4
@@ -23,11 +24,21 @@ CONNECTION_STORE_PATH = _connection_store_path()
 CRYPTPROTECT_UI_FORBIDDEN = 0x1
 
 
-def _load_dm_python():
+def _load_dm_python(driver_path: str | None = None):
+    if driver_path:
+        driver_file = _resolve_runtime_path(driver_path)
+        if not driver_file.exists():
+            raise RuntimeError(f"达梦驱动文件不存在：{driver_file}")
+        driver_dir = str(driver_file.parent)
+        os.add_dll_directory(driver_dir)
+        if driver_dir not in sys.path:
+            sys.path.insert(0, driver_dir)
+        os.environ["PATH"] = f"{driver_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+
     try:
         import dmPython
     except ImportError as exc:
-        raise RuntimeError("达梦驱动文件缺失或被安全软件删除，请恢复 resources/backend/_internal 中的 dmPython 及 dm*.dll 文件后重试") from exc
+        raise RuntimeError("达梦驱动文件缺失，请在新建连接时选择本机 dmPython 驱动文件，或恢复 resources/backend/_internal 中的 dmPython 及 dm*.dll 文件后重试") from exc
 
     return dmPython
 
@@ -85,6 +96,7 @@ class StoredConnection(BaseModel):
     encrypted_password: str | None = None
     database: str | None = None
     sqlite_path: str | None = None
+    dm_driver_path: str | None = None
 
 
 def _data_blob(data: bytes):
@@ -195,6 +207,7 @@ class ConnectionManager:
             password=_decrypt_password(stored.encrypted_password),
             database=stored.database,
             sqlite_path=stored.sqlite_path,
+            dm_driver_path=stored.dm_driver_path,
         )
 
     def get_password(self, connection_id: str) -> str:
@@ -249,6 +262,7 @@ class ConnectionManager:
             password=_decrypt_password(stored.encrypted_password),
             database=stored.database,
             sqlite_path=stored.sqlite_path,
+            dm_driver_path=stored.dm_driver_path,
         )
 
     def open_connection(self, connection_id: str) -> ConnectionInfo:
@@ -367,7 +381,7 @@ class ConnectionManager:
         if not request.username:
             raise ValueError("达梦用户名不能为空")
 
-        dm_python = _load_dm_python()
+        dm_python = _load_dm_python(request.dm_driver_path)
 
         def connect():
             return dm_python.connect(
@@ -424,6 +438,7 @@ class ConnectionManager:
             encrypted_password=_encrypt_password(request.password),
             database=request.database,
             sqlite_path=str(_resolve_runtime_path(request.sqlite_path)) if request.sqlite_path else None,
+            dm_driver_path=str(_resolve_runtime_path(request.dm_driver_path)) if request.dm_driver_path else None,
         )
 
     def _display_database(self, request: ConnectionRequest) -> str:

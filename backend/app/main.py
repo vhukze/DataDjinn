@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.backup import router as backup_router
 from app.api.connections import router as connections_router
 from app.api.health import router as health_router
 from app.api.ai_router import router as ai_router
@@ -21,4 +22,5 @@ app.include_router(health_router, prefix="/api")
 app.include_router(connections_router, prefix="/api")
 app.include_router(metadata_router, prefix="/api")
 app.include_router(query_router, prefix="/api")
+app.include_router(backup_router, prefix="/api")
 app.include_router(ai_router, prefix="/api")

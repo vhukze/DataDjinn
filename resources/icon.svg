@@ -1,0 +1,36 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- DataDjinn Icon · Chrome Minimal · b/6 shape — exact recreation -->
+
+  <!-- Back shape: thick gray, rounded stroke -->
+  <path
+    d="M 80,60
+       L 80,300
+       Q 80,430 196,430
+       Q 312,430 312,300
+       Q 312,178 196,178
+       L 152,178"
+    fill="none"
+    stroke="#BBBBBB"
+    stroke-width="48"
+    stroke-linecap="round"
+    stroke-linejoin="round"/>
+
+  <!-- Front shape: thin dark, shifted right 80px -->
+  <path
+    d="M 160,60
+       L 160,300
+       Q 160,430 276,430
+       Q 392,430 392,300
+       Q 392,178 276,178
+       L 232,178"
+    fill="none"
+    stroke="#1a1a1a"
+    stroke-width="20"
+    stroke-linecap="round"
+    stroke-linejoin="round"/>
+
+  <!-- AI dot cluster · top right -->
+  <circle cx="416" cy="76"  r="18"  fill="#1a1a1a"/>
+  <circle cx="450" cy="102" r="10"  fill="#1a1a1a" opacity="0.38"/>
+  <circle cx="438" cy="132" r="7.5" fill="#1a1a1a" opacity="0.22"/>
+</svg>
