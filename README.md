@@ -2,9 +2,6 @@
   <img src="resources/logo-horizontal.svg" alt="DataDjinn" width="360" />
 </p>
 
-<p align="center">
-  <img src="resources/icon.svg" alt="DataDjinn icon" width="96" />
-</p>
 
 <h1 align="center">DataDjinn</h1>
 
