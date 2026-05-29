@@ -37,6 +37,18 @@ DataDjinn 是一款**跨时代**的本地数据库桌面客户端，将传统数
 
 > 启动应用后，左侧树管理连接与 Schema，中央 SQL 编辑器编写查询，右侧 AI 面板用自然语言操作数据库。
 
+### SQL 编辑与 AI 问答
+
+![SQL 编辑与 AI 问答](.github/screenshots/1.png)
+
+### 数据预览与 AI 分析
+
+![数据预览与 AI 分析](.github/screenshots/2.png)
+
+### AI 设置
+
+![AI 设置](.github/screenshots/3.png)
+
 ---
 
 ## 🗄️ 支持的数据库
