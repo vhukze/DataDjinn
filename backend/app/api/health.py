@@ -8,5 +8,5 @@ def health_check():
     return {
         "status": "ok",
         "app": "DataDjinn",
-        "version": "0.1.1",
+        "version": "0.1.2",
     }

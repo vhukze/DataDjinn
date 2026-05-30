@@ -14,6 +14,7 @@ class ConnectionRequest(BaseModel):
     password: str | None = None
     database: str | None = None
     sqlite_path: str | None = None
+    dm_driver_id: str | None = None
     dm_driver_path: str | None = None
 
 

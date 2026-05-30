@@ -22,6 +22,7 @@ import {
   SortDescendingOutlined,
   SunOutlined,
   TableOutlined,
+  SettingOutlined,
   ThunderboltOutlined
 } from '@ant-design/icons'
 import {
@@ -134,6 +135,7 @@ type ConnectionFormValues = {
   password?: string
   database?: string
   sqlite_path?: string
+  dm_driver_id?: string
   dm_driver_path?: string
 }
 
@@ -150,6 +152,24 @@ type ConnectionInfo = {
 type ConnectionTestResponse = {
   success: boolean
   message: string
+}
+
+type DriverInfo = {
+  id: string
+  database_type: 'dm'
+  driver_type: 'jdbc' | 'python' | 'whl'
+  name: string
+  source: 'auto' | 'manual'
+  enabled: boolean
+  path?: string | null
+}
+
+type DriverFormValues = {
+  database_type: 'dm'
+  driver_type: 'jdbc' | 'python' | 'whl'
+  name: string
+  path?: string
+  enabled: boolean
 }
 
 type DatabaseInfo = {
@@ -367,7 +387,9 @@ const buildColumnFilterOptions = (rows: EditableRow[], column: string): ColumnFi
 
 function App(): React.JSX.Element {
   const [form] = Form.useForm<ConnectionFormValues>()
+  const [driverForm] = Form.useForm<DriverFormValues>()
   const databaseType = Form.useWatch('database_type', form) ?? 'sqlite'
+  const driverType = Form.useWatch('driver_type', driverForm) ?? 'jdbc'
   const [messageApi, contextHolder] = message.useMessage()
   const showError = (error: unknown, fallback = '操作失败'): void => {
     const content = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
@@ -452,6 +474,13 @@ function App(): React.JSX.Element {
   const [createTableLoading, setCreateTableLoading] = useState(false)
   const [newTableName, setNewTableName] = useState('')
   const [newTableColumns, setNewTableColumns] = useState<ColumnDef[]>([])
+  const [driverManagerOpen, setDriverManagerOpen] = useState(false)
+  const [drivers, setDrivers] = useState<DriverInfo[]>([])
+  const dmDrivers = drivers.filter((driver) => driver.database_type === 'dm' && driver.enabled)
+  const selectedDmDriverId = Form.useWatch('dm_driver_id', form)
+  const selectedDmDriver = dmDrivers.find((driver) => driver.id === selectedDmDriverId)
+  const [driversLoading, setDriversLoading] = useState(false)
+  const [driverSaving, setDriverSaving] = useState(false)
   const [selectedDatabases, setSelectedDatabases] = useState<Record<string, string[]>>(() => readPersisted(STORAGE_DB))
   const [selectedSchemas, setSelectedSchemas] = useState<Record<string, string[]>>(() => readPersisted(STORAGE_SCHEMA))
   const selectedDatabasesRef = useRef(selectedDatabases)
@@ -2291,13 +2320,13 @@ function App(): React.JSX.Element {
         database: 'postgres'
       })
     } else if (nextDatabaseType === 'dm') {
+      await loadDrivers()
       form.setFieldsValue({
         database_type: 'dm',
         name: '达梦',
         host: '127.0.0.1',
         port: 5236,
-        username: 'SYSDBA',
-        dm_driver_path: await window.api.getDmDriverPath() ?? undefined
+        username: 'SYSDBA'
       })
     } else if (nextDatabaseType === 'mongodb') {
       form.setFieldsValue({
@@ -2327,6 +2356,9 @@ function App(): React.JSX.Element {
 
     try {
       const data = await requestJson<ConnectionFormValues>(`/connections/${connection.connection_id}`)
+      if (data.database_type === 'dm') {
+        await loadDrivers()
+      }
       form.setFieldsValue(data)
     } catch (err) {
       showError(err instanceof Error ? err.message : '加载连接信息失败')
@@ -2377,7 +2409,7 @@ function App(): React.JSX.Element {
         username: values.username,
         password: values.password,
         database: values.database,
-        dm_driver_path: values.dm_driver_path
+        dm_driver_id: values.dm_driver_id
       }
     }
 
@@ -2404,13 +2436,81 @@ function App(): React.JSX.Element {
     }
   }
 
-  const selectDmDriverFile = async (): Promise<void> => {
-    const filePath = await window.api.selectDmDriverFile()
+  const selectDriverFile = async (): Promise<void> => {
+    const filePath = await window.api.selectDriverFile()
 
     if (filePath) {
-      form.setFieldValue('dm_driver_path', filePath)
+      driverForm.setFieldValue('path', filePath)
+      driverForm.setFieldValue('name', filePath.split(/[\\/]/).pop() ?? 'dmPython')
     }
   }
+
+  const loadDrivers = async (): Promise<void> => {
+    setDriversLoading(true)
+    try {
+      const result = await requestJson<{ drivers: DriverInfo[] }>('/drivers')
+      setDrivers(result.drivers)
+    } catch (err) {
+      showError(err instanceof Error ? err.message : '加载驱动失败')
+    } finally {
+      setDriversLoading(false)
+    }
+  }
+
+  const openDriverManager = (): void => {
+    setDriverManagerOpen(true)
+    driverForm.setFieldsValue({ database_type: 'dm', driver_type: 'jdbc', name: '', enabled: true })
+    void loadDrivers()
+  }
+
+  const addDriver = async (): Promise<void> => {
+    setDriverSaving(true)
+    try {
+      const values = await driverForm.validateFields()
+      const body = { database_type: 'dm', driver_type: values.driver_type, name: values.name, path: values.path, enabled: values.enabled }
+      await requestJson('/drivers', { method: 'POST', body: JSON.stringify(body) })
+      driverForm.setFieldsValue({ database_type: 'dm', driver_type: 'jdbc', name: '', path: undefined, enabled: true })
+      await loadDrivers()
+      messageApi.success('驱动已添加')
+    } catch (err) {
+      showError(err instanceof Error ? err.message : '添加驱动失败')
+    } finally {
+      setDriverSaving(false)
+    }
+  }
+
+  const testDriver = async (driver: DriverInfo): Promise<void> => {
+    const result = await requestJson<ConnectionTestResponse>('/drivers/test', {
+      method: 'POST',
+      body: JSON.stringify({ id: driver.id })
+    })
+    if (result.success) {
+      messageApi.success(result.message)
+    } else {
+      showError(result.message)
+    }
+  }
+
+  const deleteDriver = async (driver: DriverInfo): Promise<void> => {
+    await requestJson(`/drivers/${driver.id}`, { method: 'DELETE' })
+    await loadDrivers()
+    messageApi.success('驱动已删除')
+  }
+
+  const driverTypeLabel = (driverType: DriverInfo['driver_type']): string => {
+    if (driverType === 'python') {
+      return 'dmPython pyd'
+    }
+    if (driverType === 'whl') {
+      return 'dmPython whl'
+    }
+    return 'JDBC jar'
+  }
+
+  const dmDriverOptions = dmDrivers.map((driver) => ({
+    label: `${driverTypeLabel(driver.driver_type)} · ${driver.name}`,
+    value: driver.id
+  }))
 
   const testConnection = async (): Promise<void> => {
     setTestingConnection(true)
@@ -2607,6 +2707,7 @@ function App(): React.JSX.Element {
 
     setDatabaseCreateLoading(true)
     const isSchema = !!creatingSchemaDatabaseName
+    let createdName = databaseCreateName.trim()
 
     try {
       if (isSchema) {
@@ -2616,10 +2717,11 @@ function App(): React.JSX.Element {
           body: JSON.stringify({ name: databaseCreateName.trim() })
         })
       } else {
-        await requestJson(`/connections/${creatingDatabaseConnectionId}/databases`, {
+        const created = await requestJson<{ name: string }>(`/connections/${creatingDatabaseConnectionId}/databases`, {
           method: 'POST',
-          body: JSON.stringify({ name: databaseCreateName.trim() })
+          body: JSON.stringify({ name: createdName })
         })
+        createdName = created.name
       }
       setDatabaseCreateModalOpen(false)
       setCreatingSchemaDatabaseName('')
@@ -2654,7 +2756,7 @@ function App(): React.JSX.Element {
           refreshDatabaseNode(creatingDatabaseConnectionId, creatingSchemaDatabaseName)
         }
       } else {
-        const dbName = databaseCreateName.trim()
+        const dbName = createdName
         const connId = creatingDatabaseConnectionId
         setSelectedDatabases((current) => {
           const list = current[connId] ?? []
@@ -3394,6 +3496,7 @@ function App(): React.JSX.Element {
           <div className="titlebar-spacer" />
           <Space className="toolbar-actions titlebar-no-drag" size={4}>
             <Button type="text" size="small" icon={<FileAddOutlined />} onClick={() => openQueryWorkspace()} title="新建查询" aria-label="新建查询" />
+            <Button type="text" size="small" icon={<SettingOutlined />} onClick={openDriverManager} title="驱动管理" aria-label="驱动管理" />
             <Button type="text" size="small" icon={<ReloadOutlined />} loading={healthLoading} onClick={() => void checkHealth()} title="同步状态" aria-label="同步状态" />
             {backendStatus.state !== 'starting' && backendStatus.state !== 'online' && <Button type="text" size="small" icon={<ReloadOutlined />} loading={healthLoading} onClick={() => void restartBackend()} title="重启后端" aria-label="重启后端" />}
             <Button type={aiPanelOpen ? 'primary' : 'text'} size="small" icon={<MessageOutlined />} onClick={() => setAiPanelOpen((open) => !open)} title={aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'} aria-label={aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'} />
@@ -3542,6 +3645,50 @@ function App(): React.JSX.Element {
           </Splitter.Panel>
         </Splitter>
       </Layout.Content>
+      <Modal title="驱动管理" open={driverManagerOpen} footer={null} onCancel={() => setDriverManagerOpen(false)} width={860}>
+        <Space direction="vertical" className="full-width" size="middle">
+          <Alert type="info" showIcon message="统一管理数据库驱动。当前先支持达梦，后续其他数据库驱动会继续接入这里。达梦支持 dmPython pyd、dmPython whl 和 JDBC jar，连接时在连接信息中选择具体驱动。" />
+          <Flex justify="space-between" align="center">
+            <Typography.Title level={5} style={{ margin: 0 }}>达梦 DM</Typography.Title>
+            <Space>
+              <Button loading={driversLoading} onClick={() => void loadDrivers()}>刷新</Button>
+            </Space>
+          </Flex>
+          <Table<DriverInfo>
+            size="small"
+            rowKey="id"
+            loading={driversLoading}
+            pagination={false}
+            tableLayout="fixed"
+            scroll={{ x: 820 }}
+            dataSource={drivers.filter((driver) => driver.database_type === 'dm')}
+            columns={[
+              { title: '名称', dataIndex: 'name', width: 150, ellipsis: true, render: (value: string) => <Typography.Text ellipsis title={value}>{value}</Typography.Text> },
+              { title: '类型', dataIndex: 'driver_type', width: 120, render: (value: DriverInfo['driver_type']) => driverTypeLabel(value) },
+              { title: '来源', dataIndex: 'source', width: 90, render: () => '手动添加' },
+              { title: '驱动文件', width: 300, ellipsis: true, render: (_: unknown, driver) => <Typography.Text ellipsis title={driver.path ?? undefined}>{driver.path}</Typography.Text> },
+              { title: '状态', dataIndex: 'enabled', width: 80, render: (value: boolean) => value ? <Tag color="success">启用</Tag> : <Tag>停用</Tag> },
+              { title: '操作', width: 150, fixed: 'right', render: (_: unknown, driver) => <Space size={4} wrap={false}><Button size="small" onClick={() => void testDriver(driver)}>测试</Button><Button danger size="small" onClick={() => void deleteDriver(driver)}>删除</Button></Space> }
+            ]}
+          />
+          <Form form={driverForm} layout="vertical" initialValues={{ database_type: 'dm', driver_type: 'jdbc', enabled: true }}>
+            <Form.Item name="driver_type" label="添加驱动类型" rules={[{ required: true, message: '请选择驱动类型' }]}>
+              <Select options={[{ label: 'JDBC jar 驱动', value: 'jdbc' }, { label: 'dmPython pyd 驱动', value: 'python' }, { label: 'dmPython whl 驱动', value: 'whl' }]} />
+            </Form.Item>
+            <Form.Item name="name" label="显示名称" rules={[{ required: true, message: '请输入显示名称' }]}>
+              <Input placeholder="例如：达梦 JDBC / 本机 dmPython" />
+            </Form.Item>
+            <Form.Item
+              name="path"
+              label={driverType === 'python' ? 'dmPython pyd 文件' : driverType === 'whl' ? 'dmPython whl 文件' : 'JDBC jar 文件'}
+              rules={[{ required: true, message: driverType === 'python' ? '请选择 dmPython pyd 文件' : driverType === 'whl' ? '请选择 dmPython whl 文件' : '请选择 JDBC jar 文件' }]}
+            >
+              <Input readOnly placeholder={driverType === 'python' ? '请选择 dmPython.pyd' : driverType === 'whl' ? '请选择 dmPython whl 文件' : '请选择 DmJdbcDriver.jar'} addonAfter={<Button type="link" size="small" onClick={() => void selectDriverFile()}>选择</Button>} />
+            </Form.Item>
+            <Button type="primary" loading={driverSaving} onClick={() => void addDriver()}>添加驱动</Button>
+          </Form>
+        </Space>
+      </Modal>
       <Modal title={editingTableName ? `修改表：${editingTableName}` : '修改表'} open={tableEditorOpen} okText="保存" cancelText="取消" confirmLoading={tableEditorLoading} onOk={() => void saveTableEditor()} onCancel={() => setTableEditorOpen(false)} width={760}>
         <Alert message="支持 SQLite/MySQL 修改已有字段的类型、可空和单字段主键；当前不支持新增、删除或重命名字段。" type="warning" showIcon />
         <Table className="table-editor-grid" size="small" loading={tableEditorLoading} rowKey="name" pagination={false} dataSource={editingColumns} columns={[{ title: '字段名', dataIndex: 'name', key: 'name', render: (value: string) => <Input value={value} disabled /> }, { title: '类型', dataIndex: 'type', key: 'type', render: (value: string, column: ColumnInfo) => <Input value={value} onChange={(event) => { setEditingColumns((current) => current.map((item) => (item.name === column.name ? { ...item, type: event.target.value } : item))) }} /> }, { title: '可空', dataIndex: 'nullable', key: 'nullable', width: 90, render: (value: boolean, column: ColumnInfo) => <Switch checked={value} disabled={column.primary_key} onChange={(checked) => { setEditingColumns((current) => current.map((item) => (item.name === column.name ? { ...item, nullable: checked } : item))) }} /> }, { title: '主键', dataIndex: 'primary_key', key: 'primary_key', width: 90, render: (value: boolean, column: ColumnInfo) => <Switch checked={value} onChange={(checked) => { setEditingColumns((current) => current.map((item) => ({ ...item, primary_key: item.name === column.name ? checked : false }))) }} /> }]} />
@@ -3610,9 +3757,22 @@ function App(): React.JSX.Element {
               <Form.Item name="password" label="密码"><Input.Password /></Form.Item>
               <Form.Item name="database" label={databaseType === 'postgresql' ? '数据库名' : databaseType === 'dm' ? '默认 Schema（可选）' : databaseType === 'mongodb' ? '认证库/默认库（可选）' : '默认数据库（可选）'} rules={databaseType === 'postgresql' ? [{ required: true, message: '请输入数据库名' }] : undefined}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'dm' ? '不填则使用默认 Schema' : databaseType === 'mongodb' ? '默认 admin；也可填业务库名' : '不填则连接服务器并加载全部数据库'} /></Form.Item>
               {databaseType === 'dm' && (
-                <Form.Item name="dm_driver_path" label="达梦驱动文件" rules={[{ required: true, message: '请选择达梦驱动文件' }]}>
-                  <Input readOnly placeholder="请选择 dmPython .pyd 或达梦 .dll 文件" addonAfter={<Button type="link" size="small" onClick={() => void selectDmDriverFile()}>选择</Button>} />
-                </Form.Item>
+                <>
+                  <Form.Item name="dm_driver_id" label="达梦驱动" rules={[{ required: true, message: '请选择达梦驱动' }]}>
+                    <Select
+                      loading={driversLoading}
+                      placeholder="请选择已添加的达梦驱动"
+                      options={dmDriverOptions}
+                      notFoundContent="暂无可用达梦驱动"
+                    />
+                  </Form.Item>
+                  <Alert
+                    type={selectedDmDriver ? 'info' : 'warning'}
+                    showIcon
+                    message={selectedDmDriver ? `当前选择：${driverTypeLabel(selectedDmDriver.driver_type)} · ${selectedDmDriver.name}` : '未选择达梦驱动，请先在驱动管理中添加并选择 JDBC jar、dmPython pyd 或 dmPython whl 驱动'}
+                    action={<Button size="small" onClick={openDriverManager}>驱动管理</Button>}
+                  />
+                </>
               )}
             </>
           )}

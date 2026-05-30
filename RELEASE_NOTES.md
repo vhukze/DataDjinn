@@ -1,38 +1,59 @@
-# DataDjinn v0.1.1
+# DataDjinn v0.1.2
 
-本版本重点补齐 MongoDB 支持，优化大数据表格体验，并修复打包时达梦 DLL 被误带入的问题。
+本版本重点增强达梦 DM 连接与驱动管理能力，支持按连接选择已添加的达梦驱动，并完善 JDBC、dmPython pyd、dmPython whl 三类外部驱动的连接、元数据读取和数据预览体验。
 
 ## 新增
 
-- 新增 MongoDB 数据库类型支持：
-  - 支持创建 MongoDB 连接，用户名和密码可选，默认端口为 `27017`。
-  - 支持加载数据库和集合树，集合复用表格预览能力展示文档。
-  - 支持基于前 100 条文档推断集合字段和类型。
-  - 支持 `db.<collection>.find({})` 只读查询。
-  - 支持 `db.createCollection("collection")` 创建集合。
-  - 支持 `db.<collection>.insertOne({...})` 和 `db.<collection>.insertMany([...])` 插入测试数据。
-  - 支持 MongoDB 数据库/集合 JSON 导出。
-- AI Agent 支持 MongoDB 上下文：
-  - 可读取集合列表、字段结构和样本数据。
-  - 用户要求创建集合、插入测试数据时会自动调用工具执行，而不是只写入查询窗口。
-  - 多条 MongoDB shell 风格语句可一次执行，减少轮次超限问题。
+- 新增达梦驱动管理能力：
+  - 支持手动添加达梦 JDBC jar 驱动。
+  - 支持手动添加 dmPython pyd 驱动。
+  - 支持手动添加 dmPython whl 驱动，并校验 Python ABI、Windows 平台和文件格式兼容性。
+  - 支持测试、删除已添加的达梦驱动。
+- 达梦连接信息新增“达梦驱动”选择项：
+  - 每个达梦连接可独立选择已添加的驱动。
+  - 不再依赖全局自动选择驱动，避免多个达梦驱动混用时连接行为不明确。
+- 达梦 JDBC 连接支持：
+  - 支持通过 JDBC jar + JVM 连接达梦。
+  - 自动查找可用 JVM，并将 JDBC jar 加入 JVM classpath。
+  - 后端打包保留 JDBC 桥接依赖 `jaydebeapi` / `JPype1`。
+- 达梦 whl 驱动支持：
+  - 支持添加并加载 Windows / 当前 Python 版本匹配的 dmPython whl。
+  - whl 会解压到应用数据目录后加载，支持其中的 native `.pyd` / `.dll` 文件。
+- 达梦 Schema 创建支持：
+  - 在达梦中“新增数据库”按达梦语义创建 Schema。
+  - 创建成功后返回实际 Schema 名称，并刷新连接树。
 
 ## 优化
 
-- 表格行号选择体验优化：点击选择、拖动多选更跟手，并支持点击空白区域取消选中。
-- 表格大数据场景性能优化：列筛选聚合选项改为打开筛选弹框时懒加载。
-- 表格选中色和虚拟滚动兼容性增强。
-- 表格横纵滚动条改回 Ant Design / rc-virtual-list 原生滚动条，避免自定义滚动条同步问题。
-- 列筛选弹框宽度和内容布局优化，避免右侧大片空白。
+- 达梦驱动管理表格优化：
+  - 长驱动名称和路径支持省略展示，避免表格被撑变形。
+  - 操作列固定显示，测试和删除按钮更容易访问。
+- 达梦连接错误提示优化：
+  - 后端未捕获异常统一返回 JSON 错误详情，前端不再只显示 `Internal Server Error`。
+  - Electron 请求层兼容非 JSON 错误响应，避免错误解析失败。
+  - whl 驱动加载失败时展示更明确的 Python 版本、平台和搜索路径信息。
+- 达梦 JDBC 元数据兼容性优化：
+  - JDBC 返回的 Java String 会转换为 Python 字符串，避免元数据和查询结果校验失败。
+  - 表数据中的 Java 值会转换为 JSON 可序列化类型。
+- 达梦数据预览优化：
+  - 过滤内部分页辅助列 `_DATADJINN_RN` / `__DATADJINN_RN`，表格只展示真实业务字段。
+  - 日期、时间、Decimal、bytes 等结果值会转换为前端可展示格式。
 
 ## 修复
 
-- 修复 MongoDB 创建集合时提示“只支持只读查询”的问题。
-- 修复 AI 创建 MongoDB 集合并插入多条测试数据时容易触发“Agent 执行轮次超过上限”的问题。
-- 修复打包脚本仍强制收集达梦 `dmPython` / `dmSQLAlchemy` / `dmssl` 相关模块，导致解压包中残留达梦 DLL 并被杀软提示的问题。
-- 清理旧构建产物，避免旧包残留文件混入新发布包。
+- 修复选择 JDBC 驱动时仍尝试导入 dmPython 的问题。
+- 修复 JVM 自动探测到失效 Java 路径导致 JDBC 连接失败的问题。
+- 修复 JDBC jar 未加入 classpath 导致 `DmDriver is not found` 的问题。
+- 修复 JDBC 连接被 SQLite 方言误处理导致 `create_function` 报错的问题。
+- 修复 JDBC 自定义方言缺少 DBAPI 信息导致创建 Schema 失败的问题。
+- 修复 JDBC 连接池 pre-ping 与自定义方言不兼容的问题。
+- 修复达梦新建 Schema 使用 `CREATE DATABASE` 导致错误码 `-2007` 的问题。
+- 修复达梦 Schema 列表查询使用不存在的 `SYSOBJECTS.SCHNAME` 字段导致打开连接失败的问题。
+- 修复新建空 Schema 后不显示在连接树中的问题。
+- 修复达梦 JDBC 查看表数据时列名或行值为 Java 对象导致响应校验/序列化失败的问题。
 
 ## 打包说明
 
 - Windows Release 仍提供安装包和解压版。
-- 达梦驱动不再默认内置到发布包中；如需连接达梦，请在新建达梦连接时选择本机驱动文件。
+- 达梦驱动仍不默认内置到发布包中；如需连接达梦，请在驱动管理中添加本机可用的 JDBC jar、dmPython pyd 或 dmPython whl 驱动。
+- 使用 JDBC 驱动连接达梦需要本机安装可用的 64 位 JDK/JRE。

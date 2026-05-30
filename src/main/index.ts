@@ -27,12 +27,8 @@ type AISession = {
   messages: unknown[]
 }
 
-type AppSettings = {
-  dmDriverPath?: string
-}
-
 const Store = ('default' in StoreModule ? StoreModule.default : StoreModule) as typeof StoreModule
-const store = new Store<{ aiConfig?: AIConfig; aiConfigs?: AIConfigItem[]; aiSessions?: AISession[]; appSettings?: AppSettings }>()
+const store = new Store<{ aiConfig?: AIConfig; aiConfigs?: AIConfigItem[]; aiSessions?: AISession[] }>()
 const streamControllers = new Map<string, AbortController>()
 
 function createWindow(): void {
@@ -119,7 +115,7 @@ app.whenReady().then(() => {
     return { name, content }
   })
 
-  ipcMain.handle('select-dm-driver-file', async () => {
+  ipcMain.handle('select-driver-file', async () => {
     const window = BrowserWindow.getFocusedWindow()
 
     if (!window) {
@@ -127,9 +123,9 @@ app.whenReady().then(() => {
     }
 
     const result = await dialog.showOpenDialog(window, {
-      title: '选择达梦驱动文件',
+      title: '选择驱动文件',
       filters: [
-        { name: '达梦驱动文件', extensions: ['pyd', 'dll'] },
+        { name: '驱动文件', extensions: ['jar', 'pyd', 'whl'] },
         { name: '所有文件', extensions: ['*'] }
       ],
       properties: ['openFile']
@@ -139,9 +135,7 @@ app.whenReady().then(() => {
       return null
     }
 
-    const filePath = result.filePaths[0]
-    store.set('appSettings.dmDriverPath', filePath)
-    return filePath
+    return result.filePaths[0]
   })
 
   ipcMain.handle('select-import-file', async () => {
@@ -205,7 +199,6 @@ app.whenReady().then(() => {
     return true
   })
   ipcMain.handle('window:close', (event) => BrowserWindow.fromWebContents(event.sender)?.close())
-  ipcMain.handle('settings:get-dm-driver-path', () => store.get('appSettings.dmDriverPath') ?? null)
   ipcMain.handle('backend:get-status', () => backendManager.getStatus())
   ipcMain.handle('backend:restart', () => backendManager.restart())
   ipcMain.handle('ai-config:get', () => store.get('aiConfig') ?? null)
@@ -297,10 +290,16 @@ app.whenReady().then(() => {
     })
 
     const text = await response.text()
-    const data = text ? JSON.parse(text) : null
+    let data: any = null
+
+    try {
+      data = text ? JSON.parse(text) : null
+    } catch {
+      data = null
+    }
 
     if (!response.ok) {
-      throw new Error(data?.detail ?? `HTTP ${response.status}`)
+      throw new Error(data?.detail ?? (text || `HTTP ${response.status}`))
     }
 
     return data

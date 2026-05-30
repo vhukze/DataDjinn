@@ -29,13 +29,13 @@ def create_database_endpoint(connection_id: str, request: DatabaseCreateRequest)
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="连接已关闭，请先打开连接")
 
     try:
-        create_database(engine, request.name)
+        created = create_database(engine, request.name)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=friendly_error(exc)) from exc
 
-    return DatabaseCreateResponse(name=request.name, message="数据库创建成功")
+    return DatabaseCreateResponse(name=created.name, message="创建成功")
 
 
 @router.delete("/{connection_id}/databases/{database_name}")

@@ -92,7 +92,7 @@ def open_connection(connection_id: str) -> ConnectionCreateResponse:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=friendly_error(exc)) from exc
     except Exception as exc:
         logger.exception("打开连接失败：id=%s", connection_id)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc) or str(exc)) from exc
 
 
 @router.post("/{connection_id}/close", response_model=ConnectionCreateResponse)

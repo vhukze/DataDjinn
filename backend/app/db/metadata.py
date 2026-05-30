@@ -78,7 +78,7 @@ def list_databases(engine: Engine) -> list[DatabaseInfo]:
             ).fetchall()
         return [
             DatabaseInfo(
-                name=row[0],
+                name=str(row[0]),
                 size_bytes=int(row[1] or 0),
                 size_display=format_size(int(row[1] or 0)),
                 storage_size_bytes=int(row[2] or 0),
@@ -94,7 +94,7 @@ def list_databases(engine: Engine) -> list[DatabaseInfo]:
             ).fetchall()
         return [
             DatabaseInfo(
-                name=row[0],
+                name=str(row[0]),
                 size_bytes=int(row[1] or 0),
                 size_display=format_size(int(row[1] or 0)),
                 storage_size_bytes=int(row[1] or 0),
@@ -115,16 +115,34 @@ def list_databases(engine: Engine) -> list[DatabaseInfo]:
                     "ORDER BY CASE WHEN u.USERNAME = USER THEN 0 ELSE 1 END, u.USERNAME"
                 )
             ).fetchall()
-        return [
-            DatabaseInfo(
-                name=row[0],
+            schema_rows = []
+            for schema_sql in [
+                "SELECT NAME FROM SYSOBJECTS WHERE TYPE$ = 'SCH' ORDER BY NAME",
+                "SELECT OBJECT_NAME FROM DBA_OBJECTS WHERE OBJECT_TYPE = 'SCH' ORDER BY OBJECT_NAME",
+                "SELECT DISTINCT OWNER FROM ALL_OBJECTS WHERE OWNER IS NOT NULL ORDER BY OWNER",
+                "SELECT DISTINCT TABLE_SCHEMA FROM ALL_TABLES WHERE TABLE_SCHEMA IS NOT NULL ORDER BY TABLE_SCHEMA",
+            ]:
+                try:
+                    schema_rows = connection.execute(text(schema_sql)).fetchall()
+                    break
+                except Exception:
+                    continue
+
+        database_map = {
+            str(row[0]): DatabaseInfo(
+                name=str(row[0]),
                 size_bytes=int(row[1] or 0),
                 size_display=format_size(int(row[1] or 0)),
                 storage_size_bytes=int(row[1] or 0),
                 storage_size_display=format_size(int(row[1] or 0)),
             )
             for row in rows
-        ]
+        }
+        for row in schema_rows:
+            schema_name = str(row[0])
+            if schema_name not in database_map:
+                database_map[schema_name] = DatabaseInfo(name=schema_name)
+        return list(database_map.values())
 
     return [DatabaseInfo(name="main")]
 
@@ -164,7 +182,7 @@ def list_schemas(engine: Engine, database_name: str | None = None) -> list[Datab
             ).fetchall()
         return [
             DatabaseInfo(
-                name=row[0],
+                name=str(row[0]),
                 size_bytes=int(row[1] or 0),
                 size_display=format_size(int(row[1] or 0)),
                 storage_size_bytes=int(row[2] or 0),
@@ -182,6 +200,14 @@ def create_database(engine: Engine, database_name: str) -> DatabaseInfo:
         engine[database_name].create_collection("__datadjinn_init__")
         return DatabaseInfo(name=database_name)
 
+    if engine.dialect.name in {"dm", "dmPython"}:
+        schema_name = database_name.upper()
+        preparer = engine.dialect.identifier_preparer
+        quoted = preparer.quote(schema_name)
+        with engine.begin() as connection:
+            connection.execute(text(f"CREATE SCHEMA {quoted}"))
+        return DatabaseInfo(name=schema_name)
+
     if engine.dialect.name not in {"mysql", "postgresql"}:
         raise ValueError("SQLite 请通过新增文件连接创建数据库")
 
@@ -195,7 +221,7 @@ def create_database(engine: Engine, database_name: str) -> DatabaseInfo:
         with engine.begin() as connection:
             connection.execute(text(f"CREATE DATABASE {quoted}"))
 
-    return DatabaseInfo(name=database_name)
+    return DatabaseInfo(name=str(database_name))
 
 
 def drop_database(engine: Engine, database_name: str) -> None:
@@ -283,7 +309,7 @@ def list_tables(engine: Engine, database_name: str | None = None, pg_database: s
             ).fetchall()
         return [
             TableInfo(
-                name=row[0],
+                name=str(row[0]),
                 row_count=int(row[1] or 0),
                 size_bytes=0 if int(row[1] or 0) == 0 else int(row[2] or 0),
                 size_display=format_size(0 if int(row[1] or 0) == 0 else int(row[2] or 0)),
@@ -321,7 +347,7 @@ def list_tables(engine: Engine, database_name: str | None = None, pg_database: s
             ).fetchall()
         return [
             TableInfo(
-                name=row[0],
+                name=str(row[0]),
                 row_count=int(row[1] or 0),
                 size_bytes=int(row[2] or 0),
                 size_display=format_size(int(row[2] or 0)),
@@ -346,7 +372,7 @@ def list_tables(engine: Engine, database_name: str | None = None, pg_database: s
 
         return [
             TableInfo(
-                name=row[0],
+                name=str(row[0]),
                 row_count=int(row[1] or 0),
                 size_bytes=0 if int(row[1] or 0) == 0 else int(row[2] or 0),
                 size_display=format_size(0 if int(row[1] or 0) == 0 else int(row[2] or 0)),
@@ -384,19 +410,19 @@ def list_db_objects(engine: Engine, database_name: str | None = None, pg_databas
         with engine.connect() as connection:
             if object_type in {None, "view"}:
                 rows = connection.execute(text("SELECT TABLE_NAME FROM information_schema.VIEWS WHERE TABLE_SCHEMA = :db ORDER BY TABLE_NAME"), {"db": target_db}).fetchall()
-                objects.extend(DbObjectInfo(name=row[0], type="view") for row in rows)
+                objects.extend(DbObjectInfo(name=str(row[0]), type="view") for row in rows)
             if object_type in {None, "trigger"}:
                 rows = connection.execute(text("SELECT TRIGGER_NAME FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = :db ORDER BY TRIGGER_NAME"), {"db": target_db}).fetchall()
-                objects.extend(DbObjectInfo(name=row[0], type="trigger") for row in rows)
+                objects.extend(DbObjectInfo(name=str(row[0]), type="trigger") for row in rows)
             if object_type in {None, "procedure"}:
                 rows = connection.execute(text("SELECT ROUTINE_NAME FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = :db AND ROUTINE_TYPE = 'PROCEDURE' ORDER BY ROUTINE_NAME"), {"db": target_db}).fetchall()
-                objects.extend(DbObjectInfo(name=row[0], type="procedure") for row in rows)
+                objects.extend(DbObjectInfo(name=str(row[0]), type="procedure") for row in rows)
             if object_type in {None, "function"}:
                 rows = connection.execute(text("SELECT ROUTINE_NAME FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = :db AND ROUTINE_TYPE = 'FUNCTION' ORDER BY ROUTINE_NAME"), {"db": target_db}).fetchall()
-                objects.extend(DbObjectInfo(name=row[0], type="function") for row in rows)
+                objects.extend(DbObjectInfo(name=str(row[0]), type="function") for row in rows)
             if object_type in {None, "index"}:
                 rows = connection.execute(text("SELECT INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = :db AND INDEX_NAME <> 'PRIMARY' GROUP BY INDEX_NAME ORDER BY INDEX_NAME"), {"db": target_db}).fetchall()
-                objects.extend(DbObjectInfo(name=row[0], type="index") for row in rows)
+                objects.extend(DbObjectInfo(name=str(row[0]), type="index") for row in rows)
         return objects
 
     if engine.dialect.name == "postgresql":
@@ -404,19 +430,19 @@ def list_db_objects(engine: Engine, database_name: str | None = None, pg_databas
         with engine.connect() as connection:
             if object_type in {None, "view"}:
                 rows = connection.execute(text("SELECT table_name FROM information_schema.views WHERE table_schema = :schema ORDER BY table_name"), {"schema": target_schema}).fetchall()
-                objects.extend(DbObjectInfo(name=row[0], type="view") for row in rows)
+                objects.extend(DbObjectInfo(name=str(row[0]), type="view") for row in rows)
             if object_type in {None, "trigger"}:
                 rows = connection.execute(text("SELECT trigger_name FROM information_schema.triggers WHERE trigger_schema = :schema ORDER BY trigger_name"), {"schema": target_schema}).fetchall()
-                objects.extend(DbObjectInfo(name=row[0], type="trigger") for row in rows)
+                objects.extend(DbObjectInfo(name=str(row[0]), type="trigger") for row in rows)
             if object_type in {None, "procedure", "function"}:
                 rows = connection.execute(text("SELECT p.proname, CASE WHEN p.prokind = 'p' THEN 'procedure' ELSE 'function' END FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = :schema AND p.prokind IN ('p', 'f') ORDER BY p.proname"), {"schema": target_schema}).fetchall()
-                objects.extend(DbObjectInfo(name=row[0], type=row[1]) for row in rows if object_type is None or row[1] == object_type)
+                objects.extend(DbObjectInfo(name=str(row[0]), type=row[1]) for row in rows if object_type is None or row[1] == object_type)
             if object_type in {None, "sequence"}:
                 rows = connection.execute(text("SELECT sequence_name FROM information_schema.sequences WHERE sequence_schema = :schema ORDER BY sequence_name"), {"schema": target_schema}).fetchall()
-                objects.extend(DbObjectInfo(name=row[0], type="sequence") for row in rows)
+                objects.extend(DbObjectInfo(name=str(row[0]), type="sequence") for row in rows)
             if object_type in {None, "index"}:
                 rows = connection.execute(text("SELECT indexname FROM pg_indexes WHERE schemaname = :schema ORDER BY indexname"), {"schema": target_schema}).fetchall()
-                objects.extend(DbObjectInfo(name=row[0], type="index") for row in rows)
+                objects.extend(DbObjectInfo(name=str(row[0]), type="index") for row in rows)
         return objects
 
     if engine.dialect.name in {"dm", "dmPython"}:
@@ -424,19 +450,19 @@ def list_db_objects(engine: Engine, database_name: str | None = None, pg_databas
         with engine.connect() as connection:
             if object_type in {None, "view"}:
                 rows = connection.execute(text("SELECT VIEW_NAME FROM ALL_VIEWS WHERE OWNER = :schema ORDER BY VIEW_NAME"), {"schema": target_schema}).fetchall()
-                objects.extend(DbObjectInfo(name=row[0], type="view") for row in rows)
+                objects.extend(DbObjectInfo(name=str(row[0]), type="view") for row in rows)
             if object_type in {None, "trigger"}:
                 rows = connection.execute(text("SELECT TRIGGER_NAME FROM ALL_TRIGGERS WHERE OWNER = :schema ORDER BY TRIGGER_NAME"), {"schema": target_schema}).fetchall()
-                objects.extend(DbObjectInfo(name=row[0], type="trigger") for row in rows)
+                objects.extend(DbObjectInfo(name=str(row[0]), type="trigger") for row in rows)
             if object_type in {None, "procedure", "function"}:
                 rows = connection.execute(text("SELECT OBJECT_NAME, OBJECT_TYPE FROM ALL_OBJECTS WHERE OWNER = :schema AND OBJECT_TYPE IN ('PROCEDURE', 'FUNCTION') ORDER BY OBJECT_NAME"), {"schema": target_schema}).fetchall()
-                objects.extend(DbObjectInfo(name=row[0], type=str(row[1]).lower()) for row in rows if object_type is None or str(row[1]).lower() == object_type)
+                objects.extend(DbObjectInfo(name=str(row[0]), type=str(row[1]).lower()) for row in rows if object_type is None or str(row[1]).lower() == object_type)
             if object_type in {None, "sequence"}:
                 rows = connection.execute(text("SELECT SEQUENCE_NAME FROM ALL_SEQUENCES WHERE SEQUENCE_OWNER = :schema ORDER BY SEQUENCE_NAME"), {"schema": target_schema}).fetchall()
-                objects.extend(DbObjectInfo(name=row[0], type="sequence") for row in rows)
+                objects.extend(DbObjectInfo(name=str(row[0]), type="sequence") for row in rows)
             if object_type in {None, "index"}:
                 rows = connection.execute(text("SELECT INDEX_NAME FROM ALL_INDEXES WHERE OWNER = :schema ORDER BY INDEX_NAME"), {"schema": target_schema}).fetchall()
-                objects.extend(DbObjectInfo(name=row[0], type="index") for row in rows)
+                objects.extend(DbObjectInfo(name=str(row[0]), type="index") for row in rows)
         return objects
 
     inspector = inspect(engine)
@@ -445,11 +471,11 @@ def list_db_objects(engine: Engine, database_name: str | None = None, pg_databas
     if object_type in {None, "trigger"}:
         with engine.connect() as connection:
             rows = connection.execute(text("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")).fetchall()
-            objects.extend(DbObjectInfo(name=row[0], type="trigger") for row in rows)
+            objects.extend(DbObjectInfo(name=str(row[0]), type="trigger") for row in rows)
     if object_type in {None, "index"}:
         with engine.connect() as connection:
             rows = connection.execute(text("SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%' ORDER BY name")).fetchall()
-            objects.extend(DbObjectInfo(name=row[0], type="index") for row in rows)
+            objects.extend(DbObjectInfo(name=str(row[0]), type="index") for row in rows)
     return objects
 
 
@@ -487,14 +513,14 @@ def list_columns(engine: Engine, table_name: str, database_name: str | None = No
                 {"schema_name": schema_name, "table_name": table_name},
             ).fetchall()
 
-        primary_keys = {row[0] for row in rows if row[3] == 1}
+        primary_keys = {str(row[0]) for row in rows if row[3] == 1}
 
         return [
             ColumnInfo(
-                name=row[0],
+                name=str(row[0]),
                 type=str(row[1]),
                 nullable=row[2] == "Y",
-                primary_key=row[0] in primary_keys,
+                primary_key=str(row[0]) in primary_keys,
             )
             for row in rows
         ]

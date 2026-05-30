@@ -58,7 +58,7 @@ DataDjinn 是一款**跨时代**的本地数据库桌面客户端，将传统数
 | **SQLite** | sqlite3 | 本地文件数据库，即开即用 |
 | **MySQL** | PyMySQL | 支持 5.x / 8.x |
 | **PostgreSQL** | psycopg 3 | 支持 12+ |
-| **达梦 DM** | 外部 dmPython 驱动 | 国产数据库，支持 DM8；驱动由用户在连接时选择，默认打包不内置达梦 DLL |
+| **达梦 DM** | 外部 JDBC jar / dmPython pyd / dmPython whl 驱动 | 国产数据库，支持 DM8；可在驱动管理中添加驱动，并在连接信息中选择指定驱动，默认打包不内置达梦 DLL |
 | **MongoDB** | PyMongo | 支持连接、数据库/集合浏览、字段推断、集合预览、只读查询、创建集合、插入测试数据和 JSON 导出 |
 
 ---
@@ -110,7 +110,7 @@ MySQL SQL 备份和导入会在执行期间临时关闭外键检查，避免因�
 - `DataDjinn-x.x.x-setup.exe` —— NSIS 安装包（推荐）
 - `DataDjinn-x.x.x-win.zip` —— 解压即用版
 
-当前最新版本：`v0.1.1`。后续每次发布都会递增 `package.json`、后端 API 和 Release tag 版本号。
+当前最新版本：`v0.1.2`。后续每次发布都会递增 `package.json`、后端 API 和 Release tag 版本号。
 
 解压版无需安装，解压后双击 `DataDjinn.exe` 即可运行。已内置 Python 运行时和所有后端依赖，无需额外安装任何环境。
 
@@ -242,12 +242,14 @@ DataDjinn/
 │       ├── main.py           # FastAPI 入口
 │       ├── api/              # API 路由
 │       │   ├── connections.py # 连接管理
+│       │   ├── drivers.py     # 外部驱动管理
 │       │   ├── query.py      # SQL 执行
 │       │   ├── metadata.py   # Schema 读取
 │       │   ├── backup.py     # 备份、导出、导入接口
 │       │   └── ai_router.py  # AI 对话接口
 │       ├── db/               # 数据库层
 │       │   ├── connection_manager.py  # 连接池 + 密码加密
+│       │   ├── driver_manager.py      # 达梦外部驱动管理
 │       │   ├── sql_executor.py        # SQL 执行器
 │       │   ├── backup_manager.py      # 备份、导出、导入管理
 │       │   ├── readonly_query.py      # 只读查询

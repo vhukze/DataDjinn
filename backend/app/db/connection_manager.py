@@ -2,44 +2,139 @@ import base64
 import ctypes
 import json
 import os
+import re
+import shutil
 import sys
+import zipfile
 from ctypes import wintypes
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel
 from sqlalchemy import Engine, URL, create_engine, text
+from sqlalchemy.engine import default
+from sqlalchemy.engine.interfaces import BindTyping
+from sqlalchemy.pool import QueuePool
 
+from app.db.driver_manager import driver_manager
 from app.db.mongo_utils import MongoClient, is_mongo_client
 from app.schemas.connection import ConnectionInfo, ConnectionRequest, DatabaseType
 
-def _connection_store_path() -> Path:
+def _data_dir() -> Path:
     data_dir = os.environ.get("DATADJINN_DATA_DIR")
     if data_dir:
-        return Path(data_dir).expanduser().resolve() / "connections.json"
+        return Path(data_dir).expanduser().resolve()
 
-    return Path(__file__).resolve().parents[2] / "data" / "connections.json"
+    return Path(__file__).resolve().parents[2] / "data"
+
+
+def _connection_store_path() -> Path:
+    return _data_dir() / "connections.json"
 
 
 CONNECTION_STORE_PATH = _connection_store_path()
 CRYPTPROTECT_UI_FORBIDDEN = 0x1
 
 
-def _load_dm_python(driver_path: str | None = None):
-    if driver_path:
-        driver_file = _resolve_runtime_path(driver_path)
-        if not driver_file.exists():
-            raise RuntimeError(f"达梦驱动文件不存在：{driver_file}")
-        driver_dir = str(driver_file.parent)
-        os.add_dll_directory(driver_dir)
-        if driver_dir not in sys.path:
-            sys.path.insert(0, driver_dir)
-        os.environ["PATH"] = f"{driver_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+def _find_jvm_dll() -> Path | None:
+    candidates: list[Path] = []
+
+    java_home = os.environ.get("JAVA_HOME")
+    if java_home:
+        home = Path(java_home).expanduser()
+        candidates.extend([
+            home / "bin" / "server" / "jvm.dll",
+            home / "jre" / "bin" / "server" / "jvm.dll",
+        ])
+
+    for base in [Path("C:/Program Files/Java"), Path("C:/Program Files/Eclipse Adoptium"), Path("C:/Program Files/Microsoft")]:
+        if not base.exists():
+            continue
+        for pattern in ["*/bin/server/jvm.dll", "*/jre/bin/server/jvm.dll"]:
+            candidates.extend(base.glob(pattern))
+
+    return next((path.resolve() for path in candidates if path.exists()), None)
+
+
+def _prepare_jdbc_runtime() -> str | None:
+    jvm_dll = _find_jvm_dll()
+    if jvm_dll is None:
+        return None
+
+    jvm_bin = str(jvm_dll.parent.parent)
+    os.environ["PATH"] = f"{jvm_bin}{os.pathsep}{os.environ.get('PATH', '')}"
+    os.environ["JAVA_HOME"] = str(jvm_dll.parent.parent.parent)
+    return str(jvm_dll)
+
+
+def _validate_whl_compatibility(driver_file: Path) -> None:
+    name = driver_file.name.lower()
+    py_tags = [f"cp{tag}" for tag in re.findall(r"cp(\d{2,3})", name)]
+    current_tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
+    if py_tags and all(tag != current_tag for tag in py_tags):
+        supported = ", ".join(f"Python {tag.removeprefix('cp')[0]}.{tag.removeprefix('cp')[1:]}" for tag in sorted(set(py_tags)))
+        raise RuntimeError(f"当前 Python 是 {sys.version_info.major}.{sys.version_info.minor}，该 whl 适用于 {supported}，请下载匹配 {current_tag} 的 Windows 64 位 whl")
+
+    if any(tag in name for tag in ["linux", "manylinux", "musllinux"]):
+        raise RuntimeError("当前选择的是 Linux 版 whl，请下载 Windows 版 win_amd64 whl")
+
+    if "win" not in name:
+        raise RuntimeError("当前 whl 文件名未包含 Windows 平台标识，请确认下载的是 Windows 64 位 win_amd64 版本")
+
+
+def _prepare_dm_python_path(driver_path: str | None = None, *, is_whl: bool = False) -> Path | None:
+    if not driver_path:
+        return None
+
+    driver_file = _resolve_runtime_path(driver_path)
+    if not driver_file.exists():
+        raise RuntimeError(f"达梦驱动文件不存在：{driver_file}")
+
+    if is_whl:
+        _validate_whl_compatibility(driver_file)
+        if not zipfile.is_zipfile(driver_file):
+            raise RuntimeError("达梦 whl 驱动文件格式无效")
+        extract_dir = _data_dir() / "drivers" / "whl" / driver_file.stem
+        if not extract_dir.exists() or not any(extract_dir.iterdir()):
+            if extract_dir.exists():
+                shutil.rmtree(extract_dir)
+            extract_dir.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(driver_file) as archive:
+                archive.extractall(extract_dir)
+
+        candidate_dirs = [extract_dir]
+        package_dirs = [path.parent for path in extract_dir.rglob("*.pyd") if path.is_file()]
+        candidate_dirs.extend(path for path in package_dirs if path not in candidate_dirs)
+
+        for path in candidate_dirs:
+            path_text = str(path)
+            if path_text not in sys.path:
+                sys.path.insert(0, path_text)
+
+        for path in [extract_dir, *extract_dir.rglob("*")]:
+            if path.is_dir() and any(child.suffix.lower() in {".pyd", ".dll"} for child in path.iterdir() if child.is_file()):
+                os.add_dll_directory(str(path))
+                os.environ["PATH"] = f"{path}{os.pathsep}{os.environ.get('PATH', '')}"
+        return extract_dir
+
+    driver_dir = str(driver_file.parent)
+    os.add_dll_directory(driver_dir)
+    if driver_dir not in sys.path:
+        sys.path.insert(0, driver_dir)
+    os.environ["PATH"] = f"{driver_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+    return driver_file
+
+
+def _load_dm_python(driver_path: str | None = None, *, is_whl: bool = False):
+    _prepare_dm_python_path(driver_path, is_whl=is_whl)
 
     try:
         import dmPython
     except ImportError as exc:
-        raise RuntimeError("达梦驱动文件缺失，请在新建连接时选择本机 dmPython 驱动文件，或恢复 resources/backend/_internal 中的 dmPython 及 dm*.dll 文件后重试") from exc
+        driver_label = "dmPython whl" if is_whl else "dmPython pyd"
+        search_hint = f"，已搜索路径：{'; '.join(sys.path[:8])}" if is_whl else ""
+        raise RuntimeError(f"达梦 {driver_label} 驱动加载失败：{exc}{search_hint}。请确认驱动与当前 Python 版本、系统位数匹配") from exc
 
     return dmPython
 
@@ -58,6 +153,78 @@ def _resolve_runtime_path(path: str) -> Path:
 
 class DataBlob(ctypes.Structure):
     _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+
+class DmJdbcCursorAdapter:
+    def __init__(self, cursor: Any) -> None:
+        self._cursor = cursor
+        self.description = None
+        self.rowcount = -1
+
+    def execute(self, operation: str, parameters: Any = None) -> "DmJdbcCursorAdapter":
+        if parameters is None:
+            self._cursor.execute(operation)
+        else:
+            self._cursor.execute(operation, parameters)
+        self.description = self._cursor.description
+        self.rowcount = self._cursor.rowcount
+        return self
+
+    def executemany(self, operation: str, seq_of_parameters: Any) -> "DmJdbcCursorAdapter":
+        self._cursor.executemany(operation, seq_of_parameters)
+        self.description = self._cursor.description
+        self.rowcount = self._cursor.rowcount
+        return self
+
+    def fetchone(self) -> Any:
+        return self._cursor.fetchone()
+
+    def fetchmany(self, size: int | None = None) -> list[Any]:
+        return self._cursor.fetchmany(size) if size is not None else self._cursor.fetchmany()
+
+    def fetchall(self) -> list[Any]:
+        return self._cursor.fetchall()
+
+    def close(self) -> None:
+        self._cursor.close()
+
+    def __iter__(self):
+        return iter(self._cursor)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._cursor, name)
+
+
+class DmJdbcDbApi:
+    paramstyle = "qmark"
+    Error = Exception
+    DatabaseError = Exception
+    OperationalError = Exception
+    ProgrammingError = Exception
+    IntegrityError = Exception
+    InterfaceError = Exception
+    InternalError = Exception
+    NotSupportedError = Exception
+
+
+class DmJdbcConnectionAdapter:
+    def __init__(self, connection: Any) -> None:
+        self._connection = connection
+
+    def cursor(self) -> DmJdbcCursorAdapter:
+        return DmJdbcCursorAdapter(self._connection.cursor())
+
+    def commit(self) -> None:
+        self._connection.commit()
+
+    def rollback(self) -> None:
+        self._connection.rollback()
+
+    def close(self) -> None:
+        self._connection.close()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._connection, name)
 
 
 crypt32 = ctypes.windll.crypt32
@@ -97,6 +264,7 @@ class StoredConnection(BaseModel):
     encrypted_password: str | None = None
     database: str | None = None
     sqlite_path: str | None = None
+    dm_driver_id: str | None = None
     dm_driver_path: str | None = None
 
 
@@ -205,6 +373,7 @@ class ConnectionManager:
             password=_decrypt_password(stored.encrypted_password),
             database=stored.database,
             sqlite_path=stored.sqlite_path,
+            dm_driver_id=stored.dm_driver_id,
             dm_driver_path=stored.dm_driver_path,
         )
 
@@ -260,6 +429,7 @@ class ConnectionManager:
             password=_decrypt_password(stored.encrypted_password),
             database=stored.database,
             sqlite_path=stored.sqlite_path,
+            dm_driver_id=stored.dm_driver_id,
             dm_driver_path=stored.dm_driver_path,
         )
 
@@ -274,6 +444,7 @@ class ConnectionManager:
 
         try:
             self._ping_engine(engine)
+            server_version = self._detect_server_version(engine)
         except Exception:
             self._dispose_engine(engine)
             raise
@@ -284,7 +455,7 @@ class ConnectionManager:
             self._dispose_engine(old_engine)
 
         self._engines[connection_id] = engine
-        info = self._connection_info(connection_id, request, stored, is_open=True)
+        info = self._connection_info(connection_id, request, stored, is_open=True, server_version=server_version)
         self._connections[connection_id] = info
         return info
 
@@ -315,7 +486,7 @@ class ConnectionManager:
             return
 
         with engine.connect() as connection:
-            connection.execute(text("SELECT 1"))
+            connection.execute(text("SELECT 1 FROM DUAL" if engine.dialect.name in {"dm", "dmPython"} else "SELECT 1"))
 
     def _dispose_engine(self, engine: Engine | MongoClient) -> None:
         if is_mongo_client(engine):
@@ -420,18 +591,70 @@ class ConnectionManager:
         if not request.username:
             raise ValueError("达梦用户名不能为空")
 
-        dm_python = _load_dm_python(request.dm_driver_path)
+        driver = driver_manager.get_driver(request.dm_driver_id) if request.dm_driver_id else None
+        if driver is None:
+            raise RuntimeError("请选择达梦驱动，请先在驱动管理中手动添加 JDBC jar、dmPython pyd 或 dmPython whl 驱动")
+        if driver.database_type != "dm":
+            raise RuntimeError("请选择达梦驱动")
+        if not driver.enabled:
+            raise RuntimeError("当前选择的达梦驱动已停用，请重新选择可用驱动")
+        if not driver.path:
+            raise RuntimeError("当前选择的达梦驱动路径为空，请重新添加驱动")
 
-        def connect():
-            return dm_python.connect(
-                user=request.username,
-                password=request.password or "",
-                host=request.host,
-                port=request.port,
+        driver_path = driver.path if driver.driver_type in {"python", "whl"} else None
+
+        if driver_path:
+            dm_python = _load_dm_python(driver_path, is_whl=driver.driver_type == "whl")
+
+            def connect():
+                return dm_python.connect(
+                    user=request.username,
+                    password=request.password or "",
+                    host=request.host,
+                    port=request.port,
+                )
+
+            url = URL.create("dm+dmPython", username=request.username, host=request.host, port=request.port)
+            return create_engine(url, creator=connect, pool_pre_ping=True)
+
+        if driver and driver.driver_type == "jdbc" and driver.path:
+            jvm_path = _prepare_jdbc_runtime()
+            if jvm_path is None:
+                raise RuntimeError("未找到可用的 Java JVM，请先安装 64 位 JDK/JRE，并确认 JAVA_HOME 指向有效目录")
+
+            jdbc_path = _resolve_runtime_path(driver.path)
+            if not jdbc_path.exists():
+                raise RuntimeError(f"达梦 JDBC 驱动文件不存在：{jdbc_path}")
+            jdbc_url = f"jdbc:dm://{request.host}:{request.port}"
+
+            try:
+                import jpype
+                if jpype.isJVMStarted():
+                    jpype.addClassPath(str(jdbc_path))
+                else:
+                    jpype.startJVM(jvm_path, f"-Djava.class.path={jdbc_path}")
+                import jaydebeapi
+            except ImportError as exc:
+                raise RuntimeError("缺少 JDBC 桥接依赖 jaydebeapi/JPype1，请安装后重试") from exc
+
+            def connect_jdbc():
+                connection = jaydebeapi.connect("dm.jdbc.driver.DmDriver", jdbc_url, [request.username, request.password or ""], str(jdbc_path))
+                return DmJdbcConnectionAdapter(connection)
+
+            dialect = default.DefaultDialect(paramstyle="qmark")
+            dialect.name = "dm"
+            dialect.dbapi = DmJdbcDbApi
+            dialect.loaded_dbapi = DmJdbcDbApi
+            dialect.bind_typing = BindTyping.NONE
+            dialect.supports_statement_cache = False
+            engine = Engine(
+                QueuePool(connect_jdbc, pre_ping=False),
+                dialect,
+                URL.create("dm-jdbc", username=request.username, host=request.host, port=request.port),
             )
+            return engine
 
-        url = URL.create("dm+dmPython", host=request.host, port=request.port)
-        return create_engine(url, creator=connect, pool_pre_ping=True)
+        raise RuntimeError("未配置达梦驱动，请先在驱动管理中手动添加 JDBC jar、dmPython pyd 或 dmPython whl 驱动")
 
     def _detect_server_version(self, engine: Engine) -> str | None:
         if engine.dialect.name not in {"dm", "dmPython"}:
@@ -477,7 +700,8 @@ class ConnectionManager:
             encrypted_password=_encrypt_password(request.password),
             database=request.database,
             sqlite_path=str(_resolve_runtime_path(request.sqlite_path)) if request.sqlite_path else None,
-            dm_driver_path=str(_resolve_runtime_path(request.dm_driver_path)) if request.dm_driver_path else None,
+            dm_driver_id=request.dm_driver_id,
+            dm_driver_path=None,
         )
 
     def _display_database(self, request: ConnectionRequest) -> str:

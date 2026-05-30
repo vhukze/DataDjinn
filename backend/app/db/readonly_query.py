@@ -1,4 +1,6 @@
 import ast
+from datetime import date, datetime, time
+from decimal import Decimal
 from typing import Any
 
 import sqlparse
@@ -8,6 +10,44 @@ from app.db.mongo_utils import is_mongo_client, mongo_default_database, serializ
 from app.schemas.query import QueryResponse
 
 READONLY_TYPES = {"SELECT", "WITH"}
+INTERNAL_PAGING_COLUMNS = {"__DATADJINN_RN", "_DATADJINN_RN"}
+
+
+def _is_internal_paging_column(column: Any) -> bool:
+    return str(column).upper() in INTERNAL_PAGING_COLUMNS
+
+
+def _visible_result_columns(keys: Any) -> list[tuple[Any, str]]:
+    return [(column, str(column)) for column in keys if not _is_internal_paging_column(column)]
+
+
+def _serialize_sql_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ")
+
+    if isinstance(value, (date, time)):
+        return value.isoformat()
+
+    if isinstance(value, Decimal):
+        return float(value)
+
+    if isinstance(value, bytes):
+        return value.hex()
+
+    if isinstance(value, (list, tuple)):
+        return [_serialize_sql_value(item) for item in value]
+
+    if isinstance(value, dict):
+        return {str(key): _serialize_sql_value(item) for key, item in value.items()}
+
+    return str(value)
+
+
+def _query_rows(raw_rows: list[Any], columns: list[tuple[Any, str]]) -> list[dict[str, Any]]:
+    return [{column_name: _serialize_sql_value(row[column]) for column, column_name in columns if column in row} for row in raw_rows]
 
 
 def execute_readonly_query(engine: Engine, sql: str, limit: int, offset: int = 0, database: str | None = None, pg_database: str | None = None) -> QueryResponse:
@@ -197,14 +237,14 @@ def _execute_on_connection_with_context(engine: Engine, sql: str, limit: int, of
         elif engine.dialect.name in {"dm", "dmPython"}:
             connection.execute(text(f"SET SCHEMA {quoted}"))
         result = connection.execute(text(limited_sql))
-        columns = list(result.keys())
+        columns = _visible_result_columns(result.keys())
         raw_rows = result.mappings().fetchall()
 
     limited = len(raw_rows) > limit
     visible_rows = raw_rows[:limit]
-    rows = [dict(row) for row in visible_rows]
+    rows = _query_rows(visible_rows, columns)
 
-    return QueryResponse(columns=columns, rows=rows, row_count=len(rows), limited=limited)
+    return QueryResponse(columns=[column_name for _, column_name in columns], rows=rows, row_count=len(rows), limited=limited)
 
 
 def preview_table(engine: Engine, table_name: str, limit: int, offset: int = 0, database_name: str | None = None, pg_database: str | None = None) -> QueryResponse:
@@ -238,14 +278,14 @@ def _execute_limited_query(engine: Engine, sql: str, limit: int, offset: int = 0
 
     with engine.connect() as connection:
         result = connection.execute(text(limited_sql))
-        columns = list(result.keys())
+        columns = _visible_result_columns(result.keys())
         raw_rows = result.mappings().fetchall()
 
     limited = len(raw_rows) > limit
     visible_rows = raw_rows[:limit]
-    rows = [dict(row) for row in visible_rows]
+    rows = _query_rows(visible_rows, columns)
 
-    return QueryResponse(columns=columns, rows=rows, row_count=len(rows), limited=limited)
+    return QueryResponse(columns=[column_name for _, column_name in columns], rows=rows, row_count=len(rows), limited=limited)
 
 
 def _validate_readonly_sql(sql: str) -> str:
