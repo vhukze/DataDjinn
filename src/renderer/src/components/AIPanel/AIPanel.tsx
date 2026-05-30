@@ -1,4 +1,4 @@
-import { CheckCircleOutlined, ClockCircleOutlined, CloseOutlined, DatabaseOutlined, DeleteOutlined, ExclamationCircleOutlined, PlusOutlined, RobotOutlined, SettingOutlined, StopOutlined, ToolOutlined } from '@ant-design/icons'
+import { CheckCircleOutlined, ClockCircleOutlined, CloseCircleOutlined, CloseOutlined, DatabaseOutlined, DeleteOutlined, ExclamationCircleOutlined, LoadingOutlined, PlusOutlined, RobotOutlined, SettingOutlined, StopOutlined, ToolOutlined } from '@ant-design/icons'
 import { Alert, Button, Card, Collapse, Flex, Form, Input, List, Modal, Select, Space, Steps, Switch, Tag, Typography, message } from 'antd'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
@@ -49,6 +49,7 @@ type AISession = {
 type ToolCallView = {
   id: string
   name: string
+  status: 'running' | 'waiting_confirm' | 'completed' | 'failed'
   arguments?: unknown
   result?: unknown
 }
@@ -162,6 +163,7 @@ interface AIPanelProps {
   primaryContextSourceId?: string
   onRemoveContextSource?: (sourceId: string) => void
   onWorkspaceAction?: (action: AgentWorkspaceAction) => void
+  onAgentDataChanged?: () => void
 }
 
 const createAIConfigItem = (config?: Partial<AIConfigItem>): AIConfigItem => ({
@@ -220,6 +222,36 @@ const contextSourceTypeLabel: Record<AIContextSource['type'], string> = {
   schema: '模式'
 }
 
+const isToolResultWaitingConfirm = (result: unknown): boolean => {
+  if (!result || typeof result !== 'object') {
+    return false
+  }
+
+  const record = result as Record<string, unknown>
+  return record.confirmation_required === true
+}
+
+const toolResultStatus = (result: unknown): ToolCallView['status'] => {
+  if (isToolResultWaitingConfirm(result)) {
+    return 'waiting_confirm'
+  }
+  if (!result || typeof result !== 'object') {
+    return 'completed'
+  }
+
+  const record = result as Record<string, unknown>
+  return record.error || record.success === false ? 'failed' : 'completed'
+}
+
+const isMutatingToolResult = (name: string | undefined, result: unknown): boolean => {
+  if (!name || !['execute_query', 'restore_database_backup'].includes(name) || !result || typeof result !== 'object') {
+    return false
+  }
+
+  const record = result as Record<string, unknown>
+  return record.readonly !== true
+}
+
 const parseSseLines = (buffer: string): { events: StreamEvent[]; rest: string } => {
   const parts = buffer.split('\n\n')
   const rest = parts.pop() ?? ''
@@ -230,7 +262,7 @@ const parseSseLines = (buffer: string): { events: StreamEvent[]; rest: string } 
   return { events, rest }
 }
 
-export default function AIPanel({ requestJson, connectionContext, workspace, contextSources = [], primaryContextSourceId, onRemoveContextSource, onWorkspaceAction }: AIPanelProps): React.JSX.Element {
+export default function AIPanel({ requestJson, connectionContext, workspace, contextSources = [], primaryContextSourceId, onRemoveContextSource, onWorkspaceAction, onAgentDataChanged }: AIPanelProps): React.JSX.Element {
   const [messageApi, contextHolder] = message.useMessage()
   const showError = (error: unknown, fallback = '操作失败'): void => {
     const content = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
@@ -536,10 +568,14 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
           return { ...item, confirmation: event.confirmation }
         }
         if (event.type === 'tool_start') {
-          return { ...item, toolCalls: [...(item.toolCalls ?? []), { id: event.tool_call_id, name: event.name, arguments: event.arguments }] }
+          return { ...item, toolCalls: [...(item.toolCalls ?? []), { id: event.tool_call_id, name: event.name, status: 'running' as const, arguments: event.arguments }] }
         }
         if (event.type === 'tool_result') {
-          return { ...item, toolCalls: (item.toolCalls ?? []).map((tool) => tool.id === event.tool_call_id ? { ...tool, result: event.result } : tool) }
+          const status = toolResultStatus(event.result)
+          if (status === 'completed' && isMutatingToolResult(event.name, event.result)) {
+            onAgentDataChanged?.()
+          }
+          return { ...item, toolCalls: (item.toolCalls ?? []).map((tool) => tool.id === event.tool_call_id ? { ...tool, status, result: event.result } : tool) }
         }
         return item
       })
@@ -564,6 +600,10 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
           pg_database: connectionContext.pgDatabase
         })
       })
+      if (approved && result.executed === true) {
+        onAgentDataChanged?.()
+      }
+
       const resultPayload = result.action === 'restore_backup' ? result.backup : result.result
       const resultContent = approved ? `确认执行结果：${result.message}\n\n\`\`\`json\n${JSON.stringify(resultPayload ?? {}, null, 2)}\n\`\`\`` : result.message
       const resultMessage: ChatMessage = { id: crypto.randomUUID(), role: 'assistant', content: resultContent }
@@ -788,8 +828,15 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
                       className="ai-tool-calls"
                       items={item.toolCalls.map((tool) => ({
                         key: tool.id,
-                        label: <Space><ToolOutlined />{tool.name}</Space>,
-                        children: <pre>{JSON.stringify({ arguments: tool.arguments, result: tool.result }, null, 2)}</pre>
+                        label: (
+                          <Space>
+                            {tool.status === 'running' ? <LoadingOutlined spin /> : tool.status === 'waiting_confirm' ? <ClockCircleOutlined style={{ color: '#faad14' }} /> : tool.status === 'completed' ? <CheckCircleOutlined style={{ color: '#52c41a' }} /> : <CloseCircleOutlined style={{ color: '#ff4d4f' }} />}
+                            <ToolOutlined />
+                            {tool.name}
+                            {tool.status === 'waiting_confirm' && <Tag color="warning">待确认</Tag>}
+                          </Space>
+                        ),
+                        children: <pre>{JSON.stringify({ status: tool.status, arguments: tool.arguments, result: tool.result }, null, 2)}</pre>
                       }))}
                     />
                   )}

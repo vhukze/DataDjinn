@@ -23,7 +23,7 @@ DataDjinn 是一款**跨时代**的本地数据库桌面客户端，将传统数
 ### 核心能力
 
 - 🧠 **AI 对话式数据库操作** —— 接入任意 OpenAI 兼容 API，AI 深度理解 Schema 上下文，支持自然语言查数据、建表、修改表结构
-- 🔗 **多数据库支持** —— SQLite / MySQL / PostgreSQL / 达梦 DM
+- 🔗 **多数据库支持** —— SQLite / MySQL / PostgreSQL / 达梦 DM / MongoDB
 - ✍️ **专业 SQL 编辑器** —— 基于 Monaco Editor，语法高亮、智能补全、多标签页
 - 🧭 **连接树与数据预览** —— 支持连接、库、模式、表、视图等对象浏览，表格预览支持行列选择、列顺序拖拽和单元格编辑
 - 📦 **备份 / 导出 / 导入** —— 备份用于完整恢复，导出用于数据交换；SQL 导出支持结构、数据、结构 + 数据三种内容
@@ -58,7 +58,8 @@ DataDjinn 是一款**跨时代**的本地数据库桌面客户端，将传统数
 | **SQLite** | sqlite3 | 本地文件数据库，即开即用 |
 | **MySQL** | PyMySQL | 支持 5.x / 8.x |
 | **PostgreSQL** | psycopg 3 | 支持 12+ |
-| **达梦 DM** | dmPython | 国产数据库，支持 DM8 |
+| **达梦 DM** | 外部 dmPython 驱动 | 国产数据库，支持 DM8；驱动由用户在连接时选择，默认打包不内置达梦 DLL |
+| **MongoDB** | PyMongo | 支持连接、数据库/集合浏览、字段推断、集合预览、只读查询、创建集合、插入测试数据和 JSON 导出 |
 
 ---
 
@@ -71,7 +72,7 @@ DataDjinn 内置 AI 对话面板，接入 **OpenAI 兼容 API**（如 OpenAI、D
 | 场景 | 示例 |
 |------|------|
 | 自然语言查询 | "查询近 30 天下单超过 3 次的用户" |
-| 创建表 | "创建一个员工表，包含姓名、部门、入职日期" |
+| 创建表 / 集合 | "创建一个员工表，包含姓名、部门、入职日期" / "创建一个 users 集合并添加 10 条测试数据" |
 | 修改表结构 | "给用户表增加一个手机号字段" |
 | 探索数据 | "这个库有哪些表？orders 表结构是什么？" |
 | SQL 分析 | "这段 SQL 为什么慢，帮我优化" |
@@ -93,7 +94,7 @@ DataDjinn 内置 AI 对话面板，接入 **OpenAI 兼容 API**（如 OpenAI、D
 | 功能 | 用途 | 说明 |
 |------|------|------|
 | 备份 | 完整恢复 | 生成可恢复当前数据库的 SQL 备份文件，适合回滚或迁移前留档 |
-| 导出 | 数据交换 | 支持按数据库、模式或表导出 SQL / CSV，SQL 可选择仅结构、仅数据或结构 + 数据 |
+| 导出 | 数据交换 | 支持按数据库、模式或表导出 SQL / CSV；MongoDB 导出为 JSON |
 | 导入 | 数据写入 | 支持执行 SQL 文件和导入 CSV 文件，执行结果会展示成功、失败与可复制错误信息 |
 
 MySQL SQL 备份和导入会在执行期间临时关闭外键检查，避免因表依赖顺序导致恢复失败。
@@ -108,6 +109,8 @@ MySQL SQL 备份和导入会在执行期间临时关闭外键检查，避免因�
 
 - `DataDjinn-x.x.x-setup.exe` —— NSIS 安装包（推荐）
 - `DataDjinn-x.x.x-win.zip` —— 解压即用版
+
+当前最新版本：`v0.1.1`。后续每次发布都会递增 `package.json`、后端 API 和 Release tag 版本号。
 
 解压版无需安装，解压后双击 `DataDjinn.exe` 即可运行。已内置 Python 运行时和所有后端依赖，无需额外安装任何环境。
 
@@ -150,18 +153,28 @@ npm run build:win:all
 
 ### 自动发布 Release
 
-推送 `v*.*.*` 格式的 tag 会触发 GitHub Actions 自动构建 Windows 安装包和解压版，并创建 GitHub Release。
+推送 `v*.*.*` 格式的 tag 会触发 GitHub Actions 自动构建 Windows 安装包和解压版，并创建 GitHub Release。发布前必须递增版本号，至少同步更新：
+
+- `package.json`
+- `package-lock.json`
+- `backend/app/main.py`
+- `backend/app/api/health.py`
+
+发布说明维护在 `RELEASE_NOTES.md`，工作流会把该文件内容写入 GitHub Release。
 
 ```bash
-# 1. 修改 package.json 中的 version，例如 0.1.1
-# 2. 提交版本改动
-git add package.json package-lock.json
-git commit -m "chore: release v0.1.1"
+# 1. 递增版本号，例如从 0.1.1 到 0.1.2
+npm version 0.1.2 --no-git-tag-version
 
-# 3. 创建并推送 tag
-git tag v0.1.1
+# 2. 同步后端 API 版本，并更新 RELEASE_NOTES.md
+# 3. 提交版本改动
+git add .
+git commit -m "chore: release v0.1.2"
+
+# 4. 创建并推送 tag
+git tag v0.1.2
 git push origin main
-git push origin v0.1.1
+git push origin v0.1.2
 ```
 
 ---

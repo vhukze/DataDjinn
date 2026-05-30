@@ -8,7 +8,7 @@ from app.api.ai_router import router as ai_router
 from app.api.metadata import router as metadata_router
 from app.api.query import router as query_router
 
-app = FastAPI(title="DataDjinn API", version="0.1.0")
+app = FastAPI(title="DataDjinn API", version="0.1.1")
 
 app.add_middleware(
     CORSMiddleware,

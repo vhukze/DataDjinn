@@ -22,3 +22,6 @@ build
 # Env
 .env
 .env.*
+
+# Local drafts
+csdn-promotion.md

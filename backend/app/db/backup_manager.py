@@ -9,6 +9,7 @@ from uuid import uuid4
 from sqlalchemy import create_engine, inspect, text
 
 from app.db.connection_manager import _resolve_runtime_path, connection_manager
+from app.db.mongo_utils import is_mongo_client, serialize_mongo_document
 from app.db.sql_executor import execute_sql_file
 from app.schemas.backup import BackupRecord, ExportContent, ExportFormat, ExportScope
 from app.schemas.connection import ConnectionRequest
@@ -234,6 +235,10 @@ class BackupManager:
         file_path = Path(output_path).expanduser().resolve()
         file_path.parent.mkdir(parents=True, exist_ok=True)
 
+        if request.database_type == "mongodb":
+            self._export_mongodb(connection_id, file_path, database, table, scope)
+            return file_path
+
         if format == "sql":
             self._export_sql(connection_id, target_database, table, scope, file_path, content)
             return file_path
@@ -288,6 +293,21 @@ class BackupManager:
         if not target:
             raise ValueError("备份数据库名不能为空")
         return target
+
+    def _export_mongodb(self, connection_id: str, file_path: Path, database: str | None, table: str | None, scope: ExportScope) -> None:
+        client = connection_manager.get_engine(connection_id)
+        if client is None or not is_mongo_client(client):
+            raise ValueError("MongoDB 连接已关闭")
+        if not database:
+            raise ValueError("请选择 MongoDB 数据库")
+
+        db = client[database]
+        collections = [table] if scope == "table" and table else db.list_collection_names()
+        documents_by_collection = {
+            collection: [serialize_mongo_document(document) for document in db[collection].find({})]
+            for collection in collections
+        }
+        file_path.write_text(json.dumps({"database": database, "collections": documents_by_collection}, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _export_sql(self, connection_id: str, database: str, table: str | None, scope: ExportScope, file_path: Path, content: ExportContent) -> None:
         request = connection_manager.get_connection_request(connection_id)

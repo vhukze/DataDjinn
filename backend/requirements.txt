@@ -9,3 +9,4 @@ pyinstaller==6.17.0
 dmPython==2.5.32
 dmSQLAlchemy==2.0.12
 openai==2.13.0
+pymongo==4.15.4

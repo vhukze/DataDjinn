@@ -5,7 +5,7 @@ import { useEffect, useRef } from 'react'
 
 loader.config({ monaco })
 
-export type SqlDialect = 'sqlite' | 'mysql' | 'postgresql' | 'dm'
+export type SqlDialect = 'sqlite' | 'mysql' | 'postgresql' | 'dm' | 'mongodb'
 
 export interface SqlCompletionColumn {
   name: string
@@ -126,7 +126,8 @@ const DIALECT_KEYWORDS: Record<SqlDialect, string[]> = {
   sqlite: ['AUTOINCREMENT', 'WITHOUT ROWID', 'PRAGMA', 'RETURNING'],
   mysql: ['AUTO_INCREMENT', 'ENGINE', 'UNSIGNED', 'SHOW DATABASES', 'SHOW TABLES', 'DESCRIBE'],
   postgresql: ['SERIAL', 'BIGSERIAL', 'RETURNING', 'ILIKE', 'ON CONFLICT', 'JSONB', 'UUID'],
-  dm: ['ROWNUM', 'CONNECT BY', 'START WITH', 'SYSDATE', 'SYSTIMESTAMP', 'NVL', 'DECODE', 'DUAL']
+  dm: ['ROWNUM', 'CONNECT BY', 'START WITH', 'SYSDATE', 'SYSTIMESTAMP', 'NVL', 'DECODE', 'DUAL'],
+  mongodb: ['db', 'find', 'aggregate', 'countDocuments', 'distinct', 'sort', 'limit', 'skip', 'ObjectId']
 }
 
 const SQL_SNIPPETS = [

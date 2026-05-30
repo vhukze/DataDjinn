@@ -1,6 +1,6 @@
 {
   "name": "datadjinn",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "AI-powered desktop database client",
   "main": "./out/main/index.js",
   "author": "example.com",
@@ -14,7 +14,7 @@
     "start": "electron-vite preview",
     "dev": "electron-vite dev",
     "build": "npm run typecheck && electron-vite build",
-    "build:backend": "cd backend && .venv\\Scripts\\python.exe -m PyInstaller run.py --name datadjinn-backend --onedir --clean --noconfirm --hidden-import dmPython --hidden-import dmSQLAlchemy.dmpython",
+    "build:backend": "cd backend && .venv\\Scripts\\python.exe -m PyInstaller run.py --name datadjinn-backend --onedir --clean --noconfirm --hidden-import pymongo --hidden-import bson --hidden-import dns --exclude-module dmPython --exclude-module dmSQLAlchemy --exclude-module dmssl",
     "build:frontend": "npm run typecheck && electron-vite build",
     "postinstall": "electron-builder install-app-deps",
     "build:unpack": "npm run build && electron-builder --dir",

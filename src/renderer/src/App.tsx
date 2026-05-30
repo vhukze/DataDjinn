@@ -4,6 +4,7 @@ import {
   CloseCircleOutlined,
   DatabaseOutlined,
   FileAddOutlined,
+  FilterOutlined,
   FunctionOutlined,
   MessageOutlined,
   EditOutlined,
@@ -17,6 +18,8 @@ import {
   SaveOutlined,
   ReloadOutlined,
   RobotOutlined,
+  SortAscendingOutlined,
+  SortDescendingOutlined,
   SunOutlined,
   TableOutlined,
   ThunderboltOutlined
@@ -57,6 +60,7 @@ import mysqlIcon from './assets/icons/mysql.png'
 import postgresIcon from './assets/icons/postgres.png'
 import sqliteIcon from './assets/icons/sqllite.png'
 import dmIcon from './assets/icons/dm.svg'
+import mongoIcon from './assets/icons/mongo.png'
 import appIcon from '../../../resources/icon.svg'
 
 type BackendStatus = {
@@ -112,7 +116,7 @@ const COMMON_TYPES = [
   'BLOB', 'BYTEA'
 ]
 
-type DatabaseType = 'sqlite' | 'mysql' | 'postgresql' | 'dm'
+type DatabaseType = 'sqlite' | 'mysql' | 'postgresql' | 'dm' | 'mongodb'
 type WorkspaceTabKind = 'preview' | 'query'
 
 type HealthStatus = {
@@ -183,6 +187,10 @@ type QueryResponse = {
   limited: boolean
 }
 
+type ObjectDdlResponse = {
+  ddl: string
+}
+
 type SqlFileRunResponse = {
   success_count: number
   failed_count: number
@@ -194,6 +202,12 @@ type EditableRow = Record<string, unknown> & {
   __state?: 'inserted' | 'updated'
   __deleted?: boolean
   __original?: Record<string, unknown>
+}
+
+type ColumnFilterOption = {
+  value: string
+  label: string
+  count: number
 }
 
 type WorkspaceTab = {
@@ -215,7 +229,9 @@ type WorkspaceTab = {
   selectedColumns?: string[]
   selectedColumnMap?: Record<string, true>
   columnOrder?: string[]
-  dragSelection?: { type: 'row'; anchor: string }
+  sortState?: { column: string; direction: 'ascend' | 'descend' }
+  columnFilters?: Record<string, string[]>
+  columnFilterOptions?: Record<string, ColumnFilterOption[]>
   draggingColumn?: string
   editingCell?: { rowKey: string; column: string }
   error?: string
@@ -254,7 +270,8 @@ const DB_OBJECT_TYPES_BY_DATABASE: Record<DatabaseType, DbObjectType[]> = {
   sqlite: ['table', 'view', 'trigger', 'index'],
   mysql: ['table', 'view', 'trigger', 'procedure', 'function', 'index'],
   postgresql: ['table', 'view', 'trigger', 'procedure', 'function', 'sequence', 'index'],
-  dm: ['table', 'view', 'trigger', 'procedure', 'function', 'sequence', 'index']
+  dm: ['table', 'view', 'trigger', 'procedure', 'function', 'sequence', 'index'],
+  mongodb: ['table']
 }
 
 type AIContextSource = {
@@ -327,6 +344,27 @@ const isCellValueEqual = (left: unknown, right: unknown): boolean => {
 const buildEditableRows = (rows: Record<string, unknown>[]): EditableRow[] =>
   rows.map((row, index) => ({ ...row, __rowKey: `row:${index}`, __original: row }))
 
+const tableFilterValueKey = (value: unknown): string => value === null || value === undefined ? '__DATADJINN_NULL__' : String(value)
+
+const tableFilterValueLabel = (value: string): string => value === '__DATADJINN_NULL__' ? 'NULL' : value
+
+const sortFilterOptions = (options: ColumnFilterOption[]): ColumnFilterOption[] =>
+  options.sort((left, right) => left.label.localeCompare(right.label, 'zh-Hans-CN', { numeric: true, sensitivity: 'base' }))
+
+const buildColumnFilterOptions = (rows: EditableRow[], column: string): ColumnFilterOption[] => {
+  const filterCounts = new Map<string, number>()
+  for (const row of rows) {
+    const valueKey = tableFilterValueKey(row[column])
+    filterCounts.set(valueKey, (filterCounts.get(valueKey) ?? 0) + 1)
+  }
+
+  return sortFilterOptions([...filterCounts.entries()].map(([value, count]) => ({
+    value,
+    label: tableFilterValueLabel(value),
+    count
+  })))
+}
+
 function App(): React.JSX.Element {
   const [form] = Form.useForm<ConnectionFormValues>()
   const databaseType = Form.useWatch('database_type', form) ?? 'sqlite'
@@ -372,10 +410,6 @@ function App(): React.JSX.Element {
   const [editingDatabaseName, setEditingDatabaseName] = useState<string>()
   const [editingTableName, setEditingTableName] = useState<string>()
   const [editingColumns, setEditingColumns] = useState<ColumnInfo[]>([])
-  const [passwordModalOpen, setPasswordModalOpen] = useState(false)
-  const [passwordModalTitle, setPasswordModalTitle] = useState('')
-  const [passwordLoading, setPasswordLoading] = useState(false)
-  const [visiblePassword, setVisiblePassword] = useState('')
   const [databaseCreateModalOpen, setDatabaseCreateModalOpen] = useState(false)
   const [creatingDatabaseConnectionId, setCreatingDatabaseConnectionId] = useState<string>('')
   const [creatingSchemaDatabaseName, setCreatingSchemaDatabaseName] = useState<string>('')
@@ -436,8 +470,14 @@ function App(): React.JSX.Element {
   const [draftSelectedDatabases, setDraftSelectedDatabases] = useState<Record<string, string[]>>({})
   const [draftSelectedSchemas, setDraftSelectedSchemas] = useState<Record<string, string[]>>({})
   const [completionTables, setCompletionTables] = useState<Record<string, string[]>>({})
-  const [tableBodyHeight, setTableBodyHeight] = useState(320)
-  const tableBodyRef = useRef<HTMLDivElement>(null)
+  const [tableBodyHeights, setTableBodyHeights] = useState<Record<string, number>>({})
+  const [ddlModalOpen, setDdlModalOpen] = useState(false)
+  const [ddlModalTitle, setDdlModalTitle] = useState('')
+  const [ddlContent, setDdlContent] = useState('')
+  const [ddlLoading, setDdlLoading] = useState(false)
+  const tableBodyRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const rowDragAnchorRefs = useRef<Record<string, string | undefined>>({})
+  const rowSelectionDraftRefs = useRef<Record<string, React.Key[] | undefined>>({})
 
   const { theme, toggleTheme } = useTheme()
 
@@ -554,7 +594,7 @@ function App(): React.JSX.Element {
             label: connection.database_type === 'sqlite' ? '新增 SQLite 数据库文件' : '新建库',
             icon: <PlusOutlined />
           },
-          { key: 'run-sql', label: '运行 SQL 文件', icon: <PlayCircleOutlined /> },
+          ...(connection.database_type !== 'mongodb' ? [{ key: 'run-sql', label: '运行 SQL 文件', icon: <PlayCircleOutlined /> }] : []),
           { type: 'divider' },
           { key: 'disconnect', label: '删除连接', icon: <DeleteOutlined />, danger: true }
         ],
@@ -619,17 +659,6 @@ function App(): React.JSX.Element {
               void openEditConnectionModal(connection)
             }}
           />
-          {connection.has_password && (
-            <Button
-              type="text"
-              size="small"
-              icon={<EyeOutlined />}
-              onClick={(event) => {
-                event.stopPropagation()
-                void showConnectionPassword(connection)
-              }}
-            />
-          )}
           <Button
             type="text"
             danger
@@ -668,6 +697,8 @@ function App(): React.JSX.Element {
     icon:
       connection.database_type === 'postgresql' ? (
         <img src={postgresIcon} alt="PG" style={{ width: 16, height: 16 }} />
+      ) : connection.database_type === 'mongodb' ? (
+        <img src={mongoIcon} alt="MongoDB" style={{ width: 16, height: 16 }} />
       ) : connection.database_type === 'mysql' ? (
         <img src={mysqlIcon} alt="MySQL" style={{ width: 16, height: 16 }} />
       ) : connection.database_type === 'dm' ? (
@@ -677,7 +708,7 @@ function App(): React.JSX.Element {
       ),
     kind: 'connection',
     connectionId: connection.connection_id,
-    children: connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm' ? undefined : buildObjectGroupNodes(connection.connection_id, undefined, undefined, connection.database_type),
+    children: connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm' || connection.database_type === 'mongodb' ? undefined : buildObjectGroupNodes(connection.connection_id, undefined, undefined, connection.database_type),
     className: connection.is_open ? undefined : 'tree-node-closed',
     closed: !connection.is_open,
     isLeaf: !connection.is_open
@@ -694,7 +725,7 @@ function App(): React.JSX.Element {
       return
     }
 
-    if (connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm') {
+    if (connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm' || connection.database_type === 'mongodb') {
       const connKey = `connection:${connectionId}`
       const snapshot = expandedKeys.map(String)
 
@@ -770,13 +801,17 @@ function App(): React.JSX.Element {
   }
 
   useEffect(() => {
-    const element = tableBodyRef.current
+    if (!activeTabKey) {
+      return
+    }
+
+    const element = tableBodyRefs.current[activeTabKey]
     if (!element) {
       return
     }
 
     const updateTableBodyHeight = (): void => {
-      setTableBodyHeight(Math.max(160, element.clientHeight - 39))
+      setTableBodyHeights((current) => ({ ...current, [activeTabKey]: Math.max(160, element.clientHeight - 39) }))
     }
 
     updateTableBodyHeight()
@@ -844,6 +879,10 @@ function App(): React.JSX.Element {
     if (connection?.database_type === 'mysql') {
       const quotedTable = `\`${tableName.replaceAll('`', '``')}\``
       return databaseName ? `\`${databaseName.replaceAll('`', '``')}\`.${quotedTable}` : quotedTable
+    }
+
+    if (connection?.database_type === 'mongodb') {
+      return `db.${tableName}.find({})`
     }
 
     if (connection?.database_type === 'postgresql') {
@@ -925,6 +964,15 @@ function App(): React.JSX.Element {
       return
     }
 
+    if (node.kind === 'connection') {
+      setAiActiveContext({
+        connectionId: node.connectionId,
+        databaseName: connection.database_type === 'mysql' || connection.database_type === 'mongodb' ? getDefaultDatabaseName(connection) : undefined,
+        pgDatabaseName: connection.database_type === 'postgresql' ? getDefaultPgDatabase(connection) : undefined
+      })
+      return
+    }
+
     if (node.kind === 'database') {
       const schemaKey = `${node.connectionId}:${node.databaseName}`
       const schemas = selectedSchemas[schemaKey] ?? allSchemas[schemaKey] ?? []
@@ -942,12 +990,25 @@ function App(): React.JSX.Element {
         databaseName: node.databaseName,
         pgDatabaseName: node.pgDatabaseName
       })
+      return
+    }
+
+    if ((node.kind === 'table' || node.kind === 'db-object' || node.kind === 'object-group') && (node.databaseName || node.pgDatabaseName)) {
+      setAiActiveContext({
+        connectionId: node.connectionId,
+        databaseName: node.databaseName,
+        pgDatabaseName: node.pgDatabaseName
+      })
     }
   }
 
   const openTableQuery = (connectionId: string, tableName: string, databaseName?: string, pgDatabaseName?: string): void => {
     setSelectedConnectionId(connectionId)
-    openQueryWorkspace(`select * from ${quoteTableName(connectionId, tableName, databaseName)} limit 1000;`, `${tableName} 查询`, connectionId, databaseName, pgDatabaseName)
+    const connection = getConnection(connectionId)
+    const sql = connection?.database_type === 'mongodb'
+      ? quoteTableName(connectionId, tableName, databaseName)
+      : `select * from ${quoteTableName(connectionId, tableName, databaseName)} limit 1000;`
+    openQueryWorkspace(sql, `${tableName} 查询`, connectionId, databaseName, pgDatabaseName)
   }
 
   const openTableEditor = async (connectionId: string, tableName: string, databaseName?: string): Promise<void> => {
@@ -1118,12 +1179,16 @@ function App(): React.JSX.Element {
                 items: [
                   { key: 'refresh', label: '刷新', icon: <ReloadOutlined /> },
                   ...(isPgDb ? [{ key: 'new-schema', label: '新建模式', icon: <PlusOutlined /> }] : []),
-                  ...(!isPgDb ? [{ key: 'new-table', label: '新建表', icon: <PlusOutlined /> }] : []),
-                  { key: 'run-sql', label: '运行 SQL 文件', icon: <PlayCircleOutlined /> },
+                  ...(!isPgDb ? [{ key: 'new-table', label: getConnection(connectionId)?.database_type === 'mongodb' ? '新建集合' : '新建表', icon: <PlusOutlined /> }] : []),
+                  ...(getConnection(connectionId)?.database_type !== 'mongodb' ? [{ key: 'run-sql', label: '运行 SQL 文件', icon: <PlayCircleOutlined /> }] : []),
                   { type: 'divider' },
-                  { key: 'backup', label: '备份', icon: <SaveOutlined /> },
+                  ...(getConnection(connectionId)?.database_type !== 'mongodb' ? [{ key: 'backup', label: '备份', icon: <SaveOutlined /> }] : []),
                   { key: 'export', label: '导出', icon: <FileAddOutlined /> },
-                  { key: 'import', label: '导入', icon: <PlayCircleOutlined /> }
+                  ...(getConnection(connectionId)?.database_type !== 'mongodb' ? [{ key: 'import', label: '导入', icon: <PlayCircleOutlined /> }] : []),
+                  ...(!isPgDb && (getConnection(connectionId)?.database_type === 'mysql' || getConnection(connectionId)?.database_type === 'postgresql') ? [
+                    { type: 'divider' as const },
+                    { key: 'delete', label: '删除', danger: true, icon: <DeleteOutlined /> }
+                  ] : [])
                 ],
                 onClick: ({ key }) => {
                   if (key === 'refresh') {
@@ -1141,10 +1206,12 @@ function App(): React.JSX.Element {
                     setCreateTableDatabaseName(databaseName)
                     setCreateTablePgDatabaseName(pgDbName ?? '')
                     setNewTableName('')
-                    setNewTableColumns([
-                      { key: 'col-0', name: 'id', type: conn?.database_type === 'postgresql' ? 'INTEGER' : 'INT', nullable: false, primaryKey: true },
-                      { key: 'col-1', name: 'name', type: 'VARCHAR(100)', nullable: false, primaryKey: false }
-                    ])
+                    setNewTableColumns(conn?.database_type === 'mongodb'
+                      ? [{ key: 'col-0', name: '_id', type: 'ObjectId', nullable: false, primaryKey: true }]
+                      : [
+                          { key: 'col-0', name: 'id', type: conn?.database_type === 'postgresql' ? 'INTEGER' : 'INT', nullable: false, primaryKey: true },
+                          { key: 'col-1', name: 'name', type: 'VARCHAR(100)', nullable: false, primaryKey: false }
+                        ])
                     setCreateTableModalOpen(true)
                   }
                   if (key === 'run-sql') {
@@ -1158,6 +1225,9 @@ function App(): React.JSX.Element {
                   }
                   if (key === 'import') {
                     openImportModal(connectionId, isPgDb ? undefined : databaseName, pgDbName)
+                  }
+                  if (key === 'delete') {
+                    deleteDatabase(connectionId, databaseName)
                   }
                 }
               }}
@@ -1252,21 +1322,26 @@ function App(): React.JSX.Element {
         trigger={['contextMenu']}
         menu={{
           items: [
-            ...(canPreview ? [{ key: 'preview', label: '预览数据' }, { key: 'select', label: '生成 SELECT 查询' }] : []),
-            ...(objectType === 'table' ? [{ key: 'edit', label: '修改表' }] : []),
+            ...(canPreview ? [{ key: 'select', label: '生成 SELECT 查询' }] : []),
+            { key: 'ddl', label: '查看 DDL' },
+            ...(objectType === 'table' && getConnection(connectionId)?.database_type !== 'mongodb' ? [{ key: 'edit', label: '修改表' }] : []),
             { key: 'copy', label: '复制对象名' },
             { type: 'divider' },
             ...(canPreview ? [
               { key: 'export', label: '导出', icon: <FileAddOutlined /> },
             ] : []),
-            { key: 'import', label: '导入', icon: <PlayCircleOutlined /> }
+            ...(getConnection(connectionId)?.database_type !== 'mongodb' ? [{ key: 'import', label: '导入', icon: <PlayCircleOutlined /> }] : []),
+            ...(canPreview ? [
+              { type: 'divider' as const },
+              { key: 'delete', label: '删除', danger: true, icon: <DeleteOutlined /> }
+            ] : [])
           ],
           onClick: ({ key }) => {
-            if (key === 'preview') {
-              void previewTable(connectionId, tableName, databaseName, pgDbName)
-            }
             if (key === 'select') {
               openTableQuery(connectionId, tableName, databaseName, pgDbName)
+            }
+            if (key === 'ddl') {
+              void showObjectDdl(connectionId, tableName, objectType, databaseName, pgDbName)
             }
             if (key === 'edit') {
               void openTableEditor(connectionId, tableName, databaseName)
@@ -1279,6 +1354,9 @@ function App(): React.JSX.Element {
             }
             if (key === 'import') {
               openImportModal(connectionId, databaseName, pgDbName, tableName)
+            }
+            if (key === 'delete') {
+              deleteDbObject(connectionId, tableName, objectType, databaseName, pgDbName)
             }
           }
         }}
@@ -1415,22 +1493,79 @@ function App(): React.JSX.Element {
   }
 
   const renderResultTable = (tab: WorkspaceTab): React.ReactNode => {
-    const tableRows: EditableRow[] = tab.kind === 'preview' ? (tab.editRows ?? []) : (tab.result?.rows.map((row, index) => ({ ...row, __rowKey: `query:${index}` })) ?? [])
+    const baseTableRows: EditableRow[] = tab.kind === 'preview' ? (tab.editRows ?? []) : (tab.result?.rows.map((row, index) => ({ ...row, __rowKey: `query:${index}` })) ?? [])
     const selectedRowKeyMap = tab.selectedRowKeyMap ?? Object.fromEntries((tab.selectedRowKeys ?? []).map((key) => [String(key), true]))
     const selectedColumnMap = tab.selectedColumnMap ?? Object.fromEntries((tab.selectedColumns ?? []).map((column) => [column, true]))
     const resultColumns = tab.result?.columns ?? []
     const orderedColumns = [...(tab.columnOrder ?? []).filter((column) => resultColumns.includes(column)), ...resultColumns.filter((column) => !(tab.columnOrder ?? []).includes(column))]
+    const columnFilters = tab.columnFilters ?? {}
+    const filterColumns = Object.keys(columnFilters)
+    const filteredRows = filterColumns.length > 0
+      ? baseTableRows.filter((row) => filterColumns.every((column) => columnFilters[column]?.includes(tableFilterValueKey(row[column]))))
+      : baseTableRows
+    const tableRows = tab.sortState
+      ? [...filteredRows].sort((left, right) => {
+          const leftValue = left[tab.sortState!.column]
+          const rightValue = right[tab.sortState!.column]
+          const leftEmpty = leftValue === null || leftValue === undefined
+          const rightEmpty = rightValue === null || rightValue === undefined
+          if (leftEmpty || rightEmpty) {
+            return leftEmpty === rightEmpty ? 0 : leftEmpty ? -1 : 1
+          }
+          const leftNumber = Number(leftValue)
+          const rightNumber = Number(rightValue)
+          const result = Number.isFinite(leftNumber) && Number.isFinite(rightNumber)
+            ? leftNumber - rightNumber
+            : String(leftValue).localeCompare(String(rightValue), 'zh-Hans-CN', { numeric: true, sensitivity: 'base' })
+          return tab.sortState!.direction === 'ascend' ? result : -result
+        })
+      : filteredRows
     const rowNumberOffset = ((tab.page ?? 1) - 1) * (tab.limit ?? 1000)
 
-    const updateSelectedRows = (nextSelectedRowKeys: React.Key[]): void => {
+    const applySelectedRows = (nextSelectedRowKeys: React.Key[]): void => {
+      const nextSelectedRowKeyMap = Object.fromEntries(nextSelectedRowKeys.map((key) => [String(key), true as const]))
+      const currentSelected = JSON.stringify((tab.selectedRowKeys ?? []).map(String))
+      const nextSelected = JSON.stringify(nextSelectedRowKeys.map(String))
+      if (currentSelected === nextSelected) {
+        return
+      }
       updateWorkspaceTab(tab.key, {
         selectedRowKeys: nextSelectedRowKeys,
-        selectedRowKeyMap: Object.fromEntries(nextSelectedRowKeys.map((key) => [String(key), true]))
+        selectedRowKeyMap: nextSelectedRowKeyMap
       })
     }
 
+    const previewSelectedRows = (nextSelectedRowKeys: React.Key[]): void => {
+      rowSelectionDraftRefs.current[tab.key] = nextSelectedRowKeys
+      const nextSelectedSet = new Set(nextSelectedRowKeys.map(String))
+      const currentSelected = tableBodyRefs.current[tab.key]?.querySelectorAll('.row-selected') ?? []
+      currentSelected.forEach((element) => element.classList.remove('row-selected'))
+      tableBodyRefs.current[tab.key]?.querySelectorAll<HTMLElement>('[data-row-key]').forEach((element) => {
+        if (nextSelectedSet.has(element.dataset.rowKey ?? '')) {
+          element.classList.add('row-selected')
+        }
+      })
+    }
+
+    const commitPreviewSelectedRows = (): void => {
+      const draft = rowSelectionDraftRefs.current[tab.key]
+      if (!draft) {
+        return
+      }
+      rowSelectionDraftRefs.current[tab.key] = undefined
+      applySelectedRows(draft)
+    }
+
+    const clearSelectedRows = (): void => {
+      if (!tab.selectedRowKeys?.length && !rowSelectionDraftRefs.current[tab.key]?.length) {
+        return
+      }
+      rowSelectionDraftRefs.current[tab.key] = undefined
+      applySelectedRows([])
+    }
+
     const selectCurrentRow = (rowKey: string): void => {
-      updateSelectedRows([rowKey])
+      previewSelectedRows([rowKey])
     }
 
     const selectCurrentColumn = (column: string): void => {
@@ -1441,17 +1576,54 @@ function App(): React.JSX.Element {
       })
     }
 
-    const updateDragRowSelection = (rowKey: string): void => {
-      if (tab.dragSelection?.type !== 'row') {
+    const clearSelectedColumns = (): void => {
+      if (!tab.selectedColumns?.length && !Object.keys(tab.selectedColumnMap ?? {}).length) {
         return
       }
-      const keys = tableRows.map((row) => row.__rowKey)
-      const start = keys.indexOf(tab.dragSelection.anchor)
-      const end = keys.indexOf(rowKey)
+      updateWorkspaceTab(tab.key, { selectedColumns: [], selectedColumnMap: {} })
+    }
+
+    const toggleColumnSort = (column: string): void => {
+      const nextSort = !tab.sortState || tab.sortState.column !== column
+        ? { column, direction: 'ascend' as const }
+        : tab.sortState.direction === 'ascend'
+          ? { column, direction: 'descend' as const }
+          : undefined
+      updateWorkspaceTab(tab.key, { sortState: nextSort })
+    }
+
+    const updateColumnFilter = (column: string, values: string[]): void => {
+      const nextFilters = { ...(tab.columnFilters ?? {}) }
+      if (values.length === 0) {
+        delete nextFilters[column]
+      } else {
+        nextFilters[column] = values
+      }
+      updateWorkspaceTab(tab.key, { columnFilters: nextFilters })
+    }
+
+    const clearColumnFilter = (column: string): void => {
+      const nextFilters = { ...(tab.columnFilters ?? {}) }
+      delete nextFilters[column]
+      updateWorkspaceTab(tab.key, { columnFilters: nextFilters })
+    }
+
+    const updateDragRowSelection = (rowKey: string): void => {
+      const anchor = rowDragAnchorRefs.current[tab.key]
+      if (!anchor) {
+        return
+      }
+      const start = tableRows.findIndex((row) => row.__rowKey === anchor)
+      const end = tableRows.findIndex((row) => row.__rowKey === rowKey)
       if (start < 0 || end < 0) {
         return
       }
-      updateSelectedRows(keys.slice(Math.min(start, end), Math.max(start, end) + 1))
+      const nextSelected = tableRows.slice(Math.min(start, end), Math.max(start, end) + 1).map((row) => row.__rowKey)
+      const currentDraft = rowSelectionDraftRefs.current[tab.key]
+      if (currentDraft && currentDraft.length === nextSelected.length && currentDraft.every((key, index) => String(key) === String(nextSelected[index]))) {
+        return
+      }
+      previewSelectedRows(nextSelected)
     }
 
     const moveColumn = (fromColumn: string, toColumn: string): void => {
@@ -1469,6 +1641,93 @@ function App(): React.JSX.Element {
       updateWorkspaceTab(tab.key, { columnOrder: nextOrder, draggingColumn: undefined })
     }
 
+    const getColumnFilterOptions = (column: string): ColumnFilterOption[] => tab.columnFilterOptions?.[column] ?? []
+
+    const prepareColumnFilterOptions = (column: string): void => {
+      if (tab.columnFilterOptions?.[column]) {
+        return
+      }
+      updateWorkspaceTab(tab.key, {
+        columnFilterOptions: {
+          ...(tab.columnFilterOptions ?? {}),
+          [column]: buildColumnFilterOptions(baseTableRows, column)
+        }
+      })
+    }
+
+    const renderColumnTitle = (column: string): React.ReactNode => {
+      const filterOptions = getColumnFilterOptions(column)
+      const checkedValues = columnFilters[column] ?? []
+      const sortIcon = tab.sortState?.column === column
+        ? tab.sortState.direction === 'ascend'
+          ? <SortAscendingOutlined />
+          : <SortDescendingOutlined />
+        : <span className="column-sort-default-icon" aria-hidden="true">⇅</span>
+
+      return (
+        <Flex align="center" gap={4} className="column-header-content">
+          <button
+            type="button"
+            className={`column-select-button${selectedColumnMap[column] ? ' selected' : ''}${tab.draggingColumn === column ? ' dragging' : ''}`}
+            title="点击选中当前列，拖动可调整列顺序"
+            draggable
+            onClick={(event) => {
+              event.stopPropagation()
+              selectCurrentColumn(column)
+            }}
+            onDragStart={(event) => {
+              event.dataTransfer.effectAllowed = 'move'
+              event.dataTransfer.setData('text/plain', column)
+              updateWorkspaceTab(tab.key, { draggingColumn: column })
+            }}
+            onDragOver={(event) => {
+              event.preventDefault()
+              event.dataTransfer.dropEffect = 'move'
+            }}
+            onDrop={(event) => {
+              event.preventDefault()
+              moveColumn(event.dataTransfer.getData('text/plain') || tab.draggingColumn || column, column)
+            }}
+            onDragEnd={() => updateWorkspaceTab(tab.key, { draggingColumn: undefined })}
+          >
+            {column}
+          </button>
+          <button type="button" className={`column-sort-button${tab.sortState?.column === column ? ' active' : ''}`} title="切换排序" onClick={(event) => { event.stopPropagation(); toggleColumnSort(column) }}>
+            {sortIcon}
+          </button>
+          <Popover
+            trigger="click"
+            placement="bottomRight"
+            onOpenChange={(open) => {
+              if (open) {
+                prepareColumnFilterOptions(column)
+              }
+            }}
+            content={(
+              <Space direction="vertical" className="column-filter-popover">
+                <Typography.Text strong>{column} 筛选</Typography.Text>
+                <Checkbox.Group value={checkedValues} onChange={(values) => updateColumnFilter(column, values.map(String))}>
+                  <Space direction="vertical" className="column-filter-options">
+                    {filterOptions.length > 0 ? filterOptions.map((option) => (
+                      <Checkbox key={option.value} value={option.value}>{option.label} <Typography.Text type="secondary">({option.count})</Typography.Text></Checkbox>
+                    )) : <Typography.Text type="secondary">点击筛选后加载选项</Typography.Text>}
+                  </Space>
+                </Checkbox.Group>
+                <Flex justify="space-between" align="center">
+                  <Button size="small" type="link" onClick={() => updateColumnFilter(column, filterOptions.map((option) => option.value))} disabled={filterOptions.length === 0}>全选</Button>
+                  <Button size="small" type="link" onClick={() => clearColumnFilter(column)}>清空</Button>
+                </Flex>
+              </Space>
+            )}
+          >
+            <button type="button" className={`column-filter-button${checkedValues.length > 0 ? ' active' : ''}`} title="筛选本页数据" onClick={(event) => event.stopPropagation()}>
+              <FilterOutlined />
+            </button>
+          </Popover>
+        </Flex>
+      )
+    }
+
     const rowNumberColumn: ColumnsType<EditableRow>[number] = {
       title: <span className="row-number-header">#</span>,
       key: '__rowNumber',
@@ -1482,9 +1741,11 @@ function App(): React.JSX.Element {
             type="button"
             className={`row-number-button${selected ? ' selected' : ''}`}
             title="选中当前行，拖动可选择多行"
-            onMouseDown={() => {
+            onMouseDown={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              rowDragAnchorRefs.current[tab.key] = row.__rowKey
               selectCurrentRow(row.__rowKey)
-              updateWorkspaceTab(tab.key, { dragSelection: { type: 'row', anchor: row.__rowKey } })
             }}
             onMouseEnter={() => updateDragRowSelection(row.__rowKey)}
           >
@@ -1496,33 +1757,7 @@ function App(): React.JSX.Element {
 
     const dataColumns: ColumnsType<EditableRow> =
       orderedColumns.map((column) => ({
-        title: tab.kind === 'preview'
-          ? (
-            <button
-              type="button"
-              className={`column-select-button${selectedColumnMap[column] ? ' selected' : ''}${tab.draggingColumn === column ? ' dragging' : ''}`}
-              title="点击选中当前列，拖动可调整列顺序"
-              draggable
-              onClick={() => selectCurrentColumn(column)}
-              onDragStart={(event) => {
-                event.dataTransfer.effectAllowed = 'move'
-                event.dataTransfer.setData('text/plain', column)
-                updateWorkspaceTab(tab.key, { draggingColumn: column })
-              }}
-              onDragOver={(event) => {
-                event.preventDefault()
-                event.dataTransfer.dropEffect = 'move'
-              }}
-              onDrop={(event) => {
-                event.preventDefault()
-                moveColumn(event.dataTransfer.getData('text/plain') || tab.draggingColumn || column, column)
-              }}
-              onDragEnd={() => updateWorkspaceTab(tab.key, { draggingColumn: undefined })}
-            >
-              {column}
-            </button>
-          )
-          : column,
+        title: renderColumnTitle(column),
         dataIndex: column,
         key: column,
         width: 180,
@@ -1532,6 +1767,7 @@ function App(): React.JSX.Element {
       })) ?? []
     const tableColumns: ColumnsType<EditableRow> = tab.kind === 'preview' ? [rowNumberColumn, ...dataColumns] : dataColumns
     const tableScrollX = Math.max((tab.result?.columns.length ?? 0) * 180 + (tab.kind === 'preview' ? 34 : 0), 720)
+    const tableScrollY = tableBodyHeights[tab.key] ?? 320
 
     return (
       <div className="result-table-shell">
@@ -1539,7 +1775,28 @@ function App(): React.JSX.Element {
         {renderTableToolbar(tab)}
         {tab.error && <Alert message="执行失败" description={tab.error} type="error" showIcon />}
         {tab.result?.limited && <Alert message="还有更多数据，可点击下一页继续查看" type="warning" showIcon />}
-        <div ref={tableBodyRef} className="result-table-body" onMouseUp={() => updateWorkspaceTab(tab.key, { dragSelection: undefined })} onMouseLeave={() => updateWorkspaceTab(tab.key, { dragSelection: undefined })}>
+        <div
+          ref={(element) => { tableBodyRefs.current[tab.key] = element }}
+          className="result-table-body"
+          style={{ '--result-table-scroll-y': `${tableScrollY}px` } as React.CSSProperties}
+          onMouseDown={(event) => {
+            const target = event.target as HTMLElement
+            if (!target.closest('.row-number-button')) {
+              clearSelectedRows()
+            }
+            if (!target.closest('.column-header-content')) {
+              clearSelectedColumns()
+            }
+          }}
+          onMouseUp={() => {
+            rowDragAnchorRefs.current[tab.key] = undefined
+            commitPreviewSelectedRows()
+          }}
+          onMouseLeave={() => {
+            rowDragAnchorRefs.current[tab.key] = undefined
+            commitPreviewSelectedRows()
+          }}
+        >
           <Table
             className="result-table"
             rowClassName={(row) => [
@@ -1552,9 +1809,9 @@ function App(): React.JSX.Element {
             dataSource={tableRows}
             rowKey="__rowKey"
             pagination={false}
-            scroll={{ x: tableScrollX, y: tableBodyHeight }}
+            scroll={{ x: tableScrollX, y: tableScrollY }}
             tableLayout="fixed"
-            virtual={tableRows.length > 80}
+            virtual
             locale={{ emptyText: tab.kind === 'query' ? '暂无查询结果' : '暂无表数据' }}
           />
         </div>
@@ -1563,7 +1820,7 @@ function App(): React.JSX.Element {
   }
 
   const getDefaultDatabaseName = (connection: ConnectionInfo): string | undefined => {
-    if (connection.database_type !== 'mysql') {
+    if (connection.database_type !== 'mysql' && connection.database_type !== 'mongodb') {
       return undefined
     }
 
@@ -1651,6 +1908,7 @@ function App(): React.JSX.Element {
       const isMysql = connection?.database_type === 'mysql'
       const isDm = connection?.database_type === 'dm'
       const isPg = connection?.database_type === 'postgresql'
+      const isMongo = connection?.database_type === 'mongodb'
       const dbOptions = tab.connectionId ? (allDatabases[tab.connectionId] ?? []) : []
       const schemaKey = tab.connectionId && tab.pgDatabaseName ? `${tab.connectionId}:${tab.pgDatabaseName}` : ''
       const schemaOptions = schemaKey ? (allSchemas[schemaKey] ?? []) : []
@@ -1665,7 +1923,7 @@ function App(): React.JSX.Element {
               onChange={(connectionId) => {
                 const nextConn = getConnection(connectionId)
                 void ensureDatabasesLoaded(connectionId)
-                const nextDb = nextConn?.database_type === 'mysql' ? getDefaultDatabaseName(nextConn) : undefined
+                const nextDb = nextConn?.database_type === 'mysql' || nextConn?.database_type === 'mongodb' ? getDefaultDatabaseName(nextConn) : undefined
                 const nextPgDb = nextConn?.database_type === 'postgresql' ? getDefaultPgDatabase(nextConn!) : undefined
                 updateWorkspaceTab(tab.key, {
                   connectionId,
@@ -1673,16 +1931,16 @@ function App(): React.JSX.Element {
                   pgDatabaseName: nextPgDb
                 })
 
-                if (nextConn?.database_type === 'mysql' && nextDb) {
+                if ((nextConn?.database_type === 'mysql' || nextConn?.database_type === 'mongodb') && nextDb) {
                   void preloadCompletionForDatabase(connectionId, nextDb)
                 }
               }}
               options={connections.map((c) => ({ label: c.name, value: c.connection_id }))}
             />
-            {(isMysql || isPg || isDm) && (
+            {(isMysql || isPg || isDm || isMongo) && (
               <Select
                 className="database-select"
-                placeholder={isPg ? '选择 Database' : isDm ? '选择 Schema' : '选择库'}
+                placeholder={isPg ? '选择 Database' : isDm ? '选择 Schema' : isMongo ? '选择数据库' : '选择库'}
                 value={isPg ? (tab.pgDatabaseName || undefined) : (tab.databaseName || undefined)}
                 onChange={async (value) => {
                   if (isPg) {
@@ -1759,7 +2017,7 @@ function App(): React.JSX.Element {
     setSelectedConnectionId((current) => current ?? data.connections[0]?.connection_id)
 
     for (const connection of data.connections) {
-      if (connection.is_open && (connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm')) {
+      if (connection.is_open && (connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm' || connection.database_type === 'mongodb')) {
         try {
           const dbData = await requestJson<{ databases: DatabaseInfo[] }>(`/connections/${connection.connection_id}/databases`)
           const dbNames = dbData.databases.map((d) => d.name)
@@ -1796,7 +2054,7 @@ function App(): React.JSX.Element {
     if (node.kind === 'connection' && node.connectionId) {
       const connection = getConnection(node.connectionId)
 
-      if (connection?.database_type !== 'mysql' && connection?.database_type !== 'postgresql' && connection?.database_type !== 'dm') {
+      if (connection?.database_type !== 'mysql' && connection?.database_type !== 'postgresql' && connection?.database_type !== 'dm' && connection?.database_type !== 'mongodb') {
         return []
       }
 
@@ -1983,6 +2241,8 @@ function App(): React.JSX.Element {
   }
 
   const toggleOrLoadTreeNode = (node: DatabaseTreeNode): void => {
+    activateAIContextFromNode(node)
+
     if (!node.key || !isLoadableTreeNode(node)) {
       return
     }
@@ -2008,23 +2268,6 @@ function App(): React.JSX.Element {
 
     if (children.length > 0) {
       setTreeData((current) => updateTreeNode(current, node.key, children))
-    }
-  }
-
-  const showConnectionPassword = async (connection: ConnectionInfo): Promise<void> => {
-    setPasswordModalTitle(connection.name)
-    setVisiblePassword('')
-    setPasswordModalOpen(true)
-    setPasswordLoading(true)
-
-    try {
-      const data = await requestJson<{ password: string }>(`/connections/${connection.connection_id}/password`)
-      setVisiblePassword(data.password)
-    } catch (err) {
-      showError(err instanceof Error ? err.message : '读取密码失败')
-      setPasswordModalOpen(false)
-    } finally {
-      setPasswordLoading(false)
     }
   }
 
@@ -2055,6 +2298,14 @@ function App(): React.JSX.Element {
         port: 5236,
         username: 'SYSDBA',
         dm_driver_path: await window.api.getDmDriverPath() ?? undefined
+      })
+    } else if (nextDatabaseType === 'mongodb') {
+      form.setFieldsValue({
+        database_type: 'mongodb',
+        name: 'MongoDB',
+        host: '127.0.0.1',
+        port: 27017,
+        database: 'admin'
       })
     } else {
       form.setFieldsValue({
@@ -2090,7 +2341,8 @@ function App(): React.JSX.Element {
       { key: 'sqlite', label: 'SQLite', icon: <img src={sqliteIcon} alt="" style={{ width: 16, height: 16 }} /> },
       { key: 'mysql', label: 'MySQL', icon: <img src={mysqlIcon} alt="" style={{ width: 16, height: 16 }} /> },
       { key: 'postgresql', label: 'PostgreSQL', icon: <img src={postgresIcon} alt="" style={{ width: 16, height: 16 }} /> },
-      { key: 'dm', label: '达梦', icon: <img src={dmIcon} alt="" style={{ width: 16, height: 16 }} /> }
+      { key: 'dm', label: '达梦', icon: <img src={dmIcon} alt="" style={{ width: 16, height: 16 }} /> },
+      { key: 'mongodb', label: 'MongoDB', icon: <img src={mongoIcon} alt="" style={{ width: 16, height: 16 }} /> }
     ],
     onClick: ({ key }: { key: string }) => void openConnectionModal(key as DatabaseType)
   }
@@ -2126,6 +2378,18 @@ function App(): React.JSX.Element {
         password: values.password,
         database: values.database,
         dm_driver_path: values.dm_driver_path
+      }
+    }
+
+    if (values.database_type === 'mongodb') {
+      return {
+        name: values.name,
+        database_type: 'mongodb',
+        host: values.host,
+        port: values.port,
+        username: values.username,
+        password: values.password,
+        database: values.database
       }
     }
 
@@ -2247,6 +2511,91 @@ function App(): React.JSX.Element {
     refreshTree(nextConnections)
   }
 
+  const showObjectDdl = async (connectionId: string, name: string, type: DbObjectType, databaseName?: string, pgDatabaseName?: string): Promise<void> => {
+    setDdlModalTitle(`${name} DDL`)
+    setDdlContent('')
+    setDdlLoading(true)
+    setDdlModalOpen(true)
+
+    const params = new URLSearchParams({ type })
+    if (databaseName) {
+      params.set('database', databaseName)
+    }
+    if (pgDatabaseName) {
+      params.set('pg_database', pgDatabaseName)
+    }
+
+    try {
+      const result = await requestJson<ObjectDdlResponse>(`/connections/${connectionId}/objects/${encodeURIComponent(name)}/ddl?${params.toString()}`)
+      setDdlContent(result.ddl)
+    } catch (err) {
+      setDdlModalOpen(false)
+      showError(err instanceof Error ? err.message : '获取 DDL 失败')
+    } finally {
+      setDdlLoading(false)
+    }
+  }
+
+  const deleteDatabase = (connectionId: string, databaseName: string): void => {
+    Modal.confirm({
+      title: `确认删除数据库：${databaseName}？`,
+      content: '删除数据库会永久删除其中所有对象和数据，操作不可撤销。',
+      okText: '删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      centered: true,
+      onOk: async () => {
+        try {
+          await requestJson(`/connections/${connectionId}/databases/${encodeURIComponent(databaseName)}`, { method: 'DELETE' })
+          setSelectedDatabases((current) => {
+            const nextList = (current[connectionId] ?? []).filter((name) => name !== databaseName)
+            return { ...current, [connectionId]: nextList }
+          })
+          setWorkspaceTabs((current) => current.filter((tab) => tab.connectionId !== connectionId || tab.databaseName !== databaseName))
+          refreshConnectionNode(connectionId)
+          messageApi.success('数据库删除成功')
+        } catch (err) {
+          showError(err instanceof Error ? err.message : '删除数据库失败')
+        }
+      }
+    })
+  }
+
+  const deleteDbObject = (connectionId: string, objectName: string, objectType: DbObjectType, databaseName?: string, pgDatabaseName?: string): void => {
+    Modal.confirm({
+      title: `确认删除${objectType === 'view' ? '视图' : '表'}：${objectName}？`,
+      content: '删除后数据无法恢复，操作不可撤销。',
+      okText: '删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      centered: true,
+      onOk: async () => {
+        const params = new URLSearchParams({ type: objectType })
+        if (databaseName) {
+          params.set('database', databaseName)
+        }
+        if (pgDatabaseName) {
+          params.set('pg_database', pgDatabaseName)
+        }
+
+        try {
+          await requestJson(`/connections/${connectionId}/objects/${encodeURIComponent(objectName)}?${params.toString()}`, { method: 'DELETE' })
+          setWorkspaceTabs((current) => current.filter((tab) => tab.connectionId !== connectionId || tab.tableName !== objectName || tab.databaseName !== databaseName || tab.pgDatabaseName !== pgDatabaseName))
+          if (pgDatabaseName) {
+            refreshDatabaseNode(connectionId, pgDatabaseName)
+          } else if (databaseName) {
+            refreshDatabaseNode(connectionId, databaseName)
+          } else {
+            refreshConnectionNode(connectionId)
+          }
+          messageApi.success('对象删除成功')
+        } catch (err) {
+          showError(err instanceof Error ? err.message : '删除对象失败')
+        }
+      }
+    })
+  }
+
   const createDatabase = async (): Promise<void> => {
     if (!ensureConnectionOpen(creatingDatabaseConnectionId)) {
       return
@@ -2359,21 +2708,25 @@ function App(): React.JSX.Element {
     const isPg = conn?.database_type === 'postgresql'
 
     try {
-      const columnDefs = validColumns.map((col) => {
-        const parts: string[] = [col.name, col.type]
+      const sql = conn?.database_type === 'mongodb'
+        ? `db.createCollection("${newTableName.trim().replaceAll('"', '\\"')}")`
+        : (() => {
+            const columnDefs = validColumns.map((col) => {
+              const parts: string[] = [col.name, col.type]
 
-        if (!col.nullable) {
-          parts.push('NOT NULL')
-        }
+              if (!col.nullable) {
+                parts.push('NOT NULL')
+              }
 
-        if (col.primaryKey) {
-          parts.push('PRIMARY KEY')
-        }
+              if (col.primaryKey) {
+                parts.push('PRIMARY KEY')
+              }
 
-        return parts.join(' ')
-      })
+              return parts.join(' ')
+            })
 
-      const sql = `CREATE TABLE ${newTableName.trim()} (\n  ${columnDefs.join(',\n  ')}\n);`
+            return `CREATE TABLE ${newTableName.trim()} (\n  ${columnDefs.join(',\n  ')}\n);`
+          })()
 
       const result = await requestJson<SqlFileRunResponse>(`/connections/${createTableConnectionId}/sql-file`, {
         method: 'POST',
@@ -2433,7 +2786,7 @@ function App(): React.JSX.Element {
     let defaultDb = databaseName ?? ''
     let defaultPgDb = pgDatabaseName ?? ''
 
-    if (connection?.database_type === 'mysql' || connection?.database_type === 'postgresql') {
+    if (connection?.database_type === 'mysql' || connection?.database_type === 'postgresql' || connection?.database_type === 'mongodb') {
       try {
         const data = await requestJson<{ databases: DatabaseInfo[] }>(`/connections/${connectionId}/databases`)
         databases = data.databases
@@ -2611,6 +2964,7 @@ function App(): React.JSX.Element {
 
         return {
           ...tab,
+          columnFilterOptions: undefined,
           editingCell: undefined,
           editRows: tab.editRows?.map((row) => {
             if (row.__rowKey !== rowKey) {
@@ -2638,7 +2992,7 @@ function App(): React.JSX.Element {
       __rowKey: `new:${Date.now()}`,
       __state: 'inserted'
     })
-    updateWorkspaceTab(tab.key, { editRows: [...(tab.editRows ?? []), row] })
+    updateWorkspaceTab(tab.key, { editRows: [...(tab.editRows ?? []), row], columnFilterOptions: undefined })
   }
 
   const markSelectedRowsDeleted = (tab: WorkspaceTab): void => {
@@ -2646,7 +3000,7 @@ function App(): React.JSX.Element {
     const editRows = (tab.editRows ?? [])
       .filter((row) => !(row.__state === 'inserted' && selected.has(row.__rowKey)))
       .map((row) => (selected.has(row.__rowKey) ? { ...row, __deleted: true } : row))
-    updateWorkspaceTab(tab.key, { editRows, selectedRowKeys: [], selectedRowKeyMap: {} })
+    updateWorkspaceTab(tab.key, { editRows, selectedRowKeys: [], selectedRowKeyMap: {}, columnFilterOptions: undefined })
   }
 
   const submitPreviewChanges = async (tab: WorkspaceTab): Promise<void> => {
@@ -2672,7 +3026,7 @@ function App(): React.JSX.Element {
         method: 'PUT',
         body: JSON.stringify({ inserted, updated, deleted })
       })
-      updateWorkspaceTab(tab.key, { result, editRows: buildEditableRows(result.rows), selectedRowKeys: [], selectedRowKeyMap: {}, editingCell: undefined, loading: false, error: undefined })
+      updateWorkspaceTab(tab.key, { result, editRows: buildEditableRows(result.rows), selectedRowKeys: [], selectedRowKeyMap: {}, columnFilterOptions: undefined, editingCell: undefined, loading: false, error: undefined })
     } catch (err) {
       updateWorkspaceTab(tab.key, { loading: false, error: err instanceof Error ? err.message : '提交表数据失败' })
       showError(err instanceof Error ? err.message : '提交表数据失败')
@@ -2715,7 +3069,7 @@ function App(): React.JSX.Element {
 
     try {
       const result = await requestJson<QueryResponse>(withPageQuery(withPgDatabase(`/connections/${connectionId}/tables/${encodeURIComponent(tableName)}/preview`, databaseName, pgDatabaseName), limit, page))
-      updateWorkspaceTab(tabKey, { result, editRows: buildEditableRows(result.rows), selectedRowKeys: [], selectedRowKeyMap: {}, editingCell: undefined, loading: false, error: undefined })
+      updateWorkspaceTab(tabKey, { result, editRows: buildEditableRows(result.rows), selectedRowKeys: [], selectedRowKeyMap: {}, columnFilterOptions: undefined, editingCell: undefined, loading: false, error: undefined })
     } catch (err) {
       updateWorkspaceTab(tabKey, { loading: false, error: err instanceof Error ? err.message : '加载表数据失败' })
       showError(err instanceof Error ? err.message : '加载表数据失败')
@@ -2731,7 +3085,7 @@ function App(): React.JSX.Element {
     let finalDb = databaseName
     let finalPgDb = pgDatabaseName
 
-    if (connection?.database_type === 'mysql' && !finalDb) {
+    if ((connection?.database_type === 'mysql' || connection?.database_type === 'mongodb') && !finalDb) {
       finalDb = getDefaultDatabaseName(connection)
     }
 
@@ -2767,7 +3121,7 @@ function App(): React.JSX.Element {
     if (connId) {
       void ensureDatabasesLoaded(connId)
 
-      if (connection?.database_type === 'mysql' && finalDb) {
+      if ((connection?.database_type === 'mysql' || connection?.database_type === 'mongodb') && finalDb) {
         void preloadCompletionForDatabase(connId, finalDb)
       }
 
@@ -2798,6 +3152,23 @@ function App(): React.JSX.Element {
     }
 
     openQueryWorkspace(nextSql, title ?? 'AI 生成 SQL', aiActiveContext?.connectionId, aiActiveContext?.databaseName, aiActiveContext?.pgDatabaseName)
+  }
+
+  const refreshAfterAgentChange = (): void => {
+    if (aiActiveContext?.connectionId) {
+      if (aiActiveContext.pgDatabaseName) {
+        refreshDatabaseNode(aiActiveContext.connectionId, aiActiveContext.pgDatabaseName)
+      } else if (aiActiveContext.databaseName) {
+        refreshDatabaseNode(aiActiveContext.connectionId, aiActiveContext.databaseName)
+      } else {
+        refreshConnectionNode(aiActiveContext.connectionId)
+      }
+    }
+
+    const activePreview = workspaceTabs.find((tab) => tab.key === activeTabKey && tab.kind === 'preview' && tab.connectionId && tab.tableName)
+    if (activePreview?.connectionId && activePreview.tableName) {
+      void previewTable(activePreview.connectionId, activePreview.tableName, activePreview.databaseName, activePreview.pgDatabaseName, activePreview.limit, activePreview.page)
+    }
   }
 
   const changeTabLimit = async (tab: WorkspaceTab, limit: number): Promise<void> => {
@@ -2840,7 +3211,7 @@ function App(): React.JSX.Element {
 
     const connection = getConnection(tab.connectionId)
 
-    if (connection?.database_type === 'mysql' && !tab.databaseName) {
+    if ((connection?.database_type === 'mysql' || connection?.database_type === 'mongodb') && !tab.databaseName) {
       return
     }
 
@@ -2863,11 +3234,11 @@ function App(): React.JSX.Element {
           sql: sqlToExecute,
           limit: tab.limit ?? 1000,
           offset: Math.max(0, (tab.page ?? 1) - 1) * (tab.limit ?? 1000),
-          database: connection?.database_type === 'mysql' ? (tab.databaseName || undefined) : undefined,
+          database: connection?.database_type === 'mysql' || connection?.database_type === 'postgresql' || connection?.database_type === 'mongodb' ? (tab.databaseName || undefined) : undefined,
           pg_database: connection?.database_type === 'postgresql' ? (tab.pgDatabaseName || undefined) : undefined
         })
       })
-      updateWorkspaceTab(tab.key, { result, page: tab.page ?? 1, loading: false, error: undefined })
+      updateWorkspaceTab(tab.key, { result, page: tab.page ?? 1, selectedRowKeys: [], selectedRowKeyMap: {}, columnFilterOptions: undefined, loading: false, error: undefined })
     } catch (err) {
       updateWorkspaceTab(tab.key, { loading: false, error: err instanceof Error ? err.message : '查询失败' })
       showError(err instanceof Error ? err.message : '查询失败')
@@ -3064,6 +3435,8 @@ function App(): React.JSX.Element {
                   expandedKeys={expandedKeys}
                   onExpand={(keys, info) => {
                     const node = info.node as DatabaseTreeNode
+                    setFocusedTreeNode(node)
+                    activateAIContextFromNode(node)
                     if (!info.expanded) {
                       collapseTreeNode(node)
                       return
@@ -3090,6 +3463,7 @@ function App(): React.JSX.Element {
                       activateAIContextFromNode(treeNode)
                     }
                     if ((treeNode.kind === 'table' || treeNode.kind === 'db-object') && treeNode.connectionId && treeNode.tableName && (treeNode.objectType === 'table' || treeNode.objectType === 'view')) {
+                      activateAIContextFromNode(treeNode)
                       void previewTable(treeNode.connectionId, treeNode.tableName, treeNode.databaseName, treeNode.pgDatabaseName)
                       return
                     }
@@ -3159,6 +3533,7 @@ function App(): React.JSX.Element {
                           appendSqlToQueryWorkspace(action.sql, action.title)
                         }
                       }}
+                      onAgentDataChanged={refreshAfterAgentChange}
                     />
                   </Splitter.Panel>
                 )}
@@ -3170,10 +3545,6 @@ function App(): React.JSX.Element {
       <Modal title={editingTableName ? `修改表：${editingTableName}` : '修改表'} open={tableEditorOpen} okText="保存" cancelText="取消" confirmLoading={tableEditorLoading} onOk={() => void saveTableEditor()} onCancel={() => setTableEditorOpen(false)} width={760}>
         <Alert message="支持 SQLite/MySQL 修改已有字段的类型、可空和单字段主键；当前不支持新增、删除或重命名字段。" type="warning" showIcon />
         <Table className="table-editor-grid" size="small" loading={tableEditorLoading} rowKey="name" pagination={false} dataSource={editingColumns} columns={[{ title: '字段名', dataIndex: 'name', key: 'name', render: (value: string) => <Input value={value} disabled /> }, { title: '类型', dataIndex: 'type', key: 'type', render: (value: string, column: ColumnInfo) => <Input value={value} onChange={(event) => { setEditingColumns((current) => current.map((item) => (item.name === column.name ? { ...item, type: event.target.value } : item))) }} /> }, { title: '可空', dataIndex: 'nullable', key: 'nullable', width: 90, render: (value: boolean, column: ColumnInfo) => <Switch checked={value} disabled={column.primary_key} onChange={(checked) => { setEditingColumns((current) => current.map((item) => (item.name === column.name ? { ...item, nullable: checked } : item))) }} /> }, { title: '主键', dataIndex: 'primary_key', key: 'primary_key', width: 90, render: (value: boolean, column: ColumnInfo) => <Switch checked={value} onChange={(checked) => { setEditingColumns((current) => current.map((item) => ({ ...item, primary_key: item.name === column.name ? checked : false }))) }} /> }]} />
-      </Modal>
-      <Modal title={passwordModalTitle ? `查看密码：${passwordModalTitle}` : '查看密码'} open={passwordModalOpen} footer={null} onCancel={() => setPasswordModalOpen(false)}>
-        <Alert message="密码使用当前 Windows 用户凭据加密保存在本机，仅当前系统用户可解密。" type="info" showIcon />
-        <Input.Password className="password-viewer" value={passwordLoading ? '读取中...' : visiblePassword} readOnly />
       </Modal>
       <Modal title={creatingSchemaDatabaseName ? '新建模式' : '新增数据库'} open={databaseCreateModalOpen} okText="创建" cancelText="取消" confirmLoading={databaseCreateLoading} onOk={() => void createDatabase()} onCancel={() => { setDatabaseCreateModalOpen(false); setCreatingSchemaDatabaseName('') }} okButtonProps={{ disabled: !databaseCreateName.trim() }}>
         <Form layout="vertical">
@@ -3209,13 +3580,20 @@ function App(): React.JSX.Element {
           </Space>
         )}
       </Modal>
-      <Modal title="新建表" open={createTableModalOpen} okText="创建" cancelText="取消" confirmLoading={createTableLoading} onOk={() => void createTable()} onCancel={() => setCreateTableModalOpen(false)} width={680} okButtonProps={{ disabled: !newTableName.trim() || newTableColumns.filter((c) => c.name.trim()).length === 0 }}>
+      <Modal title={ddlModalTitle || '查看 DDL'} open={ddlModalOpen} footer={null} onCancel={() => setDdlModalOpen(false)} width={820} centered>
+        <Input.TextArea value={ddlLoading ? '加载中...' : ddlContent} autoSize={{ minRows: 12, maxRows: 24 }} readOnly />
+      </Modal>
+      <Modal title={getConnection(createTableConnectionId)?.database_type === 'mongodb' ? '新建集合' : '新建表'} open={createTableModalOpen} okText="创建" cancelText="取消" confirmLoading={createTableLoading} onOk={() => void createTable()} onCancel={() => setCreateTableModalOpen(false)} width={680} okButtonProps={{ disabled: !newTableName.trim() || (getConnection(createTableConnectionId)?.database_type !== 'mongodb' && newTableColumns.filter((c) => c.name.trim()).length === 0) }}>
         <Form layout="vertical">
-          <Form.Item label="表名" required><Input placeholder="请输入表名" value={newTableName} onChange={(event) => setNewTableName(event.target.value)} /></Form.Item>
-          <Form.Item label="字段定义">
-            <Table size="small" rowKey="key" pagination={false} dataSource={newTableColumns} columns={[{ title: '字段名', dataIndex: 'name', width: 160, render: (value: string, col: ColumnDef) => <Input size="small" value={value} placeholder="字段名" onChange={(event) => updateNewColumn(col.key, { name: event.target.value })} /> }, { title: '类型', dataIndex: 'type', width: 160, render: (value: string, col: ColumnDef) => <Select size="small" style={{ width: '100%' }} value={value} onChange={(v) => updateNewColumn(col.key, { type: v })} options={COMMON_TYPES.map((t) => ({ label: t, value: t }))} /> }, { title: '可空', dataIndex: 'nullable', width: 60, render: (value: boolean, col: ColumnDef) => <Switch size="small" checked={value} disabled={col.primaryKey} onChange={(checked) => updateNewColumn(col.key, { nullable: checked })} /> }, { title: '主键', dataIndex: 'primaryKey', width: 60, render: (value: boolean, col: ColumnDef) => <Switch size="small" checked={value} onChange={(checked) => updateNewColumn(col.key, { primaryKey: checked, nullable: checked ? false : col.nullable })} /> }, { title: '', width: 40, render: (_: unknown, col: ColumnDef) => <Button type="text" danger size="small" icon={<DeleteOutlined />} onClick={() => removeNewColumn(col.key)} /> }]} />
-          </Form.Item>
-          <Button type="dashed" block icon={<PlusOutlined />} onClick={addNewColumn}>添加字段</Button>
+          <Form.Item label={getConnection(createTableConnectionId)?.database_type === 'mongodb' ? '集合名' : '表名'} required><Input placeholder={getConnection(createTableConnectionId)?.database_type === 'mongodb' ? '请输入集合名' : '请输入表名'} value={newTableName} onChange={(event) => setNewTableName(event.target.value)} /></Form.Item>
+          {getConnection(createTableConnectionId)?.database_type !== 'mongodb' && (
+            <>
+              <Form.Item label="字段定义">
+                <Table size="small" rowKey="key" pagination={false} dataSource={newTableColumns} columns={[{ title: '字段名', dataIndex: 'name', width: 160, render: (value: string, col: ColumnDef) => <Input size="small" value={value} placeholder="字段名" onChange={(event) => updateNewColumn(col.key, { name: event.target.value })} /> }, { title: '类型', dataIndex: 'type', width: 160, render: (value: string, col: ColumnDef) => <Select size="small" style={{ width: '100%' }} value={value} onChange={(v) => updateNewColumn(col.key, { type: v })} options={COMMON_TYPES.map((t) => ({ label: t, value: t }))} /> }, { title: '可空', dataIndex: 'nullable', width: 60, render: (value: boolean, col: ColumnDef) => <Switch size="small" checked={value} disabled={col.primaryKey} onChange={(checked) => updateNewColumn(col.key, { nullable: checked })} /> }, { title: '主键', dataIndex: 'primaryKey', width: 60, render: (value: boolean, col: ColumnDef) => <Switch size="small" checked={value} onChange={(checked) => updateNewColumn(col.key, { primaryKey: checked, nullable: checked ? false : col.nullable })} /> }, { title: '', width: 40, render: (_: unknown, col: ColumnDef) => <Button type="text" danger size="small" icon={<DeleteOutlined />} onClick={() => removeNewColumn(col.key)} /> }]} />
+              </Form.Item>
+              <Button type="dashed" block icon={<PlusOutlined />} onClick={addNewColumn}>添加字段</Button>
+            </>
+          )}
         </Form>
       </Modal>
       <Modal title={connectionMode === 'edit' ? '编辑数据库连接' : '新建数据库连接'} open={connectionModalOpen} okText={connectionMode === 'edit' ? '保存修改' : '创建连接'} cancelText="取消" confirmLoading={connectionLoading} onOk={() => void saveConnection()} onCancel={() => setConnectionModalOpen(false)} footer={(_, { OkBtn, CancelBtn }) => (<Space><Button loading={testingConnection} onClick={() => void testConnection()}>测试连接</Button><CancelBtn /><OkBtn /></Space>)}>
@@ -3227,10 +3605,10 @@ function App(): React.JSX.Element {
           ) : (
             <>
               <Form.Item name="host" label="主机" rules={[{ required: true, message: '请输入主机' }]}><Input placeholder="127.0.0.1" /></Form.Item>
-              <Form.Item name="port" label="端口" rules={[{ required: true, message: '请输入端口' }]}><InputNumber min={1} max={65535} className="full-width" placeholder={databaseType === 'postgresql' ? '5432' : databaseType === 'dm' ? '5236' : '3306'} /></Form.Item>
-              <Form.Item name="username" label="用户名" rules={[{ required: true, message: '请输入用户名' }]}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'dm' ? 'SYSDBA' : undefined} /></Form.Item>
+              <Form.Item name="port" label="端口" rules={[{ required: true, message: '请输入端口' }]}><InputNumber min={1} max={65535} className="full-width" placeholder={databaseType === 'postgresql' ? '5432' : databaseType === 'dm' ? '5236' : databaseType === 'mongodb' ? '27017' : '3306'} /></Form.Item>
+              <Form.Item name="username" label="用户名" rules={databaseType === 'mongodb' ? undefined : [{ required: true, message: '请输入用户名' }]}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'dm' ? 'SYSDBA' : undefined} /></Form.Item>
               <Form.Item name="password" label="密码"><Input.Password /></Form.Item>
-              <Form.Item name="database" label={databaseType === 'postgresql' ? '数据库名' : databaseType === 'dm' ? '默认 Schema（可选）' : '默认数据库（可选）'} rules={databaseType === 'postgresql' ? [{ required: true, message: '请输入数据库名' }] : undefined}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'dm' ? '不填则使用默认 Schema' : '不填则连接服务器并加载全部数据库'} /></Form.Item>
+              <Form.Item name="database" label={databaseType === 'postgresql' ? '数据库名' : databaseType === 'dm' ? '默认 Schema（可选）' : databaseType === 'mongodb' ? '认证库/默认库（可选）' : '默认数据库（可选）'} rules={databaseType === 'postgresql' ? [{ required: true, message: '请输入数据库名' }] : undefined}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'dm' ? '不填则使用默认 Schema' : databaseType === 'mongodb' ? '默认 admin；也可填业务库名' : '不填则连接服务器并加载全部数据库'} /></Form.Item>
               {databaseType === 'dm' && (
                 <Form.Item name="dm_driver_path" label="达梦驱动文件" rules={[{ required: true, message: '请选择达梦驱动文件' }]}>
                   <Input readOnly placeholder="请选择 dmPython .pyd 或达梦 .dll 文件" addonAfter={<Button type="link" size="small" onClick={() => void selectDmDriverFile()}>选择</Button>} />

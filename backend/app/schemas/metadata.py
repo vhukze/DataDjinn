@@ -80,5 +80,9 @@ class DbObjectsResponse(BaseModel):
     objects: list[DbObjectInfo]
 
 
+class ObjectDdlResponse(BaseModel):
+    ddl: str
+
+
 class ColumnsResponse(BaseModel):
     columns: list[ColumnInfo]

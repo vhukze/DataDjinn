@@ -2,6 +2,7 @@ import re
 
 from sqlalchemy import Engine, inspect, text
 
+from app.db.mongo_utils import is_mongo_client, mongo_default_database, mongo_value_type
 from app.schemas.metadata import ColumnInfo, DatabaseInfo, DbObjectInfo, TableDataChangeRequest, TableInfo, TableUpdateColumn
 
 COLUMN_TYPE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_ (),]*$")
@@ -36,6 +37,19 @@ def _pg_engine(engine: Engine, database_name: str) -> Engine:
 
 
 def list_databases(engine: Engine) -> list[DatabaseInfo]:
+    if is_mongo_client(engine):
+        databases = []
+        for name in engine.list_database_names():
+            stats = engine[name].command("dbStats")
+            databases.append(DatabaseInfo(
+                name=name,
+                size_bytes=int(stats.get("dataSize", 0) or 0),
+                size_display=format_size(int(stats.get("dataSize", 0) or 0)),
+                storage_size_bytes=int(stats.get("storageSize", 0) or 0),
+                storage_size_display=format_size(int(stats.get("storageSize", 0) or 0)),
+            ))
+        return databases
+
     if engine.dialect.name == "mysql":
         with engine.connect() as connection:
             rows = connection.execute(
@@ -164,6 +178,10 @@ def list_schemas(engine: Engine, database_name: str | None = None) -> list[Datab
 
 
 def create_database(engine: Engine, database_name: str) -> DatabaseInfo:
+    if is_mongo_client(engine):
+        engine[database_name].create_collection("__datadjinn_init__")
+        return DatabaseInfo(name=database_name)
+
     if engine.dialect.name not in {"mysql", "postgresql"}:
         raise ValueError("SQLite 请通过新增文件连接创建数据库")
 
@@ -178,6 +196,24 @@ def create_database(engine: Engine, database_name: str) -> DatabaseInfo:
             connection.execute(text(f"CREATE DATABASE {quoted}"))
 
     return DatabaseInfo(name=database_name)
+
+
+def drop_database(engine: Engine, database_name: str) -> None:
+    if is_mongo_client(engine):
+        engine.drop_database(database_name)
+        return
+
+    if engine.dialect.name == "postgresql":
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
+            connection.execute(text(f"DROP DATABASE {engine.dialect.identifier_preparer.quote(database_name)}"))
+        return
+
+    if engine.dialect.name == "mysql":
+        with engine.begin() as connection:
+            connection.execute(text(f"DROP DATABASE {engine.dialect.identifier_preparer.quote(database_name)}"))
+        return
+
+    raise ValueError("当前数据库类型不支持删除数据库")
 
 
 def create_schema(engine: Engine, database_name: str, schema_name: str) -> DatabaseInfo:
@@ -199,6 +235,23 @@ def create_schema(engine: Engine, database_name: str, schema_name: str) -> Datab
 
 
 def list_tables(engine: Engine, database_name: str | None = None, pg_database: str | None = None) -> list[TableInfo]:
+    if is_mongo_client(engine):
+        target_db = database_name or mongo_default_database(engine)
+        if not target_db:
+            return []
+        tables = []
+        for name in engine[target_db].list_collection_names():
+            stats = engine[target_db].command("collStats", name)
+            tables.append(TableInfo(
+                name=name,
+                row_count=int(stats.get("count", 0) or 0),
+                size_bytes=int(stats.get("size", 0) or 0),
+                size_display=format_size(int(stats.get("size", 0) or 0)),
+                storage_size_bytes=int(stats.get("storageSize", 0) or 0),
+                storage_size_display=format_size(int(stats.get("storageSize", 0) or 0)),
+            ))
+        return tables
+
     if pg_database and engine.dialect.name == "postgresql":
         engine = _pg_engine(engine, pg_database)
 
@@ -310,6 +363,11 @@ def list_tables(engine: Engine, database_name: str | None = None, pg_database: s
 def list_db_objects(engine: Engine, database_name: str | None = None, pg_database: str | None = None, object_type: str | None = None) -> list[DbObjectInfo]:
     objects: list[DbObjectInfo] = []
 
+    if is_mongo_client(engine):
+        if object_type not in {None, "table"}:
+            return []
+        return [DbObjectInfo(type="table", **table.model_dump()) for table in list_tables(engine, database_name, pg_database)]
+
     if object_type in {None, "table"}:
         objects.extend(DbObjectInfo(type="table", **table.model_dump()) for table in list_tables(engine, database_name, pg_database))
 
@@ -396,6 +454,16 @@ def list_db_objects(engine: Engine, database_name: str | None = None, pg_databas
 
 
 def list_columns(engine: Engine, table_name: str, database_name: str | None = None, pg_database: str | None = None) -> list[ColumnInfo]:
+    if is_mongo_client(engine):
+        target_db = database_name or mongo_default_database(engine)
+        if not target_db:
+            return []
+        fields: dict[str, str] = {}
+        for document in engine[target_db][table_name].find({}, limit=100):
+            for key, value in document.items():
+                fields.setdefault(str(key), mongo_value_type(value))
+        return [ColumnInfo(name=name, type=value_type, nullable=True, primary_key=name == "_id") for name, value_type in fields.items()]
+
     if pg_database and engine.dialect.name == "postgresql":
         engine = _pg_engine(engine, pg_database)
 
@@ -445,6 +513,138 @@ def list_columns(engine: Engine, table_name: str, database_name: str | None = No
     ]
 
 
+def get_object_ddl(engine: Engine, object_name: str, object_type: str, database_name: str | None = None, pg_database: str | None = None) -> str:
+    if is_mongo_client(engine):
+        if object_type != "table":
+            raise ValueError("MongoDB 当前仅支持查看集合信息")
+        columns = list_columns(engine, object_name, database_name)
+        fields = ",\n  ".join(f"{column.name}: {column.type}" for column in columns)
+        return f"db.{object_name}.find()\n\n// 推断字段（基于前 100 条文档）：\n{{\n  {fields}\n}}" if fields else f"db.{object_name}.find()"
+
+    if pg_database and engine.dialect.name == "postgresql":
+        db_engine = _pg_engine(engine, pg_database)
+        try:
+            return get_object_ddl(db_engine, object_name, object_type, database_name, None)
+        finally:
+            if db_engine is not engine:
+                db_engine.dispose()
+
+    preparer = engine.dialect.identifier_preparer
+
+    if engine.dialect.name == "mysql":
+        target_db = database_name or engine.url.database
+        quoted_object = _quote_table(preparer, object_name, target_db)
+        with engine.connect() as connection:
+            if object_type == "table":
+                row = connection.execute(text(f"SHOW CREATE TABLE {quoted_object}")).fetchone()
+                return row[1] if row and len(row) > 1 else ""
+            if object_type == "view":
+                row = connection.execute(text(f"SHOW CREATE VIEW {quoted_object}")).fetchone()
+                return row[1] if row and len(row) > 1 else ""
+            if object_type == "trigger":
+                row = connection.execute(text(f"SHOW CREATE TRIGGER {quoted_object}")).fetchone()
+                return row[2] if row and len(row) > 2 else ""
+            if object_type == "procedure":
+                row = connection.execute(text(f"SHOW CREATE PROCEDURE {quoted_object}")).fetchone()
+                return row[2] if row and len(row) > 2 else ""
+            if object_type == "function":
+                row = connection.execute(text(f"SHOW CREATE FUNCTION {quoted_object}")).fetchone()
+                return row[2] if row and len(row) > 2 else ""
+        raise ValueError("当前对象类型不支持查看 DDL")
+
+    if engine.dialect.name == "postgresql":
+        schema_name = database_name or "public"
+        with engine.connect() as connection:
+            if object_type in {"table", "view"}:
+                if object_type == "view":
+                    row = connection.execute(text("SELECT pg_get_viewdef(format('%I.%I', :schema, :name)::regclass, true)"), {"schema": schema_name, "name": object_name}).fetchone()
+                    body = row[0] if row else ""
+                    return f"CREATE OR REPLACE VIEW {preparer.quote(schema_name)}.{preparer.quote(object_name)} AS\n{body};" if body else ""
+                columns = connection.execute(
+                    text(
+                        "SELECT column_name, data_type, is_nullable, column_default "
+                        "FROM information_schema.columns WHERE table_schema = :schema AND table_name = :name ORDER BY ordinal_position"
+                    ),
+                    {"schema": schema_name, "name": object_name},
+                ).fetchall()
+                column_defs = []
+                for column in columns:
+                    column_def = f"  {preparer.quote(column[0])} {column[1]}"
+                    if column[3] is not None:
+                        column_def += f" DEFAULT {column[3]}"
+                    if column[2] == "NO":
+                        column_def += " NOT NULL"
+                    column_defs.append(column_def)
+                if not column_defs:
+                    return ""
+                return f"CREATE TABLE {preparer.quote(schema_name)}.{preparer.quote(object_name)} (\n{',\n'.join(column_defs)}\n);"
+            if object_type in {"function", "procedure"}:
+                row = connection.execute(
+                    text(
+                        "SELECT pg_get_functiondef(p.oid) FROM pg_proc p "
+                        "JOIN pg_namespace n ON n.oid = p.pronamespace "
+                        "WHERE n.nspname = :schema AND p.proname = :name "
+                        "AND p.prokind = CASE WHEN :type = 'procedure' THEN 'p' ELSE 'f' END LIMIT 1"
+                    ),
+                    {"schema": schema_name, "name": object_name, "type": object_type},
+                ).fetchone()
+                return row[0] if row else ""
+            if object_type == "sequence":
+                return f"CREATE SEQUENCE {preparer.quote(schema_name)}.{preparer.quote(object_name)};"
+            if object_type == "index":
+                row = connection.execute(text("SELECT indexdef FROM pg_indexes WHERE schemaname = :schema AND indexname = :name"), {"schema": schema_name, "name": object_name}).fetchone()
+                return row[0] if row else ""
+        raise ValueError("当前对象类型不支持查看 DDL")
+
+    if engine.dialect.name in {"dm", "dmPython"}:
+        schema_name = (database_name or engine.url.username or "SYSDBA").upper()
+        object_upper = object_name.upper()
+        with engine.connect() as connection:
+            if object_type in {"table", "view", "procedure", "function"}:
+                object_kind = object_type.upper()
+                row = connection.execute(text("SELECT DBMS_METADATA.GET_DDL(:type, :name, :schema) FROM DUAL"), {"type": object_kind, "name": object_upper, "schema": schema_name}).fetchone()
+                return str(row[0]) if row and row[0] is not None else ""
+        raise ValueError("当前对象类型不支持查看 DDL")
+
+    if engine.dialect.name == "sqlite":
+        sqlite_type = "table" if object_type == "table" else object_type
+        with engine.connect() as connection:
+            row = connection.execute(text("SELECT sql FROM sqlite_master WHERE type = :type AND name = :name"), {"type": sqlite_type, "name": object_name}).fetchone()
+            return row[0] if row and row[0] else ""
+
+    raise ValueError("当前数据库类型不支持查看 DDL")
+
+
+def drop_db_object(engine: Engine, object_name: str, object_type: str, database_name: str | None = None, pg_database: str | None = None) -> None:
+    if is_mongo_client(engine):
+        if object_type != "table":
+            raise ValueError("MongoDB 当前仅支持删除集合")
+        target_db = database_name or mongo_default_database(engine)
+        if not target_db:
+            raise ValueError("请选择 MongoDB 数据库")
+        engine[target_db].drop_collection(object_name)
+        return
+
+    if pg_database and engine.dialect.name == "postgresql":
+        db_engine = _pg_engine(engine, pg_database)
+        try:
+            drop_db_object(db_engine, object_name, object_type, database_name, None)
+        finally:
+            if db_engine is not engine:
+                db_engine.dispose()
+        return
+
+    if object_type not in {"table", "view"}:
+        raise ValueError("当前仅支持删除表和视图")
+
+    preparer = engine.dialect.identifier_preparer
+    quoted_object = _quote_table(preparer, object_name, database_name)
+    keyword = "TABLE" if object_type == "table" else "VIEW"
+
+    with engine.begin() as connection:
+        connection.execute(text(f"DROP {keyword} {quoted_object}"))
+
+
 def update_table_columns(engine: Engine, table_name: str, next_columns: list[TableUpdateColumn], database_name: str | None = None) -> None:
     _validate_update_columns(engine, table_name, next_columns, database_name)
 
@@ -460,6 +660,9 @@ def update_table_columns(engine: Engine, table_name: str, next_columns: list[Tab
 
 
 def apply_table_data_changes(engine: Engine, table_name: str, changes: TableDataChangeRequest, database_name: str | None = None, pg_database: str | None = None) -> None:
+    if is_mongo_client(engine):
+        raise ValueError("MongoDB 当前暂不支持在表格中直接编辑文档")
+
     columns = list_columns(engine, table_name, database_name, pg_database)
     column_names = {column.name for column in columns}
     primary_keys = [column.name for column in columns if column.primary_key]

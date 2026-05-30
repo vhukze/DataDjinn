@@ -10,6 +10,7 @@ from uuid import uuid4
 from pydantic import BaseModel
 from sqlalchemy import Engine, URL, create_engine, text
 
+from app.db.mongo_utils import MongoClient, is_mongo_client
 from app.schemas.connection import ConnectionInfo, ConnectionRequest, DatabaseType
 
 def _connection_store_path() -> Path:
@@ -139,7 +140,7 @@ def _decrypt_password(encrypted_password: str | None) -> str | None:
 
 class ConnectionManager:
     def __init__(self) -> None:
-        self._engines: dict[str, Engine] = {}
+        self._engines: dict[str, Engine | MongoClient] = {}
         self._connections: dict[str, ConnectionInfo] = {}
         self._stored_connections: dict[str, StoredConnection] = {}
         self._load_stored_connections()
@@ -147,15 +148,13 @@ class ConnectionManager:
     def test_connection(self, request: ConnectionRequest) -> None:
         engine = self._create_engine(request)
         try:
-            with engine.connect() as connection:
-                connection.execute(text("SELECT 1"))
+            self._ping_engine(engine)
         finally:
-            engine.dispose()
+            self._dispose_engine(engine)
 
     def create_connection(self, request: ConnectionRequest) -> ConnectionInfo:
         engine = self._create_engine(request)
-        with engine.connect() as connection:
-            connection.execute(text("SELECT 1"))
+        self._ping_engine(engine)
 
         connection_id = uuid4().hex
         info = self._connection_info(connection_id, request)
@@ -171,10 +170,9 @@ class ConnectionManager:
 
         engine = self._create_engine(request)
         try:
-            with engine.connect() as connection:
-                connection.execute(text("SELECT 1"))
+            self._ping_engine(engine)
         except Exception:
-            engine.dispose()
+            self._dispose_engine(engine)
             raise
 
         old_engine = self._engines.get(connection_id)
@@ -185,7 +183,7 @@ class ConnectionManager:
         self._save_stored_connections()
 
         if old_engine is not None:
-            old_engine.dispose()
+            self._dispose_engine(old_engine)
 
         return info
 
@@ -223,7 +221,7 @@ class ConnectionManager:
 
         return password
 
-    def get_engine(self, connection_id: str) -> Engine | None:
+    def get_engine(self, connection_id: str) -> Engine | MongoClient | None:
         return self._engines.get(connection_id)
 
     def delete_connection(self, connection_id: str) -> bool:
@@ -236,7 +234,7 @@ class ConnectionManager:
         engine = self._engines.pop(connection_id, None)
 
         if engine is not None:
-            engine.dispose()
+            self._dispose_engine(engine)
 
         self._save_stored_connections()
         return True
@@ -275,16 +273,15 @@ class ConnectionManager:
         engine = self._create_engine(request)
 
         try:
-            with engine.connect() as connection:
-                connection.execute(text("SELECT 1"))
+            self._ping_engine(engine)
         except Exception:
-            engine.dispose()
+            self._dispose_engine(engine)
             raise
 
         old_engine = self._engines.get(connection_id)
 
         if old_engine is not None:
-            old_engine.dispose()
+            self._dispose_engine(old_engine)
 
         self._engines[connection_id] = engine
         info = self._connection_info(connection_id, request, stored, is_open=True)
@@ -300,7 +297,7 @@ class ConnectionManager:
         engine = self._engines.pop(connection_id, None)
 
         if engine is not None:
-            engine.dispose()
+            self._dispose_engine(engine)
 
         request = self._request_from_stored(stored)
         info = self._connection_info(connection_id, request, stored, is_open=False)
@@ -312,7 +309,22 @@ class ConnectionManager:
         data = {"connections": [connection.model_dump() for connection in self._stored_connections.values()]}
         CONNECTION_STORE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def _create_engine(self, request: ConnectionRequest) -> Engine:
+    def _ping_engine(self, engine: Engine | MongoClient) -> None:
+        if is_mongo_client(engine):
+            engine.admin.command("ping")
+            return
+
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+
+    def _dispose_engine(self, engine: Engine | MongoClient) -> None:
+        if is_mongo_client(engine):
+            engine.close()
+            return
+
+        engine.dispose()
+
+    def _create_engine(self, request: ConnectionRequest) -> Engine | MongoClient:
         if request.database_type == "sqlite":
             return self._create_sqlite_engine(request)
 
@@ -324,6 +336,9 @@ class ConnectionManager:
 
         if request.database_type == "dm":
             return self._create_dm_engine(request)
+
+        if request.database_type == "mongodb":
+            return self._create_mongodb_client(request)
 
         raise ValueError("不支持的数据库类型")
 
@@ -372,6 +387,30 @@ class ConnectionManager:
             database=request.database,
         )
         return create_engine(url, pool_pre_ping=True)
+
+    def _create_mongodb_client(self, request: ConnectionRequest) -> MongoClient:
+        if MongoClient is None:
+            raise RuntimeError("缺少 MongoDB 驱动 pymongo，请安装后重试")
+        if not request.host:
+            raise ValueError("MongoDB 主机不能为空")
+        if not request.port:
+            raise ValueError("MongoDB 端口不能为空")
+
+        auth_source = request.database or "admin"
+        kwargs = {
+            "host": request.host,
+            "port": request.port,
+            "serverSelectionTimeoutMS": 5000,
+        }
+
+        if request.username:
+            kwargs.update({
+                "username": request.username,
+                "password": request.password or "",
+                "authSource": auth_source,
+            })
+
+        return MongoClient(**kwargs)
 
     def _create_dm_engine(self, request: ConnectionRequest) -> Engine:
         if not request.host:
@@ -449,6 +488,9 @@ class ConnectionManager:
             return f"{request.database}@{request.host}:{request.port}"
 
         if request.database_type == "dm":
+            return request.database or f"{request.host}:{request.port}"
+
+        if request.database_type == "mongodb":
             return request.database or f"{request.host}:{request.port}"
 
         return request.database or f"{request.host}:{request.port}"
