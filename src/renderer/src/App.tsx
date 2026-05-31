@@ -54,6 +54,8 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { DataNode } from 'antd/es/tree'
+import DOMPurify from 'dompurify'
+import { marked } from 'marked'
 import { useEffect, useRef, useState } from 'react'
 import { useTheme } from './context/ThemeContext'
 import AIPanel from './components/AIPanel'
@@ -109,6 +111,10 @@ const defaultSelectedDatabases = (connection: ConnectionInfo, available: string[
   const configured = connection.database?.split('@')[0]
   return configured && available.includes(configured) ? [configured] : available
 }
+
+const renderMarkdown = (content: string): { __html: string } => ({
+  __html: DOMPurify.sanitize(marked.parse(content || '') as string)
+})
 
 const COMMON_TYPES = [
   'INT', 'INTEGER', 'BIGINT', 'SMALLINT',
@@ -3786,10 +3792,10 @@ function App(): React.JSX.Element {
           {updateInfo?.latestVersion && <Typography.Text>最新版本：{updateInfo.latestVersion}</Typography.Text>}
           <Flex justify="space-between" align="center">
             <Typography.Text>启动时自动检查更新</Typography.Text>
-            <Switch checked={updateSettings?.autoCheckUpdates ?? true} onChange={(checked) => void window.api.setAutoCheckUpdates(checked).then(refreshUpdateSettings)} />
+            <Switch className="update-auto-check-switch" checked={updateSettings?.autoCheckUpdates ?? true} onChange={(checked) => void window.api.setAutoCheckUpdates(checked).then(refreshUpdateSettings)} />
           </Flex>
           {updateInfo?.releaseNotes && (
-            <Input.TextArea value={updateInfo.releaseNotes} autoSize={{ minRows: 5, maxRows: 12 }} readOnly />
+            <div className="update-release-notes ai-markdown" dangerouslySetInnerHTML={renderMarkdown(updateInfo.releaseNotes)} />
           )}
           {updateProgress && (
             <Progress percent={updateProgress.percent} status={updateProgress.percent >= 100 ? 'success' : 'active'} />

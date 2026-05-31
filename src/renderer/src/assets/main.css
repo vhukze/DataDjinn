@@ -216,8 +216,18 @@ body[data-theme="dark"] {
   color: var(--dj-accent) !important;
 }
 
-.ai-config-switch.ant-switch-checked {
+.ai-config-switch.ant-switch-checked,
+.update-auto-check-switch.ant-switch-checked {
   background: var(--dj-accent) !important;
+}
+
+.update-release-notes {
+  max-height: 320px;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--dj-border-subtle);
+  border-radius: var(--dj-radius-md);
+  background: var(--dj-bg-sunken);
 }
 
 .ant-modal-content {
