@@ -13,7 +13,7 @@ from app.api.metadata import router as metadata_router
 from app.api.query import router as query_router
 
 logger = logging.getLogger("datadjinn.api")
-app = FastAPI(title="DataDjinn API", version="0.1.2")
+app = FastAPI(title="DataDjinn API", version="0.1.3")
 
 
 @app.exception_handler(Exception)

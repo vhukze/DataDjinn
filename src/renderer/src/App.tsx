@@ -16,6 +16,7 @@ import {
   PlayCircleOutlined,
   PlusOutlined,
   SaveOutlined,
+  CloudDownloadOutlined,
   ReloadOutlined,
   RobotOutlined,
   SortAscendingOutlined,
@@ -38,6 +39,7 @@ import {
   Layout,
   Modal,
   Popover,
+  Progress,
   Select,
   Space,
   Splitter,
@@ -170,6 +172,32 @@ type DriverFormValues = {
   name: string
   path?: string
   enabled: boolean
+}
+
+type UpdateMode = 'installer' | 'portable'
+
+type UpdateInfo = {
+  currentVersion: string
+  latestVersion?: string
+  available: boolean
+  mode: UpdateMode
+  releaseName?: string
+  releaseNotes?: string
+  releaseUrl?: string
+  downloadedPath?: string
+}
+
+type UpdateSettings = {
+  autoCheckUpdates: boolean
+  skippedUpdateVersion?: string | null
+  mode: UpdateMode
+  currentVersion: string
+}
+
+type UpdateProgress = {
+  percent: number
+  transferred: number
+  total?: number
 }
 
 type DatabaseInfo = {
@@ -475,6 +503,12 @@ function App(): React.JSX.Element {
   const [newTableName, setNewTableName] = useState('')
   const [newTableColumns, setNewTableColumns] = useState<ColumnDef[]>([])
   const [driverManagerOpen, setDriverManagerOpen] = useState(false)
+  const [updateModalOpen, setUpdateModalOpen] = useState(false)
+  const [updateSettings, setUpdateSettings] = useState<UpdateSettings | null>(null)
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
+  const [checkingUpdate, setCheckingUpdate] = useState(false)
+  const [downloadingUpdate, setDownloadingUpdate] = useState(false)
+  const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null)
   const [drivers, setDrivers] = useState<DriverInfo[]>([])
   const dmDrivers = drivers.filter((driver) => driver.database_type === 'dm' && driver.enabled)
   const selectedDmDriverId = Form.useWatch('dm_driver_id', form)
@@ -511,6 +545,68 @@ function App(): React.JSX.Element {
   const { theme, toggleTheme } = useTheme()
 
   const apiBaseUrl = backendStatus.apiBaseUrl
+
+  const refreshUpdateSettings = async (): Promise<void> => {
+    const settings = await window.api.getUpdateSettings()
+    setUpdateSettings(settings)
+  }
+
+  const handleUpdateAvailable = (info: UpdateInfo, open = true): void => {
+    setUpdateInfo(info)
+    setUpdateProgress(null)
+    if (open && info.latestVersion !== updateSettings?.skippedUpdateVersion) {
+      setUpdateModalOpen(true)
+    }
+  }
+
+  const checkForUpdates = async (manual = true): Promise<void> => {
+    setCheckingUpdate(true)
+    try {
+      const info = await window.api.checkForUpdates()
+      setUpdateInfo(info)
+      if (info.available) {
+        handleUpdateAvailable(info, true)
+      } else if (manual) {
+        messageApi.success('当前已经是最新版本')
+      }
+    } catch (err) {
+      showError(err instanceof Error ? err.message : '检查更新失败')
+    } finally {
+      setCheckingUpdate(false)
+    }
+  }
+
+  const downloadUpdate = async (): Promise<void> => {
+    setDownloadingUpdate(true)
+    setUpdateProgress(null)
+    try {
+      await window.api.downloadUpdate()
+      if (updateInfo?.mode === 'portable') {
+        messageApi.success('绿色版更新包已下载，请关闭应用后手动解压替换')
+      }
+    } catch (err) {
+      showError(err instanceof Error ? err.message : '下载更新失败')
+    } finally {
+      setDownloadingUpdate(false)
+    }
+  }
+
+  const installUpdate = async (): Promise<void> => {
+    try {
+      await window.api.installUpdate()
+    } catch (err) {
+      showError(err instanceof Error ? err.message : '安装更新失败')
+    }
+  }
+
+  const skipUpdate = async (): Promise<void> => {
+    if (!updateInfo?.latestVersion) {
+      return
+    }
+    await window.api.skipUpdateVersion(updateInfo.latestVersion)
+    await refreshUpdateSettings()
+    setUpdateModalOpen(false)
+  }
 
   const requestJson = async <T,>(path: string, options?: RequestInit): Promise<T> => {
     if (!apiBaseUrl && backendStatus.state !== 'online') {
@@ -3378,6 +3474,28 @@ function App(): React.JSX.Element {
   }, [])
 
   useEffect(() => {
+    void refreshUpdateSettings().catch(() => undefined)
+    const unsubscribers = [
+      window.api.onUpdateAvailable((info) => handleUpdateAvailable(info, true)),
+      window.api.onUpdateNotAvailable((info) => setUpdateInfo(info)),
+      window.api.onUpdateDownloadProgress(setUpdateProgress),
+      window.api.onUpdateDownloaded((info) => {
+        setDownloadingUpdate(false)
+        setUpdateInfo(info)
+        setUpdateProgress({ percent: 100, transferred: updateProgress?.transferred ?? 0, total: updateProgress?.total })
+        setUpdateModalOpen(true)
+      }),
+      window.api.onUpdateError((error) => {
+        setCheckingUpdate(false)
+        setDownloadingUpdate(false)
+        showError(error, '更新失败')
+      })
+    ]
+
+    return () => unsubscribers.forEach((unsubscribe) => unsubscribe())
+  }, [])
+
+  useEffect(() => {
     if (backendStatus.state !== 'online' || !backendStatus.apiBaseUrl) {
       return
     }
@@ -3401,6 +3519,13 @@ function App(): React.JSX.Element {
       // ignore
     }
   }, [selectedSchemas])
+
+  const updateMode = updateSettings?.mode ?? updateInfo?.mode ?? 'installer'
+  const updateDownloaded = Boolean(updateInfo?.downloadedPath) || (updateMode === 'installer' && updateProgress?.percent === 100)
+  const updateActionText = updateMode === 'portable' ? '下载绿色版' : '下载并安装'
+  const updateStatusMessage = updateInfo?.available
+    ? `发现新版本 ${updateInfo.latestVersion ?? ''}`
+    : `当前版本 ${updateSettings?.currentVersion ?? updateInfo?.currentVersion ?? ''}`
 
   const backendReady = backendStatus.state === 'online'
   const backendStatusIcon = backendReady ? <CheckCircleOutlined /> : <CloseCircleOutlined />
@@ -3497,6 +3622,7 @@ function App(): React.JSX.Element {
           <Space className="toolbar-actions titlebar-no-drag" size={4}>
             <Button type="text" size="small" icon={<FileAddOutlined />} onClick={() => openQueryWorkspace()} title="新建查询" aria-label="新建查询" />
             <Button type="text" size="small" icon={<SettingOutlined />} onClick={openDriverManager} title="驱动管理" aria-label="驱动管理" />
+            <Button type={updateInfo?.available ? 'primary' : 'text'} size="small" icon={<CloudDownloadOutlined />} loading={checkingUpdate || downloadingUpdate} onClick={() => { setUpdateModalOpen(true); void checkForUpdates(true) }} title="检查更新" aria-label="检查更新" />
             <Button type="text" size="small" icon={<ReloadOutlined />} loading={healthLoading} onClick={() => void checkHealth()} title="同步状态" aria-label="同步状态" />
             {backendStatus.state !== 'starting' && backendStatus.state !== 'online' && <Button type="text" size="small" icon={<ReloadOutlined />} loading={healthLoading} onClick={() => void restartBackend()} title="重启后端" aria-label="重启后端" />}
             <Button type={aiPanelOpen ? 'primary' : 'text'} size="small" icon={<MessageOutlined />} onClick={() => setAiPanelOpen((open) => !open)} title={aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'} aria-label={aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'} />
@@ -3645,6 +3771,41 @@ function App(): React.JSX.Element {
           </Splitter.Panel>
         </Splitter>
       </Layout.Content>
+      <Modal title="应用更新" open={updateModalOpen} onCancel={() => setUpdateModalOpen(false)} footer={null} width={680}>
+        <Space direction="vertical" className="full-width" size="middle">
+          <Alert
+            type={updateInfo?.available ? 'info' : 'success'}
+            showIcon
+            message={updateStatusMessage}
+            description={updateMode === 'installer' ? '安装版支持自动下载并在重启后安装更新。' : '绿色版支持检测并下载新版 zip，下载后需要关闭应用并手动解压替换。'}
+          />
+          <Flex justify="space-between" align="center">
+            <Typography.Text>当前版本：{updateSettings?.currentVersion ?? updateInfo?.currentVersion ?? '-'}</Typography.Text>
+            <Tag color={updateMode === 'installer' ? 'blue' : 'purple'}>{updateMode === 'installer' ? '安装版' : '绿色版'}</Tag>
+          </Flex>
+          {updateInfo?.latestVersion && <Typography.Text>最新版本：{updateInfo.latestVersion}</Typography.Text>}
+          <Flex justify="space-between" align="center">
+            <Typography.Text>启动时自动检查更新</Typography.Text>
+            <Switch checked={updateSettings?.autoCheckUpdates ?? true} onChange={(checked) => void window.api.setAutoCheckUpdates(checked).then(refreshUpdateSettings)} />
+          </Flex>
+          {updateInfo?.releaseNotes && (
+            <Input.TextArea value={updateInfo.releaseNotes} autoSize={{ minRows: 5, maxRows: 12 }} readOnly />
+          )}
+          {updateProgress && (
+            <Progress percent={updateProgress.percent} status={updateProgress.percent >= 100 ? 'success' : 'active'} />
+          )}
+          {updateInfo?.downloadedPath && (
+            <Alert type="success" showIcon message="绿色版更新包已下载" description={`文件位置：${updateInfo.downloadedPath}。请关闭应用后手动解压替换旧目录。`} />
+          )}
+          <Flex justify="end" gap={8} wrap="wrap">
+            <Button onClick={() => void checkForUpdates(true)} loading={checkingUpdate}>重新检查</Button>
+            {updateInfo?.releaseUrl && <Button onClick={() => void window.api.openReleasePage(updateInfo.releaseUrl)}>查看发布页</Button>}
+            {updateInfo?.available && <Button onClick={() => void skipUpdate()}>跳过此版本</Button>}
+            {updateInfo?.available && !updateDownloaded && <Button type="primary" loading={downloadingUpdate} onClick={() => void downloadUpdate()}>{updateActionText}</Button>}
+            {updateDownloaded && <Button type="primary" onClick={() => void installUpdate()}>{updateMode === 'installer' ? '重启并安装' : '打开下载位置'}</Button>}
+          </Flex>
+        </Space>
+      </Modal>
       <Modal title="驱动管理" open={driverManagerOpen} footer={null} onCancel={() => setDriverManagerOpen(false)} width={860}>
         <Space direction="vertical" className="full-width" size="middle">
           <Alert type="info" showIcon message="统一管理数据库驱动。当前先支持达梦，后续其他数据库驱动会继续接入这里。达梦支持 dmPython pyd、dmPython whl 和 JDBC jar，连接时在连接信息中选择具体驱动。" />

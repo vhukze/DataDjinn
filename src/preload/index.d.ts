@@ -30,6 +30,34 @@ type AISession = {
   messages: unknown[]
 }
 
+type UpdateMode = 'installer' | 'portable'
+
+type UpdateInfo = {
+  currentVersion: string
+  latestVersion?: string
+  available: boolean
+  mode: UpdateMode
+  releaseName?: string
+  releaseNotes?: string
+  releaseUrl?: string
+  installerUrl?: string
+  zipUrl?: string
+  downloadedPath?: string
+}
+
+type UpdateSettings = {
+  autoCheckUpdates: boolean
+  skippedUpdateVersion?: string | null
+  mode: UpdateMode
+  currentVersion: string
+}
+
+type UpdateProgress = {
+  percent: number
+  transferred: number
+  total?: number
+}
+
 interface DataDjinnAPI {
   selectSqlFile: () => Promise<SqlFileResult>
   selectImportFile: () => Promise<string | null>
@@ -38,6 +66,18 @@ interface DataDjinnAPI {
   requestJson: <T>(path: string, options?: { method?: string; headers?: Record<string, string>; body?: string }) => Promise<T>
   streamRequest: (streamId: string, path: string, options: { method?: string; headers?: Record<string, string>; body?: string }, onChunk: (chunk: string) => void | Promise<void>) => Promise<void>
   cancelStreamRequest: (streamId: string) => Promise<void>
+  getUpdateSettings: () => Promise<UpdateSettings>
+  setAutoCheckUpdates: (enabled: boolean) => Promise<boolean>
+  checkForUpdates: () => Promise<UpdateInfo>
+  downloadUpdate: () => Promise<{ filePath: string } | null>
+  installUpdate: () => Promise<void>
+  skipUpdateVersion: (version: string) => Promise<void>
+  openReleasePage: (url?: string) => Promise<void>
+  onUpdateAvailable: (callback: (info: UpdateInfo) => void) => () => void
+  onUpdateNotAvailable: (callback: (info: UpdateInfo) => void) => () => void
+  onUpdateDownloadProgress: (callback: (progress: UpdateProgress) => void) => () => void
+  onUpdateDownloaded: (callback: (info: UpdateInfo) => void) => () => void
+  onUpdateError: (callback: (message: string) => void) => () => void
   getAIConfig: () => Promise<AIConfig | null>
   setAIConfig: (config: AIConfig) => Promise<AIConfig>
   getAIConfigs: () => Promise<AIConfigItem[]>

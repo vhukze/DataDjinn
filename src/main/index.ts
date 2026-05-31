@@ -1,8 +1,11 @@
 import { app, dialog, shell, BrowserWindow, ipcMain, screen, webContents } from 'electron'
 import { join } from 'path'
-import { readFile } from 'fs/promises'
+import { createWriteStream } from 'fs'
+import { mkdir, readFile } from 'fs/promises'
+import { pipeline } from 'stream/promises'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import StoreModule from 'electron-store'
+import { autoUpdater } from 'electron-updater'
 import icon from '../../resources/icon.ico?asset'
 import { backendManager } from './backend'
 
@@ -27,9 +30,202 @@ type AISession = {
   messages: unknown[]
 }
 
+type UpdateAsset = {
+  name: string
+  browser_download_url: string
+  size?: number
+}
+
+type GitHubRelease = {
+  tag_name: string
+  name?: string
+  body?: string
+  html_url?: string
+  assets?: UpdateAsset[]
+}
+
+type UpdateInfo = {
+  currentVersion: string
+  latestVersion?: string
+  available: boolean
+  mode: 'installer' | 'portable'
+  releaseName?: string
+  releaseNotes?: string
+  releaseUrl?: string
+  installerUrl?: string
+  zipUrl?: string
+  downloadedPath?: string
+}
+
+type UpdateProgress = {
+  percent: number
+  transferred: number
+  total?: number
+}
+
+type AppStore = {
+  aiConfig?: AIConfig
+  aiConfigs?: AIConfigItem[]
+  aiSessions?: AISession[]
+  autoCheckUpdates?: boolean
+  skippedUpdateVersion?: string
+}
+
 const Store = ('default' in StoreModule ? StoreModule.default : StoreModule) as typeof StoreModule
-const store = new Store<{ aiConfig?: AIConfig; aiConfigs?: AIConfigItem[]; aiSessions?: AISession[] }>()
+const store = new Store<AppStore>()
 const streamControllers = new Map<string, AbortController>()
+const GITHUB_RELEASES_API = 'https://api.github.com/repos/vhukze/DataDjinn/releases/latest'
+const appUpdateMode = process.env.PORTABLE_EXECUTABLE_DIR ? 'portable' : 'installer'
+let latestPortableUpdate: UpdateInfo | null = null
+let installerUpdateDownloaded = false
+let isQuittingForUpdate = false
+
+const normalizeVersion = (version: string): string => version.trim().replace(/^v/i, '')
+
+const compareVersion = (left: string, right: string): number => {
+  const leftParts = normalizeVersion(left).split('.').map((part) => Number.parseInt(part, 10) || 0)
+  const rightParts = normalizeVersion(right).split('.').map((part) => Number.parseInt(part, 10) || 0)
+  const length = Math.max(leftParts.length, rightParts.length)
+
+  for (let index = 0; index < length; index += 1) {
+    const diff = (leftParts[index] ?? 0) - (rightParts[index] ?? 0)
+    if (diff !== 0) {
+      return diff > 0 ? 1 : -1
+    }
+  }
+
+  return 0
+}
+
+const githubHeaders = { 'User-Agent': `DataDjinn/${app.getVersion()}` }
+
+const fetchLatestRelease = async (): Promise<GitHubRelease> => {
+  const response = await fetch(GITHUB_RELEASES_API, { headers: githubHeaders })
+
+  if (!response.ok) {
+    throw new Error(`检查更新失败：HTTP ${response.status}`)
+  }
+
+  return await response.json() as GitHubRelease
+}
+
+const releaseToUpdateInfo = (release: GitHubRelease): UpdateInfo => {
+  const latestVersion = normalizeVersion(release.tag_name)
+  const assets = release.assets ?? []
+  const zipAsset = assets.find((asset) => /DataDjinn-.*-win\.zip$/i.test(asset.name))
+  const installerAsset = assets.find((asset) => /DataDjinn-.*-setup\.exe$/i.test(asset.name))
+
+  return {
+    currentVersion: app.getVersion(),
+    latestVersion,
+    available: compareVersion(latestVersion, app.getVersion()) > 0,
+    mode: appUpdateMode,
+    releaseName: release.name,
+    releaseNotes: release.body,
+    releaseUrl: release.html_url,
+    installerUrl: installerAsset?.browser_download_url,
+    zipUrl: zipAsset?.browser_download_url
+  }
+}
+
+const checkPortableUpdate = async (): Promise<UpdateInfo> => {
+  const release = await fetchLatestRelease()
+  const updateInfo = releaseToUpdateInfo(release)
+  latestPortableUpdate = updateInfo
+  return updateInfo
+}
+
+const sendUpdateEvent = (channel: string, payload: unknown): void => {
+  for (const window of BrowserWindow.getAllWindows()) {
+    window.webContents.send(channel, payload)
+  }
+}
+
+const downloadPortableUpdate = async (): Promise<{ filePath: string }> => {
+  const updateInfo = latestPortableUpdate ?? await checkPortableUpdate()
+
+  if (!updateInfo.available || !updateInfo.zipUrl || !updateInfo.latestVersion) {
+    throw new Error('暂无可下载的绿色版更新')
+  }
+
+  const updatesDir = join(app.getPath('downloads'), 'DataDjinn Updates')
+  await mkdir(updatesDir, { recursive: true })
+  const filePath = join(updatesDir, `DataDjinn-${updateInfo.latestVersion}-win.zip`)
+
+  const response = await fetch(updateInfo.zipUrl, { headers: githubHeaders })
+  if (!response.ok || !response.body) {
+    throw new Error(`下载更新失败：HTTP ${response.status}`)
+  }
+
+  const total = Number(response.headers.get('content-length') ?? 0) || undefined
+  let transferred = 0
+  const source = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      transferred += chunk.byteLength
+      sendUpdateEvent('update:download-progress', {
+        percent: total ? Math.round((transferred / total) * 100) : 0,
+        transferred,
+        total
+      } satisfies UpdateProgress)
+      controller.enqueue(chunk)
+    }
+  })
+
+  await pipeline(response.body.pipeThrough(source), createWriteStream(filePath))
+  latestPortableUpdate = { ...updateInfo, downloadedPath: filePath }
+  sendUpdateEvent('update:downloaded', latestPortableUpdate)
+  return { filePath }
+}
+
+autoUpdater.autoDownload = false
+autoUpdater.autoInstallOnAppQuit = false
+
+autoUpdater.on('update-available', (info) => {
+  installerUpdateDownloaded = false
+  sendUpdateEvent('update:available', {
+    currentVersion: app.getVersion(),
+    latestVersion: info.version,
+    available: true,
+    mode: 'installer',
+    releaseName: info.releaseName ?? undefined,
+    releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes : undefined,
+    releaseUrl: `https://github.com/vhukze/DataDjinn/releases/tag/v${info.version}`
+  } satisfies UpdateInfo)
+})
+
+autoUpdater.on('update-not-available', (info) => {
+  sendUpdateEvent('update:not-available', {
+    currentVersion: app.getVersion(),
+    latestVersion: info.version,
+    available: false,
+    mode: 'installer'
+  } satisfies UpdateInfo)
+})
+
+autoUpdater.on('download-progress', (progress) => {
+  sendUpdateEvent('update:download-progress', {
+    percent: Math.round(progress.percent),
+    transferred: progress.transferred,
+    total: progress.total
+  } satisfies UpdateProgress)
+})
+
+autoUpdater.on('update-downloaded', (info) => {
+  installerUpdateDownloaded = true
+  sendUpdateEvent('update:downloaded', {
+    currentVersion: app.getVersion(),
+    latestVersion: info.version,
+    available: true,
+    mode: 'installer',
+    releaseName: info.releaseName ?? undefined,
+    releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes : undefined,
+    releaseUrl: `https://github.com/vhukze/DataDjinn/releases/tag/v${info.version}`
+  } satisfies UpdateInfo)
+})
+
+autoUpdater.on('error', (error) => {
+  sendUpdateEvent('update:error', error.message)
+})
 
 function createWindow(): void {
   const { width, height } = screen.getPrimaryDisplay().workAreaSize
@@ -273,6 +469,71 @@ app.whenReady().then(() => {
     streamControllers.delete(streamId)
   })
 
+  ipcMain.handle('update:get-settings', () => ({
+    autoCheckUpdates: store.get('autoCheckUpdates') ?? true,
+    skippedUpdateVersion: store.get('skippedUpdateVersion') ?? null,
+    mode: appUpdateMode,
+    currentVersion: app.getVersion()
+  }))
+
+  ipcMain.handle('update:set-auto-check', (_, enabled: boolean) => {
+    store.set('autoCheckUpdates', enabled)
+    return enabled
+  })
+
+  ipcMain.handle('update:skip-version', (_, version: string) => {
+    store.set('skippedUpdateVersion', normalizeVersion(version))
+  })
+
+  ipcMain.handle('update:check', async () => {
+    if (appUpdateMode === 'portable') {
+      const updateInfo = await checkPortableUpdate()
+      sendUpdateEvent(updateInfo.available ? 'update:available' : 'update:not-available', updateInfo)
+      return updateInfo
+    }
+
+    const result = await autoUpdater.checkForUpdates()
+    return {
+      currentVersion: app.getVersion(),
+      latestVersion: result?.updateInfo.version,
+      available: result ? compareVersion(result.updateInfo.version, app.getVersion()) > 0 : false,
+      mode: 'installer',
+      releaseName: result?.updateInfo.releaseName ?? undefined,
+      releaseNotes: typeof result?.updateInfo.releaseNotes === 'string' ? result.updateInfo.releaseNotes : undefined,
+      releaseUrl: result?.updateInfo.version ? `https://github.com/vhukze/DataDjinn/releases/tag/v${result.updateInfo.version}` : undefined
+    } satisfies UpdateInfo
+  })
+
+  ipcMain.handle('update:download', async () => {
+    if (appUpdateMode === 'portable') {
+      return await downloadPortableUpdate()
+    }
+
+    await autoUpdater.downloadUpdate()
+    return null
+  })
+
+  ipcMain.handle('update:install', async () => {
+    if (appUpdateMode === 'portable') {
+      if (latestPortableUpdate?.downloadedPath) {
+        await shell.showItemInFolder(latestPortableUpdate.downloadedPath)
+      }
+      return
+    }
+
+    if (!installerUpdateDownloaded) {
+      throw new Error('更新尚未下载完成')
+    }
+
+    isQuittingForUpdate = true
+    await backendManager.stop()
+    autoUpdater.quitAndInstall(false, true)
+  })
+
+  ipcMain.handle('update:open-release', async (_, url?: string) => {
+    await shell.openExternal(url || 'https://github.com/vhukze/DataDjinn/releases')
+  })
+
   ipcMain.handle('api:request', async (_, path: string, options?: { method?: string; headers?: Record<string, string>; body?: string }) => {
     const backendStatus = backendManager.getStatus()
 
@@ -308,6 +569,20 @@ app.whenReady().then(() => {
   void backendManager.start()
   createWindow()
 
+  if (!is.dev && (store.get('autoCheckUpdates') ?? true)) {
+    setTimeout(() => {
+      if (appUpdateMode === 'portable') {
+        void checkPortableUpdate().then((updateInfo) => {
+          if (updateInfo.available && normalizeVersion(updateInfo.latestVersion ?? '') !== store.get('skippedUpdateVersion')) {
+            sendUpdateEvent('update:available', updateInfo)
+          }
+        }).catch((error) => sendUpdateEvent('update:error', error instanceof Error ? error.message : '检查更新失败'))
+      } else {
+        void autoUpdater.checkForUpdates().catch((error) => sendUpdateEvent('update:error', error instanceof Error ? error.message : '检查更新失败'))
+      }
+    }, 3000)
+  }
+
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the
     // dock icon is clicked and there are no other windows open.
@@ -316,6 +591,10 @@ app.whenReady().then(() => {
 })
 
 app.on('before-quit', (event) => {
+  if (isQuittingForUpdate) {
+    return
+  }
+
   event.preventDefault()
   void backendManager.stop().finally(() => app.exit(0))
 })

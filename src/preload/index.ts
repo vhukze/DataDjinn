@@ -54,6 +54,38 @@ const api = {
     })
   },
   cancelStreamRequest: (streamId: string) => ipcRenderer.invoke('api:stream-cancel', streamId),
+  getUpdateSettings: () => ipcRenderer.invoke('update:get-settings'),
+  setAutoCheckUpdates: (enabled: boolean) => ipcRenderer.invoke('update:set-auto-check', enabled),
+  checkForUpdates: () => ipcRenderer.invoke('update:check'),
+  downloadUpdate: () => ipcRenderer.invoke('update:download'),
+  installUpdate: () => ipcRenderer.invoke('update:install'),
+  skipUpdateVersion: (version: string) => ipcRenderer.invoke('update:skip-version', version),
+  openReleasePage: (url?: string) => ipcRenderer.invoke('update:open-release', url),
+  onUpdateAvailable: (callback: (info: unknown) => void) => {
+    const listener = (_: Electron.IpcRendererEvent, info: unknown): void => callback(info)
+    ipcRenderer.on('update:available', listener)
+    return () => ipcRenderer.removeListener('update:available', listener)
+  },
+  onUpdateNotAvailable: (callback: (info: unknown) => void) => {
+    const listener = (_: Electron.IpcRendererEvent, info: unknown): void => callback(info)
+    ipcRenderer.on('update:not-available', listener)
+    return () => ipcRenderer.removeListener('update:not-available', listener)
+  },
+  onUpdateDownloadProgress: (callback: (progress: unknown) => void) => {
+    const listener = (_: Electron.IpcRendererEvent, progress: unknown): void => callback(progress)
+    ipcRenderer.on('update:download-progress', listener)
+    return () => ipcRenderer.removeListener('update:download-progress', listener)
+  },
+  onUpdateDownloaded: (callback: (info: unknown) => void) => {
+    const listener = (_: Electron.IpcRendererEvent, info: unknown): void => callback(info)
+    ipcRenderer.on('update:downloaded', listener)
+    return () => ipcRenderer.removeListener('update:downloaded', listener)
+  },
+  onUpdateError: (callback: (message: string) => void) => {
+    const listener = (_: Electron.IpcRendererEvent, message: string): void => callback(message)
+    ipcRenderer.on('update:error', listener)
+    return () => ipcRenderer.removeListener('update:error', listener)
+  },
   getAIConfig: () => ipcRenderer.invoke('ai-config:get'),
   setAIConfig: (config: unknown) => ipcRenderer.invoke('ai-config:set', config),
   getAIConfigs: () => ipcRenderer.invoke('ai-configs:get'),
