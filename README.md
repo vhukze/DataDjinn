@@ -111,7 +111,7 @@ MySQL SQL 备份和导入会在执行期间临时关闭外键检查，避免因�
 - `DataDjinn-x.x.x-setup.exe` —— NSIS 安装包（推荐）
 - `DataDjinn-x.x.x-win.zip` —— 解压即用版
 
-当前最新版本：`v0.1.4`。后续每次发布都会递增 `package.json`、后端 API 和 Release tag 版本号。
+当前最新版本：`v0.1.5`。后续每次发布都会递增 `package.json`、后端 API 和 Release tag 版本号。
 
 解压版无需安装，解压后双击 `DataDjinn.exe` 即可运行。已内置 Python 运行时和所有后端依赖，无需额外安装任何环境。
 
