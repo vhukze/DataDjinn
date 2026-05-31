@@ -1,4 +1,4 @@
-# DataDjinn v0.1.3
+# DataDjinn v0.1.4
 
 本版本新增应用更新能力，并继续包含达梦 DM 连接与驱动管理增强：支持按连接选择已添加的达梦驱动，完善 JDBC、dmPython pyd、dmPython whl 三类外部驱动的连接、元数据读取和数据预览体验。
 

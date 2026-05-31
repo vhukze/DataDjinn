@@ -40,6 +40,8 @@ jobs:
 
       - name: Build Windows packages
         run: npm run build:win:all
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -50,3 +52,5 @@ jobs:
           files: |
             dist/*.exe
             dist/*.zip
+            dist/*.yml
+            dist/*.blockmap
