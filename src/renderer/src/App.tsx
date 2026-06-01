@@ -4156,7 +4156,7 @@ function App(): React.JSX.Element {
                 <Splitter.Panel>
                   <div className="editor-placeholder">
                     {workspaceTabs.length === 0 ? (
-                      <div className="empty-workspace"><FileAddOutlined /><Typography.Text type="secondary">连接数据库后，可浏览库表结构、预览数据、编写 SQL，并让 Djinn Agent 辅助分析与执行受控操作。</Typography.Text><Space><Dropdown menu={connectionCreateMenu} trigger={['click']}><Button icon={<PlusOutlined />}>保存连接</Button></Dropdown></Space></div>
+                      <div className="empty-workspace"><FileAddOutlined /><Typography.Text type="secondary">连接数据库后，可浏览库表结构、预览数据、编写 SQL，并让 Djinn Agent 辅助分析与执行受控操作。</Typography.Text><Space><Dropdown menu={connectionCreateMenu} trigger={['click']}><Button icon={<PlusOutlined />}>创建连接</Button></Dropdown></Space></div>
                     ) : (
                       <Tabs className="workspace-tabs" type="editable-card" hideAdd activeKey={activeTabKey} onChange={setActiveTabKey} onEdit={(targetKey, action) => { if (action === 'remove' && typeof targetKey === 'string') { closeWorkspaceTab(targetKey) } }} items={workspaceTabs.map((tab) => ({ key: tab.key, label: tab.title, closable: true, children: renderWorkspaceTab(tab) }))} />
                     )}
