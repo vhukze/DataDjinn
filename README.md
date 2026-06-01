@@ -23,10 +23,11 @@ DataDjinn 是一款**跨时代**的本地数据库桌面客户端，将传统数
 ### 核心能力
 
 - 🧠 **AI 对话式数据库操作** —— 接入任意 OpenAI 兼容 API，AI 深度理解 Schema 上下文，支持自然语言查数据、建表、修改表结构
-- 🔗 **多数据库支持** —— SQLite / MySQL / PostgreSQL / 达梦 DM / MongoDB
-- ✍️ **专业 SQL 编辑器** —— 基于 Monaco Editor，语法高亮、智能补全、多标签页
-- 🧭 **连接树与数据预览** —— 支持连接、库、模式、表、视图等对象浏览，表格预览支持行列选择、列顺序拖拽和单元格编辑
-- 📦 **备份 / 导出 / 导入** —— 备份用于完整恢复，导出用于数据交换；SQL 导出支持结构、数据、结构 + 数据三种内容
+- 🔗 **多数据库支持** —— SQLite / MySQL / PostgreSQL / 达梦 DM / MongoDB / Redis
+- ✍️ **专业 SQL / 命令编辑器** —— 基于 Monaco Editor，支持 SQL、MongoDB Shell 风格语句和 Redis 常用命令补全，多标签页并行工作
+- 🧭 **连接树与数据预览** —— 支持连接、库、模式、表、视图、MongoDB 集合和 Redis DB 浏览；表格预览支持 WHERE 过滤、分页、行列选择、列顺序拖拽和单元格编辑
+- 🧰 **Redis Key 管理** —— 支持 Redis DB 勾选浏览、Key 列表查看、String / Hash / List / Set / ZSet 新增编辑删除和统一提交
+- 📦 **备份 / 导出 / 导入** —— 备份用于完整恢复，导出用于数据交换；SQL 导出支持结构、数据、结构 + 数据三种内容，MongoDB / Redis 支持 JSON 导出
 - 🔐 **密码安全存储** —— Windows DPAPI 加密，仅当前用户可解密
 - 🎨 **深色 / 浅色主题** —— 自适应系统主题，手动切换也支持
 - 🪶 **无边框窗口** —— 自定义标题栏，简洁沉浸
@@ -61,6 +62,7 @@ DataDjinn 是一款**跨时代**的本地数据库桌面客户端，将传统数
 | **PostgreSQL** | psycopg 3 | 支持 12+ |
 | **达梦 DM** | 外部 JDBC jar / dmPython pyd / dmPython whl 驱动 | 国产数据库，支持 DM8；可在驱动管理中添加驱动，并在连接信息中选择指定驱动，默认打包不内置达梦 DLL |
 | **MongoDB** | PyMongo | 支持连接、数据库/集合浏览、字段推断、集合预览、只读查询、创建集合、插入测试数据和 JSON 导出 |
+| **Redis** | redis-py | 支持连接、DB 勾选浏览、Key 列表、String / Hash / List / Set / ZSet 新增编辑删除、常用命令执行和 JSON 导出 |
 
 ---
 
@@ -73,20 +75,20 @@ DataDjinn 内置 AI 对话面板，接入 **OpenAI 兼容 API**（如 OpenAI、D
 | 场景 | 示例 |
 |------|------|
 | 自然语言查询 | "查询近 30 天下单超过 3 次的用户" |
-| 创建表 / 集合 | "创建一个员工表，包含姓名、部门、入职日期" / "创建一个 users 集合并添加 10 条测试数据" |
+| 创建表 / 集合 / Key | "创建一个员工表，包含姓名、部门、入职日期" / "创建一个 users 集合并添加 10 条测试数据" / "生成 Redis HSET 测试命令" |
 | 修改表结构 | "给用户表增加一个手机号字段" |
-| 探索数据 | "这个库有哪些表？orders 表结构是什么？" |
-| SQL 分析 | "这段 SQL 为什么慢，帮我优化" |
+| 探索数据 | "这个库有哪些表？orders 表结构是什么？" / "这个 Redis DB 里有哪些 Key？" |
+| SQL / 命令分析 | "这段 SQL 为什么慢，帮我优化" / "解释这个 Redis 命令会做什么" |
 
 ### 特色设计
 
 - **全局问答** —— 未选择上下文时也可提问，AI 可读取当前连接概览并整理回答
-- **焦点上下文** —— 当前选中的连接、库、模式、表可直接作为 AI 分析对象
-- **查询窗口联动** —— AI 可读取当前 SQL 编辑器内容，也可把生成的 SQL 追加写入查询窗口
-- **Schema 感知** —— AI 自动获取当前数据库的表结构作为上下文
+- **焦点上下文** —— 当前选中的连接、库、模式、表、集合、Redis DB / Key 可直接作为 AI 分析对象
+- **查询窗口联动** —— AI 可读取当前 SQL / 命令编辑器内容，也可把生成内容追加写入查询窗口
+- **Schema 感知** —— AI 自动获取当前数据库的表结构、集合信息或 Redis Key 概览作为上下文
 - **自动压缩** —— 长对话自动总结压缩，突破 token 上限
 - **Plan-Execute 模式** —— 复杂操作先生成执行计划，确认后逐步执行
-- **工具调用** —— AI 通过内置工具执行 SQL、预览数据、读取 Schema
+- **工具调用** —— AI 通过内置工具执行 SQL、MongoDB 语句和 Redis 命令，预览数据并读取 Schema
 
 ---
 
@@ -95,10 +97,12 @@ DataDjinn 内置 AI 对话面板，接入 **OpenAI 兼容 API**（如 OpenAI、D
 | 功能 | 用途 | 说明 |
 |------|------|------|
 | 备份 | 完整恢复 | 生成可恢复当前数据库的 SQL 备份文件，适合回滚或迁移前留档 |
-| 导出 | 数据交换 | 支持按数据库、模式或表导出 SQL / CSV；MongoDB 导出为 JSON |
+| 导出 | 数据交换 | 支持按数据库、模式或表导出 SQL / CSV；MongoDB / Redis 导出为 JSON |
 | 导入 | 数据写入 | 支持执行 SQL 文件和导入 CSV 文件，执行结果会展示成功、失败与可复制错误信息 |
 
 MySQL SQL 备份和导入会在执行期间临时关闭外键检查，避免因表依赖顺序导致恢复失败。
+
+Redis / MongoDB 导出为 JSON，适合迁移前留档、人工检查或和其他工具进行数据交换。
 
 ---
 
@@ -111,7 +115,7 @@ MySQL SQL 备份和导入会在执行期间临时关闭外键检查，避免因�
 - `DataDjinn-x.x.x-setup.exe` —— NSIS 安装包（推荐）
 - `DataDjinn-x.x.x-win.zip` —— 解压即用版
 
-当前最新版本：`v0.1.5`。后续每次发布都会递增 `package.json`、后端 API 和 Release tag 版本号。
+当前最新版本：`v0.1.6`。
 
 解压版无需安装，解压后双击 `DataDjinn.exe` 即可运行。已内置 Python 运行时和所有后端依赖，无需额外安装任何环境。
 
@@ -141,7 +145,7 @@ cd ..
 npm run dev
 ```
 
-### 打包发布
+### 打包
 
 ```bash
 # 构建完整 Windows 包（安装包 + 解压版）
@@ -151,32 +155,6 @@ npm run build:win:all
 构建产物在 `dist/` 目录：
 - `DataDjinn-x.x.x-setup.exe` — NSIS 安装包
 - `DataDjinn-x.x.x-win.zip` — 解压版
-
-### 自动发布 Release
-
-推送 `v*.*.*` 格式的 tag 会触发 GitHub Actions 自动构建 Windows 安装包和解压版，并创建 GitHub Release。发布前必须递增版本号，至少同步更新：
-
-- `package.json`
-- `package-lock.json`
-- `backend/app/main.py`
-- `backend/app/api/health.py`
-
-发布说明维护在 `RELEASE_NOTES.md`，工作流会把该文件内容写入 GitHub Release。
-
-```bash
-# 1. 递增版本号，例如从 0.1.1 到 0.1.2
-npm version 0.1.2 --no-git-tag-version
-
-# 2. 同步后端 API 版本，并更新 RELEASE_NOTES.md
-# 3. 提交版本改动
-git add .
-git commit -m "chore: release v0.1.2"
-
-# 4. 创建并推送 tag
-git tag v0.1.2
-git push origin main
-git push origin v0.1.2
-```
 
 ---
 
@@ -202,7 +180,7 @@ git push origin v0.1.2
 │        Python FastAPI 后端               │
 │  ┌──────────────┐  ┌──────────────────┐ │
 │  │ SQLAlchemy   │  │ AI Agent         │ │
-│  │ 多数据库引擎  │  │ (OpenAI 兼容)    │ │
+│  │ PyMongo/Redis│  │ (OpenAI 兼容)    │ │
 │  └──────────────┘  └──────────────────┘ │
 │  ┌──────────────────────────────────┐   │
 │  │ DPAPI 密码加密                    │   │
@@ -218,7 +196,7 @@ git push origin v0.1.2
 | SQL 编辑器 | Monaco Editor |
 | 状态管理 | Zustand |
 | 后端框架 | FastAPI (Python) |
-| ORM | SQLAlchemy 2.0 |
+| ORM / 数据驱动 | SQLAlchemy 2.0 + PyMongo + redis-py |
 | AI SDK | OpenAI Python |
 | 打包 | electron-builder + PyInstaller |
 
@@ -251,10 +229,11 @@ DataDjinn/
 │       ├── db/               # 数据库层
 │       │   ├── connection_manager.py  # 连接池 + 密码加密
 │       │   ├── driver_manager.py      # 达梦外部驱动管理
+│       │   ├── redis_utils.py         # Redis 工具函数
 │       │   ├── sql_executor.py        # SQL 执行器
 │       │   ├── backup_manager.py      # 备份、导出、导入管理
-│       │   ├── readonly_query.py      # 只读查询
-│       │   └── metadata.py            # 元数据读取
+│       │   ├── readonly_query.py      # 只读查询 / MongoDB / Redis 命令执行
+│       │   └── metadata.py            # 元数据读取与表格 / Redis 数据编辑
 │       └── ai/               # AI Agent
 │           └── agent.py      # AI 工具调用 Planner
 ├── resources/                # 应用图标

@@ -2,10 +2,12 @@ from fastapi import APIRouter, HTTPException, status
 
 from app.db.connection_manager import connection_manager
 from app.db.error_utils import friendly_error
-from app.db.metadata import apply_table_data_changes, create_database, create_schema, drop_database, drop_db_object, get_object_ddl, list_columns, list_databases, list_db_objects, list_schemas, list_tables, update_table_columns
+from app.db.mongo_utils import is_mongo_client
+from app.db.redis_utils import is_redis_client
+from app.db.metadata import apply_redis_data_changes, apply_table_data_changes, create_database, create_schema, drop_database, drop_db_object, get_object_ddl, list_columns, list_databases, list_db_objects, list_schemas, list_tables, update_table_columns
 from app.db.readonly_query import preview_table
 from app.db.sql_executor import execute_sql_file
-from app.schemas.metadata import ColumnsResponse, DatabaseCreateRequest, DatabaseCreateResponse, DatabasesResponse, DbObjectsResponse, ObjectDdlResponse, TableDataChangeRequest, TableUpdateRequest, TablesResponse
+from app.schemas.metadata import ColumnsResponse, DatabaseCreateRequest, DatabaseCreateResponse, DatabasesResponse, DbObjectsResponse, ObjectDdlResponse, RedisDataChangeRequest, TableDataChangeRequest, TableUpdateRequest, TablesResponse
 from app.schemas.query import QueryResponse, SqlFileRunRequest, SqlFileRunResponse
 
 router = APIRouter(prefix="/connections", tags=["metadata"])
@@ -150,17 +152,22 @@ def get_columns(connection_id: str, table_name: str, database: str | None = None
 
 
 @router.get("/{connection_id}/tables/{table_name}/preview", response_model=QueryResponse)
-def preview(connection_id: str, table_name: str, limit: int = 1000, offset: int = 0, database: str | None = None, pg_database: str | None = None) -> QueryResponse:
+def preview(connection_id: str, table_name: str, limit: int = 1000, offset: int = 0, database: str | None = None, pg_database: str | None = None, where: str | None = None) -> QueryResponse:
     engine = connection_manager.get_engine(connection_id)
 
     if engine is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="连接已关闭，请先打开连接")
 
-    return preview_table(engine, table_name, limit, offset, database, pg_database)
+    try:
+        return preview_table(engine, table_name, limit, offset, database, pg_database, where)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=friendly_error(exc)) from exc
 
 
 @router.put("/{connection_id}/tables/{table_name}/data", response_model=QueryResponse)
-def update_table_data(connection_id: str, table_name: str, request: TableDataChangeRequest, limit: int = 1000, offset: int = 0, database: str | None = None, pg_database: str | None = None) -> QueryResponse:
+def update_table_data(connection_id: str, table_name: str, request: TableDataChangeRequest, limit: int = 1000, offset: int = 0, database: str | None = None, pg_database: str | None = None, where: str | None = None) -> QueryResponse:
     engine = connection_manager.get_engine(connection_id)
 
     if engine is None:
@@ -173,7 +180,27 @@ def update_table_data(connection_id: str, table_name: str, request: TableDataCha
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=friendly_error(exc)) from exc
 
-    return preview_table(engine, table_name, limit, offset, database, pg_database)
+    return preview_table(engine, table_name, limit, offset, database, pg_database, where)
+
+
+@router.put("/{connection_id}/redis/data", response_model=QueryResponse)
+def update_redis_data(connection_id: str, request: RedisDataChangeRequest, limit: int = 1000, offset: int = 0, database: str | None = None) -> QueryResponse:
+    engine = connection_manager.get_engine(connection_id)
+
+    if engine is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="连接已关闭，请先打开连接")
+
+    if not is_redis_client(engine):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="当前连接不是 Redis")
+
+    try:
+        apply_redis_data_changes(engine, request, database)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=friendly_error(exc)) from exc
+
+    return preview_table(engine, "__DATADJINN_REDIS_DATABASE__", limit, offset, database)
 
 
 @router.put("/{connection_id}/tables/{table_name}/columns", response_model=ColumnsResponse)
@@ -197,6 +224,9 @@ def run_sql_file(connection_id: str, request: SqlFileRunRequest) -> SqlFileRunRe
 
     if engine is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="连接已关闭，请先打开连接")
+
+    if is_mongo_client(engine) or is_redis_client(engine):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="当前连接类型不支持运行 SQL 文件，请使用查询窗口执行支持的命令")
 
     if engine.dialect.name == "mysql" and not request.database:
         stored = connection_manager._stored_connections.get(connection_id)

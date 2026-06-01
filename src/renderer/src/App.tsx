@@ -28,6 +28,7 @@ import {
 } from '@ant-design/icons'
 import {
   Alert,
+  AutoComplete,
   Button,
   Checkbox,
   ConfigProvider,
@@ -107,7 +108,16 @@ const filterPersistedValues = (persisted: string[], available: string[]): string
   return filtered.length > 0 ? filtered : available
 }
 
-const defaultSelectedDatabases = (connection: ConnectionInfo, available: string[]): string[] => {
+const defaultSelectedDatabases = (connection: ConnectionInfo, available: string[], databases: DatabaseInfo[] = []): string[] => {
+  if (connection.database_type === 'redis') {
+    const nonEmpty = databases.filter((database) => (database.size_bytes ?? 0) > 0).map((database) => database.name)
+    const configured = connection.database?.split('@')[0]
+    if (configured && available.includes(configured) && !nonEmpty.includes(configured)) {
+      nonEmpty.unshift(configured)
+    }
+    return nonEmpty.length > 0 ? nonEmpty : available.slice(0, 1)
+  }
+
   const configured = connection.database?.split('@')[0]
   return configured && available.includes(configured) ? [configured] : available
 }
@@ -125,8 +135,12 @@ const COMMON_TYPES = [
   'BLOB', 'BYTEA'
 ]
 
-type DatabaseType = 'sqlite' | 'mysql' | 'postgresql' | 'dm' | 'mongodb'
-type WorkspaceTabKind = 'preview' | 'query'
+const PREVIEW_DEFAULT_LIMIT = 300
+const QUERY_DEFAULT_LIMIT = 1000
+const REDIS_DEFAULT_LIMIT = 500
+
+type DatabaseType = 'sqlite' | 'mysql' | 'postgresql' | 'dm' | 'mongodb' | 'redis'
+type WorkspaceTabKind = 'preview' | 'query' | 'redis-browser'
 
 type HealthStatus = {
   status: string
@@ -239,6 +253,7 @@ type QueryResponse = {
   rows: Record<string, unknown>[]
   row_count: number
   limited: boolean
+  total_count?: number | null
 }
 
 type ObjectDdlResponse = {
@@ -258,11 +273,26 @@ type EditableRow = Record<string, unknown> & {
   __original?: Record<string, unknown>
 }
 
+type RedisKeyEdit = {
+  rowKey: string
+  key: string
+  type: string
+  value: string
+  ttl?: number | null
+  state?: 'inserted' | 'updated'
+  deleted?: boolean
+  originalKey?: string
+}
+
 type ColumnFilterOption = {
   value: string
   label: string
   count: number
 }
+
+type RedisBrowserMode = 'database' | 'key'
+
+type RedisExpandedValues = Record<string, true>
 
 type WorkspaceTab = {
   key: string
@@ -289,6 +319,10 @@ type WorkspaceTab = {
   draggingColumn?: string
   editingCell?: { rowKey: string; column: string }
   error?: string
+  redisMode?: RedisBrowserMode
+  redisExpandedValues?: RedisExpandedValues
+  redisEdits?: Record<string, RedisKeyEdit>
+  where?: string
 }
 
 type ColumnDef = {
@@ -320,12 +354,23 @@ const DB_OBJECT_GROUPS: DbObjectGroupMeta[] = [
 
 const DB_OBJECT_GROUP_BY_TYPE = Object.fromEntries(DB_OBJECT_GROUPS.map((group) => [group.type, group])) as Record<DbObjectType, DbObjectGroupMeta>
 
+const objectGroupTitle = (type: DbObjectType, databaseType?: DatabaseType): string => {
+  if (databaseType === 'redis' && type === 'table') {
+    return 'Key'
+  }
+  if (databaseType === 'mongodb' && type === 'table') {
+    return '集合'
+  }
+  return DB_OBJECT_GROUP_BY_TYPE[type].title
+}
+
 const DB_OBJECT_TYPES_BY_DATABASE: Record<DatabaseType, DbObjectType[]> = {
   sqlite: ['table', 'view', 'trigger', 'index'],
   mysql: ['table', 'view', 'trigger', 'procedure', 'function', 'index'],
   postgresql: ['table', 'view', 'trigger', 'procedure', 'function', 'sequence', 'index'],
   dm: ['table', 'view', 'trigger', 'procedure', 'function', 'sequence', 'index'],
-  mongodb: ['table']
+  mongodb: ['table'],
+  redis: ['table']
 }
 
 type AIContextSource = {
@@ -398,7 +443,64 @@ const isCellValueEqual = (left: unknown, right: unknown): boolean => {
 const buildEditableRows = (rows: Record<string, unknown>[]): EditableRow[] =>
   rows.map((row, index) => ({ ...row, __rowKey: `row:${index}`, __original: row }))
 
+const buildRedisEdits = (rows: Record<string, unknown>[]): Record<string, RedisKeyEdit> =>
+  Object.fromEntries(rows.map((row, index) => {
+    const key = String(row.key ?? `key:${index}`)
+    const rowKey = `${key}:${index}`
+    const ttl = Number(row.ttl)
+    return [rowKey, {
+      rowKey,
+      key,
+      type: String(row.type ?? 'string'),
+      value: displayValue(row.value),
+      ttl: Number.isFinite(ttl) && ttl > 0 ? ttl : null,
+      originalKey: key
+    }]
+  }))
+
+const countRedisPendingChanges = (tab: WorkspaceTab): number =>
+  Object.values(tab.redisEdits ?? {}).filter((edit) => edit.state || edit.deleted).length
+
 const tableFilterValueKey = (value: unknown): string => value === null || value === undefined ? '__DATADJINN_NULL__' : String(value)
+
+const displayValue = (value: unknown): string => {
+  if (value === null || value === undefined) {
+    return 'NULL'
+  }
+  if (typeof value === 'string') {
+    return value
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value)
+  }
+  return JSON.stringify(value, null, 2)
+}
+
+const redisTtlDisplay = (ttl: unknown): string => {
+  const seconds = Number(ttl)
+  if (!Number.isFinite(seconds)) {
+    return String(ttl)
+  }
+  if (seconds === -1) {
+    return '不过期'
+  }
+  if (seconds === -2) {
+    return '不存在'
+  }
+  if (seconds < 0) {
+    return `${seconds} 秒`
+  }
+  if (seconds < 60) {
+    return `${seconds} 秒后过期`
+  }
+  if (seconds < 3600) {
+    return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒后过期`
+  }
+  if (seconds < 86400) {
+    return `${Math.floor(seconds / 3600)} 小时 ${Math.floor((seconds % 3600) / 60)} 分后过期`
+  }
+  return `${Math.floor(seconds / 86400)} 天 ${Math.floor((seconds % 86400) / 3600)} 小时后过期`
+}
 
 const tableFilterValueLabel = (value: string): string => value === '__DATADJINN_NULL__' ? 'NULL' : value
 
@@ -486,7 +588,7 @@ function App(): React.JSX.Element {
   const [exportPgDatabase, setExportPgDatabase] = useState<string>('')
   const [exportTable, setExportTable] = useState<string>('')
   const [exportScope, setExportScope] = useState<'database' | 'schema' | 'table'>('database')
-  const [exportFormat, setExportFormat] = useState<'sql' | 'csv'>('sql')
+  const [exportFormat, setExportFormat] = useState<'sql' | 'csv' | 'json'>('sql')
   const [exportContent, setExportContent] = useState<'schema' | 'data' | 'schema_data'>('schema_data')
   const [exportLoading, setExportLoading] = useState(false)
   const [importModalOpen, setImportModalOpen] = useState(false)
@@ -614,16 +716,28 @@ function App(): React.JSX.Element {
     setUpdateModalOpen(false)
   }
 
+  const normalizeRequestError = (error: unknown): Error => {
+    const message = error instanceof Error ? error.message : String(error || '操作失败')
+    if (message.includes('Timeout reading from socket')) {
+      return new Error('请求后端超时，请检查数据库主机和端口是否正确、服务是否已启动，或稍后重试')
+    }
+    return error instanceof Error ? error : new Error(message)
+  }
+
   const requestJson = async <T,>(path: string, options?: RequestInit): Promise<T> => {
     if (!apiBaseUrl && backendStatus.state !== 'online') {
       throw new Error('后端服务启动中，请稍候')
     }
 
-    return window.api.requestJson<T>(path, {
-      method: options?.method,
-      headers: options?.headers as Record<string, string> | undefined,
-      body: typeof options?.body === 'string' ? options.body : undefined
-    })
+    try {
+      return await window.api.requestJson<T>(path, {
+        method: options?.method,
+        headers: options?.headers as Record<string, string> | undefined,
+        body: typeof options?.body === 'string' ? options.body : undefined
+      })
+    } catch (err) {
+      throw normalizeRequestError(err)
+    }
   }
 
   const buildSqlCompletionContext = (tab: WorkspaceTab): SqlCompletionContext => {
@@ -714,20 +828,16 @@ function App(): React.JSX.Element {
           ...(connection.is_open
             ? [
                 { key: 'close', label: '关闭连接', icon: <CloseCircleOutlined /> },
-                { key: 'refresh', label: '刷新', icon: <ReloadOutlined /> },
               ]
             : [
                 { key: 'open', label: '打开连接', icon: <PlayCircleOutlined /> },
               ]),
-          { key: 'edit', label: '编辑连接', icon: <EditOutlined /> },
-          {
+          ...(connection.database_type === 'redis' ? [] : [{
             key: 'new-database',
             label: connection.database_type === 'sqlite' ? '新增 SQLite 数据库文件' : '新建库',
             icon: <PlusOutlined />
-          },
-          ...(connection.database_type !== 'mongodb' ? [{ key: 'run-sql', label: '运行 SQL 文件', icon: <PlayCircleOutlined /> }] : []),
-          { type: 'divider' },
-          { key: 'disconnect', label: '删除连接', icon: <DeleteOutlined />, danger: true }
+          }]),
+          ...(connection.database_type !== 'mongodb' && connection.database_type !== 'redis' ? [{ key: 'run-sql', label: '运行 SQL 文件', icon: <PlayCircleOutlined /> }] : [])
         ],
         onClick: ({ key }) => {
           if (key === 'open') {
@@ -735,12 +845,6 @@ function App(): React.JSX.Element {
           }
           if (key === 'close') {
             void closeConnectionById(connection.connection_id)
-          }
-          if (key === 'refresh') {
-            refreshConnectionNode(connection.connection_id)
-          }
-          if (key === 'edit') {
-            void openEditConnectionModal(connection)
           }
           if (key === 'new-database') {
             if (connection.database_type === 'sqlite') {
@@ -754,9 +858,6 @@ function App(): React.JSX.Element {
           }
           if (key === 'run-sql') {
             void openSqlFileDialog(connection.connection_id)
-          }
-          if (key === 'disconnect') {
-            void deleteConnection(connection.connection_id)
           }
         }
       }}
@@ -811,7 +912,7 @@ function App(): React.JSX.Element {
 
     return DB_OBJECT_GROUPS.filter((group) => objectTypes.includes(group.type)).map((group) => ({
       key: `object-group:${connectionId}:${pgDatabaseName ?? ''}:${databaseName ?? ''}:${group.type}`,
-      title: group.title,
+      title: objectGroupTitle(group.type, databaseType ?? connection?.database_type),
       icon: group.icon,
       kind: 'object-group',
       connectionId,
@@ -830,6 +931,8 @@ function App(): React.JSX.Element {
         <img src={postgresIcon} alt="PG" style={{ width: 16, height: 16 }} />
       ) : connection.database_type === 'mongodb' ? (
         <img src={mongoIcon} alt="MongoDB" style={{ width: 16, height: 16 }} />
+      ) : connection.database_type === 'redis' ? (
+        <DatabaseOutlined style={{ color: '#d82c20' }} />
       ) : connection.database_type === 'mysql' ? (
         <img src={mysqlIcon} alt="MySQL" style={{ width: 16, height: 16 }} />
       ) : connection.database_type === 'dm' ? (
@@ -839,7 +942,7 @@ function App(): React.JSX.Element {
       ),
     kind: 'connection',
     connectionId: connection.connection_id,
-    children: connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm' || connection.database_type === 'mongodb' ? undefined : buildObjectGroupNodes(connection.connection_id, undefined, undefined, connection.database_type),
+    children: connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm' || connection.database_type === 'mongodb' || connection.database_type === 'redis' ? undefined : buildObjectGroupNodes(connection.connection_id, undefined, undefined, connection.database_type),
     className: connection.is_open ? undefined : 'tree-node-closed',
     closed: !connection.is_open,
     isLeaf: !connection.is_open
@@ -856,7 +959,7 @@ function App(): React.JSX.Element {
       return
     }
 
-    if (connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm' || connection.database_type === 'mongodb') {
+    if (connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm' || connection.database_type === 'mongodb' || connection.database_type === 'redis') {
       const connKey = `connection:${connectionId}`
       const snapshot = expandedKeys.map(String)
 
@@ -869,6 +972,9 @@ function App(): React.JSX.Element {
         const stillExpanded = snapshot.filter((k) => {
           if (k === connKey) return false
           if (k.startsWith(`database:${connectionId}:`)) {
+            if (connection.database_type === 'redis') {
+              return false
+            }
             const dbName = k.slice(`database:${connectionId}:`.length).split(':')[0]
             const selected = selectedDatabasesRef.current[connectionId] ?? allDatabases[connectionId] ?? []
             return selected.includes(dbName)
@@ -1004,6 +1110,11 @@ function App(): React.JSX.Element {
     return `${path}${path.includes('?') ? '&' : '?'}limit=${limit}&offset=${offset}`
   }
 
+  const withWhereQuery = (path: string, where?: string): string => {
+    const condition = where?.trim()
+    return condition ? `${path}${path.includes('?') ? '&' : '?'}where=${encodeURIComponent(condition)}` : path
+  }
+
   const quoteTableName = (connectionId: string, tableName: string, databaseName?: string): string => {
     const connection = getConnection(connectionId)
 
@@ -1014,6 +1125,10 @@ function App(): React.JSX.Element {
 
     if (connection?.database_type === 'mongodb') {
       return `db.${tableName}.find({})`
+    }
+
+    if (connection?.database_type === 'redis') {
+      return `GET ${tableName}`
     }
 
     if (connection?.database_type === 'postgresql') {
@@ -1098,7 +1213,7 @@ function App(): React.JSX.Element {
     if (node.kind === 'connection') {
       setAiActiveContext({
         connectionId: node.connectionId,
-        databaseName: connection.database_type === 'mysql' || connection.database_type === 'mongodb' ? getDefaultDatabaseName(connection) : undefined,
+        databaseName: connection.database_type === 'mysql' || connection.database_type === 'mongodb' || connection.database_type === 'redis' ? getDefaultDatabaseName(connection) : undefined,
         pgDatabaseName: connection.database_type === 'postgresql' ? getDefaultPgDatabase(connection) : undefined
       })
       return
@@ -1136,7 +1251,7 @@ function App(): React.JSX.Element {
   const openTableQuery = (connectionId: string, tableName: string, databaseName?: string, pgDatabaseName?: string): void => {
     setSelectedConnectionId(connectionId)
     const connection = getConnection(connectionId)
-    const sql = connection?.database_type === 'mongodb'
+    const sql = connection?.database_type === 'mongodb' || connection?.database_type === 'redis'
       ? quoteTableName(connectionId, tableName, databaseName)
       : `select * from ${quoteTableName(connectionId, tableName, databaseName)} limit 1000;`
     openQueryWorkspace(sql, `${tableName} 查询`, connectionId, databaseName, pgDatabaseName)
@@ -1310,12 +1425,12 @@ function App(): React.JSX.Element {
                 items: [
                   { key: 'refresh', label: '刷新', icon: <ReloadOutlined /> },
                   ...(isPgDb ? [{ key: 'new-schema', label: '新建模式', icon: <PlusOutlined /> }] : []),
-                  ...(!isPgDb ? [{ key: 'new-table', label: getConnection(connectionId)?.database_type === 'mongodb' ? '新建集合' : '新建表', icon: <PlusOutlined /> }] : []),
-                  ...(getConnection(connectionId)?.database_type !== 'mongodb' ? [{ key: 'run-sql', label: '运行 SQL 文件', icon: <PlayCircleOutlined /> }] : []),
+                  ...(!isPgDb && getConnection(connectionId)?.database_type !== 'redis' ? [{ key: 'new-table', label: getConnection(connectionId)?.database_type === 'mongodb' ? '新建集合' : '新建表', icon: <PlusOutlined /> }] : []),
+                  ...(getConnection(connectionId)?.database_type !== 'mongodb' && getConnection(connectionId)?.database_type !== 'redis' ? [{ key: 'run-sql', label: '运行 SQL 文件', icon: <PlayCircleOutlined /> }] : []),
                   { type: 'divider' },
-                  ...(getConnection(connectionId)?.database_type !== 'mongodb' ? [{ key: 'backup', label: '备份', icon: <SaveOutlined /> }] : []),
+                  ...(getConnection(connectionId)?.database_type !== 'mongodb' && getConnection(connectionId)?.database_type !== 'redis' ? [{ key: 'backup', label: '备份', icon: <SaveOutlined /> }] : []),
                   { key: 'export', label: '导出', icon: <FileAddOutlined /> },
-                  ...(getConnection(connectionId)?.database_type !== 'mongodb' ? [{ key: 'import', label: '导入', icon: <PlayCircleOutlined /> }] : []),
+                  ...(getConnection(connectionId)?.database_type !== 'mongodb' && getConnection(connectionId)?.database_type !== 'redis' ? [{ key: 'import', label: '导入', icon: <PlayCircleOutlined /> }] : []),
                   ...(!isPgDb && (getConnection(connectionId)?.database_type === 'mysql' || getConnection(connectionId)?.database_type === 'postgresql') ? [
                     { type: 'divider' as const },
                     { key: 'delete', label: '删除', danger: true, icon: <DeleteOutlined /> }
@@ -1455,13 +1570,13 @@ function App(): React.JSX.Element {
           items: [
             ...(canPreview ? [{ key: 'select', label: '生成 SELECT 查询' }] : []),
             { key: 'ddl', label: '查看 DDL' },
-            ...(objectType === 'table' && getConnection(connectionId)?.database_type !== 'mongodb' ? [{ key: 'edit', label: '修改表' }] : []),
+            ...(objectType === 'table' && getConnection(connectionId)?.database_type !== 'mongodb' && getConnection(connectionId)?.database_type !== 'redis' ? [{ key: 'edit', label: '修改表' }] : []),
             { key: 'copy', label: '复制对象名' },
             { type: 'divider' },
             ...(canPreview ? [
               { key: 'export', label: '导出', icon: <FileAddOutlined /> },
             ] : []),
-            ...(getConnection(connectionId)?.database_type !== 'mongodb' ? [{ key: 'import', label: '导入', icon: <PlayCircleOutlined /> }] : []),
+            ...(getConnection(connectionId)?.database_type !== 'mongodb' && getConnection(connectionId)?.database_type !== 'redis' ? [{ key: 'import', label: '导入', icon: <PlayCircleOutlined /> }] : []),
             ...(canPreview ? [
               { type: 'divider' as const },
               { key: 'delete', label: '删除', danger: true, icon: <DeleteOutlined /> }
@@ -1505,6 +1620,10 @@ function App(): React.JSX.Element {
   }
 
   const countPendingChanges = (tab: WorkspaceTab): number => {
+    if (tab.kind === 'redis-browser') {
+      return countRedisPendingChanges(tab)
+    }
+
     if (tab.kind !== 'preview') {
       return 0
     }
@@ -1520,9 +1639,10 @@ function App(): React.JSX.Element {
     return (
       <Flex align="center" justify="space-between" gap={8} className="result-status">
         <Space wrap>
-          <Tag color={tab.kind === 'query' ? 'blue' : 'green'}>{tab.kind === 'query' ? 'SQL 查询' : '表预览'}</Tag>
+          <Tag color={tab.kind === 'query' ? 'blue' : tab.kind === 'redis-browser' ? 'red' : 'green'}>{tab.kind === 'query' ? 'SQL 查询' : tab.kind === 'redis-browser' ? 'Redis 浏览' : '表预览'}</Tag>
           {connection && <Tag>{connection.name}</Tag>}
-          {tab.tableName && <Tag>{tab.tableName}</Tag>}
+          {tab.kind === 'redis-browser' && tab.databaseName && <Tag>{tab.databaseName}</Tag>}
+          {tab.tableName && tab.kind !== 'redis-browser' && <Tag>{tab.tableName}</Tag>}
           <Typography.Text type="secondary">{rowText}</Typography.Text>
           {tab.result?.limited && <Tag color="warning">已截断</Tag>}
           {pendingChanges > 0 && <Tag color="orange">{pendingChanges} 项未提交</Tag>}
@@ -1558,15 +1678,59 @@ function App(): React.JSX.Element {
     )
   }
 
-  const renderTableToolbar = (tab: WorkspaceTab): React.ReactNode => {
-    const showPreviewActions = tab.kind === 'preview' && tab.connectionId && tab.tableName
+  const renderWhereInput = (tab: WorkspaceTab): React.ReactNode => {
+    if (tab.kind !== 'preview' || !tab.connectionId || !tab.tableName) {
+      return null
+    }
+
+    const fieldOptions = (tab.result?.columns ?? [])
+      .filter((column) => column !== '__rowKey')
+      .map((column) => ({ value: column, label: column }))
 
     return (
-      <Flex align="center" justify="space-between" className="table-data-toolbar">
-        <Space size={4}>
+      <AutoComplete
+        className="preview-where-input"
+        options={fieldOptions}
+        value={tab.where ?? ''}
+        filterOption={(input, option) => String(option?.value ?? '').toLowerCase().includes(input.toLowerCase())}
+        onChange={(value) => updateWorkspaceTab(tab.key, { where: value })}
+        onSelect={(value) => updateWorkspaceTab(tab.key, { where: value })}
+      >
+        <Input
+          size="small"
+          allowClear
+          addonBefore="WHERE"
+          placeholder="输入过滤条件，例如：id = 2，回车查询"
+          onPressEnter={(event) => void previewTable(tab.connectionId!, tab.tableName!, tab.databaseName, tab.pgDatabaseName, tab.limit, 1, event.currentTarget.value)}
+        />
+      </AutoComplete>
+    )
+  }
+
+  const renderTableToolbar = (tab: WorkspaceTab): React.ReactNode => {
+    const connection = getConnection(tab.connectionId)
+    const showPreviewActions = tab.kind === 'preview' && tab.connectionId && tab.tableName && connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis'
+    const showRedisRefresh = tab.kind === 'redis-browser' && tab.connectionId && tab.databaseName
+
+    return (
+      <Flex align="center" justify="space-between" gap={8} className="table-data-toolbar">
+        <Space size={4} className="table-data-actions">
+          {showRedisRefresh && (
+            <>
+              <Button size="small" icon={<ReloadOutlined />} loading={tab.loading} onClick={() => void previewRedisDatabase(tab.connectionId!, tab.databaseName!, tab.limit, tab.page)}>
+                刷新
+              </Button>
+              <Button size="small" icon={<PlusOutlined />} onClick={() => addRedisRow(tab)}>
+                新增一行
+              </Button>
+              <Button type="primary" size="small" icon={<SaveOutlined />} disabled={countRedisPendingChanges(tab) === 0} loading={tab.loading} onClick={() => void submitRedisChanges(tab)}>
+                提交
+              </Button>
+            </>
+          )}
           {showPreviewActions && (
             <>
-              <Button size="small" icon={<ReloadOutlined />} loading={tab.loading} onClick={() => void previewTable(tab.connectionId!, tab.tableName!, tab.databaseName, tab.pgDatabaseName, tab.limit, tab.page)}>
+              <Button size="small" icon={<ReloadOutlined />} loading={tab.loading} onClick={() => void previewTable(tab.connectionId!, tab.tableName!, tab.databaseName, tab.pgDatabaseName, tab.limit, tab.page, tab.where)}>
                 刷新
               </Button>
               <Button size="small" icon={<PlusOutlined />} onClick={() => addPreviewRow(tab)}>
@@ -1581,24 +1745,100 @@ function App(): React.JSX.Element {
             </>
           )}
         </Space>
+        {renderWhereInput(tab)}
         {renderResultPager(tab)}
       </Flex>
     )
   }
 
+  const toggleRedisValue = (tabKey: string, rowKey: string): void => {
+    setWorkspaceTabs((current) => current.map((tab) => {
+      if (tab.key !== tabKey) {
+        return tab
+      }
+      const expanded = { ...(tab.redisExpandedValues ?? {}) }
+      if (expanded[rowKey]) {
+        delete expanded[rowKey]
+      } else {
+        expanded[rowKey] = true
+      }
+      return { ...tab, redisExpandedValues: expanded }
+    }))
+  }
+
+  const updateRedisEdit = (tabKey: string, rowKey: string, patch: Partial<RedisKeyEdit>): void => {
+    setWorkspaceTabs((current) => current.map((tab) => {
+      if (tab.key !== tabKey) {
+        return tab
+      }
+      const currentEdit = tab.redisEdits?.[rowKey]
+      if (!currentEdit) {
+        return tab
+      }
+      const nextEdit: RedisKeyEdit = {
+        ...currentEdit,
+        ...patch,
+        state: currentEdit.state === 'inserted' ? 'inserted' : 'updated'
+      }
+      return { ...tab, redisEdits: { ...(tab.redisEdits ?? {}), [rowKey]: nextEdit } }
+    }))
+  }
+
+  const addRedisRow = (tab: WorkspaceTab): void => {
+    const rowKey = `new:${Date.now()}`
+    updateWorkspaceTab(tab.key, {
+      redisEdits: {
+        ...(tab.redisEdits ?? {}),
+        [rowKey]: {
+          rowKey,
+          key: '',
+          type: 'string',
+          value: '',
+          ttl: null,
+          state: 'inserted'
+        }
+      },
+      redisExpandedValues: { ...(tab.redisExpandedValues ?? {}), [rowKey]: true }
+    })
+  }
+
+  const deleteRedisRow = (tabKey: string, rowKey: string): void => {
+    setWorkspaceTabs((current) => current.map((tab) => {
+      if (tab.key !== tabKey) {
+        return tab
+      }
+      const edits = { ...(tab.redisEdits ?? {}) }
+      const currentEdit = edits[rowKey]
+      if (!currentEdit) {
+        return tab
+      }
+      if (currentEdit.state === 'inserted') {
+        delete edits[rowKey]
+      } else {
+        edits[rowKey] = { ...currentEdit, deleted: true }
+      }
+      return { ...tab, redisEdits: edits }
+    }))
+  }
+
   const renderResultPager = (tab: WorkspaceTab): React.ReactNode => {
-    const limit = tab.limit ?? 1000
+    const limit = tab.limit ?? (tab.kind === 'preview' ? PREVIEW_DEFAULT_LIMIT : QUERY_DEFAULT_LIMIT)
     const page = tab.page ?? 1
-    const hasNext = !!tab.result?.limited
+    const totalPages = tab.result?.total_count ? Math.max(1, Math.ceil(tab.result.total_count / limit)) : undefined
+    const hasNext = totalPages ? page < totalPages : !!tab.result?.limited
 
     return (
       <Space size={4} className="result-pager">
+        <Button size="small" disabled={tab.loading || page <= 1} onClick={() => void changeTabPage(tab, 1)}>
+          首页
+        </Button>
         <Button size="small" disabled={tab.loading || page <= 1} onClick={() => void changeTabPage(tab, page - 1)}>
           上一页
         </Button>
         <InputNumber
           size="small"
           min={1}
+          max={totalPages}
           value={page}
           controls={false}
           className="result-page-input"
@@ -1612,14 +1852,66 @@ function App(): React.JSX.Element {
         <Button size="small" disabled={tab.loading || !hasNext} onClick={() => void changeTabPage(tab, page + 1)}>
           下一页
         </Button>
+        <Button size="small" disabled={tab.loading || !totalPages || page >= totalPages} onClick={() => totalPages && void changeTabPage(tab, totalPages)}>
+          末页
+        </Button>
         <Select
           size="small"
           value={limit}
           className="result-limit-select"
-          options={[500, 1000].map((value) => ({ label: `${value} 条/页`, value }))}
+          options={[300, 500, 1000].map((value) => ({ label: `${value} 条/页`, value }))}
           onChange={(value) => void changeTabLimit(tab, value)}
         />
       </Space>
+    )
+  }
+
+  const renderRedisBrowser = (tab: WorkspaceTab): React.ReactNode => {
+    const rows = tab.result?.rows ?? []
+    const edits = tab.redisEdits ?? {}
+    return (
+      <div className="result-table-shell">
+        {renderResultStatus(tab)}
+        {renderTableToolbar(tab)}
+        {tab.error && <Alert message="加载失败" description={tab.error} type="error" showIcon />}
+        {tab.result?.limited && <Alert message="还有更多 Key，可点击下一页继续查看" type="warning" showIcon />}
+        <div className="redis-browser-list">
+          {tab.loading && <Typography.Text type="secondary">加载中...</Typography.Text>}
+          {!tab.loading && Object.values(edits).filter((edit) => !edit.deleted).length === 0 && <Typography.Text type="secondary">当前 DB 暂无 Key</Typography.Text>}
+          {Object.values(edits).map((edit, index) => {
+            if (edit.deleted) {
+              return null
+            }
+            const sourceRow = rows[index] ?? {}
+            const rowKey = edit.rowKey
+            const expanded = Boolean(tab.redisExpandedValues?.[rowKey])
+            return (
+              <div className={`redis-key-card${edit.state ? ' redis-key-card-dirty' : ''}`} key={rowKey}>
+                <button className="redis-expand-button" type="button" onClick={() => toggleRedisValue(tab.key, rowKey)} aria-label={expanded ? '收起值' : '展开值'}>
+                  {expanded ? '▼' : '▶'}
+                </button>
+                <div className="redis-key-main">
+                  <Flex align="center" gap={8} wrap="wrap">
+                    <Input size="small" className="redis-key-input" value={edit.key} placeholder="Key" onChange={(event) => updateRedisEdit(tab.key, rowKey, { key: event.target.value })} />
+                    <Select size="small" className="redis-type-select" value={edit.type} options={['string', 'hash', 'list', 'set', 'zset'].map((value) => ({ label: value, value }))} onChange={(value) => updateRedisEdit(tab.key, rowKey, { type: value })} />
+                    <InputNumber size="small" className="redis-ttl-input" min={1} placeholder="TTL 秒" value={edit.ttl ?? null} onChange={(value) => updateRedisEdit(tab.key, rowKey, { ttl: typeof value === 'number' ? value : null })} />
+                    {edit.state && <Tag color="orange">未提交</Tag>}
+                    {!edit.state && sourceRow.ttl !== undefined && <Tag>{redisTtlDisplay(sourceRow.ttl)}</Tag>}
+                    {sourceRow.length !== undefined && <Tag>长度 {String(sourceRow.length)}</Tag>}
+                    {sourceRow.memory !== undefined && <Tag>内存 {String(sourceRow.memory)} B</Tag>}
+                    <Button size="small" danger icon={<DeleteOutlined />} onClick={() => deleteRedisRow(tab.key, rowKey)}>
+                      删除
+                    </Button>
+                  </Flex>
+                  {expanded && (
+                    <Input.TextArea className="redis-value-editor" value={edit.value} autoSize={{ minRows: 4, maxRows: 14 }} onChange={(event) => updateRedisEdit(tab.key, rowKey, { value: event.target.value })} />
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
     )
   }
 
@@ -1651,7 +1943,7 @@ function App(): React.JSX.Element {
           return tab.sortState!.direction === 'ascend' ? result : -result
         })
       : filteredRows
-    const rowNumberOffset = ((tab.page ?? 1) - 1) * (tab.limit ?? 1000)
+    const rowNumberOffset = ((tab.page ?? 1) - 1) * (tab.limit ?? (tab.kind === 'preview' ? PREVIEW_DEFAULT_LIMIT : QUERY_DEFAULT_LIMIT))
 
     const applySelectedRows = (nextSelectedRowKeys: React.Key[]): void => {
       const nextSelectedRowKeyMap = Object.fromEntries(nextSelectedRowKeys.map((key) => [String(key), true as const]))
@@ -1900,6 +2192,10 @@ function App(): React.JSX.Element {
     const tableScrollX = Math.max((tab.result?.columns.length ?? 0) * 180 + (tab.kind === 'preview' ? 34 : 0), 720)
     const tableScrollY = tableBodyHeights[tab.key] ?? 320
 
+    if (tab.kind === 'redis-browser') {
+      return renderRedisBrowser(tab)
+    }
+
     return (
       <div className="result-table-shell">
         {renderResultStatus(tab)}
@@ -1951,7 +2247,7 @@ function App(): React.JSX.Element {
   }
 
   const getDefaultDatabaseName = (connection: ConnectionInfo): string | undefined => {
-    if (connection.database_type !== 'mysql' && connection.database_type !== 'mongodb') {
+    if (connection.database_type !== 'mysql' && connection.database_type !== 'mongodb' && connection.database_type !== 'redis') {
       return undefined
     }
 
@@ -2040,6 +2336,7 @@ function App(): React.JSX.Element {
       const isDm = connection?.database_type === 'dm'
       const isPg = connection?.database_type === 'postgresql'
       const isMongo = connection?.database_type === 'mongodb'
+      const isRedis = connection?.database_type === 'redis'
       const dbOptions = tab.connectionId ? (allDatabases[tab.connectionId] ?? []) : []
       const schemaKey = tab.connectionId && tab.pgDatabaseName ? `${tab.connectionId}:${tab.pgDatabaseName}` : ''
       const schemaOptions = schemaKey ? (allSchemas[schemaKey] ?? []) : []
@@ -2054,7 +2351,7 @@ function App(): React.JSX.Element {
               onChange={(connectionId) => {
                 const nextConn = getConnection(connectionId)
                 void ensureDatabasesLoaded(connectionId)
-                const nextDb = nextConn?.database_type === 'mysql' || nextConn?.database_type === 'mongodb' ? getDefaultDatabaseName(nextConn) : undefined
+                const nextDb = nextConn?.database_type === 'mysql' || nextConn?.database_type === 'mongodb' || nextConn?.database_type === 'redis' ? getDefaultDatabaseName(nextConn) : undefined
                 const nextPgDb = nextConn?.database_type === 'postgresql' ? getDefaultPgDatabase(nextConn!) : undefined
                 updateWorkspaceTab(tab.key, {
                   connectionId,
@@ -2062,16 +2359,16 @@ function App(): React.JSX.Element {
                   pgDatabaseName: nextPgDb
                 })
 
-                if ((nextConn?.database_type === 'mysql' || nextConn?.database_type === 'mongodb') && nextDb) {
+                if ((nextConn?.database_type === 'mysql' || nextConn?.database_type === 'mongodb' || nextConn?.database_type === 'redis') && nextDb) {
                   void preloadCompletionForDatabase(connectionId, nextDb)
                 }
               }}
               options={connections.map((c) => ({ label: c.name, value: c.connection_id }))}
             />
-            {(isMysql || isPg || isDm || isMongo) && (
+            {(isMysql || isPg || isDm || isMongo || isRedis) && (
               <Select
                 className="database-select"
-                placeholder={isPg ? '选择 Database' : isDm ? '选择 Schema' : isMongo ? '选择数据库' : '选择库'}
+                placeholder={isPg ? '选择 Database' : isDm ? '选择 Schema' : isMongo ? '选择数据库' : isRedis ? '选择 Redis DB' : '选择库'}
                 value={isPg ? (tab.pgDatabaseName || undefined) : (tab.databaseName || undefined)}
                 onChange={async (value) => {
                   if (isPg) {
@@ -2130,6 +2427,51 @@ function App(): React.JSX.Element {
     return <div className="query-workspace">{renderResultTable(tab)}</div>
   }
 
+  const openRedisDatabaseBrowser = async (connectionId: string, databaseName: string, limit = REDIS_DEFAULT_LIMIT, page = 1): Promise<void> => {
+    if (!ensureConnectionOpen(connectionId)) {
+      return
+    }
+
+    const tabKey = `redis:${connectionId}:${databaseName}`
+    setSelectedConnectionId(connectionId)
+    setActiveTabKey(tabKey)
+    setWorkspaceTabs((current) => {
+      const exists = current.some((tab) => tab.key === tabKey)
+      if (exists) {
+        return current.map((tab) => (tab.key === tabKey ? { ...tab, limit, page, loading: true, error: undefined } : tab))
+      }
+      return [
+        ...current,
+        {
+          key: tabKey,
+          title: `Redis ${databaseName}`,
+          kind: 'redis-browser',
+          connectionId,
+          databaseName,
+          tableName: '__DATADJINN_REDIS_DATABASE__',
+          sql: '',
+          limit,
+          page,
+          loading: true,
+          redisMode: 'database',
+          redisExpandedValues: {}
+        }
+      ]
+    })
+
+    await previewRedisDatabase(connectionId, databaseName, limit, page, tabKey)
+  }
+
+  const previewRedisDatabase = async (connectionId: string, databaseName: string, limit = REDIS_DEFAULT_LIMIT, page = 1, tabKey = `redis:${connectionId}:${databaseName}`): Promise<void> => {
+    try {
+      const result = await requestJson<QueryResponse>(withPageQuery(withPgDatabase(`/connections/${connectionId}/tables/__DATADJINN_REDIS_DATABASE__/preview`, databaseName), limit, page))
+      updateWorkspaceTab(tabKey, { result, redisEdits: buildRedisEdits(result.rows), redisExpandedValues: {}, page, limit, loading: false, error: undefined })
+    } catch (err) {
+      updateWorkspaceTab(tabKey, { loading: false, error: err instanceof Error ? err.message : '加载 Redis Key 失败' })
+      showError(err instanceof Error ? err.message : '加载 Redis Key 失败')
+    }
+  }
+
   const checkHealth = async (): Promise<void> => {
     setHealthLoading(true)
 
@@ -2148,7 +2490,7 @@ function App(): React.JSX.Element {
     setSelectedConnectionId((current) => current ?? data.connections[0]?.connection_id)
 
     for (const connection of data.connections) {
-      if (connection.is_open && (connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm' || connection.database_type === 'mongodb')) {
+      if (connection.is_open && (connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm' || connection.database_type === 'mongodb' || connection.database_type === 'redis')) {
         try {
           const dbData = await requestJson<{ databases: DatabaseInfo[] }>(`/connections/${connection.connection_id}/databases`)
           const dbNames = dbData.databases.map((d) => d.name)
@@ -2162,7 +2504,7 @@ function App(): React.JSX.Element {
                 }
               }
 
-              return { ...current, [connection.connection_id]: defaultSelectedDatabases(connection, dbNames) }
+              return { ...current, [connection.connection_id]: defaultSelectedDatabases(connection, dbNames, dbData.databases) }
             }
 
             const filtered = filterPersistedValues(current[connection.connection_id], dbNames)
@@ -2185,7 +2527,7 @@ function App(): React.JSX.Element {
     if (node.kind === 'connection' && node.connectionId) {
       const connection = getConnection(node.connectionId)
 
-      if (connection?.database_type !== 'mysql' && connection?.database_type !== 'postgresql' && connection?.database_type !== 'dm' && connection?.database_type !== 'mongodb') {
+      if (connection?.database_type !== 'mysql' && connection?.database_type !== 'postgresql' && connection?.database_type !== 'dm' && connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis') {
         return []
       }
 
@@ -2193,7 +2535,7 @@ function App(): React.JSX.Element {
       const dbNames = data.databases.map((d) => d.name)
 
       const currentSelected = selectedDatabasesRef.current[node.connectionId!]
-      const nextSelected = currentSelected ? filterPersistedValues(currentSelected, dbNames) : defaultSelectedDatabases(connection, dbNames)
+      const nextSelected = currentSelected ? filterPersistedValues(currentSelected, dbNames) : defaultSelectedDatabases(connection, dbNames, data.databases)
 
       setAllDatabases((current) => ({ ...current, [node.connectionId!]: dbNames }))
       setSelectedDatabases((current) => ({ ...current, [node.connectionId!]: nextSelected }))
@@ -2209,12 +2551,16 @@ function App(): React.JSX.Element {
         sizeBytes: database.size_bytes,
         storageSizeDisplay: database.storage_size_display,
         storageSizeBytes: database.storage_size_bytes,
-        isLeaf: false
+        isLeaf: connection.database_type === 'redis'
       }))
     }
 
     if (node.kind === 'database' && node.connectionId && node.databaseName) {
       const connection = getConnection(node.connectionId)
+
+      if (connection?.database_type === 'redis') {
+        return []
+      }
 
       if (connection?.database_type === 'postgresql') {
         const data = await requestJson<{ databases: DatabaseInfo[] }>(`/connections/${node.connectionId}/schemas?database=${encodeURIComponent(node.databaseName!)}`)
@@ -2349,8 +2695,13 @@ function App(): React.JSX.Element {
     }
   }
 
-  const isLoadableTreeNode = (node: DatabaseTreeNode): boolean =>
-    node.kind === 'connection' || node.kind === 'database' || node.kind === 'pg-schema' || node.kind === 'object-group' || node.kind === 'table'
+  const isLoadableTreeNode = (node: DatabaseTreeNode): boolean => {
+    if (node.kind === 'database' && node.connectionId && getConnection(node.connectionId)?.database_type === 'redis') {
+      return false
+    }
+
+    return node.kind === 'connection' || node.kind === 'database' || node.kind === 'pg-schema' || node.kind === 'object-group' || node.kind === 'table'
+  }
 
   const collectDescendantKeys = (node: DatabaseTreeNode): Set<React.Key> => {
     const keys = new Set<React.Key>()
@@ -2438,6 +2789,14 @@ function App(): React.JSX.Element {
         port: 27017,
         database: 'admin'
       })
+    } else if (nextDatabaseType === 'redis') {
+      form.setFieldsValue({
+        database_type: 'redis',
+        name: 'Redis',
+        host: '127.0.0.1',
+        port: 6379,
+        database: '0'
+      })
     } else {
       form.setFieldsValue({
         database_type: 'mysql',
@@ -2476,7 +2835,8 @@ function App(): React.JSX.Element {
       { key: 'mysql', label: 'MySQL', icon: <img src={mysqlIcon} alt="" style={{ width: 16, height: 16 }} /> },
       { key: 'postgresql', label: 'PostgreSQL', icon: <img src={postgresIcon} alt="" style={{ width: 16, height: 16 }} /> },
       { key: 'dm', label: '达梦', icon: <img src={dmIcon} alt="" style={{ width: 16, height: 16 }} /> },
-      { key: 'mongodb', label: 'MongoDB', icon: <img src={mongoIcon} alt="" style={{ width: 16, height: 16 }} /> }
+      { key: 'mongodb', label: 'MongoDB', icon: <img src={mongoIcon} alt="" style={{ width: 16, height: 16 }} /> },
+      { key: 'redis', label: 'Redis', icon: <DatabaseOutlined style={{ color: '#d82c20' }} /> }
     ],
     onClick: ({ key }: { key: string }) => void openConnectionModal(key as DatabaseType)
   }
@@ -2519,6 +2879,18 @@ function App(): React.JSX.Element {
       return {
         name: values.name,
         database_type: 'mongodb',
+        host: values.host,
+        port: values.port,
+        username: values.username,
+        password: values.password,
+        database: values.database
+      }
+    }
+
+    if (values.database_type === 'redis') {
+      return {
+        name: values.name,
+        database_type: 'redis',
         host: values.host,
         port: values.port,
         username: values.username,
@@ -2664,7 +3036,7 @@ function App(): React.JSX.Element {
       setTreeData((current) => [...current, buildConnectionNode(connection)])
       setConnectionModalOpen(false)
     } catch (err) {
-      showError(err instanceof Error ? err.message : connectionMode === 'edit' ? '更新连接失败' : '创建连接失败')
+      showError(err instanceof Error ? err.message : connectionMode === 'edit' ? '更新连接失败' : '保存连接失败')
     } finally {
       setConnectionLoading(false)
     }
@@ -2990,7 +3362,7 @@ function App(): React.JSX.Element {
     let defaultDb = databaseName ?? ''
     let defaultPgDb = pgDatabaseName ?? ''
 
-    if (connection?.database_type === 'mysql' || connection?.database_type === 'postgresql' || connection?.database_type === 'mongodb') {
+    if (connection?.database_type === 'mysql' || connection?.database_type === 'postgresql' || connection?.database_type === 'mongodb' || connection?.database_type === 'redis') {
       try {
         const data = await requestJson<{ databases: DatabaseInfo[] }>(`/connections/${connectionId}/databases`)
         databases = data.databases
@@ -3042,12 +3414,13 @@ function App(): React.JSX.Element {
   }
 
   const openExportModal = (connectionId: string, database?: string, pgDatabase?: string, table?: string): void => {
+    const connection = getConnection(connectionId)
     setExportConnectionId(connectionId)
     setExportDatabase(database ?? '')
     setExportPgDatabase(pgDatabase ?? '')
     setExportTable(table ?? '')
     setExportScope(table ? 'table' : pgDatabase ? 'schema' : 'database')
-    setExportFormat('sql')
+    setExportFormat(connection?.database_type === 'mongodb' || connection?.database_type === 'redis' ? 'json' : 'sql')
     setExportContent('schema_data')
     setExportModalOpen(true)
   }
@@ -3056,7 +3429,7 @@ function App(): React.JSX.Element {
     setExportLoading(true)
     try {
       const defaultName = exportTable || exportPgDatabase || exportDatabase || 'export'
-      const extension = exportFormat === 'csv' ? 'csv' : 'sql'
+      const extension = exportFormat === 'csv' ? 'csv' : exportFormat === 'json' ? 'json' : 'sql'
       const outputPath = await window.api.selectExportPath(exportFormat, `${defaultName}.${extension}`)
       if (!outputPath) {
         return
@@ -3199,6 +3572,38 @@ function App(): React.JSX.Element {
     updateWorkspaceTab(tab.key, { editRows: [...(tab.editRows ?? []), row], columnFilterOptions: undefined })
   }
 
+  const submitRedisChanges = async (tab: WorkspaceTab): Promise<void> => {
+    if (!tab.connectionId || !tab.databaseName) {
+      return
+    }
+
+    const edits = Object.values(tab.redisEdits ?? {})
+    const toPayload = (edit: RedisKeyEdit): Record<string, unknown> => ({
+      key: edit.key,
+      original_key: edit.originalKey,
+      type: edit.type,
+      value: edit.value,
+      ttl: edit.ttl ?? null
+    })
+    const inserted = edits.filter((edit) => edit.state === 'inserted' && !edit.deleted).map(toPayload)
+    const updated = edits.filter((edit) => edit.state === 'updated' && !edit.deleted).map(toPayload)
+    const deleted = edits.filter((edit) => edit.deleted && edit.originalKey).map((edit) => edit.originalKey!)
+
+    updateWorkspaceTab(tab.key, { loading: true, error: undefined })
+
+    try {
+      const result = await requestJson<QueryResponse>(withPageQuery(withDatabaseQuery(`/connections/${tab.connectionId}/redis/data`, tab.databaseName), tab.limit ?? REDIS_DEFAULT_LIMIT, tab.page ?? 1), {
+        method: 'PUT',
+        body: JSON.stringify({ inserted, updated, deleted })
+      })
+      updateWorkspaceTab(tab.key, { result, redisEdits: buildRedisEdits(result.rows), redisExpandedValues: {}, page: tab.page ?? 1, loading: false, error: undefined })
+      refreshDatabaseNode(tab.connectionId, tab.databaseName)
+    } catch (err) {
+      updateWorkspaceTab(tab.key, { loading: false, error: err instanceof Error ? err.message : '提交 Redis 数据失败' })
+      showError(err instanceof Error ? err.message : '提交 Redis 数据失败')
+    }
+  }
+
   const markSelectedRowsDeleted = (tab: WorkspaceTab): void => {
     const selected = tab.selectedRowKeyMap ? new Set(Object.keys(tab.selectedRowKeyMap)) : new Set((tab.selectedRowKeys ?? []).map(String))
     const editRows = (tab.editRows ?? [])
@@ -3212,6 +3617,8 @@ function App(): React.JSX.Element {
       return
     }
 
+    const limit = tab.limit ?? PREVIEW_DEFAULT_LIMIT
+    const page = tab.page ?? 1
     const rows = tab.editRows ?? []
     const cleanRow = (row: EditableRow): Record<string, unknown> => {
       const { __rowKey, __state, __deleted, __original, ...values } = row
@@ -3226,22 +3633,24 @@ function App(): React.JSX.Element {
     updateWorkspaceTab(tab.key, { loading: true, error: undefined })
 
     try {
-      const result = await requestJson<QueryResponse>(withPageQuery(withPgDatabase(`/connections/${tab.connectionId}/tables/${encodeURIComponent(tab.tableName)}/data`, tab.databaseName, tab.pgDatabaseName), tab.limit ?? 1000, tab.page ?? 1), {
+      const dataPath = withWhereQuery(withPageQuery(withPgDatabase(`/connections/${tab.connectionId}/tables/${encodeURIComponent(tab.tableName)}/data`, tab.databaseName, tab.pgDatabaseName), limit, page), tab.where)
+      const result = await requestJson<QueryResponse>(dataPath, {
         method: 'PUT',
         body: JSON.stringify({ inserted, updated, deleted })
       })
-      updateWorkspaceTab(tab.key, { result, editRows: buildEditableRows(result.rows), selectedRowKeys: [], selectedRowKeyMap: {}, columnFilterOptions: undefined, editingCell: undefined, loading: false, error: undefined })
+      updateWorkspaceTab(tab.key, { result, editRows: buildEditableRows(result.rows), selectedRowKeys: [], selectedRowKeyMap: {}, columnFilterOptions: undefined, editingCell: undefined, where: tab.where?.trim() ?? '', loading: false, error: undefined })
     } catch (err) {
       updateWorkspaceTab(tab.key, { loading: false, error: err instanceof Error ? err.message : '提交表数据失败' })
       showError(err instanceof Error ? err.message : '提交表数据失败')
     }
   }
 
-  const previewTable = async (connectionId: string, tableName: string, databaseName?: string, pgDatabaseName?: string, limit = 1000, page = 1): Promise<void> => {
+  const previewTable = async (connectionId: string, tableName: string, databaseName?: string, pgDatabaseName?: string, limit = PREVIEW_DEFAULT_LIMIT, page = 1, where = ''): Promise<void> => {
     if (!ensureConnectionOpen(connectionId)) {
       return
     }
 
+    const whereCondition = where.trim()
     const tabKey = `preview:${connectionId}:${pgDatabaseName ?? databaseName ?? 'main'}:${tableName}`
 
     setSelectedConnectionId(connectionId)
@@ -3250,7 +3659,7 @@ function App(): React.JSX.Element {
       const exists = current.some((tab) => tab.key === tabKey)
 
       if (exists) {
-        return current.map((tab) => (tab.key === tabKey ? { ...tab, limit, page, loading: true, error: undefined } : tab))
+        return current.map((tab) => (tab.key === tabKey ? { ...tab, limit, page, where: whereCondition, loading: true, error: undefined } : tab))
       }
 
       return [
@@ -3266,14 +3675,16 @@ function App(): React.JSX.Element {
           sql: '',
           limit,
           page,
+          where: whereCondition,
           loading: true
         }
       ]
     })
 
     try {
-      const result = await requestJson<QueryResponse>(withPageQuery(withPgDatabase(`/connections/${connectionId}/tables/${encodeURIComponent(tableName)}/preview`, databaseName, pgDatabaseName), limit, page))
-      updateWorkspaceTab(tabKey, { result, editRows: buildEditableRows(result.rows), selectedRowKeys: [], selectedRowKeyMap: {}, columnFilterOptions: undefined, editingCell: undefined, loading: false, error: undefined })
+      const previewPath = withWhereQuery(withPageQuery(withPgDatabase(`/connections/${connectionId}/tables/${encodeURIComponent(tableName)}/preview`, databaseName, pgDatabaseName), limit, page), whereCondition)
+      const result = await requestJson<QueryResponse>(previewPath)
+      updateWorkspaceTab(tabKey, { result, editRows: buildEditableRows(result.rows), selectedRowKeys: [], selectedRowKeyMap: {}, columnFilterOptions: undefined, editingCell: undefined, where: whereCondition, loading: false, error: undefined })
     } catch (err) {
       updateWorkspaceTab(tabKey, { loading: false, error: err instanceof Error ? err.message : '加载表数据失败' })
       showError(err instanceof Error ? err.message : '加载表数据失败')
@@ -3289,7 +3700,7 @@ function App(): React.JSX.Element {
     let finalDb = databaseName
     let finalPgDb = pgDatabaseName
 
-    if ((connection?.database_type === 'mysql' || connection?.database_type === 'mongodb') && !finalDb) {
+    if ((connection?.database_type === 'mysql' || connection?.database_type === 'mongodb' || connection?.database_type === 'redis') && !finalDb) {
       finalDb = getDefaultDatabaseName(connection)
     }
 
@@ -3325,7 +3736,7 @@ function App(): React.JSX.Element {
     if (connId) {
       void ensureDatabasesLoaded(connId)
 
-      if ((connection?.database_type === 'mysql' || connection?.database_type === 'mongodb') && finalDb) {
+      if ((connection?.database_type === 'mysql' || connection?.database_type === 'mongodb' || connection?.database_type === 'redis') && finalDb) {
         void preloadCompletionForDatabase(connId, finalDb)
       }
 
@@ -3371,7 +3782,7 @@ function App(): React.JSX.Element {
 
     const activePreview = workspaceTabs.find((tab) => tab.key === activeTabKey && tab.kind === 'preview' && tab.connectionId && tab.tableName)
     if (activePreview?.connectionId && activePreview.tableName) {
-      void previewTable(activePreview.connectionId, activePreview.tableName, activePreview.databaseName, activePreview.pgDatabaseName, activePreview.limit, activePreview.page)
+      void previewTable(activePreview.connectionId, activePreview.tableName, activePreview.databaseName, activePreview.pgDatabaseName, activePreview.limit, activePreview.page, activePreview.where)
     }
   }
 
@@ -3383,8 +3794,13 @@ function App(): React.JSX.Element {
       return
     }
 
+    if (tab.kind === 'redis-browser' && tab.connectionId && tab.databaseName) {
+      await previewRedisDatabase(tab.connectionId, tab.databaseName, limit, 1)
+      return
+    }
+
     if (tab.kind === 'preview' && tab.connectionId && tab.tableName) {
-      await previewTable(tab.connectionId, tab.tableName, tab.databaseName, tab.pgDatabaseName, limit, 1)
+      await previewTable(tab.connectionId, tab.tableName, tab.databaseName, tab.pgDatabaseName, limit, 1, tab.where)
     }
   }
 
@@ -3397,8 +3813,13 @@ function App(): React.JSX.Element {
       return
     }
 
+    if (tab.kind === 'redis-browser' && tab.connectionId && tab.databaseName) {
+      await previewRedisDatabase(tab.connectionId, tab.databaseName, tab.limit ?? REDIS_DEFAULT_LIMIT, nextPage)
+      return
+    }
+
     if (tab.kind === 'preview' && tab.connectionId && tab.tableName) {
-      await previewTable(tab.connectionId, tab.tableName, tab.databaseName, tab.pgDatabaseName, tab.limit ?? 1000, nextPage)
+      await previewTable(tab.connectionId, tab.tableName, tab.databaseName, tab.pgDatabaseName, tab.limit ?? PREVIEW_DEFAULT_LIMIT, nextPage, tab.where)
     }
   }
 
@@ -3415,7 +3836,7 @@ function App(): React.JSX.Element {
 
     const connection = getConnection(tab.connectionId)
 
-    if ((connection?.database_type === 'mysql' || connection?.database_type === 'mongodb') && !tab.databaseName) {
+    if ((connection?.database_type === 'mysql' || connection?.database_type === 'mongodb' || connection?.database_type === 'redis') && !tab.databaseName) {
       return
     }
 
@@ -3436,9 +3857,9 @@ function App(): React.JSX.Element {
         body: JSON.stringify({
           connection_id: tab.connectionId,
           sql: sqlToExecute,
-          limit: tab.limit ?? 1000,
-          offset: Math.max(0, (tab.page ?? 1) - 1) * (tab.limit ?? 1000),
-          database: connection?.database_type === 'mysql' || connection?.database_type === 'postgresql' || connection?.database_type === 'mongodb' ? (tab.databaseName || undefined) : undefined,
+          limit: tab.limit ?? QUERY_DEFAULT_LIMIT,
+          offset: Math.max(0, (tab.page ?? 1) - 1) * (tab.limit ?? QUERY_DEFAULT_LIMIT),
+          database: connection?.database_type === 'mysql' || connection?.database_type === 'postgresql' || connection?.database_type === 'mongodb' || connection?.database_type === 'redis' ? (tab.databaseName || undefined) : undefined,
           pg_database: connection?.database_type === 'postgresql' ? (tab.pgDatabaseName || undefined) : undefined
         })
       })
@@ -3697,9 +4118,19 @@ function App(): React.JSX.Element {
                     if (treeNode.kind === 'database' || treeNode.kind === 'pg-schema') {
                       activateAIContextFromNode(treeNode)
                     }
+                    if (treeNode.kind === 'database' && treeNode.connectionId && treeNode.databaseName && getConnection(treeNode.connectionId)?.database_type === 'redis') {
+                      activateAIContextFromNode(treeNode)
+                      void openRedisDatabaseBrowser(treeNode.connectionId, treeNode.databaseName)
+                      return
+                    }
                     if ((treeNode.kind === 'table' || treeNode.kind === 'db-object') && treeNode.connectionId && treeNode.tableName && (treeNode.objectType === 'table' || treeNode.objectType === 'view')) {
                       activateAIContextFromNode(treeNode)
-                      void previewTable(treeNode.connectionId, treeNode.tableName, treeNode.databaseName, treeNode.pgDatabaseName)
+                      const connection = getConnection(treeNode.connectionId)
+                      if (connection?.database_type === 'redis') {
+                        void openRedisDatabaseBrowser(treeNode.connectionId, treeNode.databaseName ?? getDefaultDatabaseName(connection) ?? 'db0')
+                      } else {
+                        void previewTable(treeNode.connectionId, treeNode.tableName, treeNode.databaseName, treeNode.pgDatabaseName)
+                      }
                       return
                     }
                     if (treeNode.kind === 'connection' && treeNode.connectionId) {
@@ -3725,7 +4156,7 @@ function App(): React.JSX.Element {
                 <Splitter.Panel>
                   <div className="editor-placeholder">
                     {workspaceTabs.length === 0 ? (
-                      <div className="empty-workspace"><FileAddOutlined /><Typography.Text type="secondary">连接数据库后，可浏览库表结构、预览数据、编写 SQL，并让 Djinn Agent 辅助分析与执行受控操作。</Typography.Text><Space><Dropdown menu={connectionCreateMenu} trigger={['click']}><Button icon={<PlusOutlined />}>创建连接</Button></Dropdown></Space></div>
+                      <div className="empty-workspace"><FileAddOutlined /><Typography.Text type="secondary">连接数据库后，可浏览库表结构、预览数据、编写 SQL，并让 Djinn Agent 辅助分析与执行受控操作。</Typography.Text><Space><Dropdown menu={connectionCreateMenu} trigger={['click']}><Button icon={<PlusOutlined />}>保存连接</Button></Dropdown></Space></div>
                     ) : (
                       <Tabs className="workspace-tabs" type="editable-card" hideAdd activeKey={activeTabKey} onChange={setActiveTabKey} onEdit={(targetKey, action) => { if (action === 'remove' && typeof targetKey === 'string') { closeWorkspaceTab(targetKey) } }} items={workspaceTabs.map((tab) => ({ key: tab.key, label: tab.title, closable: true, children: renderWorkspaceTab(tab) }))} />
                     )}
@@ -3910,7 +4341,7 @@ function App(): React.JSX.Element {
           )}
         </Form>
       </Modal>
-      <Modal title={connectionMode === 'edit' ? '编辑数据库连接' : '新建数据库连接'} open={connectionModalOpen} okText={connectionMode === 'edit' ? '保存修改' : '创建连接'} cancelText="取消" confirmLoading={connectionLoading} onOk={() => void saveConnection()} onCancel={() => setConnectionModalOpen(false)} footer={(_, { OkBtn, CancelBtn }) => (<Space><Button loading={testingConnection} onClick={() => void testConnection()}>测试连接</Button><CancelBtn /><OkBtn /></Space>)}>
+      <Modal title={connectionMode === 'edit' ? '编辑数据库连接' : '保存数据库连接'} open={connectionModalOpen} okText={connectionMode === 'edit' ? '保存修改' : '保存连接'} cancelText="取消" confirmLoading={connectionLoading} onOk={() => void saveConnection()} onCancel={() => setConnectionModalOpen(false)} footer={(_, { OkBtn, CancelBtn }) => (<Space><Button loading={testingConnection} onClick={() => void testConnection()}>测试连接</Button><CancelBtn /><OkBtn /></Space>)}>
         <Form form={form} layout="vertical" initialValues={{ database_type: 'sqlite' }}>
           <Form.Item name="name" label="连接名称" rules={[{ required: true, message: '请输入连接名称' }]}><Input placeholder="例如：本地 SQLite" /></Form.Item>
           <Form.Item name="database_type" style={{ display: 'none' }}><Input /></Form.Item>
@@ -3919,10 +4350,10 @@ function App(): React.JSX.Element {
           ) : (
             <>
               <Form.Item name="host" label="主机" rules={[{ required: true, message: '请输入主机' }]}><Input placeholder="127.0.0.1" /></Form.Item>
-              <Form.Item name="port" label="端口" rules={[{ required: true, message: '请输入端口' }]}><InputNumber min={1} max={65535} className="full-width" placeholder={databaseType === 'postgresql' ? '5432' : databaseType === 'dm' ? '5236' : databaseType === 'mongodb' ? '27017' : '3306'} /></Form.Item>
-              <Form.Item name="username" label="用户名" rules={databaseType === 'mongodb' ? undefined : [{ required: true, message: '请输入用户名' }]}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'dm' ? 'SYSDBA' : undefined} /></Form.Item>
+              <Form.Item name="port" label="端口" rules={[{ required: true, message: '请输入端口' }]}><InputNumber min={1} max={65535} className="full-width" placeholder={databaseType === 'postgresql' ? '5432' : databaseType === 'dm' ? '5236' : databaseType === 'mongodb' ? '27017' : databaseType === 'redis' ? '6379' : '3306'} /></Form.Item>
+              <Form.Item name="username" label="用户名" rules={databaseType === 'mongodb' || databaseType === 'redis' ? undefined : [{ required: true, message: '请输入用户名' }]}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'dm' ? 'SYSDBA' : databaseType === 'redis' ? 'Redis ACL 用户名，可选' : undefined} /></Form.Item>
               <Form.Item name="password" label="密码"><Input.Password /></Form.Item>
-              <Form.Item name="database" label={databaseType === 'postgresql' ? '数据库名' : databaseType === 'dm' ? '默认 Schema（可选）' : databaseType === 'mongodb' ? '认证库/默认库（可选）' : '默认数据库（可选）'} rules={databaseType === 'postgresql' ? [{ required: true, message: '请输入数据库名' }] : undefined}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'dm' ? '不填则使用默认 Schema' : databaseType === 'mongodb' ? '默认 admin；也可填业务库名' : '不填则连接服务器并加载全部数据库'} /></Form.Item>
+              <Form.Item name="database" label={databaseType === 'postgresql' ? '数据库名' : databaseType === 'dm' ? '默认 Schema（可选）' : databaseType === 'mongodb' ? '认证库/默认库（可选）' : databaseType === 'redis' ? '默认 DB 序号（可选）' : '默认数据库（可选）'} rules={databaseType === 'postgresql' ? [{ required: true, message: '请输入数据库名' }] : undefined}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'dm' ? '不填则使用默认 Schema' : databaseType === 'mongodb' ? '默认 admin；也可填业务库名' : databaseType === 'redis' ? '默认 0；例如 0、1、2' : '不填则连接服务器并加载全部数据库'} /></Form.Item>
               {databaseType === 'dm' && (
                 <>
                   <Form.Item name="dm_driver_id" label="达梦驱动" rules={[{ required: true, message: '请选择达梦驱动' }]}>
@@ -3958,7 +4389,7 @@ function App(): React.JSX.Element {
           <Typography.Text><Typography.Text strong>范围：</Typography.Text>{exportScope === 'table' ? `表 ${exportTable}` : exportScope === 'schema' ? `模式 ${exportPgDatabase}` : `数据库 ${exportDatabase || '默认'}`}</Typography.Text>
           <Form layout="vertical">
             <Form.Item label="导出格式">
-              <Select value={exportFormat} onChange={(value) => setExportFormat(value)} options={[{ label: 'SQL 脚本', value: 'sql' }, { label: 'CSV', value: 'csv' }]} />
+              <Select value={exportFormat} onChange={(value) => setExportFormat(value)} options={getConnection(exportConnectionId)?.database_type === 'mongodb' || getConnection(exportConnectionId)?.database_type === 'redis' ? [{ label: 'JSON', value: 'json' }] : [{ label: 'SQL 脚本', value: 'sql' }, { label: 'CSV', value: 'csv' }]} />
             </Form.Item>
             {exportFormat === 'sql' && (
               <Form.Item label="导出内容">
@@ -3967,6 +4398,7 @@ function App(): React.JSX.Element {
             )}
           </Form>
           {exportFormat === 'csv' && exportScope !== 'table' && <Alert type="info" message="CSV 多表导出将创建目录，每表一个 CSV 文件" showIcon />}
+          {exportFormat === 'json' && <Alert type="info" message="Redis / MongoDB 导出为 JSON 文件，便于留档或迁移前查看。" showIcon />}
           {exportFormat === 'sql' && <Alert type="info" message="SQL 导出用于迁移或查看，可选择仅结构、仅数据或结构+数据；完整可恢复请使用备份。" showIcon />}
         </Space>
       </Modal>

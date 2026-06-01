@@ -1,9 +1,13 @@
+import json
 import re
+
+from typing import Any
 
 from sqlalchemy import Engine, inspect, text
 
 from app.db.mongo_utils import is_mongo_client, mongo_default_database, mongo_value_type
-from app.schemas.metadata import ColumnInfo, DatabaseInfo, DbObjectInfo, TableDataChangeRequest, TableInfo, TableUpdateColumn
+from app.db.redis_utils import is_redis_client, parse_redis_database_name, redis_client_for_database, redis_current_database, redis_database_name, redis_key_length, redis_key_type, redis_memory_usage, redis_scan_keys, redis_text, serialize_redis_value
+from app.schemas.metadata import ColumnInfo, DatabaseInfo, DbObjectInfo, RedisDataChangeRequest, RedisKeyUpdate, TableDataChangeRequest, TableInfo, TableUpdateColumn
 
 COLUMN_TYPE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_ (),]*$")
 
@@ -49,6 +53,24 @@ def list_databases(engine: Engine) -> list[DatabaseInfo]:
                 storage_size_display=format_size(int(stats.get("storageSize", 0) or 0)),
             ))
         return databases
+
+    if is_redis_client(engine):
+        info = engine.info("keyspace")
+        config = engine.config_get("databases")
+        database_count = int(config.get("databases", 16) or 16)
+        indexes = set(range(database_count))
+        for key in info:
+            if key.startswith("db"):
+                indexes.add(parse_redis_database_name(key))
+
+        return [
+            DatabaseInfo(
+                name=redis_database_name(index),
+                size_bytes=int(info.get(redis_database_name(index), {}).get("keys", 0) or 0) if isinstance(info.get(redis_database_name(index)), dict) else 0,
+                size_display=f"{int(info.get(redis_database_name(index), {}).get('keys', 0) or 0)} keys",
+            )
+            for index in sorted(indexes)
+        ]
 
     if engine.dialect.name == "mysql":
         with engine.connect() as connection:
@@ -200,6 +222,16 @@ def create_database(engine: Engine, database_name: str) -> DatabaseInfo:
         engine[database_name].create_collection("__datadjinn_init__")
         return DatabaseInfo(name=database_name)
 
+    if is_redis_client(engine):
+        index = parse_redis_database_name(database_name)
+        target = redis_client_for_database(engine, redis_database_name(index))
+        try:
+            target.ping()
+        finally:
+            if target is not engine:
+                target.close()
+        return DatabaseInfo(name=redis_database_name(index))
+
     if engine.dialect.name in {"dm", "dmPython"}:
         schema_name = database_name.upper()
         preparer = engine.dialect.identifier_preparer
@@ -227,6 +259,15 @@ def create_database(engine: Engine, database_name: str) -> DatabaseInfo:
 def drop_database(engine: Engine, database_name: str) -> None:
     if is_mongo_client(engine):
         engine.drop_database(database_name)
+        return
+
+    if is_redis_client(engine):
+        target = redis_client_for_database(engine, database_name)
+        try:
+            target.flushdb()
+        finally:
+            if target is not engine:
+                target.close()
         return
 
     if engine.dialect.name == "postgresql":
@@ -277,6 +318,26 @@ def list_tables(engine: Engine, database_name: str | None = None, pg_database: s
                 storage_size_display=format_size(int(stats.get("storageSize", 0) or 0)),
             ))
         return tables
+
+    if is_redis_client(engine):
+        target = redis_client_for_database(engine, database_name)
+        try:
+            tables = []
+            for key in redis_scan_keys(target):
+                key_type = redis_key_type(target, key)
+                memory = redis_memory_usage(target, key)
+                tables.append(TableInfo(
+                    name=key,
+                    row_count=redis_key_length(target, key, key_type),
+                    size_bytes=memory,
+                    size_display=format_size(memory),
+                    storage_size_bytes=memory,
+                    storage_size_display=format_size(memory),
+                ))
+            return tables
+        finally:
+            if target is not engine:
+                target.close()
 
     if pg_database and engine.dialect.name == "postgresql":
         engine = _pg_engine(engine, pg_database)
@@ -394,6 +455,11 @@ def list_db_objects(engine: Engine, database_name: str | None = None, pg_databas
             return []
         return [DbObjectInfo(type="table", **table.model_dump()) for table in list_tables(engine, database_name, pg_database)]
 
+    if is_redis_client(engine):
+        if object_type not in {None, "table"}:
+            return []
+        return [DbObjectInfo(type="table", **table.model_dump()) for table in list_tables(engine, database_name, pg_database)]
+
     if object_type in {None, "table"}:
         objects.extend(DbObjectInfo(type="table", **table.model_dump()) for table in list_tables(engine, database_name, pg_database))
 
@@ -490,6 +556,22 @@ def list_columns(engine: Engine, table_name: str, database_name: str | None = No
                 fields.setdefault(str(key), mongo_value_type(value))
         return [ColumnInfo(name=name, type=value_type, nullable=True, primary_key=name == "_id") for name, value_type in fields.items()]
 
+    if is_redis_client(engine):
+        target = redis_client_for_database(engine, database_name)
+        try:
+            key_type = redis_key_type(target, table_name)
+            if key_type == "hash":
+                fields = target.hkeys(table_name)
+                return [ColumnInfo(name=str(field.decode("utf-8") if isinstance(field, bytes) else field), type="hash field", nullable=True, primary_key=False) for field in fields]
+            if key_type == "zset":
+                return [ColumnInfo(name="member", type="string", nullable=False, primary_key=True), ColumnInfo(name="score", type="float", nullable=False, primary_key=False)]
+            if key_type in {"list", "set", "stream"}:
+                return [ColumnInfo(name="index", type="int", nullable=False, primary_key=True), ColumnInfo(name="value", type=key_type, nullable=True, primary_key=False)]
+            return [ColumnInfo(name="key", type="string", nullable=False, primary_key=True), ColumnInfo(name="value", type=key_type, nullable=True, primary_key=False)]
+        finally:
+            if target is not engine:
+                target.close()
+
     if pg_database and engine.dialect.name == "postgresql":
         engine = _pg_engine(engine, pg_database)
 
@@ -546,6 +628,28 @@ def get_object_ddl(engine: Engine, object_name: str, object_type: str, database_
         columns = list_columns(engine, object_name, database_name)
         fields = ",\n  ".join(f"{column.name}: {column.type}" for column in columns)
         return f"db.{object_name}.find()\n\n// 推断字段（基于前 100 条文档）：\n{{\n  {fields}\n}}" if fields else f"db.{object_name}.find()"
+
+    if is_redis_client(engine):
+        if object_type != "table":
+            raise ValueError("Redis 当前仅支持查看 Key 信息")
+        target = redis_client_for_database(engine, database_name)
+        try:
+            key_type = redis_key_type(target, object_name)
+            ttl = target.ttl(object_name)
+            length = redis_key_length(target, object_name, key_type)
+            memory = redis_memory_usage(target, object_name)
+            return "\n".join([
+                f"GET {object_name}" if key_type == "string" else f"TYPE {object_name}",
+                "",
+                "# Redis Key 信息",
+                f"type: {key_type}",
+                f"ttl: {ttl}",
+                f"length: {length}",
+                f"memory_usage: {memory}",
+            ])
+        finally:
+            if target is not engine:
+                target.close()
 
     if pg_database and engine.dialect.name == "postgresql":
         db_engine = _pg_engine(engine, pg_database)
@@ -651,6 +755,17 @@ def drop_db_object(engine: Engine, object_name: str, object_type: str, database_
         engine[target_db].drop_collection(object_name)
         return
 
+    if is_redis_client(engine):
+        if object_type != "table":
+            raise ValueError("Redis 当前仅支持删除 Key")
+        target = redis_client_for_database(engine, database_name)
+        try:
+            target.delete(object_name)
+        finally:
+            if target is not engine:
+                target.close()
+        return
+
     if pg_database and engine.dialect.name == "postgresql":
         db_engine = _pg_engine(engine, pg_database)
         try:
@@ -688,6 +803,9 @@ def update_table_columns(engine: Engine, table_name: str, next_columns: list[Tab
 def apply_table_data_changes(engine: Engine, table_name: str, changes: TableDataChangeRequest, database_name: str | None = None, pg_database: str | None = None) -> None:
     if is_mongo_client(engine):
         raise ValueError("MongoDB 当前暂不支持在表格中直接编辑文档")
+
+    if is_redis_client(engine):
+        raise ValueError("Redis 请使用 Redis 浏览页编辑 Key")
 
     columns = list_columns(engine, table_name, database_name, pg_database)
     column_names = {column.name for column in columns}
@@ -727,6 +845,137 @@ def apply_table_data_changes(engine: Engine, table_name: str, changes: TableData
             values_sql = ", ".join(f":insert_{column}" for column in insert_columns)
             params = {f"insert_{column}": values[column] for column in insert_columns}
             connection.execute(text(f"INSERT INTO {quoted_table} ({columns_sql}) VALUES ({values_sql})"), params)
+
+
+def apply_redis_data_changes(engine: Engine, changes: RedisDataChangeRequest, database_name: str | None = None) -> None:
+    if not is_redis_client(engine):
+        raise ValueError("当前连接不是 Redis")
+
+    target = redis_client_for_database(engine, database_name)
+    try:
+        for key in changes.deleted:
+            if key:
+                target.delete(key)
+
+        for item in changes.updated:
+            _apply_redis_key_update(target, item, True)
+
+        for item in changes.inserted:
+            _apply_redis_key_update(target, item, False)
+    finally:
+        if target is not engine:
+            target.close()
+
+
+def _apply_redis_key_update(target: Any, item: RedisKeyUpdate, replace_existing: bool) -> None:
+    key = item.key.strip()
+    if not key:
+        raise ValueError("Redis Key 不能为空")
+
+    key_type = item.type.strip().lower()
+    if key_type not in {"string", "hash", "list", "set", "zset"}:
+        raise ValueError("Redis 当前支持编辑 string、hash、list、set、zset 类型")
+
+    original_key = item.original_key.strip() if item.original_key else key
+    if replace_existing and original_key != key:
+        target.delete(original_key)
+
+    target.delete(key)
+    _write_redis_key_value(target, key, key_type, item.value)
+    if item.ttl is not None and item.ttl > 0:
+        target.expire(key, item.ttl)
+
+
+def _write_redis_key_value(target: Any, key: str, key_type: str, value: Any) -> None:
+    if key_type == "string":
+        target.set(key, "" if value is None else _redis_scalar(value))
+        return
+
+    if key_type == "hash":
+        mapping = _redis_hash_mapping(value)
+        if not mapping:
+            raise ValueError("Redis hash 至少需要一个 field")
+        target.hset(key, mapping=mapping)
+        return
+
+    if key_type == "list":
+        values = [_redis_scalar(item) for item in _redis_list(value)]
+        if not values:
+            raise ValueError("Redis list 至少需要一个元素")
+        target.rpush(key, *values)
+        return
+
+    if key_type == "set":
+        values = [_redis_scalar(item) for item in _redis_list(value)]
+        if not values:
+            raise ValueError("Redis set 至少需要一个成员")
+        target.sadd(key, *values)
+        return
+
+    values = _redis_zset_mapping(value)
+    if not values:
+        raise ValueError("Redis zset 至少需要一个成员")
+    target.zadd(key, values)
+
+
+def _redis_scalar(value: Any) -> str:
+    serialized = serialize_redis_value(value)
+    if isinstance(serialized, (dict, list)):
+        return json.dumps(serialized, ensure_ascii=False)
+    return "" if serialized is None else str(serialized)
+
+
+def _redis_list(value: Any) -> list[Any]:
+    parsed = _parse_redis_json(value)
+    if isinstance(parsed, list):
+        return parsed
+    if isinstance(parsed, tuple) or isinstance(parsed, set):
+        return list(parsed)
+    if parsed is None or parsed == "":
+        return []
+    return [parsed]
+
+
+def _redis_hash_mapping(value: Any) -> dict[str, str]:
+    parsed = _parse_redis_json(value)
+    if not isinstance(parsed, dict):
+        raise ValueError("Redis hash 的值必须是 JSON 对象")
+    return {redis_text(key): _redis_scalar(item) for key, item in parsed.items()}
+
+
+def _redis_zset_mapping(value: Any) -> dict[str, float]:
+    parsed = _parse_redis_json(value)
+    if isinstance(parsed, dict):
+        return {redis_text(member): float(score) for member, score in parsed.items()}
+    if isinstance(parsed, list):
+        result = {}
+        for item in parsed:
+            if isinstance(item, dict):
+                member = item.get("member")
+                score = item.get("score")
+            elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                member, score = item[0], item[1]
+            else:
+                raise ValueError("Redis zset 数组元素应包含 member 和 score")
+            if member is None or score is None:
+                raise ValueError("Redis zset 成员和分数不能为空")
+            result[_redis_scalar(member)] = float(score)
+        return result
+    raise ValueError("Redis zset 的值必须是对象或数组")
+
+
+def _parse_redis_json(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+
+    stripped = value.strip()
+    if not stripped:
+        return ""
+
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        return value
 
 
 def build_mysql_update_statements(engine: Engine, table_name: str, next_columns: list[TableUpdateColumn], database_name: str | None = None) -> list[str]:

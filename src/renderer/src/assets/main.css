@@ -1448,6 +1448,14 @@ body[data-theme="dark"] .ant-popover-message {
   min-height: 0;
 }
 
+.workspace-tabs .ant-tabs-tabpane-hidden {
+  display: block !important;
+  visibility: hidden;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
 .query-workspace {
   display: flex;
   flex-direction: column;
@@ -1572,6 +1580,88 @@ body[data-theme="dark"] .ant-popover-message {
 
 .result-table .ant-table-cell {
   white-space: nowrap;
+}
+
+.redis-browser-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--dj-border-subtle);
+  border-radius: var(--dj-radius-md);
+  background: var(--dj-bg-surface);
+}
+
+.redis-key-card {
+  display: flex;
+  gap: 8px;
+  padding: 10px;
+  border-bottom: 1px solid var(--dj-border-subtle);
+}
+
+.redis-key-card-dirty {
+  background: color-mix(in srgb, var(--dj-warning) 10%, transparent);
+}
+
+.redis-key-card:last-child {
+  border-bottom: none;
+}
+
+.redis-expand-button {
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--dj-radius-sm);
+  color: var(--dj-text-secondary);
+  background: transparent;
+  cursor: pointer;
+}
+
+.redis-expand-button:hover {
+  color: var(--dj-accent);
+  background: var(--dj-accent-soft);
+}
+
+.redis-key-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.redis-key-name {
+  max-width: 520px;
+  font-family: Consolas, 'JetBrains Mono', monospace;
+}
+
+.redis-key-input {
+  width: 280px;
+  font-family: Consolas, 'JetBrains Mono', monospace;
+}
+
+.redis-type-select {
+  width: 96px;
+}
+
+.redis-ttl-input {
+  width: 112px;
+}
+
+.redis-value-editor {
+  margin-top: 10px;
+  font-family: Consolas, 'JetBrains Mono', monospace;
+}
+
+.redis-value-block {
+  margin: 10px 0 0;
+  padding: 10px;
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid var(--dj-border-subtle);
+  border-radius: var(--dj-radius-sm);
+  color: var(--dj-text-primary);
+  background: var(--dj-bg-sunken, var(--dj-bg-panel));
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
 }
 
 .result-table .ant-table-tbody > tr.row-selected > td,
@@ -2055,6 +2145,17 @@ body[data-theme="dark"] .ant-popover-message {
 
 .table-data-toolbar {
   margin: 8px 10px;
+  flex-wrap: wrap;
+}
+
+.table-data-actions {
+  flex: 0 0 auto;
+}
+
+.preview-where-input {
+  flex: 1 1 280px;
+  min-width: 220px;
+  max-width: 560px;
 }
 
 .result-status {

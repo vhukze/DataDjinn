@@ -10,6 +10,7 @@ from sqlalchemy import create_engine, inspect, text
 
 from app.db.connection_manager import _resolve_runtime_path, connection_manager
 from app.db.mongo_utils import is_mongo_client, serialize_mongo_document
+from app.db.redis_utils import is_redis_client, redis_client_for_database, redis_scan_keys, redis_text, serialize_redis_value
 from app.db.sql_executor import execute_sql_file
 from app.schemas.backup import BackupRecord, ExportContent, ExportFormat, ExportScope
 from app.schemas.connection import ConnectionRequest
@@ -239,6 +240,10 @@ class BackupManager:
             self._export_mongodb(connection_id, file_path, database, table, scope)
             return file_path
 
+        if request.database_type == "redis":
+            self._export_redis(connection_id, file_path, database, table, scope)
+            return file_path
+
         if format == "sql":
             self._export_sql(connection_id, target_database, table, scope, file_path, content)
             return file_path
@@ -308,6 +313,37 @@ class BackupManager:
             for collection in collections
         }
         file_path.write_text(json.dumps({"database": database, "collections": documents_by_collection}, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _export_redis(self, connection_id: str, file_path: Path, database: str | None, table: str | None, scope: ExportScope) -> None:
+        client = connection_manager.get_engine(connection_id)
+        if client is None or not is_redis_client(client):
+            raise ValueError("Redis 连接已关闭")
+
+        target = redis_client_for_database(client, database)
+        try:
+            keys = [table] if scope == "table" and table else redis_scan_keys(target, 100000)
+            data = {}
+            for key in keys:
+                key_type = redis_text(target.type(key))
+                if key_type == "string":
+                    value = target.get(key)
+                elif key_type == "hash":
+                    value = target.hgetall(key)
+                elif key_type == "list":
+                    value = target.lrange(key, 0, -1)
+                elif key_type == "set":
+                    value = list(target.smembers(key))
+                elif key_type == "zset":
+                    value = target.zrange(key, 0, -1, withscores=True)
+                elif key_type == "stream":
+                    value = target.xrange(key)
+                else:
+                    value = None
+                data[key] = {"type": key_type, "ttl": target.ttl(key), "value": serialize_redis_value(value)}
+            file_path.write_text(json.dumps({"database": database or "current", "keys": data}, ensure_ascii=False, indent=2), encoding="utf-8")
+        finally:
+            if target is not client:
+                target.close()
 
     def _export_sql(self, connection_id: str, database: str, table: str | None, scope: ExportScope, file_path: Path, content: ExportContent) -> None:
         request = connection_manager.get_connection_request(connection_id)

@@ -1,5 +1,18 @@
 from pymysql.err import OperationalError as MySQLOperationalError
 from pymysql.err import ProgrammingError as MySQLProgrammingError
+try:
+    from redis.exceptions import AuthenticationError as RedisAuthenticationError
+    from redis.exceptions import ConnectionError as RedisConnectionError
+    from redis.exceptions import RedisError
+    from redis.exceptions import ResponseError as RedisResponseError
+    from redis.exceptions import TimeoutError as RedisTimeoutError
+except ImportError:  # pragma: no cover - optional runtime dependency
+    RedisAuthenticationError = None
+    RedisConnectionError = None
+    RedisError = None
+    RedisResponseError = None
+    RedisTimeoutError = None
+
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
 try:
@@ -17,6 +30,26 @@ def friendly_error(exc: Exception) -> str:
         if dm_message:
             return dm_message
 
+    cause_message = str(cause)
+    if 'Timeout reading from socket' in cause_message:
+        return 'Redis 连接超时，请检查主机和端口是否正确、Redis 服务是否已启动、网络或防火墙是否放行该端口'
+
+    if RedisError is not None and isinstance(cause, RedisError):
+        if RedisTimeoutError is not None and isinstance(cause, RedisTimeoutError):
+            return 'Redis 连接超时，请检查主机和端口是否正确、Redis 服务是否已启动、网络或防火墙是否放行该端口'
+        if RedisConnectionError is not None and isinstance(cause, RedisConnectionError):
+            return '无法连接到 Redis 服务，请检查主机和端口是否正确、Redis 服务是否已启动、网络或防火墙是否放行该端口'
+        if RedisAuthenticationError is not None and isinstance(cause, RedisAuthenticationError):
+            return 'Redis 用户名或密码错误，连接被拒绝'
+        if RedisResponseError is not None and isinstance(cause, RedisResponseError):
+            message = str(cause)
+            if 'invalid username-password pair' in message.lower() or 'wrongpass' in message.lower():
+                return 'Redis 用户名或密码错误，连接被拒绝'
+            if 'db index is out of range' in message.lower():
+                return 'Redis 数据库序号超出服务端配置范围，请检查默认 DB 序号'
+            return f'Redis 操作失败：{message}'
+        return f'Redis 操作失败：{cause}'
+
     if isinstance(cause, MySQLOperationalError):
         code = cause.args[0] if cause.args else 0
 
@@ -30,8 +63,14 @@ def friendly_error(exc: Exception) -> str:
             return '当前用户无权限执行该操作'
         if code == 1146:
             return '数据表不存在'
+        if code in {2003, 2013}:
+            return '无法连接到 MySQL 服务，请检查主机和端口是否正确、数据库服务是否已启动、防火墙是否放行该端口'
 
-        return f'数据库连接或操作失败：{cause.args[1] if len(cause.args) > 1 else str(cause)}'
+        message = cause.args[1] if len(cause.args) > 1 else str(cause)
+        if 'Lost connection to MySQL server' in message or "Can't connect to MySQL server" in message:
+            return '无法连接到 MySQL 服务，请检查主机和端口是否正确、数据库服务是否已启动、防火墙是否放行该端口'
+
+        return f'数据库连接或操作失败：{message}'
 
     if isinstance(cause, MySQLProgrammingError):
         code = cause.args[0] if cause.args else 0

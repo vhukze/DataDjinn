@@ -366,7 +366,9 @@ app.whenReady().then(() => {
 
     const filters: Electron.FileFilter[] = format === 'csv'
       ? [{ name: 'CSV 文件', extensions: ['csv'] }]
-      : [{ name: 'SQL 文件', extensions: ['sql'] }]
+      : format === 'json'
+        ? [{ name: 'JSON 文件', extensions: ['json'] }]
+        : [{ name: 'SQL 文件', extensions: ['sql'] }]
 
     const result = await dialog.showSaveDialog(window, {
       title: '选择导出路径',

@@ -13,6 +13,7 @@ from sqlalchemy import Engine, text
 
 from app.db.backup_manager import backup_manager
 from app.db.mongo_utils import MongoClient, is_mongo_client
+from app.db.redis_utils import is_redis_client
 from app.db.metadata import list_columns, list_tables
 from app.db.readonly_query import execute_readonly_query, preview_table
 from app.schemas.query import QueryResponse
@@ -257,7 +258,7 @@ DATABASE_TOOLS = [
         "type": "function",
         "function": {
             "name": "execute_query",
-            "description": "执行 SQL 或 MongoDB shell 风格语句。SQL readonly=true 时只允许 SELECT/WITH；MongoDB 当前支持 find、createCollection、insertOne、insertMany。",
+            "description": "执行 SQL、MongoDB shell 风格语句或 Redis 命令。SQL readonly=true 时只允许 SELECT/WITH；MongoDB 当前支持 find、createCollection、insertOne、insertMany；Redis 当前支持 SCAN/KEYS/GET/HGETALL/LRANGE/SMEMBERS/ZRANGE/XRANGE/TYPE/TTL 以及基础写入命令。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -935,6 +936,23 @@ class DatabaseAgent:
                 "has_limit": True,
             }
 
+        if is_redis_client(self.engine):
+            parts = sql.strip().rstrip(";").split()
+            command = parts[0].upper() if parts else "UNKNOWN"
+            supported = {"SCAN", "KEYS", "GET", "HGETALL", "LRANGE", "SMEMBERS", "ZRANGE", "XRANGE", "TYPE", "TTL", "SET", "HSET", "LPUSH", "RPUSH", "SADD", "ZADD", "DEL", "EXPIRE"}
+            valid = command in supported
+            return {
+                "valid": valid,
+                "readonly": readonly,
+                "statement_type": f"REDIS_{command}",
+                "risk_level": "safe" if valid else "dangerous",
+                "executed": False,
+                "requires_confirmation": False,
+                "message": "Redis 命令校验通过，但 validate_sql 只校验不执行" if valid else "Redis 当前支持 SCAN/KEYS/GET/HGETALL/LRANGE/SMEMBERS/ZRANGE/XRANGE/TYPE/TTL 以及 SET/HSET/LPUSH/RPUSH/SADD/ZADD/DEL/EXPIRE",
+                "sql": sql.strip().rstrip(";"),
+                "has_limit": True,
+            }
+
         statements = [statement for statement in sqlparse.parse(sql) if str(statement).strip()]
         if len(statements) != 1:
             return {
@@ -993,7 +1011,7 @@ class DatabaseAgent:
         if readonly:
             return execute_readonly_query(self.engine, sql, MAX_QUERY_ROWS_FOR_AGENT, 0, self.database, self.pg_database)
 
-        if is_mongo_client(self.engine):
+        if is_mongo_client(self.engine) or is_redis_client(self.engine):
             return execute_readonly_query(self.engine, sql, MAX_QUERY_ROWS_FOR_AGENT, 0, self.database, self.pg_database)
 
         with self.engine.begin() as connection:
@@ -1050,8 +1068,8 @@ def build_system_prompt(db_type: str, db_name: str, workspace: AgentWorkspaceCon
         "1. 未选择数据库上下文时，不得执行 list_tables、describe_table、execute_query、get_sample_data 等数据库任务；只能做通用问答、整理工作区已有连接概要，或调用 append_query_sql 把 SQL 写入查询窗口。\n"
         "2. 复杂分析、排查或包含多步动作时，先调用 create_agent_plan 生成可见计划。\n"
         "3. 执行 SQL 前先调用 validate_sql；validate_sql 只做校验，永远不代表 SQL 已执行。但 MongoDB 上下文中用户明确要求创建集合、插入测试数据、初始化样例数据时，可以直接调用 execute_query 自动执行支持的 MongoDB 语句，不要改为 append_query_sql。\n"
-        "4. SELECT/WITH 只读查询可以通过 execute_query(readonly=true) 自动执行，后端会限制返回行数。MongoDB 的 find/createCollection/insertOne/insertMany 也通过 execute_query(readonly=true) 自动执行。\n"
-        "5. UPDATE/DELETE/INSERT/DDL 等 SQL 写操作必须触发工具级 confirmation_required，由界面显示确认/取消按钮；不要只用自然语言要求用户输入确认。MongoDB 当前支持的 createCollection/insertOne/insertMany 属于用户明确请求时允许自动执行的安全范围。\n"
+        "4. SELECT/WITH 只读查询可以通过 execute_query(readonly=true) 自动执行，后端会限制返回行数。MongoDB 的 find/createCollection/insertOne/insertMany 和 Redis 支持命令也通过 execute_query(readonly=true) 自动执行。\n"
+        "5. UPDATE/DELETE/INSERT/DDL 等 SQL 写操作必须触发工具级 confirmation_required，由界面显示确认/取消按钮；不要只用自然语言要求用户输入确认。MongoDB 当前支持的 createCollection/insertOne/insertMany、Redis 基础写入命令属于用户明确请求时允许自动执行的安全范围。\n"
         "6. 写操作可调用 validate_sql 或 execute_query(readonly=false) 触发 confirmation_required；只有确认接口返回 executed=true 后才能说执行成功。\n"
         "7. 不确定表结构时不要猜字段名，先 describe_table。\n"
         "8. 对大表查询优先使用聚合条件或 LIMIT。\n"
@@ -1066,6 +1084,7 @@ def build_system_prompt(db_type: str, db_name: str, workspace: AgentWorkspaceCon
         "17. 生成 SQL 必须优先匹配当前执行上下文里的 dbType 和 serverVersion；不确定版本是否支持某个语法时，使用该数据库更保守、更通用的写法。\n"
         "18. 用户说“当前连接/当前库/当前模式/当前表”时，优先使用工作区里的当前焦点资源；如果没有焦点资源，再使用 AI 上下文数据源列表的第一个。\n"
         "19. 只有用户明确要求生成 SQL 到查询窗口、写入编辑器、放到当前 SQL 窗口时，才调用 append_query_sql；用户说创建、插入、初始化、执行时必须调用 execute_query，不能只写入窗口。\n"
-        "20. MongoDB 上下文中，创建集合使用 db.createCollection(\"collection\")；插入测试数据优先把多条文档合并为一条 db.<collection>.insertMany([...]) 调用，不要逐条 insertOne 导致轮次耗尽；文档键和值都使用带引号的 Python/JSON 风格字面量。可以把 createCollection 和 insertMany 用分号组成一次 execute_query 调用完成。\n\n"
+        "20. MongoDB 上下文中，创建集合使用 db.createCollection(\"collection\")；插入测试数据优先把多条文档合并为一条 db.<collection>.insertMany([...]) 调用，不要逐条 insertOne 导致轮次耗尽；文档键和值都使用带引号的 Python/JSON 风格字面量。可以把 createCollection 和 insertMany 用分号组成一次 execute_query 调用完成。\n"
+        "21. Redis 上下文中，查看 Key 列表优先使用 SCAN；查看字符串用 GET key，查看 hash/list/set/zset/stream 分别用 HGETALL/LRANGE/SMEMBERS/ZRANGE/XRANGE；创建或写入测试数据可使用 SET/HSET/LPUSH/RPUSH/SADD/ZADD，并说明会修改 Redis 数据。\n\n"
         f"工作区上下文：\n{workspace_context}"
     )

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import base64
 import ctypes
 import json
@@ -19,6 +21,7 @@ from sqlalchemy.pool import QueuePool
 
 from app.db.driver_manager import driver_manager
 from app.db.mongo_utils import MongoClient, is_mongo_client
+from app.db.redis_utils import Redis, is_redis_client
 from app.schemas.connection import ConnectionInfo, ConnectionRequest, DatabaseType
 
 def _data_dir() -> Path:
@@ -37,6 +40,20 @@ CONNECTION_STORE_PATH = _connection_store_path()
 CRYPTPROTECT_UI_FORBIDDEN = 0x1
 
 
+def _jvm_candidates_from_java_executable(java_executable: str | None) -> list[Path]:
+    if not java_executable:
+        return []
+
+    java_path = Path(java_executable).expanduser()
+    java_bin = java_path.parent
+    java_home = java_bin.parent
+    return [
+        java_bin / "server" / "jvm.dll",
+        java_home / "bin" / "server" / "jvm.dll",
+        java_home / "jre" / "bin" / "server" / "jvm.dll",
+    ]
+
+
 def _find_jvm_dll() -> Path | None:
     candidates: list[Path] = []
 
@@ -48,13 +65,16 @@ def _find_jvm_dll() -> Path | None:
             home / "jre" / "bin" / "server" / "jvm.dll",
         ])
 
-    for base in [Path("C:/Program Files/Java"), Path("C:/Program Files/Eclipse Adoptium"), Path("C:/Program Files/Microsoft")]:
+    candidates.extend(_jvm_candidates_from_java_executable(shutil.which("java")))
+    candidates.extend(_jvm_candidates_from_java_executable(shutil.which("java.exe")))
+
+    for base in [Path("C:/Program Files/Java"), Path("C:/Program Files/Eclipse Adoptium"), Path("C:/Program Files/Microsoft"), Path("C:/Program Files/Zulu"), Path("C:/Program Files/BellSoft")]:
         if not base.exists():
             continue
         for pattern in ["*/bin/server/jvm.dll", "*/jre/bin/server/jvm.dll"]:
             candidates.extend(base.glob(pattern))
 
-    return next((path.resolve() for path in candidates if path.exists()), None)
+    return next((path.resolve() for path in dict.fromkeys(candidates) if path.exists()), None)
 
 
 def _prepare_jdbc_runtime() -> str | None:
@@ -308,7 +328,7 @@ def _decrypt_password(encrypted_password: str | None) -> str | None:
 
 class ConnectionManager:
     def __init__(self) -> None:
-        self._engines: dict[str, Engine | MongoClient] = {}
+        self._engines: dict[str, Engine | MongoClient | Redis] = {}
         self._connections: dict[str, ConnectionInfo] = {}
         self._stored_connections: dict[str, StoredConnection] = {}
         self._load_stored_connections()
@@ -321,12 +341,8 @@ class ConnectionManager:
             self._dispose_engine(engine)
 
     def create_connection(self, request: ConnectionRequest) -> ConnectionInfo:
-        engine = self._create_engine(request)
-        self._ping_engine(engine)
-
         connection_id = uuid4().hex
-        info = self._connection_info(connection_id, request)
-        self._engines[connection_id] = engine
+        info = self._connection_info(connection_id, request, is_open=False)
         self._connections[connection_id] = info
         self._stored_connections[connection_id] = self._stored_connection(connection_id, request)
         self._save_stored_connections()
@@ -336,22 +352,14 @@ class ConnectionManager:
         if connection_id not in self._stored_connections:
             raise ValueError("连接不存在")
 
-        engine = self._create_engine(request)
-        try:
-            self._ping_engine(engine)
-        except Exception:
-            self._dispose_engine(engine)
-            raise
+        old_engine = self._engines.pop(connection_id, None)
+        if old_engine is not None:
+            self._dispose_engine(old_engine)
 
-        old_engine = self._engines.get(connection_id)
-        info = self._connection_info(connection_id, request)
-        self._engines[connection_id] = engine
+        info = self._connection_info(connection_id, request, is_open=False)
         self._connections[connection_id] = info
         self._stored_connections[connection_id] = self._stored_connection(connection_id, request)
         self._save_stored_connections()
-
-        if old_engine is not None:
-            self._dispose_engine(old_engine)
 
         return info
 
@@ -390,7 +398,7 @@ class ConnectionManager:
 
         return password
 
-    def get_engine(self, connection_id: str) -> Engine | MongoClient | None:
+    def get_engine(self, connection_id: str) -> Engine | MongoClient | Redis | None:
         return self._engines.get(connection_id)
 
     def delete_connection(self, connection_id: str) -> bool:
@@ -480,22 +488,26 @@ class ConnectionManager:
         data = {"connections": [connection.model_dump() for connection in self._stored_connections.values()]}
         CONNECTION_STORE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def _ping_engine(self, engine: Engine | MongoClient) -> None:
+    def _ping_engine(self, engine: Engine | MongoClient | Redis) -> None:
         if is_mongo_client(engine):
             engine.admin.command("ping")
+            return
+
+        if is_redis_client(engine):
+            engine.ping()
             return
 
         with engine.connect() as connection:
             connection.execute(text("SELECT 1 FROM DUAL" if engine.dialect.name in {"dm", "dmPython"} else "SELECT 1"))
 
-    def _dispose_engine(self, engine: Engine | MongoClient) -> None:
-        if is_mongo_client(engine):
+    def _dispose_engine(self, engine: Engine | MongoClient | Redis) -> None:
+        if is_mongo_client(engine) or is_redis_client(engine):
             engine.close()
             return
 
         engine.dispose()
 
-    def _create_engine(self, request: ConnectionRequest) -> Engine | MongoClient:
+    def _create_engine(self, request: ConnectionRequest) -> Engine | MongoClient | Redis:
         if request.database_type == "sqlite":
             return self._create_sqlite_engine(request)
 
@@ -510,6 +522,9 @@ class ConnectionManager:
 
         if request.database_type == "mongodb":
             return self._create_mongodb_client(request)
+
+        if request.database_type == "redis":
+            return self._create_redis_client(request)
 
         raise ValueError("不支持的数据库类型")
 
@@ -583,6 +598,34 @@ class ConnectionManager:
 
         return MongoClient(**kwargs)
 
+    def _create_redis_client(self, request: ConnectionRequest) -> Redis:
+        if Redis is None:
+            raise RuntimeError("缺少 Redis 驱动 redis，请安装后重试")
+        if not request.host:
+            raise ValueError("Redis 主机不能为空")
+        if not request.port:
+            raise ValueError("Redis 端口不能为空")
+
+        try:
+            database = int(request.database or 0)
+        except ValueError as exc:
+            raise ValueError("Redis 数据库必须是数字序号，例如 0") from exc
+
+        if database < 0:
+            raise ValueError("Redis 数据库序号不能小于 0")
+
+        return Redis(
+            host=request.host,
+            port=request.port,
+            username=request.username or None,
+            password=request.password or None,
+            db=database,
+            socket_connect_timeout=3,
+            socket_timeout=3,
+            retry_on_timeout=False,
+            health_check_interval=0,
+        )
+
     def _create_dm_engine(self, request: ConnectionRequest) -> Engine:
         if not request.host:
             raise ValueError("达梦主机不能为空")
@@ -620,7 +663,7 @@ class ConnectionManager:
         if driver and driver.driver_type == "jdbc" and driver.path:
             jvm_path = _prepare_jdbc_runtime()
             if jvm_path is None:
-                raise RuntimeError("未找到可用的 Java JVM，请先安装 64 位 JDK/JRE，并确认 JAVA_HOME 指向有效目录")
+                raise RuntimeError("未找到可用的 Java JVM，请先安装 64 位 JDK/JRE，并确认 JAVA_HOME 指向有效目录，或将 java.exe 所在目录配置到系统 Path")
 
             jdbc_path = _resolve_runtime_path(driver.path)
             if not jdbc_path.exists():
@@ -656,8 +699,15 @@ class ConnectionManager:
 
         raise RuntimeError("未配置达梦驱动，请先在驱动管理中手动添加 JDBC jar、dmPython pyd 或 dmPython whl 驱动")
 
-    def _detect_server_version(self, engine: Engine) -> str | None:
-        if engine.dialect.name not in {"dm", "dmPython"}:
+    def _detect_server_version(self, engine: Engine | MongoClient | Redis) -> str | None:
+        if is_redis_client(engine):
+            try:
+                info = engine.info("server")
+                return str(info.get("redis_version")) if info.get("redis_version") else None
+            except Exception:
+                return None
+
+        if is_mongo_client(engine) or engine.dialect.name not in {"dm", "dmPython"}:
             return None
 
         sql_candidates = [
@@ -716,6 +766,9 @@ class ConnectionManager:
 
         if request.database_type == "mongodb":
             return request.database or f"{request.host}:{request.port}"
+
+        if request.database_type == "redis":
+            return f"db{request.database or 0}@{request.host}:{request.port}"
 
         return request.database or f"{request.host}:{request.port}"
 

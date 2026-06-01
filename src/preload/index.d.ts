@@ -61,7 +61,7 @@ type UpdateProgress = {
 interface DataDjinnAPI {
   selectSqlFile: () => Promise<SqlFileResult>
   selectImportFile: () => Promise<string | null>
-  selectExportPath: (format: 'sql' | 'csv', defaultName?: string) => Promise<string | null>
+  selectExportPath: (format: 'sql' | 'csv' | 'json', defaultName?: string) => Promise<string | null>
   selectDriverFile: () => Promise<string | null>
   requestJson: <T>(path: string, options?: { method?: string; headers?: Record<string, string>; body?: string }) => Promise<T>
   streamRequest: (streamId: string, path: string, options: { method?: string; headers?: Record<string, string>; body?: string }, onChunk: (chunk: string) => void | Promise<void>) => Promise<void>

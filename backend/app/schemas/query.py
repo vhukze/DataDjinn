@@ -17,6 +17,7 @@ class QueryResponse(BaseModel):
     rows: list[dict[str, Any]]
     row_count: int
     limited: bool
+    total_count: int | None = None
 
 
 class SqlFileRunRequest(BaseModel):

@@ -7,7 +7,7 @@ from app.schemas.connection import DatabaseType
 
 
 BackupStatus = Literal["completed", "failed"]
-ExportFormat = Literal["sql", "csv"]
+ExportFormat = Literal["sql", "csv", "json"]
 ExportScope = Literal["database", "schema", "table"]
 ExportContent = Literal["schema", "data", "schema_data"]
 

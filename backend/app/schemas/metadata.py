@@ -59,6 +59,20 @@ class TableDataChangeRequest(BaseModel):
     deleted: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class RedisKeyUpdate(BaseModel):
+    key: str = Field(min_length=1)
+    type: str
+    value: Any = None
+    ttl: int | None = None
+    original_key: str | None = None
+
+
+class RedisDataChangeRequest(BaseModel):
+    inserted: list[RedisKeyUpdate] = Field(default_factory=list)
+    updated: list[RedisKeyUpdate] = Field(default_factory=list)
+    deleted: list[str] = Field(default_factory=list)
+
+
 class DatabaseCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=64, pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
