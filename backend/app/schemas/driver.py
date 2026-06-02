@@ -15,6 +15,7 @@ class DriverInfo(BaseModel):
     source: DriverSource = "manual"
     enabled: bool = True
     path: str | None = None
+    java_home: str | None = None
 
 
 class DriverListResponse(BaseModel):
@@ -26,6 +27,7 @@ class DriverCreateRequest(BaseModel):
     driver_type: DriverType
     name: str = Field(min_length=1, max_length=120)
     path: str | None = None
+    java_home: str | None = None
     enabled: bool = True
 
 
@@ -45,3 +47,14 @@ class DriverTestRequest(BaseModel):
 class DriverTestResponse(BaseModel):
     success: bool
     message: str
+
+
+class JavaRuntimeInfo(BaseModel):
+    home: str
+    major: int | None = None
+    jvm_path: str
+
+
+class JavaDetectResponse(BaseModel):
+    runtimes: list[JavaRuntimeInfo]
+    preferred: str | None = None

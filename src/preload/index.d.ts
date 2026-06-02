@@ -7,6 +7,8 @@ type BackendStatus = {
   pid?: number
   message?: string
   logPath?: string
+  restartAttempt?: number
+  maxRestartAttempts?: number
 }
 
 type AIConfig = {
@@ -63,6 +65,7 @@ interface DataDjinnAPI {
   selectImportFile: () => Promise<string | null>
   selectExportPath: (format: 'sql' | 'csv' | 'json', defaultName?: string) => Promise<string | null>
   selectDriverFile: () => Promise<string | null>
+  selectJavaDirectory: () => Promise<string | null>
   requestJson: <T>(path: string, options?: { method?: string; headers?: Record<string, string>; body?: string }) => Promise<T>
   streamRequest: (streamId: string, path: string, options: { method?: string; headers?: Record<string, string>; body?: string }, onChunk: (chunk: string) => void | Promise<void>) => Promise<void>
   cancelStreamRequest: (streamId: string) => Promise<void>

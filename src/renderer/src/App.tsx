@@ -67,6 +67,7 @@ import postgresIcon from './assets/icons/postgres.png'
 import sqliteIcon from './assets/icons/sqllite.png'
 import dmIcon from './assets/icons/dm.svg'
 import mongoIcon from './assets/icons/mongo.png'
+import redisIcon from './assets/icons/redis.png'
 import appIcon from '../../../resources/icon.svg'
 
 type BackendStatus = {
@@ -75,14 +76,16 @@ type BackendStatus = {
   pid?: number
   message?: string
   logPath?: string
+  restartAttempt?: number
+  maxRestartAttempts?: number
 }
 
 const BACKEND_LABELS: Record<BackendStatus['state'], string> = {
-  starting: 'Backend Starting',
-  online: 'Backend Online',
-  failed: 'Backend Failed',
-  stopped: 'Backend Stopped',
-  crashed: 'Backend Crashed'
+  starting: '服务启动中',
+  online: '服务正常',
+  failed: '服务异常',
+  stopped: '服务已停止',
+  crashed: '服务已崩溃'
 }
 
 const BACKEND_COLORS: Record<BackendStatus['state'], 'success' | 'processing' | 'error' | 'default'> = {
@@ -184,6 +187,7 @@ type DriverInfo = {
   source: 'auto' | 'manual'
   enabled: boolean
   path?: string | null
+  java_home?: string | null
 }
 
 type DriverFormValues = {
@@ -191,7 +195,19 @@ type DriverFormValues = {
   driver_type: 'jdbc' | 'python' | 'whl'
   name: string
   path?: string
+  java_home?: string
   enabled: boolean
+}
+
+type JavaRuntimeInfo = {
+  home: string
+  major?: number | null
+  jvm_path: string
+}
+
+type JavaDetectResponse = {
+  runtimes: JavaRuntimeInfo[]
+  preferred?: string | null
 }
 
 type UpdateMode = 'installer' | 'portable'
@@ -618,9 +634,16 @@ function App(): React.JSX.Element {
   const [downloadingUpdate, setDownloadingUpdate] = useState(false)
   const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null)
   const [drivers, setDrivers] = useState<DriverInfo[]>([])
-  const dmDrivers = drivers.filter((driver) => driver.database_type === 'dm' && driver.enabled)
+  const [javaRuntimes, setJavaRuntimes] = useState<JavaRuntimeInfo[]>([])
+  const javaRuntimeOptions = javaRuntimes.map((runtime) => ({
+    label: `Java ${runtime.major ?? '未知版本'} - ${runtime.home}`,
+    value: runtime.home
+  }))
+  const selectedJavaRuntimeValues = new Set(javaRuntimeOptions.map((option) => option.value.toLowerCase()))
+  const allDmDrivers = drivers.filter((driver) => driver.database_type === 'dm')
+  const dmDrivers = allDmDrivers.filter((driver) => driver.enabled)
   const selectedDmDriverId = Form.useWatch('dm_driver_id', form)
-  const selectedDmDriver = dmDrivers.find((driver) => driver.id === selectedDmDriverId)
+  const selectedDmDriver = allDmDrivers.find((driver) => driver.id === selectedDmDriverId)
   const [driversLoading, setDriversLoading] = useState(false)
   const [driverSaving, setDriverSaving] = useState(false)
   const [selectedDatabases, setSelectedDatabases] = useState<Record<string, string[]>>(() => readPersisted(STORAGE_DB))
@@ -651,8 +674,6 @@ function App(): React.JSX.Element {
   const rowSelectionDraftRefs = useRef<Record<string, React.Key[] | undefined>>({})
 
   const { theme, toggleTheme } = useTheme()
-
-  const apiBaseUrl = backendStatus.apiBaseUrl
 
   const refreshUpdateSettings = async (): Promise<void> => {
     const settings = await window.api.getUpdateSettings()
@@ -725,8 +746,8 @@ function App(): React.JSX.Element {
   }
 
   const requestJson = async <T,>(path: string, options?: RequestInit): Promise<T> => {
-    if (!apiBaseUrl && backendStatus.state !== 'online') {
-      throw new Error('后端服务启动中，请稍候')
+    if (backendStatus.state !== 'online' || !backendStatus.apiBaseUrl) {
+      throw new Error(backendStatus.message ?? '后端服务正在恢复，请稍候')
     }
 
     try {
@@ -932,7 +953,7 @@ function App(): React.JSX.Element {
       ) : connection.database_type === 'mongodb' ? (
         <img src={mongoIcon} alt="MongoDB" style={{ width: 16, height: 16 }} />
       ) : connection.database_type === 'redis' ? (
-        <DatabaseOutlined style={{ color: '#d82c20' }} />
+        <img src={redisIcon} alt="Redis" style={{ width: 16, height: 16 }} />
       ) : connection.database_type === 'mysql' ? (
         <img src={mysqlIcon} alt="MySQL" style={{ width: 16, height: 16 }} />
       ) : connection.database_type === 'dm' ? (
@@ -2817,10 +2838,17 @@ function App(): React.JSX.Element {
 
     try {
       const data = await requestJson<ConnectionFormValues>(`/connections/${connection.connection_id}`)
+      const formValues = { ...data }
       if (data.database_type === 'dm') {
-        await loadDrivers()
+        const loadedDrivers = await loadDrivers()
+        const hasSelectedDriver = loadedDrivers.some(
+          (driver) => driver.database_type === 'dm' && driver.id === data.dm_driver_id
+        )
+        if (!hasSelectedDriver) {
+          formValues.dm_driver_id = undefined
+        }
       }
-      form.setFieldsValue(data)
+      form.setFieldsValue(formValues)
     } catch (err) {
       showError(err instanceof Error ? err.message : '加载连接信息失败')
       setConnectionModalOpen(false)
@@ -2836,7 +2864,7 @@ function App(): React.JSX.Element {
       { key: 'postgresql', label: 'PostgreSQL', icon: <img src={postgresIcon} alt="" style={{ width: 16, height: 16 }} /> },
       { key: 'dm', label: '达梦', icon: <img src={dmIcon} alt="" style={{ width: 16, height: 16 }} /> },
       { key: 'mongodb', label: 'MongoDB', icon: <img src={mongoIcon} alt="" style={{ width: 16, height: 16 }} /> },
-      { key: 'redis', label: 'Redis', icon: <DatabaseOutlined style={{ color: '#d82c20' }} /> }
+      { key: 'redis', label: 'Redis', icon: <img src={redisIcon} alt="Redis" style={{ width: 16, height: 16 }} /> }
     ],
     onClick: ({ key }: { key: string }) => void openConnectionModal(key as DatabaseType)
   }
@@ -2919,13 +2947,35 @@ function App(): React.JSX.Element {
     }
   }
 
-  const loadDrivers = async (): Promise<void> => {
+  const selectJavaDirectory = async (): Promise<void> => {
+    const directory = await window.api.selectJavaDirectory()
+
+    if (directory) {
+      driverForm.setFieldValue('java_home', directory)
+    }
+  }
+
+  const loadJavaRuntimes = async (): Promise<void> => {
+    try {
+      const result = await requestJson<JavaDetectResponse>('/drivers/java')
+      setJavaRuntimes(result.runtimes)
+      if (!driverForm.getFieldValue('java_home') && result.preferred) {
+        driverForm.setFieldValue('java_home', result.preferred)
+      }
+    } catch {
+      setJavaRuntimes([])
+    }
+  }
+
+  const loadDrivers = async (): Promise<DriverInfo[]> => {
     setDriversLoading(true)
     try {
       const result = await requestJson<{ drivers: DriverInfo[] }>('/drivers')
       setDrivers(result.drivers)
+      return result.drivers
     } catch (err) {
       showError(err instanceof Error ? err.message : '加载驱动失败')
+      return []
     } finally {
       setDriversLoading(false)
     }
@@ -2935,15 +2985,16 @@ function App(): React.JSX.Element {
     setDriverManagerOpen(true)
     driverForm.setFieldsValue({ database_type: 'dm', driver_type: 'jdbc', name: '', enabled: true })
     void loadDrivers()
+    void loadJavaRuntimes()
   }
 
   const addDriver = async (): Promise<void> => {
     setDriverSaving(true)
     try {
       const values = await driverForm.validateFields()
-      const body = { database_type: 'dm', driver_type: values.driver_type, name: values.name, path: values.path, enabled: values.enabled }
+      const body = { database_type: 'dm', driver_type: values.driver_type, name: values.name, path: values.path, java_home: values.driver_type === 'jdbc' ? values.java_home : undefined, enabled: values.enabled }
       await requestJson('/drivers', { method: 'POST', body: JSON.stringify(body) })
-      driverForm.setFieldsValue({ database_type: 'dm', driver_type: 'jdbc', name: '', path: undefined, enabled: true })
+      driverForm.setFieldsValue({ database_type: 'dm', driver_type: 'jdbc', name: '', path: undefined, java_home: javaRuntimes[0]?.home, enabled: true })
       await loadDrivers()
       messageApi.success('驱动已添加')
     } catch (err) {
@@ -2981,9 +3032,11 @@ function App(): React.JSX.Element {
     return 'JDBC jar'
   }
 
-  const dmDriverOptions = dmDrivers.map((driver) => ({
-    label: `${driverTypeLabel(driver.driver_type)} · ${driver.name}`,
-    value: driver.id
+  const dmDriverOptionDrivers = selectedDmDriver && !selectedDmDriver.enabled ? [selectedDmDriver, ...dmDrivers] : dmDrivers
+  const dmDriverOptions = dmDriverOptionDrivers.map((driver) => ({
+    label: `${driverTypeLabel(driver.driver_type)} · ${driver.name}${driver.enabled ? '' : '（已禁用）'}`,
+    value: driver.id,
+    disabled: !driver.enabled
   }))
 
   const testConnection = async (): Promise<void> => {
@@ -3870,18 +3923,6 @@ function App(): React.JSX.Element {
     }
   }
 
-  const restartBackend = async (): Promise<void> => {
-    setHealthLoading(true)
-
-    try {
-      setBackendStatus(await window.api.restartBackend())
-    } catch (err) {
-      showError(err instanceof Error ? err.message : '重启后端失败')
-    } finally {
-      setHealthLoading(false)
-    }
-  }
-
   useEffect(() => {
     void window.api.getBackendStatus().then(setBackendStatus)
     const timer = window.setInterval(() => {
@@ -4051,10 +4092,9 @@ function App(): React.JSX.Element {
             <Button type="text" size="small" icon={<SettingOutlined />} onClick={openDriverManager} title="驱动管理" aria-label="驱动管理" />
             <Button type={updateInfo?.available ? 'primary' : 'text'} size="small" icon={<CloudDownloadOutlined />} loading={checkingUpdate || downloadingUpdate} onClick={() => { setUpdateModalOpen(true); void checkForUpdates(true) }} title="检查更新" aria-label="检查更新" />
             <Button type="text" size="small" icon={<ReloadOutlined />} loading={healthLoading} onClick={() => void checkHealth()} title="同步状态" aria-label="同步状态" />
-            {backendStatus.state !== 'starting' && backendStatus.state !== 'online' && <Button type="text" size="small" icon={<ReloadOutlined />} loading={healthLoading} onClick={() => void restartBackend()} title="重启后端" aria-label="重启后端" />}
             <Button type={aiPanelOpen ? 'primary' : 'text'} size="small" icon={<MessageOutlined />} onClick={() => setAiPanelOpen((open) => !open)} title={aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'} aria-label={aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'} />
             <Button className="theme-toggle-btn" type="text" size="small" icon={theme === 'dark' ? <SunOutlined /> : <MoonOutlined />} onClick={toggleTheme} title={theme === 'dark' ? '切换到亮色主题' : '切换到暗色主题'} aria-label={theme === 'dark' ? '切换到亮色主题' : '切换到暗色主题'} />
-            <Tag className="service-pill" icon={backendStatusIcon} color={BACKEND_COLORS[backendStatus.state]}>{BACKEND_LABELS[backendStatus.state]}</Tag>
+            <Tag className="service-pill" icon={backendStatusIcon} color={BACKEND_COLORS[backendStatus.state]} title={backendStatus.message}>{BACKEND_LABELS[backendStatus.state]}</Tag>
           </Space>
           <Space className="window-controls titlebar-no-drag" size={0}>
             <Button type="text" icon={<MinusOutlined />} onClick={() => void window.api.minimizeWindow()} title="最小化" aria-label="最小化" />
@@ -4258,13 +4298,14 @@ function App(): React.JSX.Element {
             loading={driversLoading}
             pagination={false}
             tableLayout="fixed"
-            scroll={{ x: 820 }}
+            scroll={{ x: 1080 }}
             dataSource={drivers.filter((driver) => driver.database_type === 'dm')}
             columns={[
               { title: '名称', dataIndex: 'name', width: 150, ellipsis: true, render: (value: string) => <Typography.Text ellipsis title={value}>{value}</Typography.Text> },
               { title: '类型', dataIndex: 'driver_type', width: 120, render: (value: DriverInfo['driver_type']) => driverTypeLabel(value) },
               { title: '来源', dataIndex: 'source', width: 90, render: () => '手动添加' },
-              { title: '驱动文件', width: 300, ellipsis: true, render: (_: unknown, driver) => <Typography.Text ellipsis title={driver.path ?? undefined}>{driver.path}</Typography.Text> },
+              { title: '驱动文件', width: 260, ellipsis: true, render: (_: unknown, driver) => <Typography.Text ellipsis title={driver.path ?? undefined}>{driver.path}</Typography.Text> },
+              { title: 'Java 目录', width: 260, ellipsis: true, render: (_: unknown, driver) => driver.driver_type === 'jdbc' ? <Typography.Text ellipsis title={driver.java_home ?? undefined}>{driver.java_home || '自动检测'}</Typography.Text> : '-' },
               { title: '状态', dataIndex: 'enabled', width: 80, render: (value: boolean) => value ? <Tag color="success">启用</Tag> : <Tag>停用</Tag> },
               { title: '操作', width: 150, fixed: 'right', render: (_: unknown, driver) => <Space size={4} wrap={false}><Button size="small" onClick={() => void testDriver(driver)}>测试</Button><Button danger size="small" onClick={() => void deleteDriver(driver)}>删除</Button></Space> }
             ]}
@@ -4283,6 +4324,37 @@ function App(): React.JSX.Element {
             >
               <Input readOnly placeholder={driverType === 'python' ? '请选择 dmPython.pyd' : driverType === 'whl' ? '请选择 dmPython whl 文件' : '请选择 DmJdbcDriver.jar'} addonAfter={<Button type="link" size="small" onClick={() => void selectDriverFile()}>选择</Button>} />
             </Form.Item>
+            {driverType === 'jdbc' && (
+              <>
+                <Form.Item label="Java 目录">
+                  <Space.Compact className="full-width">
+                    <Form.Item name="java_home" noStyle>
+                      <AutoComplete
+                        options={javaRuntimeOptions}
+                        placeholder="自动检测，或手动选择 JDK/JRE 目录"
+                        filterOption={(inputValue, option) => {
+                          const normalizedInput = inputValue.trim().toLowerCase()
+                          if (!normalizedInput || selectedJavaRuntimeValues.has(normalizedInput)) {
+                            return true
+                          }
+                          return String(option?.value ?? '').toLowerCase().includes(normalizedInput) || String(option?.label ?? '').toLowerCase().includes(normalizedInput)
+                        }}
+                        className="full-width"
+                      />
+                    </Form.Item>
+                    <Button onClick={() => void selectJavaDirectory()}>选择</Button>
+                  </Space.Compact>
+                </Form.Item>
+                {javaRuntimes.length > 0 && (
+                  <Alert
+                    type="info"
+                    showIcon
+                    message={`已自动检测到 ${javaRuntimes.length} 个 Java 环境`}
+                    description={javaRuntimes.slice(0, 3).map((runtime) => `Java ${runtime.major ?? '未知版本'}：${runtime.home}`).join('；')}
+                  />
+                )}
+              </>
+            )}
             <Button type="primary" loading={driverSaving} onClick={() => void addDriver()}>添加驱动</Button>
           </Form>
         </Space>

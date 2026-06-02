@@ -14,91 +14,113 @@ export type BackendStatus = {
   pid?: number
   message?: string
   logPath?: string
+  restartAttempt?: number
+  maxRestartAttempts?: number
 }
 
 const HEALTH_TIMEOUT_MS = 15000
 const HEALTH_INTERVAL_MS = 500
+const REQUEST_RECOVERY_HEALTH_TIMEOUT_MS = 8000
+const MAX_RESTART_ATTEMPTS = 5
+const RESTART_BASE_DELAY_MS = 1000
+const RESTART_MAX_DELAY_MS = 10000
 
 export class BackendManager {
   private process: ChildProcessWithoutNullStreams | null = null
   private status: BackendStatus = { state: 'stopped' }
   private port = 8000
   private stopping = false
+  private suppressStopStatus = false
+  private restartTimer: ReturnType<typeof setTimeout> | null = null
+  private restartAttempts = 0
+  private startPromise: Promise<BackendStatus> | null = null
+  private launchId = 0
 
   getStatus(): BackendStatus {
     return { ...this.status }
   }
 
   async start(): Promise<BackendStatus> {
-    if (this.process || this.status.state === 'starting' || this.status.state === 'online') {
-      return this.getStatus()
+    if (this.startPromise) {
+      return this.startPromise
     }
 
-    this.stopping = false
-    this.port = await getFreePort()
-    const apiBaseUrl = `http://127.0.0.1:${this.port}/api`
-    const logPath = this.getLogPath()
-    const command = this.getBackendCommand()
+    const startPromise = this.startInternal()
+    this.startPromise = startPromise
 
-    if (!existsSync(command.command)) {
-      this.setStatus({ state: 'failed', apiBaseUrl, message: `后端启动文件不存在：${command.command}`, logPath })
-      return this.getStatus()
-    }
-
-    mkdirSync(join(app.getPath('userData'), 'logs'), { recursive: true })
-    this.setStatus({ state: 'starting', apiBaseUrl, message: '后端启动中', logPath })
-
-    const logStream = createWriteStream(logPath, { flags: 'a' })
-    this.process = spawn(command.command, command.args, {
-      cwd: command.cwd,
-      windowsHide: true,
-      env: {
-        ...process.env,
-        DATADJINN_BACKEND_PORT: String(this.port),
-        DATADJINN_BACKEND_RELOAD: is.dev ? '1' : '0',
-        DATADJINN_DATA_DIR: app.getPath('userData'),
-        PYTHONIOENCODING: 'utf-8'
+    try {
+      return await startPromise
+    } finally {
+      if (this.startPromise === startPromise) {
+        this.startPromise = null
       }
-    })
-
-    this.process.stdout.pipe(logStream)
-    this.process.stderr.pipe(logStream)
-
-    this.process.on('exit', (code) => {
-      logStream.end()
-      this.process = null
-
-      if (this.stopping) {
-        this.setStatus({ state: 'stopped', apiBaseUrl, message: '后端已停止', logPath })
-        return
-      }
-
-      this.setStatus({ state: 'crashed', apiBaseUrl, message: `后端异常退出，退出码：${code ?? 'unknown'}`, logPath })
-    })
-
-    const healthy = await this.waitForHealth(apiBaseUrl)
-    if (!healthy) {
-      this.setStatus({ state: 'failed', apiBaseUrl, pid: this.process?.pid, message: '后端启动超时，请查看日志', logPath })
-      return this.getStatus()
     }
-
-    this.setStatus({ state: 'online', apiBaseUrl, pid: this.process?.pid, message: '后端已就绪', logPath })
-    return this.getStatus()
   }
 
-  async restart(): Promise<BackendStatus> {
-    await this.stop()
+  async ensureOnline(): Promise<BackendStatus> {
+    let status = this.getStatus()
+
+    if (status.state === 'online' && status.apiBaseUrl) {
+      return status
+    }
+
+    if (status.state === 'starting' && status.apiBaseUrl && this.process) {
+      const healthy = await this.waitForHealth(status.apiBaseUrl, REQUEST_RECOVERY_HEALTH_TIMEOUT_MS)
+      if (healthy && this.process) {
+        this.restartAttempts = 0
+        this.setStatus({ ...status, state: 'online', pid: this.process.pid, message: '后端已就绪' })
+        return this.getStatus()
+      }
+    }
+
+    status = this.getStatus()
+    if (status.state === 'starting') {
+      throw new Error(status.message ?? '后端正在启动，请稍候')
+    }
+
+    const nextStatus = await this.start()
+    if (nextStatus.state === 'online' && nextStatus.apiBaseUrl) {
+      return nextStatus
+    }
+
+    throw new Error(nextStatus.message ?? '后端服务未就绪')
+  }
+
+  recover(reason = '后端请求失败，正在自动重启'): void {
+    if (this.stopping || this.status.state === 'starting') {
+      return
+    }
+
+    this.clearScheduledRestart()
+    void this.restart(reason).catch((error) => {
+      this.setStatus({
+        ...this.getStatus(),
+        state: 'failed',
+        message: error instanceof Error ? error.message : '后端自动重启失败'
+      })
+    })
+  }
+
+  async restart(reason = '后端重启中'): Promise<BackendStatus> {
+    this.clearScheduledRestart()
+    this.restartAttempts = 0
+    this.setStatus({ ...this.status, state: 'starting', message: reason })
+    await this.stop(false)
     return this.start()
   }
 
-  async stop(): Promise<void> {
+  async stop(updateStatus = true): Promise<void> {
+    this.clearScheduledRestart()
     const current = this.process
     if (!current) {
-      this.setStatus({ ...this.status, state: 'stopped', message: '后端已停止' })
+      if (updateStatus) {
+        this.setStatus({ ...this.status, state: 'stopped', message: '后端已停止' })
+      }
       return
     }
 
     this.stopping = true
+    this.suppressStopStatus = !updateStatus
     await new Promise<void>((resolve) => {
       const timer = setTimeout(() => {
         if (current.pid) {
@@ -116,6 +138,134 @@ export class BackendManager {
 
       current.kill()
     })
+    this.suppressStopStatus = false
+  }
+
+  private async startInternal(): Promise<BackendStatus> {
+    if (this.process || this.status.state === 'online') {
+      return this.getStatus()
+    }
+
+    this.clearScheduledRestart()
+    this.stopping = false
+    this.port = await getFreePort()
+    const apiBaseUrl = `http://127.0.0.1:${this.port}/api`
+    const logPath = this.getLogPath()
+    const command = this.getBackendCommand()
+
+    if (!existsSync(command.command)) {
+      this.setStatus({ state: 'failed', apiBaseUrl, message: `后端启动文件不存在：${command.command}`, logPath })
+      return this.getStatus()
+    }
+
+    mkdirSync(join(app.getPath('userData'), 'logs'), { recursive: true })
+    const launchId = this.launchId + 1
+    this.launchId = launchId
+    this.setStatus({ state: 'starting', apiBaseUrl, message: '后端启动中', logPath })
+
+    const logStream = createWriteStream(logPath, { flags: 'a' })
+    const child = spawn(command.command, command.args, {
+      cwd: command.cwd,
+      windowsHide: true,
+      env: {
+        ...process.env,
+        DATADJINN_BACKEND_PORT: String(this.port),
+        DATADJINN_BACKEND_RELOAD: is.dev ? '1' : '0',
+        DATADJINN_DATA_DIR: app.getPath('userData'),
+        PYTHONIOENCODING: 'utf-8'
+      }
+    })
+    this.process = child
+
+    child.stdout.pipe(logStream)
+    child.stderr.pipe(logStream)
+
+    child.on('exit', (code) => {
+      logStream.end()
+
+      if (this.process !== child) {
+        return
+      }
+
+      this.process = null
+
+      if (this.stopping) {
+        if (!this.suppressStopStatus) {
+          this.setStatus({ state: 'stopped', apiBaseUrl, message: '后端已停止', logPath })
+        }
+        return
+      }
+
+      this.scheduleRestart(`后端异常退出，退出码：${code ?? 'unknown'}`, apiBaseUrl, logPath, code)
+    })
+
+    const healthy = await this.waitForHealth(apiBaseUrl)
+    if (launchId !== this.launchId || !this.process) {
+      return this.getStatus()
+    }
+
+    if (!healthy) {
+      this.setStatus({ state: 'failed', apiBaseUrl, pid: this.process.pid, message: '后端启动超时，正在自动重启', logPath })
+      this.process.kill()
+      return this.getStatus()
+    }
+
+    this.restartAttempts = 0
+    this.setStatus({ state: 'online', apiBaseUrl, pid: this.process.pid, message: '后端已就绪', logPath })
+    return this.getStatus()
+  }
+
+  private scheduleRestart(reason: string, apiBaseUrl?: string, logPath?: string, exitCode?: number | null): void {
+    if (this.stopping || this.restartTimer) {
+      return
+    }
+
+    if (this.restartAttempts >= MAX_RESTART_ATTEMPTS) {
+      this.setStatus({
+        state: 'crashed',
+        apiBaseUrl,
+        message: `${reason}，自动重启次数已达上限`,
+        logPath,
+        restartAttempt: this.restartAttempts,
+        maxRestartAttempts: MAX_RESTART_ATTEMPTS
+      })
+      return
+    }
+
+    const restartAttempt = this.restartAttempts + 1
+    const delay = Math.min(RESTART_BASE_DELAY_MS * 2 ** this.restartAttempts, RESTART_MAX_DELAY_MS)
+    this.restartAttempts = restartAttempt
+    this.setStatus({
+      state: 'starting',
+      apiBaseUrl,
+      message: `${reason}，${Math.round(delay / 1000)} 秒后自动重启（第 ${restartAttempt}/${MAX_RESTART_ATTEMPTS} 次）`,
+      logPath,
+      restartAttempt,
+      maxRestartAttempts: MAX_RESTART_ATTEMPTS
+    })
+
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null
+      void this.start().catch((error) => {
+        this.setStatus({
+          state: 'failed',
+          apiBaseUrl,
+          message: error instanceof Error ? error.message : '后端自动重启失败',
+          logPath,
+          restartAttempt,
+          maxRestartAttempts: MAX_RESTART_ATTEMPTS
+        })
+      })
+    }, delay)
+
+    void exitCode
+  }
+
+  private clearScheduledRestart(): void {
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer)
+      this.restartTimer = null
+    }
   }
 
   private getBackendCommand(): { command: string; args: string[]; cwd: string } {
@@ -140,8 +290,8 @@ export class BackendManager {
     return join(app.getPath('userData'), 'logs', 'backend.log')
   }
 
-  private async waitForHealth(apiBaseUrl: string): Promise<boolean> {
-    const deadline = Date.now() + HEALTH_TIMEOUT_MS
+  private async waitForHealth(apiBaseUrl: string, timeoutMs = HEALTH_TIMEOUT_MS): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs
 
     while (Date.now() < deadline) {
       if (await checkHealth(`${apiBaseUrl}/health`)) {

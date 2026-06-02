@@ -20,6 +20,7 @@ from sqlalchemy.engine.interfaces import BindTyping
 from sqlalchemy.pool import QueuePool
 
 from app.db.driver_manager import driver_manager
+from app.db import java_runtime
 from app.db.mongo_utils import MongoClient, is_mongo_client
 from app.db.redis_utils import Redis, is_redis_client
 from app.schemas.connection import ConnectionInfo, ConnectionRequest, DatabaseType
@@ -54,7 +55,39 @@ def _jvm_candidates_from_java_executable(java_executable: str | None) -> list[Pa
     ]
 
 
-def _find_jvm_dll() -> Path | None:
+def _parse_java_major(version: str | None) -> int | None:
+    if not version:
+        return None
+
+    parts = re.split(r"[._\-+]", version.strip().strip('"'))
+    if not parts or not parts[0].isdigit():
+        return None
+    if parts[0] == "1" and len(parts) > 1 and parts[1].isdigit():
+        return int(parts[1])
+    return int(parts[0])
+
+
+def _java_home_from_jvm_dll(jvm_dll: Path) -> Path:
+    home = jvm_dll.parent.parent.parent
+    if home.name.lower() == "jre" and home.parent.exists():
+        return home.parent
+    return home
+
+
+def _java_major_from_home(java_home: Path) -> int | None:
+    release_file = java_home / "release"
+    if release_file.exists():
+        try:
+            for line in release_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if line.startswith("JAVA_VERSION="):
+                    return _parse_java_major(line.split("=", 1)[1])
+        except OSError:
+            pass
+
+    return _parse_java_major(java_home.name)
+
+
+def _collect_jvm_candidates() -> list[Path]:
     candidates: list[Path] = []
 
     java_home = os.environ.get("JAVA_HOME")
@@ -74,18 +107,105 @@ def _find_jvm_dll() -> Path | None:
         for pattern in ["*/bin/server/jvm.dll", "*/jre/bin/server/jvm.dll"]:
             candidates.extend(base.glob(pattern))
 
-    return next((path.resolve() for path in dict.fromkeys(candidates) if path.exists()), None)
+    return [path.resolve() for path in dict.fromkeys(candidates) if path.exists()]
 
 
-def _prepare_jdbc_runtime() -> str | None:
-    jvm_dll = _find_jvm_dll()
-    if jvm_dll is None:
+def _find_jvm_dll(required_java_major: int | None = None) -> Path | None:
+    candidates = _collect_jvm_candidates()
+    if required_java_major is None:
+        return next(iter(candidates), None)
+
+    return next((path for path in candidates if (_java_major_from_home(_java_home_from_jvm_dll(path)) or 0) >= required_java_major), None)
+
+
+def _format_java_candidates() -> str:
+    candidates = _collect_jvm_candidates()
+    if not candidates:
+        return "未检测到 Java"
+
+    displays = []
+    for path in candidates[:8]:
+        java_home = _java_home_from_jvm_dll(path)
+        major = _java_major_from_home(java_home)
+        displays.append(f"Java {major or '未知版本'}：{java_home}")
+    return "；".join(displays)
+
+
+def _java_major_from_class_header(data: bytes) -> int | None:
+    if len(data) != 8 or data[:4] != b"\xca\xfe\xba\xbe":
         return None
 
+    class_major = int.from_bytes(data[6:8], "big")
+    return class_major - 44 if class_major >= 49 else None
+
+
+def _required_java_major_from_jar(jar_path: Path) -> int | None:
+    try:
+        with zipfile.ZipFile(jar_path) as archive:
+            if "dm/jdbc/driver/DmDriver.class" in archive.namelist():
+                java_major = _java_major_from_class_header(archive.read("dm/jdbc/driver/DmDriver.class", 8))
+                if java_major:
+                    return java_major
+
+            majors = []
+            for name in archive.namelist():
+                if not name.endswith(".class") or name.startswith("META-INF/versions/"):
+                    continue
+                java_major = _java_major_from_class_header(archive.read(name, 8))
+                if java_major:
+                    majors.append(java_major)
+    except Exception:
+        return None
+
+    return max(majors, default=None)
+
+
+def _prepare_jdbc_runtime(required_java_major: int | None = None) -> str | None:
+    jvm_dll = _find_jvm_dll(required_java_major)
+    if jvm_dll is None:
+        if required_java_major:
+            raise RuntimeError(f"当前达梦 JDBC 驱动至少需要 Java {required_java_major}，但没有检测到满足要求的 64 位 JDK/JRE。已检测到：{_format_java_candidates()}。请安装 Java {required_java_major} 或更高版本，或更换为兼容当前 Java 的达梦 JDBC 驱动")
+        return None
+
+    java_home = _java_home_from_jvm_dll(jvm_dll)
     jvm_bin = str(jvm_dll.parent.parent)
     os.environ["PATH"] = f"{jvm_bin}{os.pathsep}{os.environ.get('PATH', '')}"
-    os.environ["JAVA_HOME"] = str(jvm_dll.parent.parent.parent)
+    os.environ["JAVA_HOME"] = str(java_home)
     return str(jvm_dll)
+
+
+def _ensure_jpype_support_library(jpype_module: Any) -> Path:
+    import jpype._core as jpype_core
+
+    expected = Path(jpype_core.__file__).resolve().parent.parent / "org.jpype.jar"
+    if expected.exists():
+        return expected
+
+    candidates: list[Path] = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        meipass_path = Path(meipass)
+        candidates.extend([
+            meipass_path / "org.jpype.jar",
+            meipass_path / "_internal" / "org.jpype.jar",
+            meipass_path.parent / "org.jpype.jar",
+        ])
+
+    executable_dir = Path(sys.executable).resolve().parent
+    candidates.extend([
+        executable_dir / "org.jpype.jar",
+        executable_dir / "_internal" / "org.jpype.jar",
+        executable_dir.parent / "org.jpype.jar",
+        Path(jpype_module.__file__).resolve().parent.parent / "org.jpype.jar",
+    ])
+
+    source = next((path for path in dict.fromkeys(candidates) if path.exists()), None)
+    if source is None:
+        searched = "; ".join(str(path) for path in dict.fromkeys([expected, *candidates]))
+        raise RuntimeError(f"未找到 JPype 支持库 org.jpype.jar，已搜索路径：{searched}")
+
+    jpype_core.__file__ = str(source.parent / "jpype" / "_core.py")
+    return source
 
 
 def _validate_whl_compatibility(driver_file: Path) -> None:
@@ -661,21 +781,25 @@ class ConnectionManager:
             return create_engine(url, creator=connect, pool_pre_ping=True)
 
         if driver and driver.driver_type == "jdbc" and driver.path:
-            jvm_path = _prepare_jdbc_runtime()
-            if jvm_path is None:
-                raise RuntimeError("未找到可用的 Java JVM，请先安装 64 位 JDK/JRE，并确认 JAVA_HOME 指向有效目录，或将 java.exe 所在目录配置到系统 Path")
-
             jdbc_path = _resolve_runtime_path(driver.path)
             if not jdbc_path.exists():
                 raise RuntimeError(f"达梦 JDBC 驱动文件不存在：{jdbc_path}")
+
+            required_java_major = java_runtime.required_java_major_from_jar(jdbc_path)
+            jvm_path = java_runtime.prepare_jdbc_runtime(required_java_major, driver.java_home)
+            if jvm_path is None:
+                raise RuntimeError("未找到可用的 Java JVM，请先安装 64 位 JDK/JRE，并确认 JAVA_HOME 指向有效目录，或将 java.exe 所在目录配置到系统 Path")
+
             jdbc_url = f"jdbc:dm://{request.host}:{request.port}"
 
             try:
                 import jpype
+                jpype_support_library = _ensure_jpype_support_library(jpype)
                 if jpype.isJVMStarted():
+                    jpype.addClassPath(str(jpype_support_library))
                     jpype.addClassPath(str(jdbc_path))
                 else:
-                    jpype.startJVM(jvm_path, f"-Djava.class.path={jdbc_path}")
+                    jpype.startJVM(jvm_path, classpath=[str(jpype_support_library), str(jdbc_path)])
                 import jaydebeapi
             except ImportError as exc:
                 raise RuntimeError("缺少 JDBC 桥接依赖 jaydebeapi/JPype1，请安装后重试") from exc

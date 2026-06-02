@@ -7,6 +7,7 @@ const api = {
   selectImportFile: (): Promise<string | null> => ipcRenderer.invoke('select-import-file'),
   selectExportPath: (format: 'sql' | 'csv' | 'json', defaultName?: string): Promise<string | null> => ipcRenderer.invoke('select-export-path', format, defaultName),
   selectDriverFile: (): Promise<string | null> => ipcRenderer.invoke('select-driver-file'),
+  selectJavaDirectory: (): Promise<string | null> => ipcRenderer.invoke('select-java-directory'),
   requestJson: (path: string, options?: { method?: string; headers?: Record<string, string>; body?: string }) => ipcRenderer.invoke('api:request', path, options),
   streamRequest: (
     streamId: string,

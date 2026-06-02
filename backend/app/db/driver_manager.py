@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from uuid import uuid4
 
+from app.db.java_runtime import validate_java_home
 from app.schemas.driver import DriverCreateRequest, DriverInfo
 
 
@@ -79,6 +80,10 @@ class DriverManager:
                     raise ValueError("达梦 whl 驱动请选择 .whl 文件")
                 _validate_whl_compatibility(path)
 
+        java_home = None
+        if request.driver_type == "jdbc" and request.java_home:
+            java_home = str(validate_java_home(request.java_home)[0])
+
         driver = DriverInfo(
             id=uuid4().hex,
             database_type=request.database_type,
@@ -87,6 +92,7 @@ class DriverManager:
             source=source,
             enabled=request.enabled,
             path=driver_path,
+            java_home=java_home,
         )
         self._drivers[driver.id] = driver
         self._save_drivers()
@@ -131,6 +137,8 @@ class DriverManager:
             raise ValueError("JDBC 驱动请选择 .jar 文件")
         if driver.driver_type == "whl" and path.suffix.lower() != ".whl":
             raise ValueError("达梦 whl 驱动请选择 .whl 文件")
+        if driver.driver_type == "jdbc" and driver.java_home:
+            validate_java_home(driver.java_home)
 
     def _load_drivers(self) -> None:
         if not DRIVER_STORE_PATH.exists():

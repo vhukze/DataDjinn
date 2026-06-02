@@ -1,6 +1,6 @@
 {
   "name": "datadjinn",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "AI-powered desktop database client",
   "main": "./out/main/index.js",
   "author": "example.com",
@@ -14,7 +14,8 @@
     "start": "electron-vite preview",
     "dev": "electron-vite dev",
     "build": "npm run typecheck && electron-vite build",
-    "build:backend": "cd backend && .venv\\Scripts\\python.exe -m PyInstaller run.py --name datadjinn-backend --onedir --clean --noconfirm --hidden-import pymongo --hidden-import bson --hidden-import dns --hidden-import redis --hidden-import jaydebeapi --hidden-import jpype --collect-data jpype --collect-submodules jpype --add-data .venv/Lib/site-packages/org.jpype.jar;. --exclude-module dmPython --exclude-module dmSQLAlchemy --exclude-module dmssl",
+    "prepare:jpype": "backend\\.venv\\Scripts\\python.exe backend\\scripts\\prepare_jpype_vendor.py",
+    "build:backend": "npm run prepare:jpype && backend\\.venv\\Scripts\\python.exe backend\\scripts\\build_backend.py",
     "build:frontend": "npm run typecheck && electron-vite build",
     "postinstall": "electron-builder install-app-deps",
     "build:unpack": "npm run build && electron-builder --dir",

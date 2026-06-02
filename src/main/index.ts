@@ -141,6 +141,31 @@ const sendUpdateEvent = (channel: string, payload: unknown): void => {
   }
 }
 
+const isBackendNetworkError = (error: unknown): boolean => {
+  if (error instanceof Error && error.name === 'AbortError') {
+    return false
+  }
+
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  return /fetch failed|ECONNREFUSED|ECONNRESET|UND_ERR_SOCKET|socket hang up|terminated/i.test(message)
+}
+
+const ensureBackendForRequest = async (): Promise<string> => {
+  const backendStatus = await backendManager.ensureOnline()
+
+  if (!backendStatus.apiBaseUrl) {
+    throw new Error(backendStatus.message ?? '后端服务未就绪')
+  }
+
+  return backendStatus.apiBaseUrl
+}
+
+const recoverBackendAfterRequestError = (error: unknown): void => {
+  if (isBackendNetworkError(error)) {
+    backendManager.recover('检测到后端连接中断，正在自动重启')
+  }
+}
+
 const downloadPortableUpdate = async (): Promise<{ filePath: string }> => {
   const updateInfo = latestPortableUpdate ?? await checkPortableUpdate()
 
@@ -334,6 +359,25 @@ app.whenReady().then(() => {
     return result.filePaths[0]
   })
 
+  ipcMain.handle('select-java-directory', async () => {
+    const window = BrowserWindow.getFocusedWindow()
+
+    if (!window) {
+      return null
+    }
+
+    const result = await dialog.showOpenDialog(window, {
+      title: '选择 Java JDK/JRE 目录',
+      properties: ['openDirectory']
+    })
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return null
+    }
+
+    return result.filePaths[0]
+  })
+
   ipcMain.handle('select-import-file', async () => {
     const window = BrowserWindow.getFocusedWindow()
 
@@ -424,35 +468,30 @@ app.whenReady().then(() => {
     return sessions
   })
   ipcMain.handle('api:stream', async (event, streamId: string, path: string, options?: { method?: string; headers?: Record<string, string>; body?: string }) => {
-    const backendStatus = backendManager.getStatus()
     const sender = webContents.fromId(event.sender.id)
     const controller = new AbortController()
     streamControllers.set(streamId, controller)
 
-    if (!backendStatus.apiBaseUrl) {
-      streamControllers.delete(streamId)
-      throw new Error('后端服务启动中，请稍候')
-    }
-
-    const response = await fetch(`${backendStatus.apiBaseUrl}${path}`, {
-      method: options?.method,
-      headers: {
-        'Content-Type': 'application/json',
-        ...options?.headers
-      },
-      body: options?.body,
-      signal: controller.signal
-    })
-
-    if (!response.ok || !response.body) {
-      const text = await response.text()
-      throw new Error(text || `HTTP ${response.status}`)
-    }
-
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-
     try {
+      const apiBaseUrl = await ensureBackendForRequest()
+      const response = await fetch(`${apiBaseUrl}${path}`, {
+        method: options?.method,
+        headers: {
+          'Content-Type': 'application/json',
+          ...options?.headers
+        },
+        body: options?.body,
+        signal: controller.signal
+      })
+
+      if (!response.ok || !response.body) {
+        const text = await response.text()
+        throw new Error(text || `HTTP ${response.status}`)
+      }
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+
       while (true) {
         const { value, done } = await reader.read()
         if (done) {
@@ -460,6 +499,9 @@ app.whenReady().then(() => {
         }
         sender?.send('api:stream-chunk', streamId, decoder.decode(value, { stream: true }))
       }
+    } catch (error) {
+      recoverBackendAfterRequestError(error)
+      throw error
     } finally {
       streamControllers.delete(streamId)
       sender?.send('api:stream-end', streamId)
@@ -537,35 +579,35 @@ app.whenReady().then(() => {
   })
 
   ipcMain.handle('api:request', async (_, path: string, options?: { method?: string; headers?: Record<string, string>; body?: string }) => {
-    const backendStatus = backendManager.getStatus()
-
-    if (!backendStatus.apiBaseUrl) {
-      throw new Error('后端服务启动中，请稍候')
-    }
-
-    const response = await fetch(`${backendStatus.apiBaseUrl}${path}`, {
-      method: options?.method,
-      headers: {
-        'Content-Type': 'application/json',
-        ...options?.headers
-      },
-      body: options?.body
-    })
-
-    const text = await response.text()
-    let data: any = null
-
     try {
-      data = text ? JSON.parse(text) : null
-    } catch {
-      data = null
-    }
+      const apiBaseUrl = await ensureBackendForRequest()
+      const response = await fetch(`${apiBaseUrl}${path}`, {
+        method: options?.method,
+        headers: {
+          'Content-Type': 'application/json',
+          ...options?.headers
+        },
+        body: options?.body
+      })
 
-    if (!response.ok) {
-      throw new Error(data?.detail ?? (text || `HTTP ${response.status}`))
-    }
+      const text = await response.text()
+      let data: any = null
 
-    return data
+      try {
+        data = text ? JSON.parse(text) : null
+      } catch {
+        data = null
+      }
+
+      if (!response.ok) {
+        throw new Error(data?.detail ?? (text || `HTTP ${response.status}`))
+      }
+
+      return data
+    } catch (error) {
+      recoverBackendAfterRequestError(error)
+      throw error
+    }
   })
 
   void backendManager.start()

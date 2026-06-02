@@ -1,3 +1,5 @@
+import re
+
 from pymysql.err import OperationalError as MySQLOperationalError
 from pymysql.err import ProgrammingError as MySQLProgrammingError
 try:
@@ -31,6 +33,13 @@ def friendly_error(exc: Exception) -> str:
             return dm_message
 
     cause_message = str(cause)
+    if 'UnsupportedClassVersionError' in cause_message:
+        match = re.search(r'class file version (\d+)\.0.*up to (\d+)\.0', cause_message)
+        if match:
+            required_java = int(match.group(1)) - 44
+            current_java = int(match.group(2)) - 44
+            return f'当前达梦 JDBC 驱动需要 Java {required_java} 或更高版本，但当前选择的是 Java {current_java}。请在驱动管理中选择 Java {required_java}+ 的 64 位 JDK/JRE 目录，或更换兼容 Java {current_java} 的达梦 JDBC 驱动'
+        return '当前达梦 JDBC 驱动与 Java 版本不匹配，请在驱动管理中选择更高版本的 64 位 JDK/JRE，或更换兼容当前 Java 的达梦 JDBC 驱动'
     if 'Timeout reading from socket' in cause_message:
         return 'Redis 连接超时，请检查主机和端口是否正确、Redis 服务是否已启动、网络或防火墙是否放行该端口'
 

@@ -2,7 +2,8 @@ from fastapi import APIRouter, HTTPException, status
 
 from app.db.driver_manager import driver_manager
 from app.db.error_utils import friendly_error
-from app.schemas.driver import DriverCreateRequest, DriverDetectRequest, DriverDetectResponse, DriverListResponse, DriverTestRequest, DriverTestResponse
+from app.db.java_runtime import detect_java_runtimes
+from app.schemas.driver import DriverCreateRequest, DriverDetectRequest, DriverDetectResponse, DriverListResponse, DriverTestRequest, DriverTestResponse, JavaDetectResponse
 
 router = APIRouter(prefix="/drivers", tags=["drivers"])
 
@@ -33,6 +34,12 @@ def test_driver(request: DriverTestRequest) -> DriverTestResponse:
         return DriverTestResponse(success=True, message="驱动可用")
     except Exception as exc:
         return DriverTestResponse(success=False, message=friendly_error(exc))
+
+
+@router.get("/java", response_model=JavaDetectResponse)
+def detect_java() -> JavaDetectResponse:
+    runtimes = detect_java_runtimes()
+    return JavaDetectResponse(runtimes=runtimes, preferred=runtimes[0]["home"] if runtimes else None)
 
 
 @router.delete("/{driver_id}")

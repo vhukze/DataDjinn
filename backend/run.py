@@ -1,4 +1,10 @@
 import os
+import sys
+from pathlib import Path
+
+VENDORED_JPYPE_PATH = Path(__file__).resolve().parent / "vendor" / "jpype15"
+if VENDORED_JPYPE_PATH.exists():
+    sys.path.insert(0, str(VENDORED_JPYPE_PATH))
 
 import uvicorn
 
