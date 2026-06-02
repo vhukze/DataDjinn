@@ -1,11 +1,12 @@
-# DataDjinn v0.1.7
+# DataDjinn v0.1.9
 
-本版本用于修复达梦 JDBC 连接问题。
+解决后端不存在的问题。
 
 ## 修复
 
-- 修复 Windows 打包版本使用达梦 JDBC 连接时报 `Can't find org.jpype.jar support library` 的问题。
-- 后端打包时显式收集 JPype 子模块和 `org.jpype.jar` 支持库，确保 JDBC + JPype 启动 JVM 时可以找到必要的支持文件。
+- 修复 Windows 打包版本偶发提示后端启动文件不存在的问题，兼容 PyInstaller 目录模式下的后端可执行文件位置。
+- 后端启动失败时会展示已检查的候选路径，便于定位打包资源路径问题。
+- 改进 JPype vendor 准备与后端打包校验，确保 JDBC 相关支持库完整进入后端包。
 
 ## 打包说明
 

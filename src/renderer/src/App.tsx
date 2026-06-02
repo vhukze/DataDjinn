@@ -3171,6 +3171,7 @@ function App(): React.JSX.Element {
       okButtonProps: { danger: true },
       cancelText: '取消',
       centered: true,
+      maskClosable: false,
       onOk: async () => {
         try {
           await requestJson(`/connections/${connectionId}/databases/${encodeURIComponent(databaseName)}`, { method: 'DELETE' })
@@ -3196,6 +3197,7 @@ function App(): React.JSX.Element {
       okButtonProps: { danger: true },
       cancelText: '取消',
       centered: true,
+      maskClosable: false,
       onOk: async () => {
         const params = new URLSearchParams({ type: objectType })
         if (databaseName) {
@@ -3950,7 +3952,7 @@ function App(): React.JSX.Element {
       window.api.onUpdateDownloaded((info) => {
         setDownloadingUpdate(false)
         setUpdateInfo(info)
-        setUpdateProgress({ percent: 100, transferred: updateProgress?.transferred ?? 0, total: updateProgress?.total })
+        setUpdateProgress((current) => ({ percent: 100, transferred: current?.transferred ?? 0, total: current?.total }))
         setUpdateModalOpen(true)
       }),
       window.api.onUpdateError((error) => {
@@ -4090,7 +4092,7 @@ function App(): React.JSX.Element {
           <Space className="toolbar-actions titlebar-no-drag" size={4}>
             <Button type="text" size="small" icon={<FileAddOutlined />} onClick={() => openQueryWorkspace()} title="新建查询" aria-label="新建查询" />
             <Button type="text" size="small" icon={<SettingOutlined />} onClick={openDriverManager} title="驱动管理" aria-label="驱动管理" />
-            <Button type={updateInfo?.available ? 'primary' : 'text'} size="small" icon={<CloudDownloadOutlined />} loading={checkingUpdate || downloadingUpdate} onClick={() => { setUpdateModalOpen(true); void checkForUpdates(true) }} title="检查更新" aria-label="检查更新" />
+            <Button type={updateInfo?.available || downloadingUpdate ? 'primary' : 'text'} size="small" icon={<CloudDownloadOutlined />} loading={checkingUpdate} onClick={() => { setUpdateModalOpen(true); if (!downloadingUpdate) { void checkForUpdates(true) } }} title="检查更新" aria-label="检查更新" />
             <Button type="text" size="small" icon={<ReloadOutlined />} loading={healthLoading} onClick={() => void checkHealth()} title="同步状态" aria-label="同步状态" />
             <Button type={aiPanelOpen ? 'primary' : 'text'} size="small" icon={<MessageOutlined />} onClick={() => setAiPanelOpen((open) => !open)} title={aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'} aria-label={aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'} />
             <Button className="theme-toggle-btn" type="text" size="small" icon={theme === 'dark' ? <SunOutlined /> : <MoonOutlined />} onClick={toggleTheme} title={theme === 'dark' ? '切换到亮色主题' : '切换到暗色主题'} aria-label={theme === 'dark' ? '切换到亮色主题' : '切换到暗色主题'} />
@@ -4248,7 +4250,7 @@ function App(): React.JSX.Element {
           </Splitter.Panel>
         </Splitter>
       </Layout.Content>
-      <Modal title="应用更新" open={updateModalOpen} onCancel={() => setUpdateModalOpen(false)} footer={null} width={680}>
+      <Modal title="应用更新" open={updateModalOpen} onCancel={() => setUpdateModalOpen(false)} footer={null} width={680} maskClosable={false}>
         <Space direction="vertical" className="full-width" size="middle">
           <Alert
             type={updateInfo?.available ? 'info' : 'success'}
@@ -4283,7 +4285,7 @@ function App(): React.JSX.Element {
           </Flex>
         </Space>
       </Modal>
-      <Modal title="驱动管理" open={driverManagerOpen} footer={null} onCancel={() => setDriverManagerOpen(false)} width={860}>
+      <Modal title="驱动管理" open={driverManagerOpen} footer={null} onCancel={() => setDriverManagerOpen(false)} width={860} maskClosable={false}>
         <Space direction="vertical" className="full-width" size="middle">
           <Alert type="info" showIcon message="统一管理数据库驱动。当前先支持达梦，后续其他数据库驱动会继续接入这里。达梦支持 dmPython pyd、dmPython whl 和 JDBC jar，连接时在连接信息中选择具体驱动。" />
           <Flex justify="space-between" align="center">
@@ -4359,11 +4361,11 @@ function App(): React.JSX.Element {
           </Form>
         </Space>
       </Modal>
-      <Modal title={editingTableName ? `修改表：${editingTableName}` : '修改表'} open={tableEditorOpen} okText="保存" cancelText="取消" confirmLoading={tableEditorLoading} onOk={() => void saveTableEditor()} onCancel={() => setTableEditorOpen(false)} width={760}>
+      <Modal title={editingTableName ? `修改表：${editingTableName}` : '修改表'} open={tableEditorOpen} okText="保存" cancelText="取消" confirmLoading={tableEditorLoading} onOk={() => void saveTableEditor()} onCancel={() => setTableEditorOpen(false)} width={760} maskClosable={false}>
         <Alert message="支持 SQLite/MySQL 修改已有字段的类型、可空和单字段主键；当前不支持新增、删除或重命名字段。" type="warning" showIcon />
         <Table className="table-editor-grid" size="small" loading={tableEditorLoading} rowKey="name" pagination={false} dataSource={editingColumns} columns={[{ title: '字段名', dataIndex: 'name', key: 'name', render: (value: string) => <Input value={value} disabled /> }, { title: '类型', dataIndex: 'type', key: 'type', render: (value: string, column: ColumnInfo) => <Input value={value} onChange={(event) => { setEditingColumns((current) => current.map((item) => (item.name === column.name ? { ...item, type: event.target.value } : item))) }} /> }, { title: '可空', dataIndex: 'nullable', key: 'nullable', width: 90, render: (value: boolean, column: ColumnInfo) => <Switch checked={value} disabled={column.primary_key} onChange={(checked) => { setEditingColumns((current) => current.map((item) => (item.name === column.name ? { ...item, nullable: checked } : item))) }} /> }, { title: '主键', dataIndex: 'primary_key', key: 'primary_key', width: 90, render: (value: boolean, column: ColumnInfo) => <Switch checked={value} onChange={(checked) => { setEditingColumns((current) => current.map((item) => ({ ...item, primary_key: item.name === column.name ? checked : false }))) }} /> }]} />
       </Modal>
-      <Modal title={creatingSchemaDatabaseName ? '新建模式' : '新增数据库'} open={databaseCreateModalOpen} okText="创建" cancelText="取消" confirmLoading={databaseCreateLoading} onOk={() => void createDatabase()} onCancel={() => { setDatabaseCreateModalOpen(false); setCreatingSchemaDatabaseName('') }} okButtonProps={{ disabled: !databaseCreateName.trim() }}>
+      <Modal title={creatingSchemaDatabaseName ? '新建模式' : '新增数据库'} open={databaseCreateModalOpen} okText="创建" cancelText="取消" confirmLoading={databaseCreateLoading} onOk={() => void createDatabase()} onCancel={() => { setDatabaseCreateModalOpen(false); setCreatingSchemaDatabaseName('') }} okButtonProps={{ disabled: !databaseCreateName.trim() }} maskClosable={false}>
         <Form layout="vertical">
           <Form.Item label={creatingSchemaDatabaseName ? '模式名称' : '数据库名称'} required>
             <Input placeholder={creatingSchemaDatabaseName ? '请输入模式名称' : '请输入数据库名称'} value={databaseCreateName} onChange={(event) => setDatabaseCreateName(event.target.value)} onPressEnter={() => void createDatabase()} />
@@ -4371,7 +4373,7 @@ function App(): React.JSX.Element {
           <Typography.Text type="secondary">只允许字母、数字、下划线，首字符不能是数字，长度 1-64</Typography.Text>
         </Form>
       </Modal>
-      <Modal title="运行 SQL 文件" open={sqlFileModalOpen} okText="执行" cancelText="取消" confirmLoading={sqlFileLoading} onOk={() => void runSqlFile()} onCancel={() => setSqlFileModalOpen(false)} okButtonProps={{ danger: true, disabled: sqlFileDatabases.length > 0 && !sqlFileDatabase }} footer={sqlFileResult ? undefined : (_, { OkBtn, CancelBtn }) => (<Space><CancelBtn /><OkBtn /></Space>)}>
+      <Modal title="运行 SQL 文件" open={sqlFileModalOpen} okText="执行" cancelText="取消" confirmLoading={sqlFileLoading} onOk={() => void runSqlFile()} onCancel={() => setSqlFileModalOpen(false)} okButtonProps={{ danger: true, disabled: sqlFileDatabases.length > 0 && !sqlFileDatabase }} footer={sqlFileResult ? undefined : (_, { OkBtn, CancelBtn }) => (<Space><CancelBtn /><OkBtn /></Space>)} maskClosable={false}>
         {sqlFileResult ? (
           <Space direction="vertical" className="full-width">
             <Alert type={sqlFileResult.failed_count === 0 ? 'success' : 'warning'} message={`执行完成：${sqlFileResult.success_count} 条成功，${sqlFileResult.failed_count} 条失败`} showIcon />
@@ -4397,10 +4399,10 @@ function App(): React.JSX.Element {
           </Space>
         )}
       </Modal>
-      <Modal title={ddlModalTitle || '查看 DDL'} open={ddlModalOpen} footer={null} onCancel={() => setDdlModalOpen(false)} width={820} centered>
+      <Modal title={ddlModalTitle || '查看 DDL'} open={ddlModalOpen} footer={null} onCancel={() => setDdlModalOpen(false)} width={820} centered maskClosable={false}>
         <Input.TextArea value={ddlLoading ? '加载中...' : ddlContent} autoSize={{ minRows: 12, maxRows: 24 }} readOnly />
       </Modal>
-      <Modal title={getConnection(createTableConnectionId)?.database_type === 'mongodb' ? '新建集合' : '新建表'} open={createTableModalOpen} okText="创建" cancelText="取消" confirmLoading={createTableLoading} onOk={() => void createTable()} onCancel={() => setCreateTableModalOpen(false)} width={680} okButtonProps={{ disabled: !newTableName.trim() || (getConnection(createTableConnectionId)?.database_type !== 'mongodb' && newTableColumns.filter((c) => c.name.trim()).length === 0) }}>
+      <Modal title={getConnection(createTableConnectionId)?.database_type === 'mongodb' ? '新建集合' : '新建表'} open={createTableModalOpen} okText="创建" cancelText="取消" confirmLoading={createTableLoading} onOk={() => void createTable()} onCancel={() => setCreateTableModalOpen(false)} width={680} okButtonProps={{ disabled: !newTableName.trim() || (getConnection(createTableConnectionId)?.database_type !== 'mongodb' && newTableColumns.filter((c) => c.name.trim()).length === 0) }} maskClosable={false}>
         <Form layout="vertical">
           <Form.Item label={getConnection(createTableConnectionId)?.database_type === 'mongodb' ? '集合名' : '表名'} required><Input placeholder={getConnection(createTableConnectionId)?.database_type === 'mongodb' ? '请输入集合名' : '请输入表名'} value={newTableName} onChange={(event) => setNewTableName(event.target.value)} /></Form.Item>
           {getConnection(createTableConnectionId)?.database_type !== 'mongodb' && (
@@ -4413,7 +4415,7 @@ function App(): React.JSX.Element {
           )}
         </Form>
       </Modal>
-      <Modal title={connectionMode === 'edit' ? '编辑数据库连接' : '保存数据库连接'} open={connectionModalOpen} okText={connectionMode === 'edit' ? '保存修改' : '保存连接'} cancelText="取消" confirmLoading={connectionLoading} onOk={() => void saveConnection()} onCancel={() => setConnectionModalOpen(false)} footer={(_, { OkBtn, CancelBtn }) => (<Space><Button loading={testingConnection} onClick={() => void testConnection()}>测试连接</Button><CancelBtn /><OkBtn /></Space>)}>
+      <Modal title={connectionMode === 'edit' ? '编辑数据库连接' : '保存数据库连接'} open={connectionModalOpen} okText={connectionMode === 'edit' ? '保存修改' : '保存连接'} cancelText="取消" confirmLoading={connectionLoading} onOk={() => void saveConnection()} onCancel={() => setConnectionModalOpen(false)} footer={(_, { OkBtn, CancelBtn }) => (<Space><Button loading={testingConnection} onClick={() => void testConnection()}>测试连接</Button><CancelBtn /><OkBtn /></Space>)} maskClosable={false}>
         <Form form={form} layout="vertical" initialValues={{ database_type: 'sqlite' }}>
           <Form.Item name="name" label="连接名称" rules={[{ required: true, message: '请输入连接名称' }]}><Input placeholder="例如：本地 SQLite" /></Form.Item>
           <Form.Item name="database_type" style={{ display: 'none' }}><Input /></Form.Item>
@@ -4448,14 +4450,14 @@ function App(): React.JSX.Element {
           )}
         </Form>
       </Modal>
-      <Modal title="备份" open={backupRestoreModalOpen} okText="选择路径并备份" cancelText="取消" confirmLoading={backupRestoreLoading} onOk={() => void runBackup()} onCancel={() => setBackupRestoreModalOpen(false)}>
+      <Modal title="备份" open={backupRestoreModalOpen} okText="选择路径并备份" cancelText="取消" confirmLoading={backupRestoreLoading} onOk={() => void runBackup()} onCancel={() => setBackupRestoreModalOpen(false)} maskClosable={false}>
         <Space direction="vertical" className="full-width">
           <Typography.Text><Typography.Text strong>连接：</Typography.Text>{getConnection(backupRestoreConnectionId)?.name}</Typography.Text>
           <Typography.Text><Typography.Text strong>数据库：</Typography.Text>{backupRestorePgDatabase || backupRestoreDatabase || '默认'}</Typography.Text>
           <Alert type="info" message="备份将生成 SQL 脚本（含建表语句和数据），可随时通过导入功能恢复。" showIcon />
         </Space>
       </Modal>
-      <Modal title="导出" open={exportModalOpen} okText="选择路径并导出" cancelText="取消" confirmLoading={exportLoading} onOk={() => void runExport()} onCancel={() => setExportModalOpen(false)}>
+      <Modal title="导出" open={exportModalOpen} okText="选择路径并导出" cancelText="取消" confirmLoading={exportLoading} onOk={() => void runExport()} onCancel={() => setExportModalOpen(false)} maskClosable={false}>
         <Space direction="vertical" className="full-width">
           <Typography.Text><Typography.Text strong>连接：</Typography.Text>{getConnection(exportConnectionId)?.name}</Typography.Text>
           <Typography.Text><Typography.Text strong>范围：</Typography.Text>{exportScope === 'table' ? `表 ${exportTable}` : exportScope === 'schema' ? `模式 ${exportPgDatabase}` : `数据库 ${exportDatabase || '默认'}`}</Typography.Text>
@@ -4474,7 +4476,7 @@ function App(): React.JSX.Element {
           {exportFormat === 'sql' && <Alert type="info" message="SQL 导出用于迁移或查看，可选择仅结构、仅数据或结构+数据；完整可恢复请使用备份。" showIcon />}
         </Space>
       </Modal>
-      <Modal title="导入" open={importModalOpen} okText="导入" cancelText="取消" confirmLoading={importLoading} onOk={() => void runImport()} onCancel={() => setImportModalOpen(false)} okButtonProps={{ disabled: !importPath }}>
+      <Modal title="导入" open={importModalOpen} okText="导入" cancelText="取消" confirmLoading={importLoading} onOk={() => void runImport()} onCancel={() => setImportModalOpen(false)} okButtonProps={{ disabled: !importPath }} maskClosable={false}>
         <Space direction="vertical" className="full-width">
           <Typography.Text><Typography.Text strong>连接：</Typography.Text>{getConnection(importConnectionId)?.name}</Typography.Text>
           <Typography.Text><Typography.Text strong>目标：</Typography.Text>{importTable ? `表 ${importTable}` : importPgDatabase ? `模式 ${importPgDatabase}` : `数据库 ${importDatabase || '默认'}`}</Typography.Text>

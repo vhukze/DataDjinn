@@ -10,6 +10,9 @@ backend/.venv
 backend/build
 backend/dist
 backend/__pycache__
+backend/vendor/jpype15.json
+backend/vendor/jpype15-build-*/
+backend/vendor/jpype15-old-*/
 *.pyc
 *.spec
 

@@ -1,10 +1,37 @@
+import json
 import os
 import sys
 from pathlib import Path
 
-VENDORED_JPYPE_PATH = Path(__file__).resolve().parent / "vendor" / "jpype15"
-if VENDORED_JPYPE_PATH.exists():
-    sys.path.insert(0, str(VENDORED_JPYPE_PATH))
+BACKEND_DIR = Path(__file__).resolve().parent
+VENDORED_JPYPE_PATH = BACKEND_DIR / "vendor" / "jpype15"
+VENDORED_JPYPE_MANIFEST = BACKEND_DIR / "vendor" / "jpype15.json"
+
+
+def _is_complete_vendored_jpype_path(vendor_path: Path) -> bool:
+    return (
+        (vendor_path / "jpype" / "__init__.py").exists()
+        and (vendor_path / "org.jpype.jar").exists()
+        and (any(vendor_path.glob("_jpype*.pyd")) or any(vendor_path.glob("_jpype*.so")))
+    )
+
+
+def _resolve_vendored_jpype_path() -> Path:
+    if VENDORED_JPYPE_MANIFEST.exists():
+        try:
+            manifest = json.loads(VENDORED_JPYPE_MANIFEST.read_text(encoding="utf-8"))
+            manifest_vendor_path = Path(manifest.get("vendor_dir", ""))
+            if _is_complete_vendored_jpype_path(manifest_vendor_path):
+                return manifest_vendor_path
+        except (OSError, json.JSONDecodeError, TypeError):
+            pass
+
+    return VENDORED_JPYPE_PATH
+
+
+vendored_jpype_path = _resolve_vendored_jpype_path()
+if _is_complete_vendored_jpype_path(vendored_jpype_path):
+    sys.path.insert(0, str(vendored_jpype_path))
 
 import uvicorn
 

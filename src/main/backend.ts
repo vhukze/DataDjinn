@@ -3,7 +3,7 @@ import { is } from '@electron-toolkit/utils'
 import { ChildProcessWithoutNullStreams, spawn } from 'child_process'
 import { createWriteStream, existsSync, mkdirSync } from 'fs'
 import { get } from 'http'
-import { join } from 'path'
+import { dirname, join } from 'path'
 import { AddressInfo, createServer } from 'net'
 
 export type BackendState = 'starting' | 'online' | 'failed' | 'stopped' | 'crashed'
@@ -24,6 +24,13 @@ const REQUEST_RECOVERY_HEALTH_TIMEOUT_MS = 8000
 const MAX_RESTART_ATTEMPTS = 5
 const RESTART_BASE_DELAY_MS = 1000
 const RESTART_MAX_DELAY_MS = 10000
+
+type BackendCommand = {
+  command: string
+  args: string[]
+  cwd: string
+  checkedPaths?: string[]
+}
 
 export class BackendManager {
   private process: ChildProcessWithoutNullStreams | null = null
@@ -154,7 +161,12 @@ export class BackendManager {
     const command = this.getBackendCommand()
 
     if (!existsSync(command.command)) {
-      this.setStatus({ state: 'failed', apiBaseUrl, message: `后端启动文件不存在：${command.command}`, logPath })
+      this.setStatus({
+        state: 'failed',
+        apiBaseUrl,
+        message: `后端启动文件不存在：${command.command}。${describeBackendLookup(command.checkedPaths ?? [command.command])}`,
+        logPath
+      })
       return this.getStatus()
     }
 
@@ -268,7 +280,7 @@ export class BackendManager {
     }
   }
 
-  private getBackendCommand(): { command: string; args: string[]; cwd: string } {
+  private getBackendCommand(): BackendCommand {
     if (is.dev) {
       const backendDir = join(process.cwd(), 'backend')
       return {
@@ -278,12 +290,24 @@ export class BackendManager {
       }
     }
 
-    const backendDir = join(process.resourcesPath, 'backend')
+    const candidates = this.getPackagedBackendCandidates()
+    const command = candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]
     return {
-      command: join(backendDir, 'datadjinn-backend.exe'),
+      command,
       args: [],
-      cwd: backendDir
+      cwd: dirname(command),
+      checkedPaths: candidates
     }
+  }
+
+  private getPackagedBackendCandidates(): string[] {
+    const backendDir = join(process.resourcesPath, 'backend')
+    return [
+      join(backendDir, 'datadjinn-backend.exe'),
+      join(backendDir, 'datadjinn-backend', 'datadjinn-backend.exe'),
+      join(backendDir, 'DataDjinnBackend', 'datadjinn-backend.exe'),
+      join(process.resourcesPath, 'DataDjinnBackend', 'datadjinn-backend.exe')
+    ]
   }
 
   private getLogPath(): string {
@@ -336,5 +360,10 @@ const getFreePort = (): Promise<number> =>
     })
     server.on('error', reject)
   })
+
+const describeBackendLookup = (paths: string[]): string => {
+  const checkedPaths = Array.from(new Set(paths))
+  return `已检查候选路径：${checkedPaths.join('；')}`
+}
 
 export const backendManager = new BackendManager()
