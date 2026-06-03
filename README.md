@@ -23,7 +23,7 @@ DataDjinn 是一款**跨时代**的本地数据库桌面客户端，将传统数
 ### 核心能力
 
 - 🧠 **AI 对话式数据库操作** —— 接入任意 OpenAI 兼容 API，AI 深度理解 Schema 上下文，支持自然语言查数据、建表、修改表结构
-- 🔗 **多数据库支持** —— SQLite / MySQL / PostgreSQL / 达梦 DM / MongoDB / Redis
+- 🔗 **多数据库支持** —— SQLite / MySQL / PostgreSQL / 达梦 DM / MongoDB / Redis / ClickHouse
 - ✍️ **专业 SQL / 命令编辑器** —— 基于 Monaco Editor，支持 SQL、MongoDB Shell 风格语句和 Redis 常用命令补全，多标签页并行工作
 - 🧭 **连接树与数据预览** —— 支持连接、库、模式、表、视图、MongoDB 集合和 Redis DB 浏览；表格预览支持 WHERE 过滤、分页、行列选择、列顺序拖拽和单元格编辑
 - 🧰 **Redis Key 管理** —— 支持 Redis DB 勾选浏览、Key 列表查看、String / Hash / List / Set / ZSet 新增编辑删除和统一提交
@@ -63,6 +63,7 @@ DataDjinn 是一款**跨时代**的本地数据库桌面客户端，将传统数
 | **达梦 DM** | 外部 JDBC jar / dmPython pyd / dmPython whl 驱动 | 国产数据库，支持 DM8；可在驱动管理中添加驱动，并在连接信息中选择指定驱动，默认打包不内置达梦 DLL |
 | **MongoDB** | PyMongo | 支持连接、数据库/集合浏览、字段推断、集合预览、只读查询、创建集合、插入测试数据和 JSON 导出 |
 | **Redis** | redis-py | 支持连接、DB 勾选浏览、Key 列表、String / Hash / List / Set / ZSet 新增编辑删除、常用命令执行和 JSON 导出 |
+| **ClickHouse** | clickhouse-connect | 支持连接、数据库/表浏览、只读查询、表结构查看和 SQL 执行 |
 
 ---
 
@@ -115,7 +116,7 @@ Redis / MongoDB 导出为 JSON，适合迁移前留档、人工检查或和其�
 - `DataDjinn-x.x.x-setup.exe` —— NSIS 安装包（推荐）
 - `DataDjinn-x.x.x-win.zip` —— 解压即用版
 
-当前最新版本：`v0.1.7`。
+当前最新版本：`v0.1.10`。
 
 解压版无需安装，解压后双击 `DataDjinn.exe` 即可运行。已内置 Python 运行时和所有后端依赖，无需额外安装任何环境。
 
