@@ -1893,9 +1893,6 @@ function App(): React.JSX.Element {
       return node.title as React.ReactNode
     }
 
-    const connectionId = node.connectionId
-    const databaseName = node.databaseName
-    const pgDbName = node.pgDatabaseName
     return (
       <Flex align="center" justify="space-between" className="tree-title-with-size">
         <span className="table-tree-title">
