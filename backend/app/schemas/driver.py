@@ -2,7 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-DriverDatabaseType = Literal["dm"]
+DriverDatabaseType = Literal["dm", "gaussdb"]
 DriverType = Literal["jdbc", "python", "whl"]
 DriverSource = Literal["auto", "manual"]
 
@@ -15,7 +15,6 @@ class DriverInfo(BaseModel):
     source: DriverSource = "manual"
     enabled: bool = True
     path: str | None = None
-    java_home: str | None = None
 
 
 class DriverListResponse(BaseModel):
@@ -27,7 +26,6 @@ class DriverCreateRequest(BaseModel):
     driver_type: DriverType
     name: str = Field(min_length=1, max_length=120)
     path: str | None = None
-    java_home: str | None = None
     enabled: bool = True
 
 
@@ -58,3 +56,17 @@ class JavaRuntimeInfo(BaseModel):
 class JavaDetectResponse(BaseModel):
     runtimes: list[JavaRuntimeInfo]
     preferred: str | None = None
+    configured: str | None = None
+    enabled: bool = False
+
+
+class JavaRuntimeConfigRequest(BaseModel):
+    java_home: str | None = None
+    enabled: bool = False
+
+
+class JavaRuntimeConfigResponse(BaseModel):
+    java_home: str | None = None
+    major: int | None = None
+    jvm_path: str | None = None
+    enabled: bool = False

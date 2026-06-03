@@ -15,6 +15,62 @@ PG_SYSTEM_SCHEMAS = {"pg_catalog", "information_schema"}
 DM_SYSTEM_SCHEMAS = {"SYS", "SYSDBA", "SYSAUDITOR", "SYSSSO", "CTISYS"}
 
 
+def _is_clickhouse_engine(engine: Engine) -> bool:
+    return engine.dialect.name in {"clickhouse", "clickhousedb"}
+
+
+def _dm_current_user(connection: Any) -> str:
+    row = connection.execute(text("SELECT USER FROM DUAL")).fetchone()
+    return str(row[0]).upper() if row and row[0] is not None else "SYSDBA"
+
+
+def _dm_owner_segment_sizes(connection: Any, current_user: str) -> dict[str, int]:
+    for sql, params in [
+        ("SELECT OWNER, COALESCE(SUM(BYTES), 0) FROM ALL_SEGMENTS GROUP BY OWNER", {}),
+        ("SELECT OWNER, COALESCE(SUM(BYTES), 0) FROM DBA_SEGMENTS GROUP BY OWNER", {}),
+        ("SELECT :owner, COALESCE(SUM(BYTES), 0) FROM USER_SEGMENTS", {"owner": current_user}),
+    ]:
+        try:
+            rows = connection.execute(text(sql), params).fetchall()
+            return {str(row[0]).upper(): int(row[1] or 0) for row in rows}
+        except Exception:
+            try:
+                connection.rollback()
+            except Exception:
+                pass
+            continue
+    return {}
+
+
+def _dm_table_segment_sizes(connection: Any, schema_name: str, current_user: str) -> dict[str, int]:
+    queries = [
+        (
+            "SELECT SEGMENT_NAME, COALESCE(SUM(BYTES), 0) FROM ALL_SEGMENTS "
+            "WHERE OWNER = :schema_name GROUP BY SEGMENT_NAME",
+            {"schema_name": schema_name},
+        ),
+        (
+            "SELECT SEGMENT_NAME, COALESCE(SUM(BYTES), 0) FROM DBA_SEGMENTS "
+            "WHERE OWNER = :schema_name GROUP BY SEGMENT_NAME",
+            {"schema_name": schema_name},
+        ),
+    ]
+    if schema_name == current_user:
+        queries.append(("SELECT SEGMENT_NAME, COALESCE(SUM(BYTES), 0) FROM USER_SEGMENTS GROUP BY SEGMENT_NAME", {}))
+
+    for sql, params in queries:
+        try:
+            rows = connection.execute(text(sql), params).fetchall()
+            return {str(row[0]).upper(): int(row[1] or 0) for row in rows}
+        except Exception:
+            try:
+                connection.rollback()
+            except Exception:
+                pass
+            continue
+    return {}
+
+
 def format_size(size_bytes: int | None) -> str | None:
     if size_bytes is None:
         return None
@@ -26,6 +82,30 @@ def format_size(size_bytes: int | None) -> str | None:
         value /= 1024
 
     return f"{value:.1f}G"
+
+
+def _db_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+
+    if hasattr(value, "getSubString") and hasattr(value, "length"):
+        try:
+            return str(value.getSubString(1, int(value.length())))
+        except Exception:
+            pass
+
+    if hasattr(value, "read"):
+        try:
+            content = value.read()
+            return _db_text(content)
+        except Exception:
+            pass
+
+    return str(value)
 
 
 def _pg_engine(engine: Engine, database_name: str) -> Engine:
@@ -125,18 +205,31 @@ def list_databases(engine: Engine) -> list[DatabaseInfo]:
             for row in rows
         ]
 
-    if engine.dialect.name in {"dm", "dmPython"}:
+    if _is_clickhouse_engine(engine):
         with engine.connect() as connection:
             rows = connection.execute(
                 text(
-                    "SELECT u.USERNAME, COALESCE(SUM(s.BYTES), 0) AS SIZE_BYTES "
-                    "FROM ALL_USERS u "
-                    "LEFT JOIN DBA_SEGMENTS s ON s.OWNER = u.USERNAME "
-                    "WHERE u.USERNAME = USER OR u.USERNAME IN (SELECT DISTINCT OWNER FROM ALL_TABLES) "
-                    "GROUP BY u.USERNAME "
-                    "ORDER BY CASE WHEN u.USERNAME = USER THEN 0 ELSE 1 END, u.USERNAME"
+                    "SELECT d.name, COALESCE(SUM(t.total_bytes), 0) AS storage_size_bytes "
+                    "FROM system.databases d LEFT JOIN system.tables t ON t.database = d.name "
+                    "WHERE d.name NOT IN ('system', 'INFORMATION_SCHEMA', 'information_schema') "
+                    "GROUP BY d.name ORDER BY d.name"
                 )
             ).fetchall()
+        return [
+            DatabaseInfo(
+                name=str(row[0]),
+                size_bytes=int(row[1] or 0),
+                size_display=format_size(int(row[1] or 0)),
+                storage_size_bytes=int(row[1] or 0),
+                storage_size_display=format_size(int(row[1] or 0)),
+            )
+            for row in rows
+        ]
+
+    if engine.dialect.name in {"dm", "dmPython"}:
+        with engine.connect() as connection:
+            current_user = _dm_current_user(connection)
+            owner_sizes = _dm_owner_segment_sizes(connection, current_user)
             schema_rows = []
             for schema_sql in [
                 "SELECT NAME FROM SYSOBJECTS WHERE TYPE$ = 'SCH' ORDER BY NAME",
@@ -151,20 +244,20 @@ def list_databases(engine: Engine) -> list[DatabaseInfo]:
                     continue
 
         database_map = {
-            str(row[0]): DatabaseInfo(
-                name=str(row[0]),
-                size_bytes=int(row[1] or 0),
-                size_display=format_size(int(row[1] or 0)),
-                storage_size_bytes=int(row[1] or 0),
-                storage_size_display=format_size(int(row[1] or 0)),
+            owner: DatabaseInfo(
+                name=owner,
+                size_bytes=size_bytes,
+                size_display=format_size(size_bytes),
+                storage_size_bytes=size_bytes,
+                storage_size_display=format_size(size_bytes),
             )
-            for row in rows
+            for owner, size_bytes in owner_sizes.items()
         }
         for row in schema_rows:
-            schema_name = str(row[0])
+            schema_name = str(row[0]).upper()
             if schema_name not in database_map:
                 database_map[schema_name] = DatabaseInfo(name=schema_name)
-        return list(database_map.values())
+        return sorted(database_map.values(), key=lambda item: (item.name != current_user, item.name))
 
     return [DatabaseInfo(name="main")]
 
@@ -240,6 +333,12 @@ def create_database(engine: Engine, database_name: str) -> DatabaseInfo:
             connection.execute(text(f"CREATE SCHEMA {quoted}"))
         return DatabaseInfo(name=schema_name)
 
+    if _is_clickhouse_engine(engine):
+        quoted = engine.dialect.identifier_preparer.quote(database_name)
+        with engine.begin() as connection:
+            connection.execute(text(f"CREATE DATABASE {quoted}"))
+        return DatabaseInfo(name=str(database_name))
+
     if engine.dialect.name not in {"mysql", "postgresql"}:
         raise ValueError("SQLite 请通过新增文件连接创建数据库")
 
@@ -276,6 +375,11 @@ def drop_database(engine: Engine, database_name: str) -> None:
         return
 
     if engine.dialect.name == "mysql":
+        with engine.begin() as connection:
+            connection.execute(text(f"DROP DATABASE {engine.dialect.identifier_preparer.quote(database_name)}"))
+        return
+
+    if _is_clickhouse_engine(engine):
         with engine.begin() as connection:
             connection.execute(text(f"DROP DATABASE {engine.dialect.identifier_preparer.quote(database_name)}"))
         return
@@ -418,15 +522,38 @@ def list_tables(engine: Engine, database_name: str | None = None, pg_database: s
             for row in rows
         ]
 
-    if engine.dialect.name in {"dm", "dmPython"}:
-        schema_name = database_name or engine.url.username.upper() or "SYSDBA"
-
+    if _is_clickhouse_engine(engine):
+        target_db = database_name or engine.url.database or "default"
         with engine.connect() as connection:
             rows = connection.execute(
                 text(
-                    "SELECT t.TABLE_NAME, COALESCE(t.NUM_ROWS, 0) AS ROW_COUNT, COALESCE(SUM(s.BYTES), 0) AS STORAGE_SIZE_BYTES "
-                    "FROM ALL_TABLES t LEFT JOIN DBA_SEGMENTS s ON s.OWNER = t.OWNER AND s.SEGMENT_NAME = t.TABLE_NAME "
-                    "WHERE t.OWNER = :schema_name GROUP BY t.TABLE_NAME, t.NUM_ROWS ORDER BY t.TABLE_NAME"
+                    "SELECT name, COALESCE(total_rows, 0) AS row_count, COALESCE(total_bytes, 0) AS storage_size_bytes "
+                    "FROM system.tables WHERE database = :database_name AND is_temporary = 0 AND engine NOT LIKE '%View' ORDER BY name"
+                ),
+                {"database_name": target_db},
+            ).fetchall()
+        return [
+            TableInfo(
+                name=str(row[0]),
+                row_count=int(row[1] or 0),
+                size_bytes=int(row[2] or 0),
+                size_display=format_size(int(row[2] or 0)),
+                storage_size_bytes=int(row[2] or 0),
+                storage_size_display=format_size(int(row[2] or 0)),
+            )
+            for row in rows
+        ]
+
+    if engine.dialect.name in {"dm", "dmPython"}:
+        schema_name = (database_name or engine.url.username or "SYSDBA").upper()
+
+        with engine.connect() as connection:
+            current_user = _dm_current_user(connection)
+            segment_sizes = _dm_table_segment_sizes(connection, schema_name, current_user)
+            rows = connection.execute(
+                text(
+                    "SELECT t.TABLE_NAME, COALESCE(t.NUM_ROWS, 0) AS ROW_COUNT "
+                    "FROM ALL_TABLES t WHERE t.OWNER = :schema_name ORDER BY t.TABLE_NAME"
                 ),
                 {"schema_name": schema_name},
             ).fetchall()
@@ -435,10 +562,10 @@ def list_tables(engine: Engine, database_name: str | None = None, pg_database: s
             TableInfo(
                 name=str(row[0]),
                 row_count=int(row[1] or 0),
-                size_bytes=0 if int(row[1] or 0) == 0 else int(row[2] or 0),
-                size_display=format_size(0 if int(row[1] or 0) == 0 else int(row[2] or 0)),
-                storage_size_bytes=int(row[2] or 0),
-                storage_size_display=format_size(int(row[2] or 0)),
+                size_bytes=segment_sizes.get(str(row[0]).upper(), 0),
+                size_display=format_size(segment_sizes.get(str(row[0]).upper(), 0)),
+                storage_size_bytes=segment_sizes.get(str(row[0]).upper(), 0),
+                storage_size_display=format_size(segment_sizes.get(str(row[0]).upper(), 0)),
             )
             for row in rows
         ]
@@ -511,6 +638,17 @@ def list_db_objects(engine: Engine, database_name: str | None = None, pg_databas
                 objects.extend(DbObjectInfo(name=str(row[0]), type="index") for row in rows)
         return objects
 
+    if _is_clickhouse_engine(engine):
+        target_db = database_name or engine.url.database or "default"
+        if object_type in {None, "view"}:
+            with engine.connect() as connection:
+                rows = connection.execute(
+                    text("SELECT name FROM system.tables WHERE database = :database_name AND engine LIKE '%View' ORDER BY name"),
+                    {"database_name": target_db},
+                ).fetchall()
+                objects.extend(DbObjectInfo(name=str(row[0]), type="view") for row in rows)
+        return objects
+
     if engine.dialect.name in {"dm", "dmPython"}:
         target_schema = (schema_name or engine.url.username or "SYSDBA").upper()
         with engine.connect() as connection:
@@ -575,6 +713,18 @@ def list_columns(engine: Engine, table_name: str, database_name: str | None = No
     if pg_database and engine.dialect.name == "postgresql":
         engine = _pg_engine(engine, pg_database)
 
+    if _is_clickhouse_engine(engine):
+        target_db = database_name or engine.url.database or "default"
+        with engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT name, type, COALESCE(is_in_sorting_key, 0) AS primary_key "
+                    "FROM system.columns WHERE database = :database_name AND table = :table_name ORDER BY position"
+                ),
+                {"database_name": target_db, "table_name": table_name},
+            ).fetchall()
+        return [ColumnInfo(name=str(row[0]), type=str(row[1]), nullable="Nullable(" in str(row[1]), primary_key=bool(row[2])) for row in rows]
+
     if engine.dialect.name in {"dm", "dmPython"}:
         schema_name = database_name or engine.url.username.upper() or "SYSDBA"
 
@@ -622,6 +772,8 @@ def list_columns(engine: Engine, table_name: str, database_name: str | None = No
 
 
 def get_object_ddl(engine: Engine, object_name: str, object_type: str, database_name: str | None = None, pg_database: str | None = None) -> str:
+    object_type = object_type.strip().lower()
+
     if is_mongo_client(engine):
         if object_type != "table":
             raise ValueError("MongoDB 当前仅支持查看集合信息")
@@ -726,15 +878,32 @@ def get_object_ddl(engine: Engine, object_name: str, object_type: str, database_
                 return row[0] if row else ""
         raise ValueError("当前对象类型不支持查看 DDL")
 
+    if _is_clickhouse_engine(engine):
+        if object_type not in {"table", "view"}:
+            raise ValueError("当前对象类型不支持查看 DDL")
+        target_db = database_name or engine.url.database or "default"
+        quoted_object = _quote_table(preparer, object_name, target_db)
+        with engine.connect() as connection:
+            row = connection.execute(text(f"SHOW CREATE TABLE {quoted_object}")).fetchone()
+            return _db_text(row[0]).strip() if row and row[0] is not None else ""
+
     if engine.dialect.name in {"dm", "dmPython"}:
         schema_name = (database_name or engine.url.username or "SYSDBA").upper()
         object_upper = object_name.upper()
+        dm_object_types = {
+            "table": "TABLE",
+            "view": "VIEW",
+            "trigger": "TRIGGER",
+            "procedure": "PROCEDURE",
+            "function": "FUNCTION",
+        }
+        object_kind = dm_object_types.get(object_type)
+        if not object_kind:
+            raise ValueError("当前对象类型不支持查看 DDL")
+
         with engine.connect() as connection:
-            if object_type in {"table", "view", "procedure", "function"}:
-                object_kind = object_type.upper()
-                row = connection.execute(text("SELECT DBMS_METADATA.GET_DDL(:type, :name, :schema) FROM DUAL"), {"type": object_kind, "name": object_upper, "schema": schema_name}).fetchone()
-                return str(row[0]) if row and row[0] is not None else ""
-        raise ValueError("当前对象类型不支持查看 DDL")
+            row = connection.execute(text("SELECT DBMS_METADATA.GET_DDL(:type, :name, :schema) FROM DUAL"), {"type": object_kind, "name": object_upper, "schema": schema_name}).fetchone()
+            return _db_text(row[0]).strip() if row and row[0] is not None else ""
 
     if engine.dialect.name == "sqlite":
         sqlite_type = "table" if object_type == "table" else object_type

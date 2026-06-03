@@ -21,7 +21,12 @@ def _driver_store_path() -> Path:
     return _driver_data_dir() / "drivers.json"
 
 
+def _jdbc_runtime_store_path() -> Path:
+    return _driver_data_dir() / "jdbc_runtime.json"
+
+
 DRIVER_STORE_PATH = _driver_store_path()
+JDBC_RUNTIME_STORE_PATH = _jdbc_runtime_store_path()
 
 
 def _validate_whl_compatibility(path: Path) -> None:
@@ -62,7 +67,45 @@ class DriverManager:
     def get_driver(self, driver_id: str) -> DriverInfo | None:
         return self._drivers.get(driver_id)
 
+    def get_jdbc_runtime_config(self) -> tuple[bool, str | None]:
+        if not JDBC_RUNTIME_STORE_PATH.exists():
+            return False, None
+
+        try:
+            data = json.loads(JDBC_RUNTIME_STORE_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False, None
+
+        java_home = data.get("java_home")
+        return bool(data.get("enabled", False)), str(java_home) if java_home else None
+
+    def is_jdbc_java_enabled(self) -> bool:
+        enabled, _ = self.get_jdbc_runtime_config()
+        return enabled
+
+    def get_jdbc_java_home(self) -> str | None:
+        _, java_home = self.get_jdbc_runtime_config()
+        return java_home
+
+    def set_jdbc_java_config(self, enabled: bool, java_home: str | None) -> tuple[Path | None, int | None, Path | None, bool]:
+        home = None
+        major = None
+        jvm_dll = None
+
+        if enabled:
+            if not java_home:
+                raise ValueError("开启 JDBC Java 环境前请选择 Java 目录")
+            home, major, jvm_dll = validate_java_home(java_home)
+        elif java_home:
+            home = Path(java_home).expanduser().resolve()
+
+        JDBC_RUNTIME_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        JDBC_RUNTIME_STORE_PATH.write_text(json.dumps({"enabled": enabled, "java_home": str(home) if home else None}, ensure_ascii=False, indent=2), encoding="utf-8")
+        return home, major, jvm_dll, enabled
+
     def add_driver(self, request: DriverCreateRequest, source: str = "manual") -> DriverInfo:
+        if request.database_type == "gaussdb" and request.driver_type != "jdbc":
+            raise ValueError("高斯数据库当前仅预留 JDBC jar 驱动配置")
         if request.driver_type in {"python", "jdbc", "whl"} and not request.path:
             raise ValueError("请选择驱动文件")
 
@@ -80,10 +123,6 @@ class DriverManager:
                     raise ValueError("达梦 whl 驱动请选择 .whl 文件")
                 _validate_whl_compatibility(path)
 
-        java_home = None
-        if request.driver_type == "jdbc" and request.java_home:
-            java_home = str(validate_java_home(request.java_home)[0])
-
         driver = DriverInfo(
             id=uuid4().hex,
             database_type=request.database_type,
@@ -92,7 +131,6 @@ class DriverManager:
             source=source,
             enabled=request.enabled,
             path=driver_path,
-            java_home=java_home,
         )
         self._drivers[driver.id] = driver
         self._save_drivers()
@@ -137,8 +175,6 @@ class DriverManager:
             raise ValueError("JDBC 驱动请选择 .jar 文件")
         if driver.driver_type == "whl" and path.suffix.lower() != ".whl":
             raise ValueError("达梦 whl 驱动请选择 .whl 文件")
-        if driver.driver_type == "jdbc" and driver.java_home:
-            validate_java_home(driver.java_home)
 
     def _load_drivers(self) -> None:
         if not DRIVER_STORE_PATH.exists():

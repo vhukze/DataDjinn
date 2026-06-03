@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 from sqlalchemy import Engine, URL, create_engine, text
+from sqlalchemy.dialects import registry
 from sqlalchemy.engine import default
 from sqlalchemy.engine.interfaces import BindTyping
 from sqlalchemy.pool import QueuePool
@@ -24,6 +25,31 @@ from app.db import java_runtime
 from app.db.mongo_utils import MongoClient, is_mongo_client
 from app.db.redis_utils import Redis, is_redis_client
 from app.schemas.connection import ConnectionInfo, ConnectionRequest, DatabaseType
+
+
+def _is_clickhouse_engine(engine: Any) -> bool:
+    return getattr(getattr(engine, "dialect", None), "name", "") in {"clickhouse", "clickhousedb"}
+
+
+def _ensure_clickhouse_dialect_registered() -> None:
+    try:
+        registry.load("clickhousedb")
+        return
+    except Exception:
+        pass
+
+    try:
+        __import__("clickhouse_connect.cc_sqlalchemy.dialect")
+    except ImportError as exc:
+        raise RuntimeError("缺少 ClickHouse SQLAlchemy 方言模块 clickhouse_connect.cc_sqlalchemy.dialect") from exc
+
+    registry.register("clickhousedb", "clickhouse_connect.cc_sqlalchemy.dialect", "ClickHouseDialect")
+
+    try:
+        registry.load("clickhousedb")
+    except Exception as exc:
+        raise RuntimeError(f"ClickHouse SQLAlchemy 方言注册失败：{exc}") from exc
+
 
 def _data_dir() -> Path:
     data_dir = os.environ.get("DATADJINN_DATA_DIR")
@@ -646,6 +672,9 @@ class ConnectionManager:
         if request.database_type == "redis":
             return self._create_redis_client(request)
 
+        if request.database_type == "clickhouse":
+            return self._create_clickhouse_engine(request)
+
         raise ValueError("不支持的数据库类型")
 
     def _create_sqlite_engine(self, request: ConnectionRequest) -> Engine:
@@ -746,6 +775,24 @@ class ConnectionManager:
             health_check_interval=0,
         )
 
+    def _create_clickhouse_engine(self, request: ConnectionRequest) -> Engine:
+        if not request.host:
+            raise ValueError("ClickHouse 主机不能为空")
+        if not request.port:
+            raise ValueError("ClickHouse 端口不能为空")
+
+        _ensure_clickhouse_dialect_registered()
+
+        url = URL.create(
+            "clickhousedb",
+            username=request.username or "default",
+            password=request.password or "",
+            host=request.host,
+            port=request.port,
+            database=request.database or "default",
+        )
+        return create_engine(url, pool_pre_ping=True)
+
     def _create_dm_engine(self, request: ConnectionRequest) -> Engine:
         if not request.host:
             raise ValueError("达梦主机不能为空")
@@ -781,14 +828,18 @@ class ConnectionManager:
             return create_engine(url, creator=connect, pool_pre_ping=True)
 
         if driver and driver.driver_type == "jdbc" and driver.path:
+            java_enabled, java_home = driver_manager.get_jdbc_runtime_config()
+            if not java_enabled or not java_home:
+                raise RuntimeError("JDBC Java 环境未开启或未配置，请先在驱动管理中开启并配置全局 JDBC Java 环境")
+
             jdbc_path = _resolve_runtime_path(driver.path)
             if not jdbc_path.exists():
                 raise RuntimeError(f"达梦 JDBC 驱动文件不存在：{jdbc_path}")
 
             required_java_major = java_runtime.required_java_major_from_jar(jdbc_path)
-            jvm_path = java_runtime.prepare_jdbc_runtime(required_java_major, driver.java_home)
+            jvm_path = java_runtime.prepare_jdbc_runtime(required_java_major, java_home)
             if jvm_path is None:
-                raise RuntimeError("未找到可用的 Java JVM，请先安装 64 位 JDK/JRE，并确认 JAVA_HOME 指向有效目录，或将 java.exe 所在目录配置到系统 Path")
+                raise RuntimeError("未找到可用的 Java JVM，请先在驱动管理中配置全局 JDBC Java 环境")
 
             jdbc_url = f"jdbc:dm://{request.host}:{request.port}"
 
@@ -831,7 +882,18 @@ class ConnectionManager:
             except Exception:
                 return None
 
-        if is_mongo_client(engine) or engine.dialect.name not in {"dm", "dmPython"}:
+        if is_mongo_client(engine):
+            return None
+
+        if _is_clickhouse_engine(engine):
+            try:
+                with engine.connect() as connection:
+                    version = connection.execute(text("SELECT version()")).scalar()
+                    return str(version) if version is not None else None
+            except Exception:
+                return None
+
+        if engine.dialect.name not in {"dm", "dmPython"}:
             return None
 
         sql_candidates = [
@@ -893,6 +955,9 @@ class ConnectionManager:
 
         if request.database_type == "redis":
             return f"db{request.database or 0}@{request.host}:{request.port}"
+
+        if request.database_type == "clickhouse":
+            return f"{request.database or 'default'}@{request.host}:{request.port}"
 
         return request.database or f"{request.host}:{request.port}"
 

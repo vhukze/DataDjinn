@@ -6,6 +6,7 @@ import {
   FileAddOutlined,
   FilterOutlined,
   FunctionOutlined,
+  GithubOutlined,
   MessageOutlined,
   EditOutlined,
   DeleteOutlined,
@@ -38,6 +39,7 @@ import {
   Input,
   InputNumber,
   Layout,
+  Menu,
   Modal,
   Popover,
   Progress,
@@ -53,11 +55,12 @@ import {
   Typography,
   message
 } from 'antd'
+import type { MenuProps } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { DataNode } from 'antd/es/tree'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
-import { useEffect, useRef, useState } from 'react'
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTheme } from './context/ThemeContext'
 import AIPanel from './components/AIPanel'
 import SqlEditor from './components/SqlEditor'
@@ -68,7 +71,9 @@ import sqliteIcon from './assets/icons/sqllite.png'
 import dmIcon from './assets/icons/dm.svg'
 import mongoIcon from './assets/icons/mongo.png'
 import redisIcon from './assets/icons/redis.png'
+import clickhouseIcon from './assets/icons/clickhouse.png'
 import appIcon from '../../../resources/icon.svg'
+import appLogoHorizontal from '../../../resources/logo-horizontal.svg'
 
 type BackendStatus = {
   state: 'starting' | 'online' | 'failed' | 'stopped' | 'crashed'
@@ -142,7 +147,7 @@ const PREVIEW_DEFAULT_LIMIT = 300
 const QUERY_DEFAULT_LIMIT = 1000
 const REDIS_DEFAULT_LIMIT = 500
 
-type DatabaseType = 'sqlite' | 'mysql' | 'postgresql' | 'dm' | 'mongodb' | 'redis'
+type DatabaseType = 'sqlite' | 'mysql' | 'postgresql' | 'dm' | 'mongodb' | 'redis' | 'clickhouse'
 type WorkspaceTabKind = 'preview' | 'query' | 'redis-browser'
 
 type HealthStatus = {
@@ -179,23 +184,25 @@ type ConnectionTestResponse = {
   message: string
 }
 
+type DriverDatabaseType = 'dm' | 'gaussdb'
+
+type DriverType = 'jdbc' | 'python' | 'whl'
+
 type DriverInfo = {
   id: string
-  database_type: 'dm'
-  driver_type: 'jdbc' | 'python' | 'whl'
+  database_type: DriverDatabaseType
+  driver_type: DriverType
   name: string
   source: 'auto' | 'manual'
   enabled: boolean
   path?: string | null
-  java_home?: string | null
 }
 
 type DriverFormValues = {
-  database_type: 'dm'
-  driver_type: 'jdbc' | 'python' | 'whl'
+  database_type: DriverDatabaseType
+  driver_type: DriverType
   name: string
   path?: string
-  java_home?: string
   enabled: boolean
 }
 
@@ -208,7 +215,24 @@ type JavaRuntimeInfo = {
 type JavaDetectResponse = {
   runtimes: JavaRuntimeInfo[]
   preferred?: string | null
+  configured?: string | null
+  enabled: boolean
 }
+
+type JavaRuntimeConfigResponse = {
+  java_home?: string | null
+  major?: number | null
+  jvm_path?: string | null
+  enabled: boolean
+}
+
+type AppInfo = {
+  name: string
+  version: string
+  projectUrl: string
+}
+
+type SettingsSection = 'app' | 'drivers'
 
 type UpdateMode = 'installer' | 'portable'
 
@@ -385,6 +409,7 @@ const DB_OBJECT_TYPES_BY_DATABASE: Record<DatabaseType, DbObjectType[]> = {
   mysql: ['table', 'view', 'trigger', 'procedure', 'function', 'index'],
   postgresql: ['table', 'view', 'trigger', 'procedure', 'function', 'sequence', 'index'],
   dm: ['table', 'view', 'trigger', 'procedure', 'function', 'sequence', 'index'],
+  clickhouse: ['table', 'view'],
   mongodb: ['table'],
   redis: ['table']
 }
@@ -433,6 +458,7 @@ type DatabaseTreeNode = DataNode & {
   nullable?: boolean
   primaryKey?: boolean
   closed?: boolean
+  childrenLoaded?: boolean
   children?: DatabaseTreeNode[]
 }
 
@@ -541,6 +567,7 @@ function App(): React.JSX.Element {
   const [form] = Form.useForm<ConnectionFormValues>()
   const [driverForm] = Form.useForm<DriverFormValues>()
   const databaseType = Form.useWatch('database_type', form) ?? 'sqlite'
+  const driverDatabaseType = Form.useWatch('database_type', driverForm) ?? 'dm'
   const driverType = Form.useWatch('driver_type', driverForm) ?? 'jdbc'
   const [messageApi, contextHolder] = message.useMessage()
   const showError = (error: unknown, fallback = '操作失败'): void => {
@@ -563,6 +590,7 @@ function App(): React.JSX.Element {
   const [selectedConnectionId, setSelectedConnectionId] = useState<string>()
   const [treeData, setTreeData] = useState<DatabaseTreeNode[]>([])
   const [expandedKeys, setExpandedKeys] = useState<React.Key[]>([])
+  const [connectionTreeLoading, setConnectionTreeLoading] = useState<Record<string, string>>({})
   const [connectionModalOpen, setConnectionModalOpen] = useState(false)
   const [connectionMode, setConnectionMode] = useState<'create' | 'edit'>('create')
   const [editingConnectionInfoId, setEditingConnectionInfoId] = useState<string>()
@@ -577,6 +605,7 @@ function App(): React.JSX.Element {
   const [aiContextSources, setAiContextSources] = useState<AIContextSource[]>([])
   const [aiActiveContext, setAiActiveContext] = useState<AIActiveContext | undefined>()
   const [focusedTreeNode, setFocusedTreeNode] = useState<DatabaseTreeNode | undefined>()
+  const [treeContextMenu, setTreeContextMenu] = useState<{ x: number; y: number; node: DatabaseTreeNode } | null>(null)
   const [queryCounter, setQueryCounter] = useState(1)
   const [tableEditorOpen, setTableEditorOpen] = useState(false)
   const [tableEditorLoading, setTableEditorLoading] = useState(false)
@@ -627,6 +656,9 @@ function App(): React.JSX.Element {
   const [newTableName, setNewTableName] = useState('')
   const [newTableColumns, setNewTableColumns] = useState<ColumnDef[]>([])
   const [driverManagerOpen, setDriverManagerOpen] = useState(false)
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>('app')
+  const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
+  const [javaRestartRequired, setJavaRestartRequired] = useState(false)
   const [updateModalOpen, setUpdateModalOpen] = useState(false)
   const [updateSettings, setUpdateSettings] = useState<UpdateSettings | null>(null)
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
@@ -635,6 +667,10 @@ function App(): React.JSX.Element {
   const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null)
   const [drivers, setDrivers] = useState<DriverInfo[]>([])
   const [javaRuntimes, setJavaRuntimes] = useState<JavaRuntimeInfo[]>([])
+  const [jdbcJavaHome, setJdbcJavaHome] = useState<string>('')
+  const [jdbcJavaEnabled, setJdbcJavaEnabled] = useState<boolean>(false)
+  const [configuredJdbcJavaHome, setConfiguredJdbcJavaHome] = useState<string>('')
+  const [configuredJdbcJavaEnabled, setConfiguredJdbcJavaEnabled] = useState<boolean>(false)
   const javaRuntimeOptions = javaRuntimes.map((runtime) => ({
     label: `Java ${runtime.major ?? '未知版本'} - ${runtime.home}`,
     value: runtime.home
@@ -672,6 +708,7 @@ function App(): React.JSX.Element {
   const tableBodyRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const rowDragAnchorRefs = useRef<Record<string, string | undefined>>({})
   const rowSelectionDraftRefs = useRef<Record<string, React.Key[] | undefined>>({})
+  const treeLoadingKeysRef = useRef<Set<React.Key>>(new Set())
 
   const { theme, toggleTheme } = useTheme()
 
@@ -763,64 +800,19 @@ function App(): React.JSX.Element {
 
   const buildSqlCompletionContext = (tab: WorkspaceTab): SqlCompletionContext => {
     const connection = getConnection(tab.connectionId)
-    const tables: SqlCompletionTable[] = []
-    const columns: SqlCompletionColumn[] = []
-
-    const includeNode = (node: DatabaseTreeNode): boolean => {
-      if (!tab.connectionId || node.connectionId !== tab.connectionId) {
-        return false
-      }
-      if (tab.pgDatabaseName && node.pgDatabaseName !== tab.pgDatabaseName) {
-        return false
-      }
-      if (tab.databaseName && node.databaseName !== tab.databaseName) {
-        return false
-      }
-      return true
-    }
-
-    const walk = (nodes: DatabaseTreeNode[]): void => {
-      for (const node of nodes) {
-        if (node.closed) {
-          continue
-        }
-
-        if (node.kind === 'table' && node.tableName && includeNode(node)) {
-          const tableColumns = ((node.children as DatabaseTreeNode[] | undefined) ?? [])
-            .filter((child) => child.kind === 'column' && child.columnName)
-            .map<SqlCompletionColumn>((child) => ({
-              name: child.columnName!,
-              type: child.columnType,
-              tableName: node.tableName,
-              databaseName: connection?.database_type === 'postgresql' ? node.pgDatabaseName : node.databaseName,
-              schemaName: connection?.database_type === 'postgresql' ? node.databaseName : undefined,
-              nullable: child.nullable,
-              primaryKey: child.primaryKey
-            }))
-
-          tables.push({
-            name: node.tableName,
-            databaseName: connection?.database_type === 'postgresql' ? node.pgDatabaseName : node.databaseName,
-            schemaName: connection?.database_type === 'postgresql' ? node.databaseName : undefined,
-            columns: tableColumns
-          })
-          columns.push(...tableColumns)
-        }
-
-        if (node.children) {
-          walk(node.children)
-        }
-      }
-    }
-
-    walk(treeData)
+    const scopeKey = tab.connectionId ? `${tab.connectionId}:${tab.pgDatabaseName ?? ''}:${tab.databaseName ?? ''}` : ''
+    const loadedScope = scopeKey ? loadedCompletionIndex.get(scopeKey) : undefined
+    const tables = loadedScope ? [...loadedScope.tables] : []
+    const columns = loadedScope ? [...loadedScope.columns] : []
 
     const cacheKey = tab.connectionId && tab.databaseName ? `${tab.connectionId}:${tab.databaseName}` : ''
 
     if (cacheKey && completionTables[cacheKey]) {
+      const existingTableNames = new Set(tables.map((table) => table.name))
       for (const tableName of completionTables[cacheKey]) {
-        if (!tables.some((t) => t.name === tableName)) {
+        if (!existingTableNames.has(tableName)) {
           tables.push({ name: tableName, databaseName: tab.databaseName })
+          existingTableNames.add(tableName)
         }
       }
     }
@@ -841,18 +833,22 @@ function App(): React.JSX.Element {
     }
   }
 
-  const renderConnectionTitle = (connection: ConnectionInfo): React.ReactNode => (
-    <Dropdown
-      trigger={['contextMenu']}
-      menu={{
-        items: [
-          ...(connection.is_open
-            ? [
-                { key: 'close', label: '关闭连接', icon: <CloseCircleOutlined /> },
-              ]
-            : [
-                { key: 'open', label: '打开连接', icon: <PlayCircleOutlined /> },
-              ]),
+  const renderConnectionTitle = (connection: ConnectionInfo): React.ReactNode => {
+    const loadingText = connectionTreeLoading[connection.connection_id]
+    const loading = Boolean(loadingText)
+
+    return (
+      <>
+        {/*
+        menu={{
+          items: [
+            ...(connection.is_open
+              ? [
+                  { key: 'close', label: '关闭连接', icon: <CloseCircleOutlined />, disabled: loading },
+                ]
+              : [
+                  { key: 'open', label: '打开连接', icon: <PlayCircleOutlined />, disabled: loading },
+                ]),
           ...(connection.database_type === 'redis' ? [] : [{
             key: 'new-database',
             label: connection.database_type === 'sqlite' ? '新增 SQLite 数据库文件' : '新建库',
@@ -882,7 +878,7 @@ function App(): React.JSX.Element {
           }
         }
       }}
-    >
+        */}
       <Flex className="connection-tree-title" align="center">
         <div className="connection-tree-main">
           <Typography.Text className="connection-tree-name" ellipsis title={connection.name}>
@@ -898,6 +894,9 @@ function App(): React.JSX.Element {
             type="text"
             size="small"
             icon={<ReloadOutlined />}
+            loading={loading}
+            disabled={loading}
+            title={loadingText ?? '刷新连接'}
             onClick={(event) => {
               event.stopPropagation()
               refreshConnectionNode(connection.connection_id)
@@ -924,8 +923,9 @@ function App(): React.JSX.Element {
           />
         </Space>
       </Flex>
-    </Dropdown>
-  )
+      </>
+    )
+  }
 
   const buildObjectGroupNodes = (connectionId: string, databaseName?: string, pgDatabaseName?: string, databaseType?: DatabaseType): DatabaseTreeNode[] => {
     const connection = getConnection(connectionId)
@@ -940,95 +940,147 @@ function App(): React.JSX.Element {
       databaseName,
       pgDatabaseName,
       objectType: group.type,
+      childrenLoaded: false,
       isLeaf: false
     }))
   }
 
-  const buildConnectionNode = (connection: ConnectionInfo): DatabaseTreeNode => ({
-    key: `connection:${connection.connection_id}`,
-    title: connection.name,
-    icon:
-      connection.database_type === 'postgresql' ? (
-        <img src={postgresIcon} alt="PG" style={{ width: 16, height: 16 }} />
-      ) : connection.database_type === 'mongodb' ? (
-        <img src={mongoIcon} alt="MongoDB" style={{ width: 16, height: 16 }} />
-      ) : connection.database_type === 'redis' ? (
-        <img src={redisIcon} alt="Redis" style={{ width: 16, height: 16 }} />
-      ) : connection.database_type === 'mysql' ? (
-        <img src={mysqlIcon} alt="MySQL" style={{ width: 16, height: 16 }} />
-      ) : connection.database_type === 'dm' ? (
-        <img src={dmIcon} alt="DM" style={{ width: 16, height: 16 }} />
-      ) : (
-        <img src={sqliteIcon} alt="SQLite" style={{ width: 16, height: 16 }} />
-      ),
-    kind: 'connection',
+  const buildDatabaseNode = (connection: ConnectionInfo, database: DatabaseInfo): DatabaseTreeNode => ({
+    key: `database:${connection.connection_id}:${database.name}`,
+    title: database.name,
+    icon: <DatabaseOutlined />,
+    kind: 'database',
     connectionId: connection.connection_id,
-    children: connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm' || connection.database_type === 'mongodb' || connection.database_type === 'redis' ? undefined : buildObjectGroupNodes(connection.connection_id, undefined, undefined, connection.database_type),
-    className: connection.is_open ? undefined : 'tree-node-closed',
-    closed: !connection.is_open,
-    isLeaf: !connection.is_open
+    databaseName: database.name,
+    sizeDisplay: database.size_display,
+    sizeBytes: database.size_bytes,
+    storageSizeDisplay: database.storage_size_display,
+    storageSizeBytes: database.storage_size_bytes,
+    childrenLoaded: connection.database_type === 'redis',
+    isLeaf: connection.database_type === 'redis'
   })
+
+  const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, schema: DatabaseInfo): DatabaseTreeNode => ({
+    key: `pg-schema:${connection.connection_id}:${pgDatabaseName}:${schema.name}`,
+    title: schema.name,
+    icon: <BranchesOutlined />,
+    kind: 'pg-schema',
+    connectionId: connection.connection_id,
+    databaseName: schema.name,
+    pgDatabaseName,
+    sizeDisplay: schema.size_display,
+    sizeBytes: schema.size_bytes,
+    storageSizeDisplay: schema.storage_size_display,
+    storageSizeBytes: schema.storage_size_bytes,
+    childrenLoaded: false,
+    isLeaf: false
+  })
+
+  const buildConnectionNode = (connection: ConnectionInfo): DatabaseTreeNode => {
+    const children = connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm' || connection.database_type === 'mongodb' || connection.database_type === 'redis' || connection.database_type === 'clickhouse'
+      ? undefined
+      : buildObjectGroupNodes(connection.connection_id, undefined, undefined, connection.database_type)
+
+    return {
+      key: `connection:${connection.connection_id}`,
+      title: connection.name,
+      icon:
+        connection.database_type === 'postgresql' ? (
+          <img src={postgresIcon} alt="PG" style={{ width: 16, height: 16 }} />
+        ) : connection.database_type === 'mongodb' ? (
+          <img src={mongoIcon} alt="MongoDB" style={{ width: 16, height: 16 }} />
+        ) : connection.database_type === 'redis' ? (
+          <img src={redisIcon} alt="Redis" style={{ width: 16, height: 16 }} />
+        ) : connection.database_type === 'clickhouse' ? (
+          <img src={clickhouseIcon} alt="ClickHouse" style={{ width: 16, height: 16 }} />
+        ) : connection.database_type === 'mysql' ? (
+          <img src={mysqlIcon} alt="MySQL" style={{ width: 16, height: 16 }} />
+        ) : connection.database_type === 'dm' ? (
+          <img src={dmIcon} alt="DM" style={{ width: 16, height: 16 }} />
+        ) : (
+          <img src={sqliteIcon} alt="SQLite" style={{ width: 16, height: 16 }} />
+        ),
+      kind: 'connection',
+      connectionId: connection.connection_id,
+      children,
+      className: connection.is_open ? undefined : 'tree-node-closed',
+      closed: !connection.is_open,
+      childrenLoaded: Boolean(children),
+      isLeaf: !connection.is_open
+    }
+  }
 
   const refreshTree = (nextConnections: ConnectionInfo[]): void => {
     setTreeData(nextConnections.map(buildConnectionNode))
   }
 
-  const refreshConnectionNode = (connectionId: string): void => {
-    const connection = connections.find((c) => c.connection_id === connectionId)
+  const refreshConnectionNode = (connectionId: string, selectedDatabaseOverride?: string[]): void => {
+    const connection = getConnection(connectionId)
 
     if (!connection) {
       return
     }
 
-    if (connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm' || connection.database_type === 'mongodb' || connection.database_type === 'redis') {
-      const connKey = `connection:${connectionId}`
-      const snapshot = expandedKeys.map(String)
+    void (async () => {
+      setConnectionTreeLoadingText(connectionId, '正在刷新连接...')
+      try {
+        const connKey = `connection:${connectionId}`
+        const snapshot = expandedKeys.map(String)
 
-      void reloadNodeChildren({
-        key: connKey,
-        kind: 'connection',
-        connectionId,
-        isLeaf: false
-      }).then(async () => {
-        const stillExpanded = snapshot.filter((k) => {
-          if (k === connKey) return false
-          if (k.startsWith(`database:${connectionId}:`)) {
-            if (connection.database_type === 'redis') {
-              return false
+        if (connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm' || connection.database_type === 'mongodb' || connection.database_type === 'redis' || connection.database_type === 'clickhouse') {
+          const databaseNodes = await preloadConnectionTree(connection, selectedDatabaseOverride)
+          const selectedNames = new Set(databaseNodes.map((node) => node.databaseName).filter(Boolean))
+          const stillExpanded = snapshot.filter((k) => {
+            if (k === connKey) return false
+            if (k.startsWith(`database:${connectionId}:`)) {
+              if (connection.database_type === 'redis') {
+                return false
+              }
+              const dbName = k.slice(`database:${connectionId}:`.length).split(':')[0]
+              return selectedNames.has(dbName)
             }
-            const dbName = k.slice(`database:${connectionId}:`.length).split(':')[0]
-            const selected = selectedDatabasesRef.current[connectionId] ?? allDatabases[connectionId] ?? []
-            return selected.includes(dbName)
-          }
-          return k.startsWith(`pg-schema:${connectionId}:`) || k.startsWith(`object-group:${connectionId}:`) || k.startsWith(`table:${connectionId}:`)
-        })
+            return k.startsWith(`pg-schema:${connectionId}:`) || k.startsWith(`object-group:${connectionId}:`) || k.startsWith(`table:${connectionId}:`)
+          })
+          startTransition(() => {
+            setExpandedKeys(Array.from(new Set([connKey, ...stillExpanded])))
+          })
+        } else {
+          setTreeData((current) =>
+            current.map((node) => {
+              if (node.key === connKey) {
+                const nextChildren = buildConnectionNode(connection).children
+                return { ...node, children: nextChildren, childrenLoaded: Boolean(nextChildren) }
+              }
 
-        if (stillExpanded.length > 0) {
-          setExpandedKeys((current) => Array.from(new Set([...current, ...stillExpanded])))
-          await reloadExpandedDescendants(connectionId, stillExpanded)
+              return node
+            })
+          )
         }
-      })
-    } else {
-      setTreeData((current) =>
-        current.map((node) => {
-          if (node.key === `connection:${connectionId}`) {
-            return { ...node, children: buildConnectionNode(connection).children }
-          }
-
-          return node
-        })
-      )
-    }
+      } catch (err) {
+        showError(err instanceof Error ? err.message : '刷新连接失败')
+      } finally {
+        setConnectionTreeLoadingText(connectionId)
+      }
+    })()
   }
 
-  const refreshDatabaseNode = (connectionId: string, databaseName: string): void => {
-    void reloadNodeChildren({
-      key: `database:${connectionId}:${databaseName}`,
-      kind: 'database',
-      connectionId,
-      databaseName,
-      isLeaf: false
-    })
+  const refreshDatabaseNode = (connectionId: string, databaseName: string, selectedSchemaOverride?: string[]): void => {
+    const connection = getConnection(connectionId)
+    if (!connection) {
+      return
+    }
+
+    void (async () => {
+      setConnectionTreeLoadingText(connectionId, '正在加载表列表...')
+      try {
+        const children = await preloadDatabaseChildren(connection, databaseName, selectedSchemaOverride)
+        setTreeData((current) => updateTreeNode(current, `database:${connectionId}:${databaseName}`, children))
+      } catch (err) {
+        showError(err instanceof Error ? err.message : '加载表列表失败')
+      } finally {
+        setConnectionTreeLoadingText(connectionId)
+      }
+    })()
   }
 
   const replaceConnectionNode = (nodes: DatabaseTreeNode[], connection: ConnectionInfo, preserveChildren?: boolean): DatabaseTreeNode[] =>
@@ -1038,21 +1090,47 @@ function App(): React.JSX.Element {
       }
 
       const nextNode = buildConnectionNode(connection)
-      return preserveChildren && connection.is_open ? { ...nextNode, children: node.children } : nextNode
+      return preserveChildren && connection.is_open ? { ...nextNode, children: node.children, childrenLoaded: node.childrenLoaded } : nextNode
     })
 
-  const updateTreeNode = (nodes: DatabaseTreeNode[], key: React.Key, children: DatabaseTreeNode[]): DatabaseTreeNode[] =>
-    nodes.map((node) => {
-      if (node.key === key) {
-        return { ...node, children }
-      }
+  const updateTreeNode = (nodes: DatabaseTreeNode[], key: React.Key, children: DatabaseTreeNode[]): DatabaseTreeNode[] => {
+    const visit = (currentNodes: DatabaseTreeNode[]): [DatabaseTreeNode[], boolean] => {
+      let changed = false
 
-      if (node.children) {
-        return { ...node, children: updateTreeNode(node.children, key, children) }
-      }
+      const nextNodes = currentNodes.map((node) => {
+        if (node.key === key) {
+          changed = true
+          return { ...node, children, childrenLoaded: true }
+        }
 
-      return node
+        if (!node.children?.length) {
+          return node
+        }
+
+        const [nextChildren, childChanged] = visit(node.children)
+        if (!childChanged) {
+          return node
+        }
+
+        changed = true
+        return { ...node, children: nextChildren }
+      })
+
+      return [changed ? nextNodes : currentNodes, changed]
+    }
+
+    return visit(nodes)[0]
+  }
+
+  const setConnectionTreeLoadingText = (connectionId: string, text?: string): void => {
+    setConnectionTreeLoading((current) => {
+      if (!text) {
+        const { [connectionId]: _removed, ...rest } = current
+        return rest
+      }
+      return { ...current, [connectionId]: text }
     })
+  }
 
   const updateWorkspaceTab = (key: string, patch: Partial<WorkspaceTab>): void => {
     setWorkspaceTabs((current) => current.map((tab) => (tab.key === key ? { ...tab, ...patch } : tab)))
@@ -1079,6 +1157,21 @@ function App(): React.JSX.Element {
     return () => observer.disconnect()
   }, [activeTabKey, workspaceTabs.length])
 
+  useEffect(() => {
+    if (!treeContextMenu) {
+      return
+    }
+
+    const handleEscape = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        setTreeContextMenu(null)
+      }
+    }
+
+    window.addEventListener('keydown', handleEscape)
+    return () => window.removeEventListener('keydown', handleEscape)
+  }, [treeContextMenu])
+
   const closeWorkspaceTab = (key: string): void => {
     setWorkspaceTabs((current) => {
       const index = current.findIndex((tab) => tab.key === key)
@@ -1092,8 +1185,68 @@ function App(): React.JSX.Element {
     })
   }
 
-  const getConnection = (connectionId?: string): ConnectionInfo | undefined => connections.find((connection) => connection.connection_id === connectionId)
+  const connectionMap = useMemo(() => new Map(connections.map((connection) => [connection.connection_id, connection])), [connections])
+  const getConnection = useCallback((connectionId?: string): ConnectionInfo | undefined => (
+    connectionId ? connectionMap.get(connectionId) : undefined
+  ), [connectionMap])
+  const loadedCompletionIndex = useMemo(() => {
+    const index = new Map<string, { tables: SqlCompletionTable[]; columns: SqlCompletionColumn[] }>()
 
+    const getScopeKey = (connectionId: string, databaseName?: string, pgDatabaseName?: string): string =>
+      `${connectionId}:${pgDatabaseName ?? ''}:${databaseName ?? ''}`
+
+    const ensureScope = (scopeKey: string): { tables: SqlCompletionTable[]; columns: SqlCompletionColumn[] } => {
+      const existing = index.get(scopeKey)
+      if (existing) {
+        return existing
+      }
+
+      const created = { tables: [], columns: [] }
+      index.set(scopeKey, created)
+      return created
+    }
+
+    const walk = (nodes: DatabaseTreeNode[]): void => {
+      for (const node of nodes) {
+        if (node.closed) {
+          continue
+        }
+
+        if (node.kind === 'table' && node.tableName && node.connectionId) {
+          const connection = connectionMap.get(node.connectionId)
+          const databaseName = connection?.database_type === 'postgresql' ? node.pgDatabaseName : node.databaseName
+          const schemaName = connection?.database_type === 'postgresql' ? node.databaseName : undefined
+          const scope = ensureScope(getScopeKey(node.connectionId, node.databaseName, node.pgDatabaseName))
+          const tableColumns = ((node.children as DatabaseTreeNode[] | undefined) ?? [])
+            .filter((child) => child.kind === 'column' && child.columnName)
+            .map<SqlCompletionColumn>((child) => ({
+              name: child.columnName!,
+              type: child.columnType,
+              tableName: node.tableName!,
+              databaseName,
+              schemaName,
+              nullable: child.nullable,
+              primaryKey: child.primaryKey
+            }))
+
+          scope.tables.push({
+            name: node.tableName,
+            databaseName,
+            schemaName,
+            columns: tableColumns
+          })
+          scope.columns.push(...tableColumns)
+        }
+
+        if (node.children?.length) {
+          walk(node.children)
+        }
+      }
+    }
+
+    walk(treeData)
+    return index
+  }, [connectionMap, treeData])
   const ensureConnectionOpen = (connectionId?: string): boolean => {
     const connection = getConnection(connectionId)
 
@@ -1139,7 +1292,7 @@ function App(): React.JSX.Element {
   const quoteTableName = (connectionId: string, tableName: string, databaseName?: string): string => {
     const connection = getConnection(connectionId)
 
-    if (connection?.database_type === 'mysql') {
+    if (connection?.database_type === 'mysql' || connection?.database_type === 'clickhouse') {
       const quotedTable = `\`${tableName.replaceAll('`', '``')}\``
       return databaseName ? `\`${databaseName.replaceAll('`', '``')}\`.${quotedTable}` : quotedTable
     }
@@ -1221,6 +1374,9 @@ function App(): React.JSX.Element {
     setAiContextSources((current) => current.filter((source) => source.id !== sourceId))
   }
 
+  const isDatabaseScopedType = (databaseType?: DatabaseType): databaseType is 'mysql' | 'mongodb' | 'redis' | 'clickhouse' =>
+    databaseType === 'mysql' || databaseType === 'mongodb' || databaseType === 'redis' || databaseType === 'clickhouse'
+
   const activateAIContextFromNode = (node: DatabaseTreeNode): void => {
     if (!node.connectionId) {
       return
@@ -1234,7 +1390,7 @@ function App(): React.JSX.Element {
     if (node.kind === 'connection') {
       setAiActiveContext({
         connectionId: node.connectionId,
-        databaseName: connection.database_type === 'mysql' || connection.database_type === 'mongodb' || connection.database_type === 'redis' ? getDefaultDatabaseName(connection) : undefined,
+        databaseName: isDatabaseScopedType(connection.database_type) ? getDefaultDatabaseName(connection) : undefined,
         pgDatabaseName: connection.database_type === 'postgresql' ? getDefaultPgDatabase(connection) : undefined
       })
       return
@@ -1348,9 +1504,13 @@ function App(): React.JSX.Element {
             setActiveSelector(popKey)
           } else {
             const nextSelected = draftSelectedDatabases[connectionId] ?? selected
-            setSelectedDatabases((current) => ({ ...current, [connectionId]: nextSelected }))
+            setSelectedDatabases((current) => {
+              const next = { ...current, [connectionId]: nextSelected }
+              selectedDatabasesRef.current = next
+              return next
+            })
             setActiveSelector(null)
-            setTimeout(() => refreshConnectionNode(connectionId), 0)
+            refreshConnectionNode(connectionId, nextSelected)
           }
         }}
         content={
@@ -1419,6 +1579,219 @@ function App(): React.JSX.Element {
     )
   }
 
+  const handleConnectionContextMenuClick = (key: string, connection: ConnectionInfo): void => {
+    if (key === 'open') {
+      void openConnectionById(connection.connection_id)
+    }
+    if (key === 'close') {
+      void closeConnectionById(connection.connection_id)
+    }
+    if (key === 'new-database') {
+      if (connection.database_type === 'sqlite') {
+        void openConnectionModal('sqlite')
+      } else {
+        setCreatingDatabaseConnectionId(connection.connection_id)
+        setCreatingSchemaDatabaseName('')
+        setDatabaseCreateName('')
+        setDatabaseCreateModalOpen(true)
+      }
+    }
+    if (key === 'run-sql') {
+      void openSqlFileDialog(connection.connection_id)
+    }
+  }
+
+  const getDatabaseContextMenu = (node: DatabaseTreeNode): MenuProps['items'] => {
+    if ((!node.connectionId || !node.databaseName) || (node.kind !== 'database' && node.kind !== 'pg-schema')) {
+      return []
+    }
+
+    const connection = getConnection(node.connectionId)
+    const isPgDb = node.kind === 'database' && connection?.database_type === 'postgresql'
+
+    return [
+      { key: 'refresh', label: '刷新', icon: <ReloadOutlined /> },
+      ...(isPgDb ? [{ key: 'new-schema', label: '新建模式', icon: <PlusOutlined /> }] : []),
+      ...(!isPgDb && connection?.database_type !== 'redis'
+        ? [{ key: 'new-table', label: connection?.database_type === 'mongodb' ? '新建集合' : '新建表', icon: <PlusOutlined /> }]
+        : []),
+      ...(connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis'
+        ? [{ key: 'run-sql', label: '运行 SQL 文件', icon: <PlayCircleOutlined /> }]
+        : []),
+      { type: 'divider' },
+      ...(connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis'
+        ? [{ key: 'backup', label: '备份', icon: <SaveOutlined /> }]
+        : []),
+      { key: 'export', label: '导出', icon: <FileAddOutlined /> },
+      ...(connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis'
+        ? [{ key: 'import', label: '导入', icon: <PlayCircleOutlined /> }]
+        : []),
+      ...(!isPgDb && (connection?.database_type === 'mysql' || connection?.database_type === 'postgresql')
+        ? [{ type: 'divider' as const }, { key: 'delete', label: '删除', danger: true, icon: <DeleteOutlined /> }]
+        : [])
+    ]
+  }
+
+  const handleDatabaseContextMenuClick = (key: string, node: DatabaseTreeNode): void => {
+    if (!node.connectionId || !node.databaseName || (node.kind !== 'database' && node.kind !== 'pg-schema')) {
+      return
+    }
+
+    const connectionId = node.connectionId
+    const databaseName = node.databaseName
+    const pgDbName = node.pgDatabaseName
+    const connection = getConnection(connectionId)
+    const isPgDb = node.kind === 'database' && connection?.database_type === 'postgresql'
+
+    if (key === 'refresh') {
+      refreshDatabaseNode(connectionId, databaseName)
+    }
+    if (key === 'new-schema') {
+      setCreatingDatabaseConnectionId(connectionId)
+      setCreatingSchemaDatabaseName(databaseName)
+      setDatabaseCreateName('')
+      setDatabaseCreateModalOpen(true)
+    }
+    if (key === 'new-table') {
+      setCreateTableConnectionId(connectionId)
+      setCreateTableDatabaseName(databaseName)
+      setCreateTablePgDatabaseName(pgDbName ?? '')
+      setNewTableName('')
+      setNewTableColumns(connection?.database_type === 'mongodb'
+        ? [{ key: 'col-0', name: '_id', type: 'ObjectId', nullable: false, primaryKey: true }]
+        : [
+            { key: 'col-0', name: 'id', type: connection?.database_type === 'postgresql' ? 'INTEGER' : connection?.database_type === 'clickhouse' ? 'UInt64' : 'INT', nullable: false, primaryKey: connection?.database_type !== 'clickhouse' },
+            { key: 'col-1', name: 'name', type: connection?.database_type === 'clickhouse' ? 'String' : 'VARCHAR(100)', nullable: false, primaryKey: false }
+          ])
+      setCreateTableModalOpen(true)
+    }
+    if (key === 'run-sql') {
+      void openSqlFileDialog(connectionId, databaseName, pgDbName)
+    }
+    if (key === 'backup') {
+      openBackupRestoreModal(connectionId, isPgDb ? undefined : databaseName, pgDbName)
+    }
+    if (key === 'export') {
+      openExportModal(connectionId, isPgDb ? undefined : databaseName, pgDbName)
+    }
+    if (key === 'import') {
+      openImportModal(connectionId, isPgDb ? undefined : databaseName, pgDbName)
+    }
+    if (key === 'delete') {
+      deleteDatabase(connectionId, databaseName)
+    }
+  }
+
+  const getObjectContextMenu = (node: DatabaseTreeNode): MenuProps['items'] => {
+    if ((node.kind !== 'table' && node.kind !== 'db-object') || !node.connectionId || !node.tableName) {
+      return []
+    }
+
+    const objectType = node.objectType ?? 'table'
+    const connection = getConnection(node.connectionId)
+    const canPreview = objectType === 'table' || objectType === 'view'
+
+    return [
+      ...(canPreview ? [{ key: 'select', label: '生成 SELECT 查询' }] : []),
+      { key: 'ddl', label: '查看 DDL' },
+      ...(objectType === 'table' && connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis'
+        ? [{ key: 'edit', label: '修改表' }]
+        : []),
+      { key: 'copy', label: '复制对象名' },
+      { type: 'divider' },
+      ...(canPreview ? [{ key: 'export', label: '导出', icon: <FileAddOutlined /> }] : []),
+      ...(connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis'
+        ? [{ key: 'import', label: '导入', icon: <PlayCircleOutlined /> }]
+        : []),
+      ...(canPreview ? [{ type: 'divider' as const }, { key: 'delete', label: '删除', danger: true, icon: <DeleteOutlined /> }] : [])
+    ]
+  }
+
+  const handleObjectContextMenuClick = (key: string, node: DatabaseTreeNode): void => {
+    if ((node.kind !== 'table' && node.kind !== 'db-object') || !node.connectionId || !node.tableName) {
+      return
+    }
+
+    const connectionId = node.connectionId
+    const tableName = node.tableName
+    const databaseName = node.databaseName
+    const pgDbName = node.pgDatabaseName
+    const objectType = node.objectType ?? 'table'
+
+    if (key === 'select') {
+      openTableQuery(connectionId, tableName, databaseName, pgDbName)
+    }
+    if (key === 'ddl') {
+      void showObjectDdl(connectionId, tableName, objectType, databaseName, pgDbName)
+    }
+    if (key === 'edit') {
+      void openTableEditor(connectionId, tableName, databaseName)
+    }
+    if (key === 'copy') {
+      void copyTableName(tableName)
+    }
+    if (key === 'export') {
+      openExportModal(connectionId, databaseName, pgDbName, tableName)
+    }
+    if (key === 'import') {
+      openImportModal(connectionId, databaseName, pgDbName, tableName)
+    }
+    if (key === 'delete') {
+      deleteDbObject(connectionId, tableName, objectType, databaseName, pgDbName)
+    }
+  }
+
+  const getConnectionContextMenu = (connection: ConnectionInfo): MenuProps['items'] => {
+    const loading = Boolean(connectionTreeLoading[connection.connection_id])
+    return [
+      ...(connection.is_open
+        ? [{ key: 'close', label: '关闭连接', icon: <CloseCircleOutlined />, disabled: loading }]
+        : [{ key: 'open', label: '打开连接', icon: <PlayCircleOutlined />, disabled: loading }]),
+      ...(connection.database_type === 'redis' ? [] : [{
+        key: 'new-database',
+        label: connection.database_type === 'sqlite' ? '新增 SQLite 数据库文件' : '新建库',
+        icon: <PlusOutlined />
+      }]),
+      ...(connection.database_type !== 'mongodb' && connection.database_type !== 'redis'
+        ? [{ key: 'run-sql', label: '运行 SQL 文件', icon: <PlayCircleOutlined /> }]
+        : [])
+    ]
+  }
+
+  const getTreeContextMenuItems = (node: DatabaseTreeNode): MenuProps['items'] => {
+    if (node.kind === 'connection' && node.connectionId) {
+      const connection = getConnection(node.connectionId)
+      return connection ? getConnectionContextMenu(connection) : []
+    }
+    if (node.kind === 'database' || node.kind === 'pg-schema') {
+      return getDatabaseContextMenu(node)
+    }
+    if (node.kind === 'table' || node.kind === 'db-object') {
+      return getObjectContextMenu(node)
+    }
+    return []
+  }
+
+  const handleTreeContextMenuClick = ({ key }: { key: string }): void => {
+    if (!treeContextMenu) {
+      return
+    }
+
+    const node = treeContextMenu.node
+    if (node.kind === 'connection' && node.connectionId) {
+      const connection = getConnection(node.connectionId)
+      if (connection) {
+        handleConnectionContextMenuClick(key, connection)
+      }
+    } else if (node.kind === 'database' || node.kind === 'pg-schema') {
+      handleDatabaseContextMenuClick(key, node)
+    } else if (node.kind === 'table' || node.kind === 'db-object') {
+      handleObjectContextMenuClick(key, node)
+    }
+
+    setTreeContextMenu(null)
+  }
+
   const renderTreeTitle = (node: DatabaseTreeNode): React.ReactNode => {
     if (node.kind === 'connection' && node.connectionId) {
       const connection = getConnection(node.connectionId)
@@ -1428,7 +1801,6 @@ function App(): React.JSX.Element {
     if ((node.kind === 'database' || node.kind === 'pg-schema') && node.connectionId && node.databaseName) {
       const connectionId = node.connectionId
       const databaseName = node.databaseName
-      const pgDbName = node.pgDatabaseName
       const isPgDb = node.kind === 'database' && getConnection(connectionId)?.database_type === 'postgresql'
       const selKey = `${connectionId}:${databaseName}`
       const schemas = allSchemas[selKey] ?? []
@@ -1440,69 +1812,9 @@ function App(): React.JSX.Element {
       return (
         <Flex align="center" justify="space-between" className="tree-title-row">
           <div className="tree-title-with-size">
-            <Dropdown
-              trigger={['contextMenu']}
-              menu={{
-                items: [
-                  { key: 'refresh', label: '刷新', icon: <ReloadOutlined /> },
-                  ...(isPgDb ? [{ key: 'new-schema', label: '新建模式', icon: <PlusOutlined /> }] : []),
-                  ...(!isPgDb && getConnection(connectionId)?.database_type !== 'redis' ? [{ key: 'new-table', label: getConnection(connectionId)?.database_type === 'mongodb' ? '新建集合' : '新建表', icon: <PlusOutlined /> }] : []),
-                  ...(getConnection(connectionId)?.database_type !== 'mongodb' && getConnection(connectionId)?.database_type !== 'redis' ? [{ key: 'run-sql', label: '运行 SQL 文件', icon: <PlayCircleOutlined /> }] : []),
-                  { type: 'divider' },
-                  ...(getConnection(connectionId)?.database_type !== 'mongodb' && getConnection(connectionId)?.database_type !== 'redis' ? [{ key: 'backup', label: '备份', icon: <SaveOutlined /> }] : []),
-                  { key: 'export', label: '导出', icon: <FileAddOutlined /> },
-                  ...(getConnection(connectionId)?.database_type !== 'mongodb' && getConnection(connectionId)?.database_type !== 'redis' ? [{ key: 'import', label: '导入', icon: <PlayCircleOutlined /> }] : []),
-                  ...(!isPgDb && (getConnection(connectionId)?.database_type === 'mysql' || getConnection(connectionId)?.database_type === 'postgresql') ? [
-                    { type: 'divider' as const },
-                    { key: 'delete', label: '删除', danger: true, icon: <DeleteOutlined /> }
-                  ] : [])
-                ],
-                onClick: ({ key }) => {
-                  if (key === 'refresh') {
-                    refreshDatabaseNode(connectionId, databaseName)
-                  }
-                  if (key === 'new-schema') {
-                    setCreatingDatabaseConnectionId(connectionId)
-                    setCreatingSchemaDatabaseName(databaseName)
-                    setDatabaseCreateName('')
-                    setDatabaseCreateModalOpen(true)
-                  }
-                  if (key === 'new-table') {
-                    const conn = getConnection(connectionId)
-                    setCreateTableConnectionId(connectionId)
-                    setCreateTableDatabaseName(databaseName)
-                    setCreateTablePgDatabaseName(pgDbName ?? '')
-                    setNewTableName('')
-                    setNewTableColumns(conn?.database_type === 'mongodb'
-                      ? [{ key: 'col-0', name: '_id', type: 'ObjectId', nullable: false, primaryKey: true }]
-                      : [
-                          { key: 'col-0', name: 'id', type: conn?.database_type === 'postgresql' ? 'INTEGER' : 'INT', nullable: false, primaryKey: true },
-                          { key: 'col-1', name: 'name', type: 'VARCHAR(100)', nullable: false, primaryKey: false }
-                        ])
-                    setCreateTableModalOpen(true)
-                  }
-                  if (key === 'run-sql') {
-                    void openSqlFileDialog(connectionId, databaseName, pgDbName)
-                  }
-                  if (key === 'backup') {
-                    openBackupRestoreModal(connectionId, isPgDb ? undefined : databaseName, pgDbName)
-                  }
-                  if (key === 'export') {
-                    openExportModal(connectionId, isPgDb ? undefined : databaseName, pgDbName)
-                  }
-                  if (key === 'import') {
-                    openImportModal(connectionId, isPgDb ? undefined : databaseName, pgDbName)
-                  }
-                  if (key === 'delete') {
-                    deleteDatabase(connectionId, databaseName)
-                  }
-                }
-              }}
-            >
-              <span className="table-tree-title">{node.title as React.ReactNode}</span>
-            </Dropdown>
+            <span className="table-tree-title">{node.title as React.ReactNode}</span>
             <span className="tree-node-actions">
-              {renderAIContextButton(node)}
+              {focusedTreeNode?.key === node.key && renderAIContextButton(node)}
               {node.sizeDisplay && <span className="tree-size-badge" title={`数据大小：${node.sizeDisplay}${node.storageSizeDisplay ? `，物理占用：${node.storageSizeDisplay}` : ''}`}>{node.sizeDisplay}</span>}
             </span>
           </div>
@@ -1519,9 +1831,13 @@ function App(): React.JSX.Element {
                   setActiveSelector(selKey)
                 } else {
                   const nextSelected = draftSelectedSchemas[selKey] ?? selectedSchemaList
-                  setSelectedSchemas((current) => ({ ...current, [selKey]: nextSelected }))
+                  setSelectedSchemas((current) => {
+                    const next = { ...current, [selKey]: nextSelected }
+                    selectedSchemasRef.current = next
+                    return next
+                  })
                   setActiveSelector(null)
-                  refreshDatabaseNode(connectionId, databaseName)
+                  refreshDatabaseNode(connectionId, databaseName, nextSelected)
                 }
               }}
               content={
@@ -1580,63 +1896,15 @@ function App(): React.JSX.Element {
     const connectionId = node.connectionId
     const databaseName = node.databaseName
     const pgDbName = node.pgDatabaseName
-    const tableName = node.tableName
-    const objectType = node.objectType ?? 'table'
-    const canPreview = objectType === 'table' || objectType === 'view'
-
     return (
-      <Dropdown
-        trigger={['contextMenu']}
-        menu={{
-          items: [
-            ...(canPreview ? [{ key: 'select', label: '生成 SELECT 查询' }] : []),
-            { key: 'ddl', label: '查看 DDL' },
-            ...(objectType === 'table' && getConnection(connectionId)?.database_type !== 'mongodb' && getConnection(connectionId)?.database_type !== 'redis' ? [{ key: 'edit', label: '修改表' }] : []),
-            { key: 'copy', label: '复制对象名' },
-            { type: 'divider' },
-            ...(canPreview ? [
-              { key: 'export', label: '导出', icon: <FileAddOutlined /> },
-            ] : []),
-            ...(getConnection(connectionId)?.database_type !== 'mongodb' && getConnection(connectionId)?.database_type !== 'redis' ? [{ key: 'import', label: '导入', icon: <PlayCircleOutlined /> }] : []),
-            ...(canPreview ? [
-              { type: 'divider' as const },
-              { key: 'delete', label: '删除', danger: true, icon: <DeleteOutlined /> }
-            ] : [])
-          ],
-          onClick: ({ key }) => {
-            if (key === 'select') {
-              openTableQuery(connectionId, tableName, databaseName, pgDbName)
-            }
-            if (key === 'ddl') {
-              void showObjectDdl(connectionId, tableName, objectType, databaseName, pgDbName)
-            }
-            if (key === 'edit') {
-              void openTableEditor(connectionId, tableName, databaseName)
-            }
-            if (key === 'copy') {
-              void copyTableName(tableName)
-            }
-            if (key === 'export') {
-              openExportModal(connectionId, databaseName, pgDbName, tableName)
-            }
-            if (key === 'import') {
-              openImportModal(connectionId, databaseName, pgDbName, tableName)
-            }
-            if (key === 'delete') {
-              deleteDbObject(connectionId, tableName, objectType, databaseName, pgDbName)
-            }
-          }
-        }}
-      >
-        <Flex align="center" justify="space-between" className="tree-title-with-size">
-          <span className="table-tree-title">
-            {node.title as React.ReactNode}
-          </span>
-          <span className="tree-node-actions">
-            {node.sizeDisplay && <span className="tree-size-badge" title={`数据大小：${node.sizeDisplay}${node.storageSizeDisplay ? `，物理占用：${node.storageSizeDisplay}` : ''}`}>{node.sizeDisplay}</span>}
-          </span>
-        </Flex>
-      </Dropdown>
+      <Flex align="center" justify="space-between" className="tree-title-with-size">
+        <span className="table-tree-title">
+          {node.title as React.ReactNode}
+        </span>
+        <span className="tree-node-actions">
+          {node.sizeDisplay && <span className="tree-size-badge" title={`数据大小：${node.sizeDisplay}${node.storageSizeDisplay ? `，物理占用：${node.storageSizeDisplay}` : ''}`}>{node.sizeDisplay}</span>}
+        </span>
+      </Flex>
     )
   }
 
@@ -2268,7 +2536,7 @@ function App(): React.JSX.Element {
   }
 
   const getDefaultDatabaseName = (connection: ConnectionInfo): string | undefined => {
-    if (connection.database_type !== 'mysql' && connection.database_type !== 'mongodb' && connection.database_type !== 'redis') {
+    if (connection.database_type !== 'mysql' && connection.database_type !== 'mongodb' && connection.database_type !== 'redis' && connection.database_type !== 'clickhouse') {
       return undefined
     }
 
@@ -2358,6 +2626,7 @@ function App(): React.JSX.Element {
       const isPg = connection?.database_type === 'postgresql'
       const isMongo = connection?.database_type === 'mongodb'
       const isRedis = connection?.database_type === 'redis'
+      const isClickHouse = connection?.database_type === 'clickhouse'
       const dbOptions = tab.connectionId ? (allDatabases[tab.connectionId] ?? []) : []
       const schemaKey = tab.connectionId && tab.pgDatabaseName ? `${tab.connectionId}:${tab.pgDatabaseName}` : ''
       const schemaOptions = schemaKey ? (allSchemas[schemaKey] ?? []) : []
@@ -2372,7 +2641,7 @@ function App(): React.JSX.Element {
               onChange={(connectionId) => {
                 const nextConn = getConnection(connectionId)
                 void ensureDatabasesLoaded(connectionId)
-                const nextDb = nextConn?.database_type === 'mysql' || nextConn?.database_type === 'mongodb' || nextConn?.database_type === 'redis' ? getDefaultDatabaseName(nextConn) : undefined
+                const nextDb = isDatabaseScopedType(nextConn?.database_type) ? getDefaultDatabaseName(nextConn) : undefined
                 const nextPgDb = nextConn?.database_type === 'postgresql' ? getDefaultPgDatabase(nextConn!) : undefined
                 updateWorkspaceTab(tab.key, {
                   connectionId,
@@ -2380,16 +2649,16 @@ function App(): React.JSX.Element {
                   pgDatabaseName: nextPgDb
                 })
 
-                if ((nextConn?.database_type === 'mysql' || nextConn?.database_type === 'mongodb' || nextConn?.database_type === 'redis') && nextDb) {
+                if ((isDatabaseScopedType(nextConn?.database_type)) && nextDb) {
                   void preloadCompletionForDatabase(connectionId, nextDb)
                 }
               }}
               options={connections.map((c) => ({ label: c.name, value: c.connection_id }))}
             />
-            {(isMysql || isPg || isDm || isMongo || isRedis) && (
+            {(isMysql || isPg || isDm || isMongo || isRedis || isClickHouse) && (
               <Select
                 className="database-select"
-                placeholder={isPg ? '选择 Database' : isDm ? '选择 Schema' : isMongo ? '选择数据库' : isRedis ? '选择 Redis DB' : '选择库'}
+                placeholder={isPg ? '选择 Database' : isDm ? '选择 Schema' : isMongo ? '选择数据库' : isRedis ? '选择 Redis DB' : isClickHouse ? '选择数据库' : '选择库'}
                 value={isPg ? (tab.pgDatabaseName || undefined) : (tab.databaseName || undefined)}
                 onChange={async (value) => {
                   if (isPg) {
@@ -2511,7 +2780,7 @@ function App(): React.JSX.Element {
     setSelectedConnectionId((current) => current ?? data.connections[0]?.connection_id)
 
     for (const connection of data.connections) {
-      if (connection.is_open && (connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm' || connection.database_type === 'mongodb' || connection.database_type === 'redis')) {
+      if (connection.is_open && (connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm' || connection.database_type === 'mongodb' || connection.database_type === 'redis' || connection.database_type === 'clickhouse')) {
         try {
           const dbData = await requestJson<{ databases: DatabaseInfo[] }>(`/connections/${connection.connection_id}/databases`)
           const dbNames = dbData.databases.map((d) => d.name)
@@ -2540,6 +2809,87 @@ function App(): React.JSX.Element {
     refreshTree(data.connections)
   }
 
+  const objectNodesForGroup = async (connectionId: string, objectType: DbObjectType, databaseName?: string, pgDatabaseName?: string): Promise<DatabaseTreeNode[]> => {
+    const path = withPgDatabase(`/connections/${connectionId}/objects`, databaseName, pgDatabaseName)
+    const data = await requestJson<{ objects: DbObjectInfo[] }>(`${path}${databaseName || pgDatabaseName ? '&' : '?'}type=${objectType}`)
+    return data.objects.map<DatabaseTreeNode>((object) => {
+      const kind = object.type === 'table' ? 'table' : 'db-object'
+      const group = DB_OBJECT_GROUP_BY_TYPE[object.type]
+
+      return {
+        key: `${kind}:${connectionId}:${pgDatabaseName ?? ''}:${databaseName ?? ''}:${object.type}:${object.name}`,
+        title: object.name,
+        icon: group.icon,
+        kind,
+        connectionId,
+        databaseName,
+        pgDatabaseName,
+        tableName: object.name,
+        objectType: object.type,
+        sizeDisplay: object.size_display,
+        sizeBytes: object.size_bytes,
+        storageSizeDisplay: object.storage_size_display,
+        storageSizeBytes: object.storage_size_bytes,
+        rowCount: object.row_count,
+        childrenLoaded: false,
+        isLeaf: object.type !== 'table'
+      }
+    })
+  }
+
+  const preloadObjectGroupNodes = async (connectionId: string, databaseName?: string, pgDatabaseName?: string, databaseType?: DatabaseType): Promise<DatabaseTreeNode[]> => {
+    return buildObjectGroupNodes(connectionId, databaseName, pgDatabaseName, databaseType)
+  }
+
+  const preloadDatabaseChildren = async (connection: ConnectionInfo, databaseName: string, selectedSchemaOverride?: string[]): Promise<DatabaseTreeNode[]> => {
+    if (connection.database_type === 'redis') {
+      return []
+    }
+
+    if (connection.database_type === 'postgresql') {
+      const data = await requestJson<{ databases: DatabaseInfo[] }>(`/connections/${connection.connection_id}/schemas?database=${encodeURIComponent(databaseName)}`)
+      const selKey = `${connection.connection_id}:${databaseName}`
+      const schemaNames = data.databases.map((schema) => schema.name)
+      const currentSelected = selectedSchemaOverride ?? selectedSchemasRef.current[selKey]
+      const nextSelected = currentSelected ? filterPersistedValues(currentSelected, schemaNames) : schemaNames
+
+      setAllSchemas((current) => ({ ...current, [selKey]: schemaNames }))
+      setSelectedSchemas((current) => {
+        const next = { ...current, [selKey]: nextSelected }
+        selectedSchemasRef.current = next
+        return next
+      })
+
+      return data.databases
+        .filter((schema) => nextSelected.includes(schema.name))
+        .map((schema) => buildPgSchemaNode(connection, databaseName, schema))
+    }
+
+    void preloadCompletionForDatabase(connection.connection_id, databaseName)
+    return preloadObjectGroupNodes(connection.connection_id, databaseName, undefined, connection.database_type)
+  }
+
+  const preloadConnectionTree = async (connection: ConnectionInfo, selectedDatabaseOverride?: string[]): Promise<DatabaseTreeNode[]> => {
+    const data = await requestJson<{ databases: DatabaseInfo[] }>(`/connections/${connection.connection_id}/databases`)
+    const dbNames = data.databases.map((database) => database.name)
+    const currentSelected = selectedDatabaseOverride ?? selectedDatabasesRef.current[connection.connection_id]
+    const nextSelected = currentSelected ? filterPersistedValues(currentSelected, dbNames) : defaultSelectedDatabases(connection, dbNames, data.databases)
+
+    setAllDatabases((current) => ({ ...current, [connection.connection_id]: dbNames }))
+    setSelectedDatabases((current) => {
+      const next = { ...current, [connection.connection_id]: nextSelected }
+      selectedDatabasesRef.current = next
+      return next
+    })
+
+    const databaseNodes = data.databases
+      .filter((database) => nextSelected.includes(database.name))
+      .map((database) => buildDatabaseNode(connection, database))
+
+    setTreeData((current) => updateTreeNode(current, `connection:${connection.connection_id}`, databaseNodes))
+    return databaseNodes
+  }
+
   const loadChildrenForNode = async (node: DatabaseTreeNode): Promise<DatabaseTreeNode[]> => {
     if (node.closed) {
       return []
@@ -2548,98 +2898,29 @@ function App(): React.JSX.Element {
     if (node.kind === 'connection' && node.connectionId) {
       const connection = getConnection(node.connectionId)
 
-      if (connection?.database_type !== 'mysql' && connection?.database_type !== 'postgresql' && connection?.database_type !== 'dm' && connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis') {
+      if (connection?.database_type !== 'mysql' && connection?.database_type !== 'postgresql' && connection?.database_type !== 'dm' && connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis' && connection?.database_type !== 'clickhouse') {
         return []
       }
 
-      const data = await requestJson<{ databases: DatabaseInfo[] }>(`/connections/${node.connectionId}/databases`)
-      const dbNames = data.databases.map((d) => d.name)
-
-      const currentSelected = selectedDatabasesRef.current[node.connectionId!]
-      const nextSelected = currentSelected ? filterPersistedValues(currentSelected, dbNames) : defaultSelectedDatabases(connection, dbNames, data.databases)
-
-      setAllDatabases((current) => ({ ...current, [node.connectionId!]: dbNames }))
-      setSelectedDatabases((current) => ({ ...current, [node.connectionId!]: nextSelected }))
-
-      return data.databases.filter((d) => nextSelected.includes(d.name)).map<DatabaseTreeNode>((database) => ({
-        key: `database:${node.connectionId}:${database.name}`,
-        title: database.name,
-        icon: <DatabaseOutlined />,
-        kind: 'database',
-        connectionId: node.connectionId,
-        databaseName: database.name,
-        sizeDisplay: database.size_display,
-        sizeBytes: database.size_bytes,
-        storageSizeDisplay: database.storage_size_display,
-        storageSizeBytes: database.storage_size_bytes,
-        isLeaf: connection.database_type === 'redis'
-      }))
+      return preloadConnectionTree(connection)
     }
 
     if (node.kind === 'database' && node.connectionId && node.databaseName) {
       const connection = getConnection(node.connectionId)
 
-      if (connection?.database_type === 'redis') {
+      if (!connection || connection.database_type === 'redis') {
         return []
       }
 
-      if (connection?.database_type === 'postgresql') {
-        const data = await requestJson<{ databases: DatabaseInfo[] }>(`/connections/${node.connectionId}/schemas?database=${encodeURIComponent(node.databaseName!)}`)
-        const selKey = `${node.connectionId}:${node.databaseName}`
-        const schemaNames = data.databases.map((s) => s.name)
-        const currentSelectedSchemas = selectedSchemasRef.current[selKey]
-        const nextSelectedSchemas = currentSelectedSchemas ? filterPersistedValues(currentSelectedSchemas, schemaNames) : schemaNames
-
-        setAllSchemas((current) => ({ ...current, [selKey]: schemaNames }))
-        setSelectedSchemas((current) => ({ ...current, [selKey]: nextSelectedSchemas }))
-
-        return data.databases.filter((s) => nextSelectedSchemas.includes(s.name)).map<DatabaseTreeNode>((schema) => ({
-          key: `pg-schema:${node.connectionId}:${node.databaseName}:${schema.name}`,
-          title: schema.name,
-          icon: <BranchesOutlined />,
-          kind: 'pg-schema',
-          connectionId: node.connectionId,
-          databaseName: schema.name,
-          pgDatabaseName: node.databaseName,
-          sizeDisplay: schema.size_display,
-          sizeBytes: schema.size_bytes,
-          storageSizeDisplay: schema.storage_size_display,
-          storageSizeBytes: schema.storage_size_bytes,
-          isLeaf: false
-        }))
-      }
-
-      return buildObjectGroupNodes(node.connectionId, node.databaseName)
+      return preloadDatabaseChildren(connection, node.databaseName)
     }
 
     if (node.kind === 'pg-schema' && node.connectionId && node.databaseName) {
-      return buildObjectGroupNodes(node.connectionId, node.databaseName, node.pgDatabaseName)
+      return preloadObjectGroupNodes(node.connectionId, node.databaseName, node.pgDatabaseName, getConnection(node.connectionId)?.database_type)
     }
 
     if (node.kind === 'object-group' && node.connectionId && node.objectType) {
-      const data = await requestJson<{ objects: DbObjectInfo[] }>(`${withPgDatabase(`/connections/${node.connectionId}/objects`, node.databaseName, node.pgDatabaseName)}${node.databaseName || node.pgDatabaseName ? '&' : '?'}type=${node.objectType}`)
-      return data.objects.map<DatabaseTreeNode>((object) => {
-        const kind = object.type === 'table' ? 'table' : 'db-object'
-        const group = DB_OBJECT_GROUP_BY_TYPE[object.type]
-
-        return {
-          key: `${kind}:${node.connectionId}:${node.pgDatabaseName ?? ''}:${node.databaseName ?? ''}:${object.type}:${object.name}`,
-          title: object.name,
-          icon: group.icon,
-          kind,
-          connectionId: node.connectionId,
-          databaseName: node.databaseName,
-          pgDatabaseName: node.pgDatabaseName,
-          tableName: object.name,
-          objectType: object.type,
-          sizeDisplay: object.size_display,
-          sizeBytes: object.size_bytes,
-          storageSizeDisplay: object.storage_size_display,
-          storageSizeBytes: object.storage_size_bytes,
-          rowCount: object.row_count,
-          isLeaf: object.type !== 'table'
-        }
-      })
+      return objectNodesForGroup(node.connectionId, node.objectType, node.databaseName, node.pgDatabaseName)
     }
 
     if (node.kind === 'table' && node.connectionId && node.tableName) {
@@ -2648,6 +2929,10 @@ function App(): React.JSX.Element {
         key: `column:${node.connectionId}:${node.databaseName ?? 'main'}:${node.tableName}:${column.name}`,
         title: `${column.name} · ${column.type}${column.primary_key ? ' · PK' : ''}${column.nullable ? '' : ' · NOT NULL'}`,
         kind: 'column',
+        columnName: column.name,
+        columnType: column.type,
+        nullable: column.nullable,
+        primaryKey: column.primary_key,
         isLeaf: true
       }))
     }
@@ -2655,66 +2940,29 @@ function App(): React.JSX.Element {
     return []
   }
 
-  const reloadExpandedDescendants = async (connectionId: string, expandedSnapshot: string[]): Promise<void> => {
-    const descendants = expandedSnapshot
-      .filter((k) => {
-        return k.startsWith(`database:${connectionId}:`) || k.startsWith(`pg-schema:${connectionId}:`) || k.startsWith(`object-group:${connectionId}:`) || k.startsWith(`table:${connectionId}:`)
-      })
-      .sort((a, b) => a.split(':').length - b.split(':').length)
+  const reloadNodeChildren = async (node: DatabaseTreeNode, expand = true): Promise<void> => {
+    if (!node.key || treeLoadingKeysRef.current.has(node.key)) {
+      return
+    }
 
-    for (const key of descendants) {
-      const parts = key.split(':')
-      const kind = parts[0] as TreeNodeKind
-
-      if (kind === 'database') {
-        await reloadNodeChildren({
-          key,
-          kind: 'database',
-          connectionId,
-          databaseName: parts.slice(2).join(':'),
-          isLeaf: false
-        })
-      } else if (kind === 'pg-schema') {
-        await reloadNodeChildren({
-          key,
-          kind: 'pg-schema',
-          connectionId,
-          databaseName: parts[3],
-          pgDatabaseName: parts[2],
-          isLeaf: false
-        })
-      } else if (kind === 'object-group') {
-        await reloadNodeChildren({
-          key,
-          kind: 'object-group',
-          connectionId,
-          pgDatabaseName: parts[2] || undefined,
-          databaseName: parts[3] || undefined,
-          objectType: parts[4] as DbObjectType,
-          isLeaf: false
-        })
-      } else if (kind === 'table') {
-        await reloadNodeChildren({
-          key,
-          kind: 'table',
-          connectionId,
-          pgDatabaseName: parts[2] || undefined,
-          databaseName: parts[3] || undefined,
-          objectType: 'table',
-          tableName: parts.slice(5).join(':'),
-          isLeaf: false
+    treeLoadingKeysRef.current.add(node.key)
+    try {
+      const children = await loadChildrenForNode(node)
+      if (node.kind !== 'connection') {
+        setTreeData((current) => updateTreeNode(current, node.key as React.Key, children))
+      }
+      if (expand) {
+        startTransition(() => {
+          setExpandedKeys((current) => current.includes(node.key as React.Key) ? current : [...current, node.key as React.Key])
         })
       }
+    } finally {
+      treeLoadingKeysRef.current.delete(node.key)
     }
   }
 
-  const reloadNodeChildren = async (node: DatabaseTreeNode, expand = true): Promise<void> => {
-    const children = await loadChildrenForNode(node)
-    setTreeData((current) => updateTreeNode(current, node.key, children))
-    if (expand) {
-      setExpandedKeys((current) => current.includes(node.key) ? current : [...current, node.key])
-    }
-  }
+  const isTreeNodeChildrenLoaded = (node: DatabaseTreeNode): boolean =>
+    Boolean(node.isLeaf || node.childrenLoaded || node.children?.length)
 
   const isLoadableTreeNode = (node: DatabaseTreeNode): boolean => {
     if (node.kind === 'database' && node.connectionId && getConnection(node.connectionId)?.database_type === 'redis') {
@@ -2724,28 +2972,14 @@ function App(): React.JSX.Element {
     return node.kind === 'connection' || node.kind === 'database' || node.kind === 'pg-schema' || node.kind === 'object-group' || node.kind === 'table'
   }
 
-  const collectDescendantKeys = (node: DatabaseTreeNode): Set<React.Key> => {
-    const keys = new Set<React.Key>()
-    const collect = (children?: DatabaseTreeNode[]): void => {
-      children?.forEach((child) => {
-        keys.add(child.key)
-        collect(child.children)
-      })
-    }
-
-    collect(node.children)
-    return keys
-  }
-
   const collapseTreeNode = (node: DatabaseTreeNode): void => {
     const key = node.key as React.Key
-    const descendantKeys = collectDescendantKeys(node)
-    setExpandedKeys((current) => current.filter((item) => item !== key && !descendantKeys.has(item)))
+    startTransition(() => {
+      setExpandedKeys((current) => current.filter((item) => item !== key))
+    })
   }
 
   const toggleOrLoadTreeNode = (node: DatabaseTreeNode): void => {
-    activateAIContextFromNode(node)
-
     if (!node.key || !isLoadableTreeNode(node)) {
       return
     }
@@ -2758,20 +2992,14 @@ function App(): React.JSX.Element {
       return
     }
 
-    if (!node.children || node.children.length === 0) {
+    if (!isTreeNodeChildrenLoaded(node)) {
       void reloadNodeChildren({ ...node, isLeaf: false })
       return
     }
 
-    setExpandedKeys((current) => current.includes(key) ? current : [...current, key])
-  }
-
-  const loadTreeData = async (node: DatabaseTreeNode): Promise<void> => {
-    const children = await loadChildrenForNode(node)
-
-    if (children.length > 0) {
-      setTreeData((current) => updateTreeNode(current, node.key, children))
-    }
+    startTransition(() => {
+      setExpandedKeys((current) => current.includes(key) ? current : [...current, key])
+    })
   }
 
   const openConnectionModal = async (nextDatabaseType: DatabaseType): Promise<void> => {
@@ -2817,6 +3045,15 @@ function App(): React.JSX.Element {
         host: '127.0.0.1',
         port: 6379,
         database: '0'
+      })
+    } else if (nextDatabaseType === 'clickhouse') {
+      form.setFieldsValue({
+        database_type: 'clickhouse',
+        name: 'ClickHouse',
+        host: '127.0.0.1',
+        port: 8123,
+        username: 'default',
+        database: 'default'
       })
     } else {
       form.setFieldsValue({
@@ -2864,7 +3101,8 @@ function App(): React.JSX.Element {
       { key: 'postgresql', label: 'PostgreSQL', icon: <img src={postgresIcon} alt="" style={{ width: 16, height: 16 }} /> },
       { key: 'dm', label: '达梦', icon: <img src={dmIcon} alt="" style={{ width: 16, height: 16 }} /> },
       { key: 'mongodb', label: 'MongoDB', icon: <img src={mongoIcon} alt="" style={{ width: 16, height: 16 }} /> },
-      { key: 'redis', label: 'Redis', icon: <img src={redisIcon} alt="Redis" style={{ width: 16, height: 16 }} /> }
+      { key: 'redis', label: 'Redis', icon: <img src={redisIcon} alt="Redis" style={{ width: 16, height: 16 }} /> },
+      { key: 'clickhouse', label: 'ClickHouse', icon: <img src={clickhouseIcon} alt="ClickHouse" style={{ width: 16, height: 16 }} /> }
     ],
     onClick: ({ key }: { key: string }) => void openConnectionModal(key as DatabaseType)
   }
@@ -2927,6 +3165,18 @@ function App(): React.JSX.Element {
       }
     }
 
+    if (values.database_type === 'clickhouse') {
+      return {
+        name: values.name,
+        database_type: 'clickhouse',
+        host: values.host,
+        port: values.port,
+        username: values.username,
+        password: values.password,
+        database: values.database
+      }
+    }
+
     return {
       name: values.name,
       database_type: 'mysql',
@@ -2947,21 +3197,65 @@ function App(): React.JSX.Element {
     }
   }
 
+  const saveJdbcJavaConfig = async (): Promise<void> => {
+    const nextJavaHome = jdbcJavaHome.trim()
+    const previousJavaHome = configuredJdbcJavaHome
+    const previousEnabled = configuredJdbcJavaEnabled
+
+    if (jdbcJavaEnabled && !nextJavaHome) {
+      messageApi.warning('开启 JDBC Java 环境前请选择 Java 目录')
+      return
+    }
+
+    const result = await requestJson<JavaRuntimeConfigResponse>('/drivers/java/config', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled: jdbcJavaEnabled, java_home: nextJavaHome || null })
+    })
+    const savedJavaHome = result.java_home ?? ''
+    const savedEnabled = result.enabled
+    setJdbcJavaHome(savedJavaHome)
+    setJdbcJavaEnabled(savedEnabled)
+    setConfiguredJdbcJavaHome(savedJavaHome)
+    setConfiguredJdbcJavaEnabled(savedEnabled)
+
+    if (savedJavaHome !== previousJavaHome || savedEnabled !== previousEnabled) {
+      Modal.confirm({
+        title: '需要重启应用',
+        content: 'JDBC Java 环境已修改。由于 JVM 启动后不能切换 Java 版本，需要重启应用后才能生效。是否现在重启？',
+        okText: '确认并重启',
+        cancelText: '取消',
+        centered: true,
+        maskClosable: false,
+        onOk: async () => {
+          await window.api.relaunchApp()
+        },
+        onCancel: () => {
+          setJavaRestartRequired(true)
+        }
+      })
+      return
+    }
+
+    messageApi.success(savedEnabled ? `JDBC Java 环境已设置为 Java ${result.major ?? '未知版本'}` : '已关闭 JDBC Java 环境')
+  }
+
   const selectJavaDirectory = async (): Promise<void> => {
     const directory = await window.api.selectJavaDirectory()
 
     if (directory) {
-      driverForm.setFieldValue('java_home', directory)
+      setJdbcJavaHome(directory)
     }
   }
 
   const loadJavaRuntimes = async (): Promise<void> => {
     try {
       const result = await requestJson<JavaDetectResponse>('/drivers/java')
+      const configured = result.configured ?? ''
       setJavaRuntimes(result.runtimes)
-      if (!driverForm.getFieldValue('java_home') && result.preferred) {
-        driverForm.setFieldValue('java_home', result.preferred)
-      }
+      setJdbcJavaHome(configured || result.preferred || '')
+      setJdbcJavaEnabled(result.enabled)
+      setConfiguredJdbcJavaHome(configured)
+      setConfiguredJdbcJavaEnabled(result.enabled)
     } catch {
       setJavaRuntimes([])
     }
@@ -2981,20 +3275,38 @@ function App(): React.JSX.Element {
     }
   }
 
-  const openDriverManager = (): void => {
+  const openSettings = (section: SettingsSection = 'app'): void => {
+    setSettingsSection(section)
     setDriverManagerOpen(true)
-    driverForm.setFieldsValue({ database_type: 'dm', driver_type: 'jdbc', name: '', enabled: true })
-    void loadDrivers()
-    void loadJavaRuntimes()
+    void window.api.getAppInfo().then(setAppInfo).catch(() => undefined)
+
+    if (section === 'drivers') {
+      driverForm.setFieldsValue({ database_type: 'dm', driver_type: 'jdbc', name: '', enabled: true })
+      void loadDrivers()
+      void loadJavaRuntimes()
+    }
+  }
+
+  const openDriverManager = (): void => {
+    openSettings('drivers')
+  }
+
+  const switchSettingsSection = (section: SettingsSection): void => {
+    setSettingsSection(section)
+    if (section === 'drivers') {
+      driverForm.setFieldsValue({ database_type: driverForm.getFieldValue('database_type') ?? 'dm', driver_type: driverForm.getFieldValue('driver_type') ?? 'jdbc', enabled: true })
+      void loadDrivers()
+      void loadJavaRuntimes()
+    }
   }
 
   const addDriver = async (): Promise<void> => {
     setDriverSaving(true)
     try {
       const values = await driverForm.validateFields()
-      const body = { database_type: 'dm', driver_type: values.driver_type, name: values.name, path: values.path, java_home: values.driver_type === 'jdbc' ? values.java_home : undefined, enabled: values.enabled }
+      const body = { database_type: values.database_type, driver_type: values.driver_type, name: values.name, path: values.path, enabled: values.enabled }
       await requestJson('/drivers', { method: 'POST', body: JSON.stringify(body) })
-      driverForm.setFieldsValue({ database_type: 'dm', driver_type: 'jdbc', name: '', path: undefined, java_home: javaRuntimes[0]?.home, enabled: true })
+      driverForm.setFieldsValue({ database_type: values.database_type, driver_type: 'jdbc', name: '', path: undefined, enabled: true })
       await loadDrivers()
       messageApi.success('驱动已添加')
     } catch (err) {
@@ -3096,6 +3408,7 @@ function App(): React.JSX.Element {
   }
 
   const openConnectionById = async (connectionId: string): Promise<void> => {
+    setConnectionTreeLoadingText(connectionId, '正在打开连接...')
     try {
       const connection = await requestJson<ConnectionInfo>(`/connections/${connectionId}/open`, { method: 'POST' })
 
@@ -3108,11 +3421,13 @@ function App(): React.JSX.Element {
       if (connection.database_type === 'sqlite') {
         setTreeData((current) => updateTreeNode(current, connKey, buildConnectionNode(connection).children ?? []))
       } else {
-        void reloadNodeChildren({ key: connKey, kind: 'connection', connectionId, closed: false, isLeaf: false })
+        setConnectionTreeLoadingText(connectionId, '正在加载库表...')
+        await preloadConnectionTree(connection)
       }
-
     } catch (err) {
       showError(err instanceof Error ? err.message : '打开连接失败')
+    } finally {
+      setConnectionTreeLoadingText(connectionId)
     }
   }
 
@@ -3278,6 +3593,7 @@ function App(): React.JSX.Element {
             connectionId: creatingDatabaseConnectionId,
             databaseName: name,
             pgDatabaseName: creatingSchemaDatabaseName,
+            childrenLoaded: false,
             isLeaf: false
           }))
           setTreeData((current) => updateTreeNode(current, dbKey, schemaChildren))
@@ -3291,9 +3607,10 @@ function App(): React.JSX.Element {
           const list = current[connId] ?? []
           if (!list.includes(dbName)) {
             const nextList = [...list, dbName]
-            selectedDatabasesRef.current = { ...current, [connId]: nextList }
-            setTimeout(() => refreshConnectionNode(connId), 0)
-            return { ...current, [connId]: nextList }
+            const next = { ...current, [connId]: nextList }
+            selectedDatabasesRef.current = next
+            setTimeout(() => refreshConnectionNode(connId, nextList), 0)
+            return next
           }
           return current
         })
@@ -3343,6 +3660,11 @@ function App(): React.JSX.Element {
         ? `db.createCollection("${newTableName.trim().replaceAll('"', '\\"')}")`
         : (() => {
             const columnDefs = validColumns.map((col) => {
+              if (conn?.database_type === 'clickhouse') {
+                const type = col.nullable && !col.type.startsWith('Nullable(') ? `Nullable(${col.type})` : col.type
+                return `${col.name} ${type}`
+              }
+
               const parts: string[] = [col.name, col.type]
 
               if (!col.nullable) {
@@ -3356,7 +3678,8 @@ function App(): React.JSX.Element {
               return parts.join(' ')
             })
 
-            return `CREATE TABLE ${newTableName.trim()} (\n  ${columnDefs.join(',\n  ')}\n);`
+            const tableSql = `CREATE TABLE ${newTableName.trim()} (\n  ${columnDefs.join(',\n  ')}\n)`
+            return conn?.database_type === 'clickhouse' ? `${tableSql}\nENGINE = MergeTree\nORDER BY tuple();` : `${tableSql};`
           })()
 
       const result = await requestJson<SqlFileRunResponse>(`/connections/${createTableConnectionId}/sql-file`, {
@@ -3417,7 +3740,7 @@ function App(): React.JSX.Element {
     let defaultDb = databaseName ?? ''
     let defaultPgDb = pgDatabaseName ?? ''
 
-    if (connection?.database_type === 'mysql' || connection?.database_type === 'postgresql' || connection?.database_type === 'mongodb' || connection?.database_type === 'redis') {
+    if (connection?.database_type === 'mysql' || connection?.database_type === 'postgresql' || connection?.database_type === 'mongodb' || connection?.database_type === 'redis' || connection?.database_type === 'clickhouse') {
       try {
         const data = await requestJson<{ databases: DatabaseInfo[] }>(`/connections/${connectionId}/databases`)
         databases = data.databases
@@ -3755,7 +4078,7 @@ function App(): React.JSX.Element {
     let finalDb = databaseName
     let finalPgDb = pgDatabaseName
 
-    if ((connection?.database_type === 'mysql' || connection?.database_type === 'mongodb' || connection?.database_type === 'redis') && !finalDb) {
+    if ((isDatabaseScopedType(connection?.database_type)) && !finalDb) {
       finalDb = getDefaultDatabaseName(connection)
     }
 
@@ -3791,7 +4114,7 @@ function App(): React.JSX.Element {
     if (connId) {
       void ensureDatabasesLoaded(connId)
 
-      if ((connection?.database_type === 'mysql' || connection?.database_type === 'mongodb' || connection?.database_type === 'redis') && finalDb) {
+      if ((isDatabaseScopedType(connection?.database_type)) && finalDb) {
         void preloadCompletionForDatabase(connId, finalDb)
       }
 
@@ -3891,7 +4214,7 @@ function App(): React.JSX.Element {
 
     const connection = getConnection(tab.connectionId)
 
-    if ((connection?.database_type === 'mysql' || connection?.database_type === 'mongodb' || connection?.database_type === 'redis') && !tab.databaseName) {
+    if ((isDatabaseScopedType(connection?.database_type)) && !tab.databaseName) {
       return
     }
 
@@ -3914,7 +4237,7 @@ function App(): React.JSX.Element {
           sql: sqlToExecute,
           limit: tab.limit ?? QUERY_DEFAULT_LIMIT,
           offset: Math.max(0, (tab.page ?? 1) - 1) * (tab.limit ?? QUERY_DEFAULT_LIMIT),
-          database: connection?.database_type === 'mysql' || connection?.database_type === 'postgresql' || connection?.database_type === 'mongodb' || connection?.database_type === 'redis' ? (tab.databaseName || undefined) : undefined,
+          database: connection?.database_type === 'mysql' || connection?.database_type === 'postgresql' || connection?.database_type === 'mongodb' || connection?.database_type === 'redis' || connection?.database_type === 'clickhouse' ? (tab.databaseName || undefined) : undefined,
           pg_database: connection?.database_type === 'postgresql' ? (tab.pgDatabaseName || undefined) : undefined
         })
       })
@@ -4091,7 +4414,7 @@ function App(): React.JSX.Element {
           <div className="titlebar-spacer" />
           <Space className="toolbar-actions titlebar-no-drag" size={4}>
             <Button type="text" size="small" icon={<FileAddOutlined />} onClick={() => openQueryWorkspace()} title="新建查询" aria-label="新建查询" />
-            <Button type="text" size="small" icon={<SettingOutlined />} onClick={openDriverManager} title="驱动管理" aria-label="驱动管理" />
+            <Button type="text" size="small" icon={<SettingOutlined />} onClick={() => openSettings('app')} title="设置" aria-label="设置" />
             <Button type={updateInfo?.available || downloadingUpdate ? 'primary' : 'text'} size="small" icon={<CloudDownloadOutlined />} loading={checkingUpdate} onClick={() => { setUpdateModalOpen(true); if (!downloadingUpdate) { void checkForUpdates(true) } }} title="检查更新" aria-label="检查更新" />
             <Button type="text" size="small" icon={<ReloadOutlined />} loading={healthLoading} onClick={() => void checkHealth()} title="同步状态" aria-label="同步状态" />
             <Button type={aiPanelOpen ? 'primary' : 'text'} size="small" icon={<MessageOutlined />} onClick={() => setAiPanelOpen((open) => !open)} title={aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'} aria-label={aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'} />
@@ -4122,69 +4445,100 @@ function App(): React.JSX.Element {
               <div className="summary-card accent"><span>{workspaceTabs.length}</span><small>工作页</small></div>
             </div>
             <div className="resource-tree-shell">
-              {connections.length === 0 ? (
-                <Alert message="暂无数据库连接" description="先创建一个 SQLite 或 MySQL 连接。" type="info" showIcon />
-              ) : (
-                <Tree
-                  showIcon
-                  blockNode
-                  virtual
-                  treeData={treeData}
-                  expandedKeys={expandedKeys}
-                  onExpand={(keys, info) => {
-                    const node = info.node as DatabaseTreeNode
-                    setFocusedTreeNode(node)
-                    activateAIContextFromNode(node)
-                    if (!info.expanded) {
-                      collapseTreeNode(node)
-                      return
-                    }
-                    setExpandedKeys(keys)
-                    if ((!node.children || node.children.length === 0) && isLoadableTreeNode(node)) {
-                      void reloadNodeChildren({ ...node, isLeaf: false }, false)
-                    }
-                  }}
-                  loadData={(node) => loadTreeData(node as DatabaseTreeNode)}
-                  titleRender={(node) => renderTreeTitle(node as DatabaseTreeNode)}
-                  selectedKeys={selectedConnectionId ? [`connection:${selectedConnectionId}`] : []}
-                  onSelect={(_, info) => {
-                    const node = info.node as DatabaseTreeNode
-                    setFocusedTreeNode(node)
-                    if (node.connectionId) {
-                      setSelectedConnectionId(node.connectionId)
-                    }
-                  }}
-                  onDoubleClick={(_, node) => {
-                    const treeNode = node as DatabaseTreeNode
-                    setFocusedTreeNode(treeNode)
-                    if (treeNode.kind === 'database' || treeNode.kind === 'pg-schema') {
-                      activateAIContextFromNode(treeNode)
-                    }
-                    if (treeNode.kind === 'database' && treeNode.connectionId && treeNode.databaseName && getConnection(treeNode.connectionId)?.database_type === 'redis') {
-                      activateAIContextFromNode(treeNode)
-                      void openRedisDatabaseBrowser(treeNode.connectionId, treeNode.databaseName)
-                      return
-                    }
-                    if ((treeNode.kind === 'table' || treeNode.kind === 'db-object') && treeNode.connectionId && treeNode.tableName && (treeNode.objectType === 'table' || treeNode.objectType === 'view')) {
-                      activateAIContextFromNode(treeNode)
-                      const connection = getConnection(treeNode.connectionId)
-                      if (connection?.database_type === 'redis') {
-                        void openRedisDatabaseBrowser(treeNode.connectionId, treeNode.databaseName ?? getDefaultDatabaseName(connection) ?? 'db0')
-                      } else {
-                        void previewTable(treeNode.connectionId, treeNode.tableName, treeNode.databaseName, treeNode.pgDatabaseName)
-                      }
-                      return
-                    }
-                    if (treeNode.kind === 'connection' && treeNode.connectionId) {
-                      const conn = getConnection(treeNode.connectionId)
-                      if (conn && !conn.is_open) {
-                        void openConnectionById(treeNode.connectionId)
+              <div className="resource-tree-viewport">
+                {connections.length === 0 ? (
+                  <Alert message="暂无数据库连接" description="先创建一个 SQLite 或 MySQL 连接。" type="info" showIcon />
+                ) : (
+                  <Tree
+                    showIcon
+                    blockNode
+                    virtual={false}
+                    motion={null}
+                    treeData={treeData}
+                    expandedKeys={expandedKeys}
+                    onExpand={(keys, info) => {
+                      const node = info.node as DatabaseTreeNode
+                      if (!info.expanded) {
+                        collapseTreeNode(node)
                         return
                       }
-                    }
-                    toggleOrLoadTreeNode(treeNode)
-                  }}
-                />
+                      startTransition(() => {
+                        setExpandedKeys(keys)
+                      })
+                      if (!isTreeNodeChildrenLoaded(node) && isLoadableTreeNode(node)) {
+                        void reloadNodeChildren({ ...node, isLeaf: false }, false)
+                      }
+                    }}
+                    titleRender={(node) => renderTreeTitle(node as DatabaseTreeNode)}
+                    selectedKeys={selectedConnectionId ? [`connection:${selectedConnectionId}`] : []}
+                    onSelect={(_, info) => {
+                      const node = info.node as DatabaseTreeNode
+                      setFocusedTreeNode(node)
+                      if (node.connectionId) {
+                        setSelectedConnectionId(node.connectionId)
+                      }
+                    }}
+                    onRightClick={({ node, event }) => {
+                      event.preventDefault()
+                      const treeNode = node as DatabaseTreeNode
+                      const items = getTreeContextMenuItems(treeNode)
+                      if (!items || items.length === 0) {
+                        return
+                      }
+                      setFocusedTreeNode(treeNode)
+                      if (treeNode.connectionId) {
+                        setSelectedConnectionId(treeNode.connectionId)
+                      }
+                      setTreeContextMenu({
+                        x: event.clientX,
+                        y: event.clientY,
+                        node: treeNode
+                      })
+                    }}
+                    onDoubleClick={(_, node) => {
+                      const treeNode = node as DatabaseTreeNode
+                      setFocusedTreeNode(treeNode)
+                      if (treeNode.kind === 'database' || treeNode.kind === 'pg-schema') {
+                        activateAIContextFromNode(treeNode)
+                      }
+                      if (treeNode.kind === 'database' && treeNode.connectionId && treeNode.databaseName && getConnection(treeNode.connectionId)?.database_type === 'redis') {
+                        activateAIContextFromNode(treeNode)
+                        void openRedisDatabaseBrowser(treeNode.connectionId, treeNode.databaseName)
+                        return
+                      }
+                      if ((treeNode.kind === 'table' || treeNode.kind === 'db-object') && treeNode.connectionId && treeNode.tableName && (treeNode.objectType === 'table' || treeNode.objectType === 'view')) {
+                        activateAIContextFromNode(treeNode)
+                        const connection = getConnection(treeNode.connectionId)
+                        if (connection?.database_type === 'redis') {
+                          void openRedisDatabaseBrowser(treeNode.connectionId, treeNode.databaseName ?? getDefaultDatabaseName(connection) ?? 'db0')
+                        } else {
+                          void previewTable(treeNode.connectionId, treeNode.tableName, treeNode.databaseName, treeNode.pgDatabaseName)
+                        }
+                        return
+                      }
+                      if (treeNode.kind === 'connection' && treeNode.connectionId) {
+                        const conn = getConnection(treeNode.connectionId)
+                        if (conn && !conn.is_open) {
+                          void openConnectionById(treeNode.connectionId)
+                          return
+                        }
+                      }
+                      toggleOrLoadTreeNode(treeNode)
+                    }}
+                  />
+                )}
+              </div>
+              {treeContextMenu && (
+                <div className="tree-context-menu-backdrop" onMouseDown={() => setTreeContextMenu(null)}>
+                  <div
+                    className="tree-context-menu-panel"
+                    style={{ left: treeContextMenu.x, top: treeContextMenu.y }}
+                    onMouseDown={(event) => event.stopPropagation()}
+                    onContextMenu={(event) => event.preventDefault()}
+                  >
+                    <Menu items={getTreeContextMenuItems(treeContextMenu.node)} onClick={handleTreeContextMenuClick} />
+                  </div>
+                </div>
               )}
             </div>
           </Splitter.Panel>
@@ -4200,7 +4554,7 @@ function App(): React.JSX.Element {
                     {workspaceTabs.length === 0 ? (
                       <div className="empty-workspace"><FileAddOutlined /><Typography.Text type="secondary">连接数据库后，可浏览库表结构、预览数据、编写 SQL，并让 Djinn Agent 辅助分析与执行受控操作。</Typography.Text><Space><Dropdown menu={connectionCreateMenu} trigger={['click']}><Button icon={<PlusOutlined />}>创建连接</Button></Dropdown></Space></div>
                     ) : (
-                      <Tabs className="workspace-tabs" type="editable-card" hideAdd activeKey={activeTabKey} onChange={setActiveTabKey} onEdit={(targetKey, action) => { if (action === 'remove' && typeof targetKey === 'string') { closeWorkspaceTab(targetKey) } }} items={workspaceTabs.map((tab) => ({ key: tab.key, label: tab.title, closable: true, children: renderWorkspaceTab(tab) }))} />
+                      <Tabs className="workspace-tabs" type="editable-card" hideAdd destroyOnHidden activeKey={activeTabKey} onChange={setActiveTabKey} onEdit={(targetKey, action) => { if (action === 'remove' && typeof targetKey === 'string') { closeWorkspaceTab(targetKey) } }} items={workspaceTabs.map((tab) => ({ key: tab.key, label: tab.title, closable: true, children: tab.key === activeTabKey ? renderWorkspaceTab(tab) : null }))} />
                     )}
                   </div>
                 </Splitter.Panel>
@@ -4285,81 +4639,122 @@ function App(): React.JSX.Element {
           </Flex>
         </Space>
       </Modal>
-      <Modal title="驱动管理" open={driverManagerOpen} footer={null} onCancel={() => setDriverManagerOpen(false)} width={860} maskClosable={false}>
-        <Space direction="vertical" className="full-width" size="middle">
-          <Alert type="info" showIcon message="统一管理数据库驱动。当前先支持达梦，后续其他数据库驱动会继续接入这里。达梦支持 dmPython pyd、dmPython whl 和 JDBC jar，连接时在连接信息中选择具体驱动。" />
-          <Flex justify="space-between" align="center">
-            <Typography.Title level={5} style={{ margin: 0 }}>达梦 DM</Typography.Title>
-            <Space>
-              <Button loading={driversLoading} onClick={() => void loadDrivers()}>刷新</Button>
-            </Space>
-          </Flex>
-          <Table<DriverInfo>
-            size="small"
-            rowKey="id"
-            loading={driversLoading}
-            pagination={false}
-            tableLayout="fixed"
-            scroll={{ x: 1080 }}
-            dataSource={drivers.filter((driver) => driver.database_type === 'dm')}
-            columns={[
-              { title: '名称', dataIndex: 'name', width: 150, ellipsis: true, render: (value: string) => <Typography.Text ellipsis title={value}>{value}</Typography.Text> },
-              { title: '类型', dataIndex: 'driver_type', width: 120, render: (value: DriverInfo['driver_type']) => driverTypeLabel(value) },
-              { title: '来源', dataIndex: 'source', width: 90, render: () => '手动添加' },
-              { title: '驱动文件', width: 260, ellipsis: true, render: (_: unknown, driver) => <Typography.Text ellipsis title={driver.path ?? undefined}>{driver.path}</Typography.Text> },
-              { title: 'Java 目录', width: 260, ellipsis: true, render: (_: unknown, driver) => driver.driver_type === 'jdbc' ? <Typography.Text ellipsis title={driver.java_home ?? undefined}>{driver.java_home || '自动检测'}</Typography.Text> : '-' },
-              { title: '状态', dataIndex: 'enabled', width: 80, render: (value: boolean) => value ? <Tag color="success">启用</Tag> : <Tag>停用</Tag> },
-              { title: '操作', width: 150, fixed: 'right', render: (_: unknown, driver) => <Space size={4} wrap={false}><Button size="small" onClick={() => void testDriver(driver)}>测试</Button><Button danger size="small" onClick={() => void deleteDriver(driver)}>删除</Button></Space> }
-            ]}
-          />
-          <Form form={driverForm} layout="vertical" initialValues={{ database_type: 'dm', driver_type: 'jdbc', enabled: true }}>
-            <Form.Item name="driver_type" label="添加驱动类型" rules={[{ required: true, message: '请选择驱动类型' }]}>
-              <Select options={[{ label: 'JDBC jar 驱动', value: 'jdbc' }, { label: 'dmPython pyd 驱动', value: 'python' }, { label: 'dmPython whl 驱动', value: 'whl' }]} />
-            </Form.Item>
-            <Form.Item name="name" label="显示名称" rules={[{ required: true, message: '请输入显示名称' }]}>
-              <Input placeholder="例如：达梦 JDBC / 本机 dmPython" />
-            </Form.Item>
-            <Form.Item
-              name="path"
-              label={driverType === 'python' ? 'dmPython pyd 文件' : driverType === 'whl' ? 'dmPython whl 文件' : 'JDBC jar 文件'}
-              rules={[{ required: true, message: driverType === 'python' ? '请选择 dmPython pyd 文件' : driverType === 'whl' ? '请选择 dmPython whl 文件' : '请选择 JDBC jar 文件' }]}
-            >
-              <Input readOnly placeholder={driverType === 'python' ? '请选择 dmPython.pyd' : driverType === 'whl' ? '请选择 dmPython whl 文件' : '请选择 DmJdbcDriver.jar'} addonAfter={<Button type="link" size="small" onClick={() => void selectDriverFile()}>选择</Button>} />
-            </Form.Item>
-            {driverType === 'jdbc' && (
-              <>
-                <Form.Item label="Java 目录">
+      <Modal title="设置" open={driverManagerOpen} footer={null} onCancel={() => setDriverManagerOpen(false)} width={980} maskClosable={false}>
+        <Flex gap={18} align="stretch" className="settings-layout">
+          <div className="settings-sidebar">
+            <Menu
+              mode="inline"
+              selectedKeys={[settingsSection]}
+              onClick={({ key }) => switchSettingsSection(key as SettingsSection)}
+              items={[
+                { key: 'app', icon: <SettingOutlined />, label: '应用' },
+                { key: 'drivers', icon: <DatabaseOutlined />, label: '驱动管理' }
+              ]}
+            />
+          </div>
+          <div className="settings-content">
+            {settingsSection === 'app' ? (
+              <Space direction="vertical" className="full-width" size="large">
+                <div className="settings-about-card">
+                  <img className="settings-about-logo" src={appLogoHorizontal} alt="DataDjinn" />
+                  <Typography.Text type="secondary">当前版本：{appInfo?.version ?? updateSettings?.currentVersion ?? '-'}</Typography.Text>
+                </div>
+                <Button icon={<GithubOutlined />} onClick={() => void window.api.openProjectHome()}>
+                  GitHub
+                </Button>
+              </Space>
+            ) : (
+              <Space direction="vertical" className="full-width" size="middle">
+                <Space direction="vertical" className="full-width" size="small">
+                  <Typography.Title level={5} style={{ margin: 0 }}>全局 JDBC Java 环境</Typography.Title>
+                  {javaRestartRequired && (
+                    <Alert
+                      type="warning"
+                      showIcon
+                      message="需要重启应用"
+                      description="JDBC Java 环境已修改，但当前应用尚未重启。重启后新的 Java 环境才会生效。"
+                    />
+                  )}
+                  <Flex justify="space-between" align="center">
+                    <Space direction="vertical" size={0}>
+                      <Typography.Text>启用 JDBC Java 环境</Typography.Text>
+                      <Typography.Text type="secondary">关闭后启动应用时不会加载 Java，使用 JDBC 驱动连接时需要先开启并配置。</Typography.Text>
+                    </Space>
+                    <Switch checked={jdbcJavaEnabled} onChange={setJdbcJavaEnabled} />
+                  </Flex>
                   <Space.Compact className="full-width">
-                    <Form.Item name="java_home" noStyle>
-                      <AutoComplete
-                        options={javaRuntimeOptions}
-                        placeholder="自动检测，或手动选择 JDK/JRE 目录"
-                        filterOption={(inputValue, option) => {
-                          const normalizedInput = inputValue.trim().toLowerCase()
-                          if (!normalizedInput || selectedJavaRuntimeValues.has(normalizedInput)) {
-                            return true
-                          }
-                          return String(option?.value ?? '').toLowerCase().includes(normalizedInput) || String(option?.label ?? '').toLowerCase().includes(normalizedInput)
-                        }}
-                        className="full-width"
-                      />
-                    </Form.Item>
-                    <Button onClick={() => void selectJavaDirectory()}>选择</Button>
+                    <AutoComplete
+                      value={jdbcJavaHome}
+                      options={javaRuntimeOptions}
+                      placeholder="请选择项目启动后 JDBC 统一使用的 JDK/JRE 目录"
+                      onChange={setJdbcJavaHome}
+                      disabled={!jdbcJavaEnabled}
+                      filterOption={(inputValue, option) => {
+                        const normalizedInput = inputValue.trim().toLowerCase()
+                        if (!normalizedInput || selectedJavaRuntimeValues.has(normalizedInput)) {
+                          return true
+                        }
+                        return String(option?.value ?? '').toLowerCase().includes(normalizedInput) || String(option?.label ?? '').toLowerCase().includes(normalizedInput)
+                      }}
+                      className="full-width"
+                    />
+                    <Button disabled={!jdbcJavaEnabled} onClick={() => void selectJavaDirectory()}>选择</Button>
+                    <Button type="primary" onClick={() => void saveJdbcJavaConfig()}>保存</Button>
                   </Space.Compact>
-                </Form.Item>
-                {javaRuntimes.length > 0 && (
-                  <Alert
-                    type="info"
-                    showIcon
-                    message={`已自动检测到 ${javaRuntimes.length} 个 Java 环境`}
-                    description={javaRuntimes.slice(0, 3).map((runtime) => `Java ${runtime.major ?? '未知版本'}：${runtime.home}`).join('；')}
-                  />
-                )}
-              </>
+                </Space>
+                <Flex justify="space-between" align="center">
+                  <Typography.Title level={5} style={{ margin: 0 }}>数据库驱动</Typography.Title>
+                  <Button loading={driversLoading} onClick={() => void loadDrivers()}>刷新</Button>
+                </Flex>
+                <Table<DriverInfo>
+                  size="small"
+                  rowKey="id"
+                  loading={driversLoading}
+                  pagination={false}
+                  tableLayout="fixed"
+                  scroll={{ x: 980 }}
+                  dataSource={drivers}
+                  columns={[
+                    { title: '数据库', dataIndex: 'database_type', width: 100, render: (value: DriverDatabaseType) => value === 'dm' ? '达梦' : '高斯' },
+                    { title: '名称', dataIndex: 'name', width: 160, ellipsis: true, render: (value: string) => <Typography.Text ellipsis title={value}>{value}</Typography.Text> },
+                    { title: '类型', dataIndex: 'driver_type', width: 120, render: (value: DriverInfo['driver_type']) => driverTypeLabel(value) },
+                    { title: '来源', dataIndex: 'source', width: 90, render: () => '手动添加' },
+                    { title: '驱动文件', width: 330, ellipsis: true, render: (_: unknown, driver) => <Typography.Text ellipsis title={driver.path ?? undefined}>{driver.path}</Typography.Text> },
+                    { title: '状态', dataIndex: 'enabled', width: 80, render: (value: boolean) => value ? <Tag color="success">启用</Tag> : <Tag>停用</Tag> },
+                    { title: '操作', width: 150, fixed: 'right', render: (_: unknown, driver) => <Space size={4} wrap={false}><Button size="small" onClick={() => void testDriver(driver)}>测试</Button><Button danger size="small" onClick={() => void deleteDriver(driver)}>删除</Button></Space> }
+                  ]}
+                />
+                <Form form={driverForm} layout="vertical" initialValues={{ database_type: 'dm', driver_type: 'jdbc', enabled: true }}>
+                  <Form.Item name="database_type" label="数据库类型" rules={[{ required: true, message: '请选择数据库类型' }]}>
+                    <Select
+                      options={[{ label: '达梦 DM', value: 'dm' }, { label: '高斯数据库（预留）', value: 'gaussdb' }]}
+                      onChange={(value: DriverDatabaseType) => {
+                        if (value === 'gaussdb') {
+                          driverForm.setFieldValue('driver_type', 'jdbc')
+                        }
+                      }}
+                    />
+                  </Form.Item>
+                  <Form.Item name="driver_type" label="添加驱动类型" rules={[{ required: true, message: '请选择驱动类型' }]}>
+                    <Select options={driverDatabaseType === 'gaussdb' ? [{ label: 'JDBC jar 驱动', value: 'jdbc' }] : [{ label: 'JDBC jar 驱动', value: 'jdbc' }, { label: 'dmPython pyd 驱动', value: 'python' }, { label: 'dmPython whl 驱动', value: 'whl' }]} />
+                  </Form.Item>
+                  {driverDatabaseType === 'gaussdb' && <Alert type="warning" showIcon message="高斯数据库驱动当前仅保存配置，连接功能后续接入。" />}
+                  <Form.Item name="name" label="显示名称" rules={[{ required: true, message: '请输入显示名称' }]}>
+                    <Input placeholder={driverDatabaseType === 'gaussdb' ? '例如：高斯 JDBC' : '例如：达梦 JDBC / 本机 dmPython'} />
+                  </Form.Item>
+                  <Form.Item
+                    name="path"
+                    label={driverType === 'python' ? 'dmPython pyd 文件' : driverType === 'whl' ? 'dmPython whl 文件' : 'JDBC jar 文件'}
+                    rules={[{ required: true, message: driverType === 'python' ? '请选择 dmPython pyd 文件' : driverType === 'whl' ? '请选择 dmPython whl 文件' : '请选择 JDBC jar 文件' }]}
+                  >
+                    <Input readOnly placeholder={driverType === 'python' ? '请选择 dmPython.pyd' : driverType === 'whl' ? '请选择 dmPython whl 文件' : driverDatabaseType === 'gaussdb' ? '请选择高斯 JDBC jar' : '请选择 DmJdbcDriver.jar'} addonAfter={<Button type="link" size="small" onClick={() => void selectDriverFile()}>选择</Button>} />
+                  </Form.Item>
+                  <Button type="primary" loading={driverSaving} onClick={() => void addDriver()}>添加驱动</Button>
+                </Form>
+              </Space>
             )}
-            <Button type="primary" loading={driverSaving} onClick={() => void addDriver()}>添加驱动</Button>
-          </Form>
-        </Space>
+          </div>
+        </Flex>
       </Modal>
       <Modal title={editingTableName ? `修改表：${editingTableName}` : '修改表'} open={tableEditorOpen} okText="保存" cancelText="取消" confirmLoading={tableEditorLoading} onOk={() => void saveTableEditor()} onCancel={() => setTableEditorOpen(false)} width={760} maskClosable={false}>
         <Alert message="支持 SQLite/MySQL 修改已有字段的类型、可空和单字段主键；当前不支持新增、删除或重命名字段。" type="warning" showIcon />
@@ -4424,10 +4819,10 @@ function App(): React.JSX.Element {
           ) : (
             <>
               <Form.Item name="host" label="主机" rules={[{ required: true, message: '请输入主机' }]}><Input placeholder="127.0.0.1" /></Form.Item>
-              <Form.Item name="port" label="端口" rules={[{ required: true, message: '请输入端口' }]}><InputNumber min={1} max={65535} className="full-width" placeholder={databaseType === 'postgresql' ? '5432' : databaseType === 'dm' ? '5236' : databaseType === 'mongodb' ? '27017' : databaseType === 'redis' ? '6379' : '3306'} /></Form.Item>
-              <Form.Item name="username" label="用户名" rules={databaseType === 'mongodb' || databaseType === 'redis' ? undefined : [{ required: true, message: '请输入用户名' }]}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'dm' ? 'SYSDBA' : databaseType === 'redis' ? 'Redis ACL 用户名，可选' : undefined} /></Form.Item>
+              <Form.Item name="port" label="端口" rules={[{ required: true, message: '请输入端口' }]}><InputNumber min={1} max={65535} className="full-width" placeholder={databaseType === 'postgresql' ? '5432' : databaseType === 'dm' ? '5236' : databaseType === 'mongodb' ? '27017' : databaseType === 'redis' ? '6379' : databaseType === 'clickhouse' ? '8123' : '3306'} /></Form.Item>
+              <Form.Item name="username" label="用户名" rules={databaseType === 'mongodb' || databaseType === 'redis' ? undefined : [{ required: true, message: '请输入用户名' }]}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'dm' ? 'SYSDBA' : databaseType === 'redis' ? 'Redis ACL 用户名，可选' : databaseType === 'clickhouse' ? 'default' : undefined} /></Form.Item>
               <Form.Item name="password" label="密码"><Input.Password /></Form.Item>
-              <Form.Item name="database" label={databaseType === 'postgresql' ? '数据库名' : databaseType === 'dm' ? '默认 Schema（可选）' : databaseType === 'mongodb' ? '认证库/默认库（可选）' : databaseType === 'redis' ? '默认 DB 序号（可选）' : '默认数据库（可选）'} rules={databaseType === 'postgresql' ? [{ required: true, message: '请输入数据库名' }] : undefined}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'dm' ? '不填则使用默认 Schema' : databaseType === 'mongodb' ? '默认 admin；也可填业务库名' : databaseType === 'redis' ? '默认 0；例如 0、1、2' : '不填则连接服务器并加载全部数据库'} /></Form.Item>
+              <Form.Item name="database" label={databaseType === 'postgresql' ? '数据库名' : databaseType === 'dm' ? '默认 Schema（可选）' : databaseType === 'mongodb' ? '认证库/默认库（可选）' : databaseType === 'redis' ? '默认 DB 序号（可选）' : databaseType === 'clickhouse' ? '默认数据库' : '默认数据库（可选）'} rules={databaseType === 'postgresql' ? [{ required: true, message: '请输入数据库名' }] : undefined}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'dm' ? '不填则使用默认 Schema' : databaseType === 'mongodb' ? '默认 admin；也可填业务库名' : databaseType === 'redis' ? '默认 0；例如 0、1、2' : databaseType === 'clickhouse' ? '默认 default' : '不填则连接服务器并加载全部数据库'} /></Form.Item>
               {databaseType === 'dm' && (
                 <>
                   <Form.Item name="dm_driver_id" label="达梦驱动" rules={[{ required: true, message: '请选择达梦驱动' }]}>

@@ -71,7 +71,7 @@ def execute_readonly_query(engine: Engine, sql: str, limit: int, offset: int = 0
     try:
         statement = _validate_readonly_sql(sql)
 
-        if database and engine.dialect.name in {"mysql", "postgresql", "dm", "dmPython"}:
+        if database and engine.dialect.name in {"mysql", "postgresql", "dm", "dmPython", "clickhouse", "clickhousedb"}:
             return _execute_on_connection_with_context(engine, statement, limit, offset, database)
 
         return _execute_limited_query(engine, statement, limit, offset)
@@ -372,6 +372,8 @@ def _execute_on_connection_with_context(engine: Engine, sql: str, limit: int, of
             connection.execute(text(f"SET search_path TO {quoted}"))
         elif engine.dialect.name in {"dm", "dmPython"}:
             connection.execute(text(f"SET SCHEMA {quoted}"))
+        elif engine.dialect.name in {"clickhouse", "clickhousedb"}:
+            connection.execute(text(f"USE {quoted}"))
         result = connection.execute(text(limited_sql))
         columns = _visible_result_columns(result.keys())
         raw_rows = result.mappings().fetchall()

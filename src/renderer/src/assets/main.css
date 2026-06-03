@@ -230,6 +230,56 @@ body[data-theme="dark"] {
   background: var(--dj-bg-sunken);
 }
 
+.settings-layout {
+  min-height: 520px;
+}
+
+.settings-sidebar {
+  flex: 0 0 160px;
+  padding-right: 14px;
+  border-right: 1px solid var(--dj-border-subtle);
+}
+
+.settings-sidebar .ant-menu {
+  border-inline-end: none !important;
+  background: transparent;
+}
+
+.settings-sidebar .ant-menu-item {
+  height: 36px;
+  margin-inline: 0;
+  border-radius: 9px;
+}
+
+.settings-sidebar .ant-menu-item-selected {
+  color: var(--dj-accent) !important;
+  background: var(--dj-accent-soft) !important;
+}
+
+.settings-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-height: 620px;
+  overflow: auto;
+}
+
+.settings-about-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 24px;
+  border: 1px solid var(--dj-border-subtle);
+  border-radius: var(--dj-radius-md);
+  background: var(--dj-bg-surface);
+}
+
+.settings-about-logo {
+  display: block;
+  width: min(360px, 100%);
+  height: auto;
+}
+
 .ant-modal-content {
   overflow: hidden;
   border: 1px solid var(--dj-border-default);
@@ -1087,14 +1137,23 @@ body[data-theme="dark"] .ant-popover-message {
 }
 
 .resource-tree-shell {
+  position: relative;
   flex: 1;
   min-height: 0;
   padding: 6px;
-  overflow-y: auto;
-  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   border: 1px solid var(--dj-border-subtle);
   border-radius: var(--dj-radius-md);
   background: rgba(255, 255, 255, 0.03);
+}
+
+.resource-tree-viewport {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .resource-tree-shell .ant-tree {
@@ -1107,6 +1166,9 @@ body[data-theme="dark"] .ant-popover-message {
   align-items: center;
   width: 100%;
   padding: 1px 0;
+  contain: layout style paint;
+  content-visibility: auto;
+  contain-intrinsic-size: 30px;
 }
 
 .resource-tree-shell .ant-tree-node-content-wrapper {
@@ -1238,6 +1300,18 @@ body[data-theme="dark"] .ant-popover-message {
   border-color: var(--dj-accent);
 }
 
+.tree-selector-static {
+  flex: 0 0 auto;
+  margin-left: 8px;
+  padding: 0 5px;
+  color: var(--dj-text-secondary);
+  font-size: 10px;
+  line-height: 17px;
+  border-radius: 999px;
+  border: 1px solid var(--dj-border-subtle);
+  background: var(--dj-bg-glass);
+}
+
 .table-tree-title {
   display: block;
   flex: 1 1 auto;
@@ -1298,6 +1372,27 @@ body[data-theme="dark"] .ant-popover-message {
   background: var(--dj-bg-glass);
   border: 1px solid var(--dj-border-subtle);
   border-radius: 999px;
+}
+
+.tree-context-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1400;
+}
+
+.tree-context-menu-panel {
+  position: fixed;
+  min-width: 180px;
+  max-width: 260px;
+  background: var(--dj-bg-panel);
+  border: 1px solid var(--dj-border-subtle);
+  border-radius: 10px;
+  box-shadow: var(--dj-shadow-card);
+  overflow: hidden;
+}
+
+.tree-context-menu-panel .ant-menu {
+  border-inline-end: 0 !important;
 }
 
 /* ===== Closed Tree Nodes ===== */

@@ -152,12 +152,12 @@ def prepare_jdbc_runtime(required_java_major: int | None = None, preferred_java_
     if preferred_java_home:
         java_home, java_major, jvm_dll = validate_java_home(preferred_java_home)
         if required_java_major and (java_major or 0) < required_java_major:
-            raise RuntimeError(f"当前达梦 JDBC 驱动至少需要 Java {required_java_major}，但你选择的 Java 目录是 Java {java_major or '未知版本'}：{java_home}。请在驱动管理中选择 Java {required_java_major} 或更高版本的 64 位 JDK/JRE，或更换兼容当前 Java 的达梦 JDBC 驱动")
+            raise RuntimeError(f"当前 JDBC 驱动至少需要 Java {required_java_major}，但全局 JDBC Java 环境是 Java {java_major or '未知版本'}：{java_home}。请在驱动管理中选择 Java {required_java_major} 或更高版本的 64 位 JDK/JRE，或更换兼容当前 Java 的 JDBC 驱动")
     else:
         jvm_dll = find_jvm_dll(required_java_major)
         if jvm_dll is None:
             if required_java_major:
-                raise RuntimeError(f"当前达梦 JDBC 驱动至少需要 Java {required_java_major}，但没有检测到满足要求的 64 位 JDK/JRE。已检测到：{format_java_candidates()}。请安装 Java {required_java_major} 或更高版本，或在驱动管理中选择对应 Java 目录")
+                raise RuntimeError(f"当前 JDBC 驱动至少需要 Java {required_java_major}，但没有检测到满足要求的 64 位 JDK/JRE。已检测到：{format_java_candidates()}。请安装 Java {required_java_major} 或更高版本，或在驱动管理中配置全局 JDBC Java 环境")
             return None
         java_home = java_home_from_jvm_dll(jvm_dll)
 

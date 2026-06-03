@@ -11,5 +11,6 @@ dmSQLAlchemy==2.0.12
 openai==2.13.0
 pymongo==4.15.4
 redis==7.1.0
+clickhouse-connect==0.10.0
 jaydebeapi==1.2.3
 JPype1==1.5.2

@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, status
 from app.db.driver_manager import driver_manager
 from app.db.error_utils import friendly_error
 from app.db.java_runtime import detect_java_runtimes
-from app.schemas.driver import DriverCreateRequest, DriverDetectRequest, DriverDetectResponse, DriverListResponse, DriverTestRequest, DriverTestResponse, JavaDetectResponse
+from app.schemas.driver import DriverCreateRequest, DriverDetectRequest, DriverDetectResponse, DriverListResponse, DriverTestRequest, DriverTestResponse, JavaDetectResponse, JavaRuntimeConfigRequest, JavaRuntimeConfigResponse
 
 router = APIRouter(prefix="/drivers", tags=["drivers"])
 
@@ -39,7 +39,17 @@ def test_driver(request: DriverTestRequest) -> DriverTestResponse:
 @router.get("/java", response_model=JavaDetectResponse)
 def detect_java() -> JavaDetectResponse:
     runtimes = detect_java_runtimes()
-    return JavaDetectResponse(runtimes=runtimes, preferred=runtimes[0]["home"] if runtimes else None)
+    enabled, configured = driver_manager.get_jdbc_runtime_config()
+    return JavaDetectResponse(runtimes=runtimes, preferred=configured or (runtimes[0]["home"] if runtimes else None), configured=configured, enabled=enabled)
+
+
+@router.put("/java/config", response_model=JavaRuntimeConfigResponse)
+def update_java_config(request: JavaRuntimeConfigRequest) -> JavaRuntimeConfigResponse:
+    try:
+        home, major, jvm_dll, enabled = driver_manager.set_jdbc_java_config(request.enabled, request.java_home)
+        return JavaRuntimeConfigResponse(java_home=str(home) if home else None, major=major, jvm_path=str(jvm_dll) if jvm_dll else None, enabled=enabled)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
 
 
 @router.delete("/{driver_id}")

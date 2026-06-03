@@ -74,11 +74,13 @@ type AppStore = {
 const Store = ('default' in StoreModule ? StoreModule.default : StoreModule) as typeof StoreModule
 const store = new Store<AppStore>()
 const streamControllers = new Map<string, AbortController>()
-const GITHUB_RELEASES_API = 'https://api.github.com/repos/vhukze/DataDjinn/releases/latest'
+const GITHUB_PROJECT_URL = 'https://github.com/vhukze/DataDjinn'
+const GITHUB_RELEASES_API = `${GITHUB_PROJECT_URL}/releases/latest`.replace('github.com', 'api.github.com/repos')
 const appUpdateMode = process.env.PORTABLE_EXECUTABLE_DIR ? 'portable' : 'installer'
 let latestPortableUpdate: UpdateInfo | null = null
 let installerUpdateDownloaded = false
 let isQuittingForUpdate = false
+let isRelaunching = false
 
 const normalizeVersion = (version: string): string => version.trim().replace(/^v/i, '')
 
@@ -441,6 +443,16 @@ app.whenReady().then(() => {
     return true
   })
   ipcMain.handle('window:close', (event) => BrowserWindow.fromWebContents(event.sender)?.close())
+  ipcMain.handle('app:get-info', () => ({ name: app.getName(), version: app.getVersion(), projectUrl: GITHUB_PROJECT_URL }))
+  ipcMain.handle('app:open-project-home', async () => {
+    await shell.openExternal(GITHUB_PROJECT_URL)
+  })
+  ipcMain.handle('app:relaunch', async () => {
+    isRelaunching = true
+    await backendManager.stop()
+    app.relaunch()
+    app.exit(0)
+  })
   ipcMain.handle('backend:get-status', () => backendManager.getStatus())
   ipcMain.handle('backend:restart', () => backendManager.restart())
   ipcMain.handle('ai-config:get', () => store.get('aiConfig') ?? null)
@@ -635,7 +647,7 @@ app.whenReady().then(() => {
 })
 
 app.on('before-quit', (event) => {
-  if (isQuittingForUpdate) {
+  if (isQuittingForUpdate || isRelaunching) {
     return
   }
 

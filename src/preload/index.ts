@@ -62,6 +62,9 @@ const api = {
   installUpdate: () => ipcRenderer.invoke('update:install'),
   skipUpdateVersion: (version: string) => ipcRenderer.invoke('update:skip-version', version),
   openReleasePage: (url?: string) => ipcRenderer.invoke('update:open-release', url),
+  getAppInfo: () => ipcRenderer.invoke('app:get-info'),
+  openProjectHome: () => ipcRenderer.invoke('app:open-project-home'),
+  relaunchApp: () => ipcRenderer.invoke('app:relaunch'),
   onUpdateAvailable: (callback: (info: unknown) => void) => {
     const listener = (_: Electron.IpcRendererEvent, info: unknown): void => callback(info)
     ipcRenderer.on('update:available', listener)

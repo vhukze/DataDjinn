@@ -35,6 +35,15 @@ def _quote_identifier(engine, name: str) -> str:
     return engine.dialect.identifier_preparer.quote(name)
 
 
+def _is_clickhouse_engine(engine) -> bool:
+    return engine.dialect.name in {"clickhouse", "clickhousedb"}
+
+
+def _qualified_table_name(engine, database: str | None, table: str) -> str:
+    quoted_table = _quote_identifier(engine, table)
+    return f"{_quote_identifier(engine, database)}.{quoted_table}" if database else quoted_table
+
+
 def _generate_sqlite_backup(request: ConnectionRequest) -> str:
     if not request.sqlite_path:
         raise ValueError("SQLite 文件路径不能为空")
@@ -191,6 +200,8 @@ class BackupManager:
             if not pg_db:
                 raise ValueError("PostgreSQL 备份需要指定数据库名")
             sql = _generate_postgresql_backup(engine, pg_db, target_database if target_database != pg_db else "public")
+        elif request.database_type == "clickhouse":
+            sql = self._export_clickhouse_sql(engine, target_database, None, "database", "schema_data")
         else:
             raise ValueError("达梦备份暂未接入，请先使用达梦官方工具备份")
 
@@ -356,7 +367,9 @@ class BackupManager:
             file_path.write_text(sql, encoding="utf-8")
             return
 
-        if scope == "table" and table:
+        if request.database_type == "clickhouse":
+            sql = self._export_clickhouse_sql(engine, database, table, scope, content)
+        elif scope == "table" and table:
             sql = self._export_single_table_sql(engine, request.database_type, database, table, content)
         elif request.database_type == "mysql":
             sql = _generate_mysql_backup(engine, database, content)
@@ -368,6 +381,39 @@ class BackupManager:
         if not sql:
             raise ValueError("无法生成 SQL 导出")
         file_path.write_text(sql, encoding="utf-8")
+
+    def _export_clickhouse_sql(self, engine, database: str, table: str | None, scope: ExportScope, content: ExportContent) -> str:
+        tables = [table] if scope == "table" and table else []
+        lines: list[str] = []
+
+        with engine.connect() as connection:
+            if not tables:
+                rows = connection.execute(text("SELECT name FROM system.tables WHERE database = :database AND is_temporary = 0 ORDER BY name"), {"database": database}).fetchall()
+                tables = [str(row[0]) for row in rows]
+
+            for table_name in tables:
+                quoted = _qualified_table_name(engine, database, table_name)
+                if content in {"schema", "schema_data"}:
+                    row = connection.execute(text(f"SHOW CREATE TABLE {quoted}")).fetchone()
+                    if row and row[0]:
+                        lines.append(f"DROP TABLE IF EXISTS {quoted};")
+                        lines.append(f"{row[0]};")
+                        lines.append("")
+
+                if content == "schema":
+                    continue
+
+                result = connection.execute(text(f"SELECT * FROM {quoted}"))
+                columns = list(result.keys())
+                if not columns:
+                    continue
+                column_list = ", ".join(_quote_identifier(engine, column) for column in columns)
+                for row in result:
+                    values = ", ".join(_format_value(value) for value in row)
+                    lines.append(f"INSERT INTO {quoted} ({column_list}) VALUES ({values});")
+                lines.append("")
+
+        return "\n".join(lines)
 
     def _export_single_table_sql(self, engine, db_type: str, database: str, table: str, content: ExportContent) -> str:
         lines: list[str] = []
@@ -384,6 +430,13 @@ class BackupManager:
                 if content in {"schema", "schema_data"} and row and len(row) >= 2:
                     lines.append(f"DROP TABLE IF EXISTS {quoted};")
                     lines.append(f"{row[1]};")
+            elif db_type == "clickhouse":
+                quoted = _qualified_table_name(engine, database, table)
+                if content in {"schema", "schema_data"}:
+                    row = connection.execute(text(f"SHOW CREATE TABLE {quoted}")).fetchone()
+                    if row and row[0]:
+                        lines.append(f"DROP TABLE IF EXISTS {quoted};")
+                        lines.append(f"{row[0]};")
             elif db_type == "postgresql":
                 columns = inspector.get_columns(table, schema=database)
                 col_defs = []
@@ -422,7 +475,7 @@ class BackupManager:
             raise ValueError("连接已关闭")
 
         inspector = inspect(engine)
-        schema = database if engine.dialect.name in {"mysql", "postgresql", "dm", "dmPython"} else None
+        schema = database if engine.dialect.name in {"mysql", "postgresql", "dm", "dmPython"} or _is_clickhouse_engine(engine) else None
         tables = [table] if scope == "table" and table else inspector.get_table_names(schema=schema)
         if not tables:
             raise ValueError("未找到可导出的表")
@@ -440,7 +493,7 @@ class BackupManager:
         quoted_table = preparer.quote(table_name)
         if engine.dialect.name == "postgresql" and database:
             quoted_table = f"{preparer.quote(database)}.{quoted_table}"
-        elif engine.dialect.name == "mysql" and database:
+        elif (engine.dialect.name == "mysql" or _is_clickhouse_engine(engine)) and database:
             quoted_table = f"{preparer.quote(database)}.{quoted_table}"
 
         with engine.connect() as connection:
@@ -479,7 +532,7 @@ class BackupManager:
             quoted_table = preparer.quote(table)
             if engine.dialect.name == "postgresql" and database:
                 quoted_table = f"{preparer.quote(database)}.{quoted_table}"
-            elif engine.dialect.name == "mysql" and database:
+            elif (engine.dialect.name == "mysql" or _is_clickhouse_engine(engine)) and database:
                 quoted_table = f"{preparer.quote(database)}.{quoted_table}"
             column_sql = ", ".join(preparer.quote(column) for column in columns)
             value_sql = ", ".join(f":{column}" for column in columns)

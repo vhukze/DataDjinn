@@ -60,6 +60,12 @@ type UpdateProgress = {
   total?: number
 }
 
+type AppInfo = {
+  name: string
+  version: string
+  projectUrl: string
+}
+
 interface DataDjinnAPI {
   selectSqlFile: () => Promise<SqlFileResult>
   selectImportFile: () => Promise<string | null>
@@ -76,6 +82,9 @@ interface DataDjinnAPI {
   installUpdate: () => Promise<void>
   skipUpdateVersion: (version: string) => Promise<void>
   openReleasePage: (url?: string) => Promise<void>
+  getAppInfo: () => Promise<AppInfo>
+  openProjectHome: () => Promise<void>
+  relaunchApp: () => Promise<void>
   onUpdateAvailable: (callback: (info: UpdateInfo) => void) => () => void
   onUpdateNotAvailable: (callback: (info: UpdateInfo) => void) => () => void
   onUpdateDownloadProgress: (callback: (progress: UpdateProgress) => void) => () => void

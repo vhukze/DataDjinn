@@ -37,6 +37,8 @@ def execute_sql_file(engine: Engine, sql: str, database: str | None = None, pg_d
                         connection.execute(text(f"USE {quoted}"))
                         connection.execute(text("SET FOREIGN_KEY_CHECKS=0"))
                         mysql_foreign_key_checks_disabled = True
+                    elif engine.dialect.name in {"clickhouse", "clickhousedb"}:
+                        connection.execute(text(f"USE {quoted}"))
 
                 try:
                     for statement in statements:
