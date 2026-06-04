@@ -35,6 +35,12 @@ class ColumnInfo(BaseModel):
     type: str
     nullable: bool
     primary_key: bool
+    comment: str | None = None
+    unique: bool = False
+    auto_increment: bool = False
+    auto_increment_step: int | None = None
+    minimum: str | None = None
+    maximum: str | None = None
 
 
 class TableUpdateColumn(BaseModel):
@@ -42,10 +48,30 @@ class TableUpdateColumn(BaseModel):
     type: str = Field(min_length=1, max_length=80)
     nullable: bool
     primary_key: bool
+    comment: str | None = Field(default=None, max_length=500)
+    unique: bool = False
+    auto_increment: bool = False
+    auto_increment_step: int | None = Field(default=None, ge=1, le=1_000_000)
+    minimum: str | None = Field(default=None, max_length=64)
+    maximum: str | None = Field(default=None, max_length=64)
 
 
 class TableUpdateRequest(BaseModel):
     columns: list[TableUpdateColumn] = Field(min_length=1)
+    table_comment: str | None = Field(default=None, max_length=1000)
+
+
+class TableCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    columns: list[TableUpdateColumn] = Field(default_factory=list)
+    database: str | None = None
+    pg_database: str | None = None
+    table_comment: str | None = Field(default=None, max_length=1000)
+
+
+class TableCreateResponse(BaseModel):
+    name: str
+    message: str
 
 
 class TableRowUpdate(BaseModel):
@@ -100,3 +126,4 @@ class ObjectDdlResponse(BaseModel):
 
 class ColumnsResponse(BaseModel):
     columns: list[ColumnInfo]
+    table_comment: str | None = None

@@ -4,10 +4,10 @@ from app.db.connection_manager import connection_manager
 from app.db.error_utils import friendly_error
 from app.db.mongo_utils import is_mongo_client
 from app.db.redis_utils import is_redis_client
-from app.db.metadata import apply_redis_data_changes, apply_table_data_changes, create_database, create_schema, drop_database, drop_db_object, get_object_ddl, list_columns, list_databases, list_db_objects, list_schemas, list_tables, update_table_columns
+from app.db.metadata import apply_redis_data_changes, apply_table_data_changes, create_database, create_schema, create_table, drop_database, drop_db_object, get_object_ddl, get_table_comment, list_columns, list_databases, list_db_objects, list_schemas, list_tables, update_table_columns
 from app.db.readonly_query import preview_table
 from app.db.sql_executor import execute_sql_file
-from app.schemas.metadata import ColumnsResponse, DatabaseCreateRequest, DatabaseCreateResponse, DatabasesResponse, DbObjectsResponse, ObjectDdlResponse, RedisDataChangeRequest, TableDataChangeRequest, TableUpdateRequest, TablesResponse
+from app.schemas.metadata import ColumnsResponse, DatabaseCreateRequest, DatabaseCreateResponse, DatabasesResponse, DbObjectsResponse, ObjectDdlResponse, RedisDataChangeRequest, TableCreateRequest, TableCreateResponse, TableDataChangeRequest, TableUpdateRequest, TablesResponse
 from app.schemas.query import QueryResponse, SqlFileRunRequest, SqlFileRunResponse
 
 router = APIRouter(prefix="/connections", tags=["metadata"])
@@ -94,6 +94,23 @@ def get_tables(connection_id: str, database: str | None = None, pg_database: str
     return TablesResponse(tables=list_tables(engine, database, pg_database))
 
 
+@router.post("/{connection_id}/tables", response_model=TableCreateResponse)
+def create_table_endpoint(connection_id: str, request: TableCreateRequest) -> TableCreateResponse:
+    engine = connection_manager.get_engine(connection_id)
+
+    if engine is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="连接已关闭，请先打开连接")
+
+    try:
+        create_table(engine, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=friendly_error(exc)) from exc
+
+    return TableCreateResponse(name=request.name, message="创建成功")
+
+
 @router.get("/{connection_id}/objects", response_model=DbObjectsResponse)
 def get_objects(connection_id: str, database: str | None = None, pg_database: str | None = None, type: str | None = None) -> DbObjectsResponse:
     engine = connection_manager.get_engine(connection_id)
@@ -148,7 +165,10 @@ def get_columns(connection_id: str, table_name: str, database: str | None = None
     if engine is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="连接已关闭，请先打开连接")
 
-    return ColumnsResponse(columns=list_columns(engine, table_name, database, pg_database))
+    return ColumnsResponse(
+        columns=list_columns(engine, table_name, database, pg_database),
+        table_comment=get_table_comment(engine, table_name, database, pg_database),
+    )
 
 
 @router.get("/{connection_id}/tables/{table_name}/preview", response_model=QueryResponse)
@@ -204,18 +224,23 @@ def update_redis_data(connection_id: str, request: RedisDataChangeRequest, limit
 
 
 @router.put("/{connection_id}/tables/{table_name}/columns", response_model=ColumnsResponse)
-def update_columns(connection_id: str, table_name: str, request: TableUpdateRequest, database: str | None = None) -> ColumnsResponse:
+def update_columns(connection_id: str, table_name: str, request: TableUpdateRequest, database: str | None = None, pg_database: str | None = None) -> ColumnsResponse:
     engine = connection_manager.get_engine(connection_id)
 
     if engine is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="连接已关闭，请先打开连接")
 
     try:
-        update_table_columns(engine, table_name, request.columns, database)
+        update_table_columns(engine, table_name, request.columns, database, pg_database, request.table_comment)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=friendly_error(exc)) from exc
 
-    return ColumnsResponse(columns=list_columns(engine, table_name, database))
+    return ColumnsResponse(
+        columns=list_columns(engine, table_name, database, pg_database),
+        table_comment=get_table_comment(engine, table_name, database, pg_database),
+    )
 
 
 @router.post("/{connection_id}/sql-file", response_model=SqlFileRunResponse)

@@ -45,6 +45,7 @@ type UpdateInfo = {
   installerUrl?: string
   zipUrl?: string
   downloadedPath?: string
+  installerDownloaded?: boolean
 }
 
 type UpdateSettings = {

@@ -1,7 +1,7 @@
 import { BrowserWindow, app } from 'electron'
 import { is } from '@electron-toolkit/utils'
 import { ChildProcessWithoutNullStreams, spawn } from 'child_process'
-import { createWriteStream, existsSync, mkdirSync } from 'fs'
+import { createWriteStream, existsSync, mkdirSync, readFileSync } from 'fs'
 import { get } from 'http'
 import { dirname, join } from 'path'
 import { AddressInfo, createServer } from 'net'
@@ -30,6 +30,7 @@ type BackendCommand = {
   args: string[]
   cwd: string
   checkedPaths?: string[]
+  env?: Record<string, string>
 }
 
 export class BackendManager {
@@ -181,6 +182,7 @@ export class BackendManager {
       windowsHide: true,
       env: {
         ...process.env,
+        ...command.env,
         DATADJINN_BACKEND_PORT: String(this.port),
         DATADJINN_BACKEND_RELOAD: is.dev ? '1' : '0',
         DATADJINN_DATA_DIR: app.getPath('userData'),
@@ -283,10 +285,17 @@ export class BackendManager {
   private getBackendCommand(): BackendCommand {
     if (is.dev) {
       const backendDir = join(process.cwd(), 'backend')
+      const venvPython = join(backendDir, '.venv', 'Scripts', 'python.exe')
+      const sitePackages = join(backendDir, '.venv', 'Lib', 'site-packages')
+      const pyvenvCfg = join(backendDir, '.venv', 'pyvenv.cfg')
+      const fallbackPython = this.resolveSystemPythonFromVenv(pyvenvCfg)
+
       return {
-        command: join(backendDir, '.venv', 'Scripts', 'python.exe'),
+        command: existsSync(venvPython) ? venvPython : (fallbackPython ?? venvPython),
         args: [join(backendDir, 'run.py')],
-        cwd: backendDir
+        cwd: backendDir,
+        checkedPaths: [venvPython, ...(fallbackPython ? [fallbackPython] : [])],
+        env: existsSync(sitePackages) ? { PYTHONPATH: sitePackages } : undefined
       }
     }
 
@@ -312,6 +321,28 @@ export class BackendManager {
 
   private getLogPath(): string {
     return join(app.getPath('userData'), 'logs', 'backend.log')
+  }
+
+  private resolveSystemPythonFromVenv(pyvenvCfg: string): string | undefined {
+    if (!existsSync(pyvenvCfg)) {
+      return undefined
+    }
+
+    try {
+      const content = readFileSync(pyvenvCfg, 'utf-8')
+      const executableLine = content
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('executable = '))
+
+      if (!executableLine) {
+        return undefined
+      }
+
+      const executable = executableLine.slice('executable = '.length).trim()
+      return executable || undefined
+    } catch {
+      return undefined
+    }
   }
 
   private async waitForHealth(apiBaseUrl: string, timeoutMs = HEALTH_TIMEOUT_MS): Promise<boolean> {

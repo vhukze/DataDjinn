@@ -55,6 +55,7 @@ type UpdateInfo = {
   installerUrl?: string
   zipUrl?: string
   downloadedPath?: string
+  installerDownloaded?: boolean
 }
 
 type UpdateProgress = {
@@ -126,7 +127,8 @@ const releaseToUpdateInfo = (release: GitHubRelease): UpdateInfo => {
     releaseNotes: release.body,
     releaseUrl: release.html_url,
     installerUrl: installerAsset?.browser_download_url,
-    zipUrl: zipAsset?.browser_download_url
+    zipUrl: zipAsset?.browser_download_url,
+    installerDownloaded: false
   }
 }
 
@@ -216,7 +218,8 @@ autoUpdater.on('update-available', (info) => {
     mode: 'installer',
     releaseName: info.releaseName ?? undefined,
     releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes : undefined,
-    releaseUrl: `https://github.com/vhukze/DataDjinn/releases/tag/v${info.version}`
+    releaseUrl: `https://github.com/vhukze/DataDjinn/releases/tag/v${info.version}`,
+    installerDownloaded: false
   } satisfies UpdateInfo)
 })
 
@@ -225,7 +228,8 @@ autoUpdater.on('update-not-available', (info) => {
     currentVersion: app.getVersion(),
     latestVersion: info.version,
     available: false,
-    mode: 'installer'
+    mode: 'installer',
+    installerDownloaded: false
   } satisfies UpdateInfo)
 })
 
@@ -246,7 +250,8 @@ autoUpdater.on('update-downloaded', (info) => {
     mode: 'installer',
     releaseName: info.releaseName ?? undefined,
     releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes : undefined,
-    releaseUrl: `https://github.com/vhukze/DataDjinn/releases/tag/v${info.version}`
+    releaseUrl: `https://github.com/vhukze/DataDjinn/releases/tag/v${info.version}`,
+    installerDownloaded: true
   } satisfies UpdateInfo)
 })
 
@@ -556,7 +561,8 @@ app.whenReady().then(() => {
       mode: 'installer',
       releaseName: result?.updateInfo.releaseName ?? undefined,
       releaseNotes: typeof result?.updateInfo.releaseNotes === 'string' ? result.updateInfo.releaseNotes : undefined,
-      releaseUrl: result?.updateInfo.version ? `https://github.com/vhukze/DataDjinn/releases/tag/v${result.updateInfo.version}` : undefined
+      releaseUrl: result?.updateInfo.version ? `https://github.com/vhukze/DataDjinn/releases/tag/v${result.updateInfo.version}` : undefined,
+      installerDownloaded: installerUpdateDownloaded
     } satisfies UpdateInfo
   })
 

@@ -24,9 +24,30 @@ def _visible_result_columns(keys: Any) -> list[tuple[Any, str]]:
     return [(column, str(column)) for column in keys if not _is_internal_paging_column(column)]
 
 
+def _read_sql_large_object(value: Any) -> Any:
+    if hasattr(value, "getSubString") and hasattr(value, "length"):
+        try:
+            return value.getSubString(1, int(value.length()))
+        except Exception:
+            pass
+
+    if hasattr(value, "read"):
+        try:
+            return value.read()
+        except Exception:
+            pass
+
+    return value
+
+
 def _serialize_sql_value(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
+
+    if hasattr(value, "getSubString") or hasattr(value, "read"):
+        expanded = _read_sql_large_object(value)
+        if expanded is not value:
+            return _serialize_sql_value(expanded)
 
     if isinstance(value, datetime):
         return value.isoformat(sep=" ")

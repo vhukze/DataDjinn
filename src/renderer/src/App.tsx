@@ -1,4 +1,4 @@
-import {
+﻿import {
   BranchesOutlined,
   CheckCircleOutlined,
   CloseCircleOutlined,
@@ -11,11 +11,15 @@ import {
   EditOutlined,
   DeleteOutlined,
   BorderOutlined,
+  DoubleLeftOutlined,
+  DoubleRightOutlined,
   EyeOutlined,
   MinusOutlined,
   MoonOutlined,
+  LeftOutlined,
   PlayCircleOutlined,
   PlusOutlined,
+  RightOutlined,
   SaveOutlined,
   CloudDownloadOutlined,
   ReloadOutlined,
@@ -143,6 +147,18 @@ const COMMON_TYPES = [
   'BLOB', 'BYTEA'
 ]
 
+const INTEGER_TYPE_PREFIXES = ['int', 'integer', 'bigint', 'smallint', 'tinyint', 'mediumint', 'serial', 'bigserial', 'smallserial']
+const NUMERIC_TYPE_PREFIXES = [...INTEGER_TYPE_PREFIXES, 'decimal', 'numeric', 'float', 'double', 'real']
+
+const tableDesignerSupportsComments = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql'
+const tableDesignerSupportsUnique = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'sqlite'
+const tableDesignerSupportsAutoIncrement = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'sqlite'
+const tableDesignerSupportsAutoIncrementStep = (databaseType?: DatabaseType): boolean => databaseType === 'postgresql'
+const tableDesignerSupportsMinMax = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'sqlite'
+const tableDesignerSupportsEdit = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'sqlite'
+const isIntegerLikeType = (type: string): boolean => INTEGER_TYPE_PREFIXES.some((prefix) => type.trim().toLowerCase().startsWith(prefix))
+const isNumericLikeType = (type: string): boolean => NUMERIC_TYPE_PREFIXES.some((prefix) => type.trim().toLowerCase().startsWith(prefix))
+
 const PREVIEW_DEFAULT_LIMIT = 300
 const QUERY_DEFAULT_LIMIT = 1000
 const REDIS_DEFAULT_LIMIT = 500
@@ -245,6 +261,7 @@ type UpdateInfo = {
   releaseNotes?: string
   releaseUrl?: string
   downloadedPath?: string
+  installerDownloaded?: boolean
 }
 
 type UpdateSettings = {
@@ -286,6 +303,17 @@ type ColumnInfo = {
   type: string
   nullable: boolean
   primary_key: boolean
+  comment?: string | null
+  unique?: boolean
+  auto_increment?: boolean
+  auto_increment_step?: number | null
+  minimum?: string | null
+  maximum?: string | null
+}
+
+type ColumnsResponse = {
+  columns: ColumnInfo[]
+  table_comment?: string | null
 }
 
 type QueryResponse = {
@@ -371,7 +399,15 @@ type ColumnDef = {
   type: string
   nullable: boolean
   primaryKey: boolean
+  comment: string
+  unique: boolean
+  autoIncrement: boolean
+  autoIncrementStep?: number | null
+  minimum: string
+  maximum: string
 }
+
+type TableDesignerMode = 'create' | 'edit'
 
 type DbObjectType = 'table' | 'view' | 'trigger' | 'procedure' | 'function' | 'sequence' | 'index'
 type TreeNodeKind = 'connection' | 'database' | 'pg-schema' | 'object-group' | 'table' | 'db-object' | 'column'
@@ -500,6 +536,20 @@ const buildRedisEdits = (rows: Record<string, unknown>[]): Record<string, RedisK
     }]
   }))
 
+const toColumnDef = (column: ColumnInfo): ColumnDef => ({
+  key: column.name,
+  name: column.name,
+  type: column.type,
+  nullable: column.nullable,
+  primaryKey: column.primary_key,
+  comment: column.comment ?? '',
+  unique: column.unique ?? false,
+  autoIncrement: column.auto_increment ?? false,
+  autoIncrementStep: column.auto_increment_step ?? undefined,
+  minimum: column.minimum ?? '',
+  maximum: column.maximum ?? ''
+})
+
 const countRedisPendingChanges = (tab: WorkspaceTab): number =>
   Object.values(tab.redisEdits ?? {}).filter((edit) => edit.state || edit.deleted).length
 
@@ -611,8 +661,10 @@ function App(): React.JSX.Element {
   const [tableEditorLoading, setTableEditorLoading] = useState(false)
   const [editingConnectionId, setEditingConnectionId] = useState<string>()
   const [editingDatabaseName, setEditingDatabaseName] = useState<string>()
+  const [editingPgDatabaseName, setEditingPgDatabaseName] = useState<string>()
   const [editingTableName, setEditingTableName] = useState<string>()
-  const [editingColumns, setEditingColumns] = useState<ColumnInfo[]>([])
+  const [editingTableComment, setEditingTableComment] = useState('')
+  const [editingColumns, setEditingColumns] = useState<ColumnDef[]>([])
   const [databaseCreateModalOpen, setDatabaseCreateModalOpen] = useState(false)
   const [creatingDatabaseConnectionId, setCreatingDatabaseConnectionId] = useState<string>('')
   const [creatingSchemaDatabaseName, setCreatingSchemaDatabaseName] = useState<string>('')
@@ -654,6 +706,7 @@ function App(): React.JSX.Element {
   const [createTablePgDatabaseName, setCreateTablePgDatabaseName] = useState<string>('')
   const [createTableLoading, setCreateTableLoading] = useState(false)
   const [newTableName, setNewTableName] = useState('')
+  const [newTableComment, setNewTableComment] = useState('')
   const [newTableColumns, setNewTableColumns] = useState<ColumnDef[]>([])
   const [driverManagerOpen, setDriverManagerOpen] = useState(false)
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('app')
@@ -748,12 +801,12 @@ function App(): React.JSX.Element {
     try {
       await window.api.downloadUpdate()
       if (updateInfo?.mode === 'portable') {
+        setDownloadingUpdate(false)
         messageApi.success('绿色版更新包已下载，请关闭应用后手动解压替换')
       }
     } catch (err) {
-      showError(err instanceof Error ? err.message : '下载更新失败')
-    } finally {
       setDownloadingUpdate(false)
+      showError(err instanceof Error ? err.message : '下载更新失败')
     }
   }
 
@@ -784,7 +837,7 @@ function App(): React.JSX.Element {
 
   const requestJson = async <T,>(path: string, options?: RequestInit): Promise<T> => {
     if (backendStatus.state !== 'online' || !backendStatus.apiBaseUrl) {
-      throw new Error(backendStatus.message ?? '后端服务正在恢复，请稍候')
+      throw new Error(backendStatus.message ?? '后端服务正在恢复，请稍后再试')
     }
 
     try {
@@ -1434,21 +1487,24 @@ function App(): React.JSX.Element {
     openQueryWorkspace(sql, `${tableName} 查询`, connectionId, databaseName, pgDatabaseName)
   }
 
-  const openTableEditor = async (connectionId: string, tableName: string, databaseName?: string): Promise<void> => {
+  const openTableEditor = async (connectionId: string, tableName: string, databaseName?: string, pgDatabaseName?: string): Promise<void> => {
     if (!ensureConnectionOpen(connectionId)) {
       return
     }
 
     setEditingConnectionId(connectionId)
     setEditingDatabaseName(databaseName)
+    setEditingPgDatabaseName(pgDatabaseName)
     setEditingTableName(tableName)
+    setEditingTableComment('')
     setEditingColumns([])
     setTableEditorOpen(true)
     setTableEditorLoading(true)
 
     try {
-      const data = await requestJson<{ columns: ColumnInfo[] }>(withDatabaseQuery(`/connections/${connectionId}/tables/${encodeURIComponent(tableName)}/columns`, databaseName))
-      setEditingColumns(data.columns)
+      const data = await requestJson<ColumnsResponse>(withPgDatabase(`/connections/${connectionId}/tables/${encodeURIComponent(tableName)}/columns`, databaseName, pgDatabaseName))
+      setEditingTableComment(data.table_comment ?? '')
+      setEditingColumns(data.columns.map(toColumnDef))
     } catch (err) {
       showError(err instanceof Error ? err.message : '加载字段失败')
     } finally {
@@ -1468,11 +1524,26 @@ function App(): React.JSX.Element {
     setTableEditorLoading(true)
 
     try {
-      const data = await requestJson<{ columns: ColumnInfo[] }>(withDatabaseQuery(`/connections/${editingConnectionId}/tables/${encodeURIComponent(editingTableName)}/columns`, editingDatabaseName), {
+      const data = await requestJson<ColumnsResponse>(withPgDatabase(`/connections/${editingConnectionId}/tables/${encodeURIComponent(editingTableName)}/columns`, editingDatabaseName, editingPgDatabaseName), {
         method: 'PUT',
-        body: JSON.stringify({ columns: editingColumns })
+        body: JSON.stringify({
+          table_comment: editingTableComment.trim() || null,
+          columns: editingColumns.map((column) => ({
+            name: column.name,
+            type: column.type,
+            nullable: column.nullable,
+            primary_key: column.primaryKey,
+            comment: column.comment.trim() || null,
+            unique: column.unique,
+            auto_increment: column.autoIncrement,
+            auto_increment_step: column.autoIncrementStep ?? null,
+            minimum: column.minimum.trim() || null,
+            maximum: column.maximum.trim() || null
+          }))
+        })
       })
-      setEditingColumns(data.columns)
+      setEditingTableComment(data.table_comment ?? '')
+      setEditingColumns(data.columns.map(toColumnDef))
       setTableEditorOpen(false)
     } catch (err) {
       showError(err instanceof Error ? err.message : '保存表结构失败')
@@ -1657,11 +1728,36 @@ function App(): React.JSX.Element {
       setCreateTableDatabaseName(databaseName)
       setCreateTablePgDatabaseName(pgDbName ?? '')
       setNewTableName('')
+      setNewTableComment('')
       setNewTableColumns(connection?.database_type === 'mongodb'
-        ? [{ key: 'col-0', name: '_id', type: 'ObjectId', nullable: false, primaryKey: true }]
+        ? [{ key: 'col-0', name: '_id', type: 'ObjectId', nullable: false, primaryKey: true, comment: '', unique: false, autoIncrement: false, autoIncrementStep: undefined, minimum: '', maximum: '' }]
         : [
-            { key: 'col-0', name: 'id', type: connection?.database_type === 'postgresql' ? 'INTEGER' : connection?.database_type === 'clickhouse' ? 'UInt64' : 'INT', nullable: false, primaryKey: connection?.database_type !== 'clickhouse' },
-            { key: 'col-1', name: 'name', type: connection?.database_type === 'clickhouse' ? 'String' : 'VARCHAR(100)', nullable: false, primaryKey: false }
+            {
+              key: 'col-0',
+              name: 'id',
+              type: connection?.database_type === 'postgresql' ? 'INTEGER' : connection?.database_type === 'clickhouse' ? 'UInt64' : 'INT',
+              nullable: false,
+              primaryKey: connection?.database_type !== 'clickhouse',
+              comment: '',
+              unique: false,
+              autoIncrement: connection?.database_type === 'mysql' || connection?.database_type === 'postgresql' || connection?.database_type === 'sqlite',
+              autoIncrementStep: connection?.database_type === 'postgresql' ? 1 : undefined,
+              minimum: '',
+              maximum: ''
+            },
+            {
+              key: 'col-1',
+              name: 'name',
+              type: connection?.database_type === 'clickhouse' ? 'String' : 'VARCHAR(100)',
+              nullable: false,
+              primaryKey: false,
+              comment: '',
+              unique: false,
+              autoIncrement: false,
+              autoIncrementStep: undefined,
+              minimum: '',
+              maximum: ''
+            }
           ])
       setCreateTableModalOpen(true)
     }
@@ -1725,7 +1821,7 @@ function App(): React.JSX.Element {
       void showObjectDdl(connectionId, tableName, objectType, databaseName, pgDbName)
     }
     if (key === 'edit') {
-      void openTableEditor(connectionId, tableName, databaseName)
+      void openTableEditor(connectionId, tableName, databaseName, pgDbName)
     }
     if (key === 'copy') {
       void copyTableName(tableName)
@@ -1919,7 +2015,14 @@ function App(): React.JSX.Element {
 
   const renderResultStatus = (tab: WorkspaceTab): React.ReactNode => {
     const connection = getConnection(tab.connectionId)
-    const rowText = tab.result ? `${tab.result.row_count} 行` : '暂无结果'
+    const totalRows = tab.result?.total_count ?? tab.result?.row_count
+    const rowText = tab.result
+      ? tab.kind === 'preview'
+        ? `总行数 ${totalRows ?? 0} 行`
+        : tab.kind === 'redis-browser'
+          ? `${tab.result.row_count} 项`
+          : `${tab.result.row_count} 行`
+      : '暂无结果'
     const pendingChanges = countPendingChanges(tab)
 
     return (
@@ -2003,31 +2106,17 @@ function App(): React.JSX.Element {
         <Space size={4} className="table-data-actions">
           {showRedisRefresh && (
             <>
-              <Button size="small" icon={<ReloadOutlined />} loading={tab.loading} onClick={() => void previewRedisDatabase(tab.connectionId!, tab.databaseName!, tab.limit, tab.page)}>
-                刷新
-              </Button>
-              <Button size="small" icon={<PlusOutlined />} onClick={() => addRedisRow(tab)}>
-                新增一行
-              </Button>
-              <Button type="primary" size="small" icon={<SaveOutlined />} disabled={countRedisPendingChanges(tab) === 0} loading={tab.loading} onClick={() => void submitRedisChanges(tab)}>
-                提交
-              </Button>
+              <Button size="small" icon={<ReloadOutlined />} title="刷新" aria-label="刷新" loading={tab.loading} onClick={() => void previewRedisDatabase(tab.connectionId!, tab.databaseName!, tab.limit, tab.page)} />
+              <Button size="small" icon={<PlusOutlined />} title="新增一行" aria-label="新增一行" onClick={() => addRedisRow(tab)} />
+              <Button type="primary" size="small" icon={<SaveOutlined />} title="提交" aria-label="提交" disabled={countRedisPendingChanges(tab) === 0} loading={tab.loading} onClick={() => void submitRedisChanges(tab)} />
             </>
           )}
           {showPreviewActions && (
             <>
-              <Button size="small" icon={<ReloadOutlined />} loading={tab.loading} onClick={() => void previewTable(tab.connectionId!, tab.tableName!, tab.databaseName, tab.pgDatabaseName, tab.limit, tab.page, tab.where)}>
-                刷新
-              </Button>
-              <Button size="small" icon={<PlusOutlined />} onClick={() => addPreviewRow(tab)}>
-                新增行
-              </Button>
-              <Button size="small" icon={<MinusOutlined />} disabled={!tab.selectedRowKeys?.length} onClick={() => markSelectedRowsDeleted(tab)}>
-                删除行
-              </Button>
-              <Button type="primary" size="small" icon={<SaveOutlined />} disabled={countPendingChanges(tab) === 0} loading={tab.loading} onClick={() => void submitPreviewChanges(tab)}>
-                提交
-              </Button>
+              <Button size="small" icon={<ReloadOutlined />} title="刷新" aria-label="刷新" loading={tab.loading} onClick={() => void previewTable(tab.connectionId!, tab.tableName!, tab.databaseName, tab.pgDatabaseName, tab.limit, tab.page, tab.where)} />
+              <Button size="small" icon={<PlusOutlined />} title="新增行" aria-label="新增行" onClick={() => addPreviewRow(tab)} />
+              <Button size="small" icon={<MinusOutlined />} title="删除选中行" aria-label="删除选中行" disabled={!tab.selectedRowKeys?.length} onClick={() => markSelectedRowsDeleted(tab)} />
+              <Button type="primary" size="small" icon={<SaveOutlined />} title="提交" aria-label="提交" disabled={countPendingChanges(tab) === 0} loading={tab.loading} onClick={() => void submitPreviewChanges(tab)} />
             </>
           )}
         </Space>
@@ -2112,35 +2201,38 @@ function App(): React.JSX.Element {
     const page = tab.page ?? 1
     const totalPages = tab.result?.total_count ? Math.max(1, Math.ceil(tab.result.total_count / limit)) : undefined
     const hasNext = totalPages ? page < totalPages : !!tab.result?.limited
+    const jumpToPage = (rawValue: string): void => {
+      const parsed = Number(rawValue.trim())
+      if (!Number.isFinite(parsed) || parsed < 1) {
+        return
+      }
+      const nextPage = totalPages ? Math.min(Math.floor(parsed), totalPages) : Math.floor(parsed)
+      if (nextPage !== page) {
+        void changeTabPage(tab, nextPage)
+      }
+    }
 
     return (
       <Space size={4} className="result-pager">
-        <Button size="small" disabled={tab.loading || page <= 1} onClick={() => void changeTabPage(tab, 1)}>
-          首页
-        </Button>
-        <Button size="small" disabled={tab.loading || page <= 1} onClick={() => void changeTabPage(tab, page - 1)}>
-          上一页
-        </Button>
-        <InputNumber
+        <Button size="small" icon={<DoubleLeftOutlined />} title="棣栭〉" aria-label="棣栭〉" disabled={tab.loading || page <= 1} onClick={() => void changeTabPage(tab, 1)} />
+        <Button size="small" icon={<LeftOutlined />} title="上一页" aria-label="上一页" disabled={tab.loading || page <= 1} onClick={() => void changeTabPage(tab, page - 1)} />
+        <Input
           size="small"
-          min={1}
-          max={totalPages}
-          value={page}
-          controls={false}
+          key={`${tab.key}:${page}:${totalPages ?? 'open'}`}
           className="result-page-input"
+          defaultValue={String(page)}
+          inputMode="numeric"
+          aria-label="椤电爜"
           onPressEnter={(event) => {
-            const value = Number(event.currentTarget.value)
-            if (Number.isFinite(value) && value >= 1 && value !== page) {
-              void changeTabPage(tab, Math.floor(value))
-            }
+            jumpToPage(event.currentTarget.value)
+            event.currentTarget.blur()
+          }}
+          onBlur={(event) => {
+            event.currentTarget.value = String(page)
           }}
         />
-        <Button size="small" disabled={tab.loading || !hasNext} onClick={() => void changeTabPage(tab, page + 1)}>
-          下一页
-        </Button>
-        <Button size="small" disabled={tab.loading || !totalPages || page >= totalPages} onClick={() => totalPages && void changeTabPage(tab, totalPages)}>
-          末页
-        </Button>
+        <Button size="small" icon={<RightOutlined />} title="下一页" aria-label="下一页" disabled={tab.loading || !hasNext} onClick={() => void changeTabPage(tab, page + 1)} />
+        <Button size="small" icon={<DoubleRightOutlined />} title="末页" aria-label="末页" disabled={tab.loading || !totalPages || page >= totalPages} onClick={() => totalPages && void changeTabPage(tab, totalPages)} />
         <Select
           size="small"
           value={limit}
@@ -2160,7 +2252,7 @@ function App(): React.JSX.Element {
         {renderResultStatus(tab)}
         {renderTableToolbar(tab)}
         {tab.error && <Alert message="加载失败" description={tab.error} type="error" showIcon />}
-        {tab.result?.limited && <Alert message="还有更多 Key，可点击下一页继续查看" type="warning" showIcon />}
+        {tab.result?.limited && <Alert message="还有更多 Key，可以点击下一页继续查看" type="warning" showIcon />}
         <div className="redis-browser-list">
           {tab.loading && <Typography.Text type="secondary">加载中...</Typography.Text>}
           {!tab.loading && Object.values(edits).filter((edit) => !edit.deleted).length === 0 && <Typography.Text type="secondary">当前 DB 暂无 Key</Typography.Text>}
@@ -2487,7 +2579,7 @@ function App(): React.JSX.Element {
         {renderResultStatus(tab)}
         {renderTableToolbar(tab)}
         {tab.error && <Alert message="执行失败" description={tab.error} type="error" showIcon />}
-        {tab.result?.limited && <Alert message="还有更多数据，可点击下一页继续查看" type="warning" showIcon />}
+        {tab.result?.limited && <Alert message="还有更多数据，可以点击下一页继续查看" type="warning" showIcon />}
         <div
           ref={(element) => { tableBodyRefs.current[tab.key] = element }}
           className="result-table-body"
@@ -2524,7 +2616,6 @@ function App(): React.JSX.Element {
             pagination={false}
             scroll={{ x: tableScrollX, y: tableScrollY }}
             tableLayout="fixed"
-            virtual
             locale={{ emptyText: tab.kind === 'query' ? '暂无查询结果' : '暂无表数据' }}
           />
         </div>
@@ -3218,7 +3309,7 @@ function App(): React.JSX.Element {
     if (savedJavaHome !== previousJavaHome || savedEnabled !== previousEnabled) {
       Modal.confirm({
         title: '需要重启应用',
-        content: 'JDBC Java 环境已修改。由于 JVM 启动后不能切换 Java 版本，需要重启应用后才能生效。是否现在重启？',
+        content: 'JDBC Java 环境已修改。由于 JVM 启动后不能切换 Java 版本，重启应用后才能生效。是否现在重启？',
         okText: '确认并重启',
         cancelText: '取消',
         centered: true,
@@ -3343,7 +3434,7 @@ function App(): React.JSX.Element {
 
   const dmDriverOptionDrivers = selectedDmDriver && !selectedDmDriver.enabled ? [selectedDmDriver, ...dmDrivers] : dmDrivers
   const dmDriverOptions = dmDriverOptionDrivers.map((driver) => ({
-    label: `${driverTypeLabel(driver.driver_type)} · ${driver.name}${driver.enabled ? '' : '（已禁用）'}`,
+    label: `${driverTypeLabel(driver.driver_type)} - ${driver.name}${driver.enabled ? '' : '（已禁用）'}`,
     value: driver.id,
     disabled: !driver.enabled
   }))
@@ -3614,7 +3705,7 @@ function App(): React.JSX.Element {
         refreshConnectionNode(connId)
       }
     } catch (err) {
-      showError(err instanceof Error ? err.message : isSchema ? '创建模式失败' : '创建数据库失败')
+      showError(err instanceof Error ? err.message : isSchema ? '创建 Schema 失败' : '创建数据库失败')
     } finally {
       setDatabaseCreateLoading(false)
     }
@@ -3622,7 +3713,19 @@ function App(): React.JSX.Element {
 
   const addNewColumn = (): void => {
     const key = `col-${Date.now()}`
-    setNewTableColumns((current) => [...current, { key, name: '', type: 'VARCHAR(100)', nullable: true, primaryKey: false }])
+    setNewTableColumns((current) => [...current, {
+      key,
+      name: '',
+      type: 'VARCHAR(100)',
+      nullable: true,
+      primaryKey: false,
+      comment: '',
+      unique: false,
+      autoIncrement: false,
+      autoIncrementStep: undefined,
+      minimum: '',
+      maximum: ''
+    }])
   }
 
   const removeNewColumn = (key: string): void => {
@@ -3633,6 +3736,337 @@ function App(): React.JSX.Element {
     setNewTableColumns((current) => current.map((col) => (col.key === key ? { ...col, ...patch } : col)))
   }
 
+  const updateEditingColumn = (key: string, patch: Partial<ColumnDef>): void => {
+    setEditingColumns((current) => current.map((col) => (col.key === key ? { ...col, ...patch } : col)))
+  }
+
+  const renderTableDesigner = (
+    mode: TableDesignerMode,
+    connectionId: string | undefined,
+    databaseName: string | undefined,
+    pgDatabaseName: string | undefined,
+    tableName: string,
+    setTableName: ((value: string) => void) | undefined,
+    tableComment: string,
+    setTableComment: ((value: string) => void) | undefined,
+    columns: ColumnDef[],
+    loading: boolean
+  ): React.ReactNode => {
+    const connection = connectionId ? getConnection(connectionId) : undefined
+    const isCreateMode = mode === 'create'
+    const isMongo = connection?.database_type === 'mongodb'
+    const supportsComments = tableDesignerSupportsComments(connection?.database_type)
+    const supportsUnique = tableDesignerSupportsUnique(connection?.database_type)
+    const supportsAutoIncrement = tableDesignerSupportsAutoIncrement(connection?.database_type)
+    const supportsAutoIncrementStep = tableDesignerSupportsAutoIncrementStep(connection?.database_type)
+    const supportsMinMax = tableDesignerSupportsMinMax(connection?.database_type)
+    const scopeLabel = connection?.database_type === 'postgresql'
+      ? (databaseName ? `${pgDatabaseName ?? '-'} / ${databaseName}` : (pgDatabaseName ?? '-'))
+      : (databaseName || '默认')
+    const validColumns = columns.filter((column) => column.name.trim())
+    const primaryKeyColumns = validColumns.filter((column) => column.primaryKey).map((column) => column.name.trim())
+    const typeOptions = COMMON_TYPES.map((type) => ({ label: type, value: type }))
+    const updateColumn = isCreateMode ? updateNewColumn : updateEditingColumn
+    const canAddRemoveColumns = isCreateMode && !isMongo
+    const canUseAutoIncrement = (column: ColumnDef): boolean => supportsAutoIncrement && isIntegerLikeType(column.type)
+    const canUseAutoIncrementStep = (column: ColumnDef): boolean => supportsAutoIncrementStep && canUseAutoIncrement(column) && column.autoIncrement
+    const canUseMinMax = (column: ColumnDef): boolean => supportsMinMax && isNumericLikeType(column.type)
+
+    const commitColumnPatch = (column: ColumnDef, patch: Partial<ColumnDef>): void => {
+      const next: ColumnDef = { ...column, ...patch }
+      if (next.primaryKey) {
+        next.nullable = false
+        next.unique = false
+      }
+      if (!supportsComments) {
+        next.comment = ''
+      }
+      if (!supportsUnique) {
+        next.unique = false
+      }
+      if (!supportsAutoIncrement || !isIntegerLikeType(next.type)) {
+        next.autoIncrement = false
+        next.autoIncrementStep = undefined
+      }
+      if (next.autoIncrement) {
+        next.nullable = false
+        if (!supportsAutoIncrementStep) {
+          next.autoIncrementStep = undefined
+        } else if (!next.autoIncrementStep || next.autoIncrementStep < 1) {
+          next.autoIncrementStep = 1
+        }
+      }
+      if (!supportsMinMax || !isNumericLikeType(next.type)) {
+        next.minimum = ''
+        next.maximum = ''
+      }
+      updateColumn(column.key, next)
+    }
+
+    const renderColumnOptions = (column: ColumnDef): React.ReactNode => (
+      <div className="table-designer-expanded-card">
+        <div className="table-designer-expanded-grid">
+          <div className="table-designer-section-card">
+            <Flex align="center" justify="space-between" className="table-designer-section-head">
+              <Typography.Text strong>字段约束</Typography.Text>
+              <Tag color="blue">{column.name.trim() || '未命名字段'}</Tag>
+            </Flex>
+            <div className="table-designer-option-list">
+              <div className="table-designer-option-row">
+                <Typography.Text className="table-designer-option-label">设为主键</Typography.Text>
+                <Checkbox
+                  checked={column.primaryKey}
+                  onChange={(event) => commitColumnPatch(column, {
+                    primaryKey: event.target.checked,
+                    nullable: event.target.checked ? false : column.nullable
+                  })}
+                />
+              </div>
+              <div className="table-designer-option-row">
+                <Typography.Text className="table-designer-option-label">不允许为空</Typography.Text>
+                <Checkbox
+                  checked={!column.nullable}
+                  disabled={column.primaryKey || column.autoIncrement}
+                  onChange={(event) => commitColumnPatch(column, { nullable: !event.target.checked })}
+                />
+              </div>
+              {supportsUnique && (
+                <div className="table-designer-option-row">
+                  <Typography.Text className="table-designer-option-label">值必须唯一</Typography.Text>
+                  <Checkbox
+                    checked={column.unique}
+                    disabled={column.primaryKey}
+                    onChange={(event) => commitColumnPatch(column, { unique: event.target.checked })}
+                  />
+                </div>
+              )}
+              {canUseAutoIncrement(column) && (
+                <div className="table-designer-option-row">
+                  <Typography.Text className="table-designer-option-label">自动递增</Typography.Text>
+                  <Checkbox
+                    checked={column.autoIncrement}
+                    onChange={(event) => commitColumnPatch(column, { autoIncrement: event.target.checked })}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="table-designer-section-card">
+            <Flex align="center" justify="space-between" className="table-designer-section-head">
+              <Typography.Text strong>类型规则</Typography.Text>
+              <Typography.Text type="secondary">{column.type || '未填写类型'}</Typography.Text>
+            </Flex>
+            <div className="table-designer-option-list">
+              <div className="table-designer-hint-card">
+                <Typography.Text type="secondary">
+                  {canUseAutoIncrement(column)
+                    ? '当前字段是整数类型，可设置自增。'
+                    : canUseMinMax(column)
+                      ? '当前字段是数值类型，可设置最小值和最大值。'
+                      : '当前字段按数据库原始类型创建，没有额外数值规则。'}
+                </Typography.Text>
+              </div>
+              {canUseAutoIncrementStep(column) && (
+                <div className="table-designer-option-row">
+                  <Typography.Text className="table-designer-option-label">自增步长</Typography.Text>
+                  <InputNumber
+                    size="small"
+                    min={1}
+                    className="table-designer-option-control"
+                    value={column.autoIncrementStep ?? undefined}
+                    onChange={(nextValue) => commitColumnPatch(column, { autoIncrementStep: typeof nextValue === 'number' ? nextValue : undefined })}
+                  />
+                </div>
+              )}
+              {canUseMinMax(column) && (
+                <>
+                  <div className="table-designer-option-row">
+                    <Typography.Text className="table-designer-option-label">最小值</Typography.Text>
+                    <Input
+                      size="small"
+                      className="table-designer-option-control"
+                      value={column.minimum}
+                      onChange={(event) => commitColumnPatch(column, { minimum: event.target.value })}
+                    />
+                  </div>
+                  <div className="table-designer-option-row">
+                    <Typography.Text className="table-designer-option-label">最大值</Typography.Text>
+                    <Input
+                      size="small"
+                      className="table-designer-option-control"
+                      value={column.maximum}
+                      onChange={(event) => commitColumnPatch(column, { maximum: event.target.value })}
+                    />
+                  </div>
+                </>
+              )}
+              {!canUseAutoIncrementStep(column) && !canUseMinMax(column) && (
+                <div className="table-designer-option-empty">
+                  <Typography.Text type="secondary">这个字段类型当前没有更多可设置的数值规则。</Typography.Text>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+        {canAddRemoveColumns && (
+          <Flex justify="end">
+            <Button type="text" danger size="small" icon={<DeleteOutlined />} onClick={() => removeNewColumn(column.key)}>
+              删除字段
+            </Button>
+          </Flex>
+        )}
+      </div>
+    )
+
+    const columnDefs: ColumnsType<ColumnDef> = [
+      {
+        title: '字段名',
+        dataIndex: 'name',
+        key: 'name',
+        width: 240,
+        render: (value: string, column: ColumnDef) => (
+          <Input
+            size="small"
+            value={value}
+            placeholder="字段名"
+            disabled={!isCreateMode}
+            onChange={(event) => commitColumnPatch(column, { name: event.target.value })}
+          />
+        )
+      },
+      {
+        title: '类型',
+        dataIndex: 'type',
+        key: 'type',
+        width: 260,
+        render: (value: string, column: ColumnDef) => (
+          <AutoComplete
+            value={value}
+            options={typeOptions}
+            onChange={(nextValue) => commitColumnPatch(column, { type: nextValue })}
+            filterOption={(inputValue, option) => String(option?.value ?? '').toLowerCase().includes(inputValue.toLowerCase())}
+          >
+            <Input size="small" placeholder="例如 VARCHAR(100)" />
+          </AutoComplete>
+        )
+      },
+      {
+        title: '字段注释',
+        dataIndex: 'comment',
+        key: 'comment',
+        width: 300,
+        render: (value: string, column: ColumnDef) => (
+          <Input
+            size="small"
+            value={value}
+            disabled={!supportsComments}
+            placeholder={supportsComments ? '例如：用户昵称、创建时间' : '当前数据库暂不支持字段注释'}
+            onChange={(event) => commitColumnPatch(column, { comment: event.target.value })}
+          />
+        )
+      }
+    ]
+
+    const tabs = isMongo
+      ? []
+      : [
+          {
+            key: 'columns',
+            label: '字段',
+            children: (
+              <Space direction="vertical" className="full-width" size="middle">
+                <Flex align="center" justify="space-between" className="table-designer-toolbar">
+                  <Space size={8}>
+                    <Typography.Text strong>字段</Typography.Text>
+                    <Tag>{validColumns.length} 列</Tag>
+                    {!isCreateMode && <Typography.Text type="secondary">当前只支持修改已有字段属性，不支持新增、删除或重命名字段。</Typography.Text>}
+                  </Space>
+                  {canAddRemoveColumns && <Button type="dashed" size="small" icon={<PlusOutlined />} onClick={addNewColumn}>新增字段</Button>}
+                </Flex>
+                <Table<ColumnDef>
+                  className="table-designer-grid"
+                  size="small"
+                  rowKey="key"
+                  loading={loading}
+                  pagination={false}
+                  tableLayout="fixed"
+                  scroll={{ x: 860, y: 360 }}
+                  dataSource={columns}
+                  columns={columnDefs}
+                  expandable={{
+                    expandedRowRender: (column) => renderColumnOptions(column),
+                    rowExpandable: () => true
+                  }}
+                  locale={{ emptyText: '暂无字段' }}
+                />
+              </Space>
+            )
+          },
+          {
+            key: 'indexes',
+            label: '约束摘要',
+            children: (
+              <Space direction="vertical" className="full-width" size="middle">
+                <Alert type="info" showIcon message="当前先展示主键摘要，索引、外键和其他约束后续再补。" />
+                <div className="table-designer-index-card">
+                  <Flex align="center" justify="space-between">
+                    <Space size={8}>
+                      <Tag color="blue">PRIMARY</Tag>
+                      <Typography.Text strong>主键</Typography.Text>
+                    </Space>
+                    <Typography.Text type="secondary">{primaryKeyColumns.length > 0 ? `${primaryKeyColumns.length} 列` : '未设置'}</Typography.Text>
+                  </Flex>
+                  <Typography.Text type="secondary">
+                    {primaryKeyColumns.length > 0 ? primaryKeyColumns.join(', ') : '当前没有主键字段'}
+                  </Typography.Text>
+                </div>
+              </Space>
+            )
+          }
+        ]
+
+    return (
+      <Space direction="vertical" className="full-width" size="middle">
+        <div className="table-designer-header">
+          <div className="table-designer-header-main">
+            <Typography.Text type="secondary">{isCreateMode ? '新建结构' : '编辑结构'}</Typography.Text>
+            <Input
+              size="large"
+              value={tableName}
+              placeholder={isMongo ? '请输入集合名' : '请输入表名'}
+              disabled={!isCreateMode}
+              onChange={(event) => setTableName?.(event.target.value)}
+            />
+            {!isMongo && (
+              <Input
+                value={tableComment}
+                placeholder="表注释"
+                disabled={!supportsComments}
+                onChange={(event) => setTableComment?.(event.target.value)}
+              />
+            )}
+          </div>
+          <div className="table-designer-meta">
+            <div className="table-designer-meta-card">
+              <Typography.Text type="secondary">连接</Typography.Text>
+              <Typography.Text strong>{connection?.name ?? '-'}</Typography.Text>
+            </div>
+            <div className="table-designer-meta-card">
+              <Typography.Text type="secondary">{connection?.database_type === 'postgresql' ? '数据库 / Schema' : '数据库'}</Typography.Text>
+              <Typography.Text strong>{scopeLabel}</Typography.Text>
+            </div>
+            <div className="table-designer-meta-card">
+              <Typography.Text type="secondary">类型</Typography.Text>
+              <Typography.Text strong>{isMongo ? '集合' : '数据表'}</Typography.Text>
+            </div>
+          </div>
+        </div>
+        {tabs.length > 0
+          ? <Tabs className="table-designer-tabs" items={tabs} />
+          : <Alert type="info" showIcon message="MongoDB 只需要填写集合名，字段结构会在写入文档后逐步推断。" />}
+      </Space>
+    )
+  }
   const createTable = async (): Promise<void> => {
     if (!ensureConnectionOpen(createTableConnectionId)) {
       return
@@ -3642,8 +4076,7 @@ function App(): React.JSX.Element {
       return
     }
 
-    const validColumns = newTableColumns.filter((col) => col.name.trim())
-
+    const validColumns = newTableColumns.filter((column) => column.name.trim())
     if (validColumns.length === 0) {
       return
     }
@@ -3653,41 +4086,27 @@ function App(): React.JSX.Element {
     const isPg = conn?.database_type === 'postgresql'
 
     try {
-      const sql = conn?.database_type === 'mongodb'
-        ? `db.createCollection("${newTableName.trim().replaceAll('"', '\\"')}")`
-        : (() => {
-            const columnDefs = validColumns.map((col) => {
-              if (conn?.database_type === 'clickhouse') {
-                const type = col.nullable && !col.type.startsWith('Nullable(') ? `Nullable(${col.type})` : col.type
-                return `${col.name} ${type}`
-              }
-
-              const parts: string[] = [col.name, col.type]
-
-              if (!col.nullable) {
-                parts.push('NOT NULL')
-              }
-
-              if (col.primaryKey) {
-                parts.push('PRIMARY KEY')
-              }
-
-              return parts.join(' ')
-            })
-
-            const tableSql = `CREATE TABLE ${newTableName.trim()} (\n  ${columnDefs.join(',\n  ')}\n)`
-            return conn?.database_type === 'clickhouse' ? `${tableSql}\nENGINE = MergeTree\nORDER BY tuple();` : `${tableSql};`
-          })()
-
-      const result = await requestJson<SqlFileRunResponse>(`/connections/${createTableConnectionId}/sql-file`, {
+      await requestJson<{ name: string; message: string }>(`/connections/${createTableConnectionId}/tables`, {
         method: 'POST',
-        body: JSON.stringify({ sql, database: createTableDatabaseName || undefined, pg_database: createTablePgDatabaseName || undefined })
+        body: JSON.stringify({
+          name: newTableName.trim(),
+          database: createTableDatabaseName || undefined,
+          pg_database: createTablePgDatabaseName || undefined,
+          table_comment: newTableComment.trim() || null,
+          columns: validColumns.map((column) => ({
+            name: column.name.trim(),
+            type: column.type.trim(),
+            nullable: column.nullable,
+            primary_key: column.primaryKey,
+            comment: column.comment.trim() || null,
+            unique: column.unique,
+            auto_increment: column.autoIncrement,
+            auto_increment_step: column.autoIncrementStep ?? null,
+            minimum: column.minimum.trim() || null,
+            maximum: column.maximum.trim() || null
+          }))
+        })
       })
-
-      if (result.failed_count > 0) {
-        showError(result.errors[0] ?? '创建表失败')
-        return
-      }
 
       setCreateTableModalOpen(false)
 
@@ -3715,7 +4134,6 @@ function App(): React.JSX.Element {
       setCreateTableLoading(false)
     }
   }
-
   const openSqlFileDialog = async (connectionId: string, databaseName?: string, pgDatabaseName?: string): Promise<void> => {
     if (!ensureConnectionOpen(connectionId)) {
       return
@@ -4311,7 +4729,9 @@ function App(): React.JSX.Element {
   }, [selectedSchemas])
 
   const updateMode = updateSettings?.mode ?? updateInfo?.mode ?? 'installer'
-  const updateDownloaded = Boolean(updateInfo?.downloadedPath) || (updateMode === 'installer' && updateProgress?.percent === 100)
+  const updateDownloaded = updateMode === 'portable'
+    ? Boolean(updateInfo?.downloadedPath)
+    : Boolean(updateInfo?.installerDownloaded)
   const updateActionText = updateMode === 'portable' ? '下载绿色版' : '下载并安装'
   const updateStatusMessage = updateInfo?.available
     ? `发现新版本 ${updateInfo.latestVersion ?? ''}`
@@ -4549,7 +4969,7 @@ function App(): React.JSX.Element {
                 <Splitter.Panel>
                   <div className="editor-placeholder">
                     {workspaceTabs.length === 0 ? (
-                      <div className="empty-workspace"><FileAddOutlined /><Typography.Text type="secondary">连接数据库后，可浏览库表结构、预览数据、编写 SQL，并让 Djinn Agent 辅助分析与执行受控操作。</Typography.Text><Space><Dropdown menu={connectionCreateMenu} trigger={['click']}><Button icon={<PlusOutlined />}>创建连接</Button></Dropdown></Space></div>
+                      <div className="empty-workspace"><FileAddOutlined /><Typography.Text type="secondary">连接数据库后，可以浏览库表结构、预览数据、编写 SQL，并让 Djinn Agent 辅助分析与执行受控操作。</Typography.Text><Space><Dropdown menu={connectionCreateMenu} trigger={['click']}><Button icon={<PlusOutlined />}>创建连接</Button></Dropdown></Space></div>
                     ) : (
                       <Tabs className="workspace-tabs" type="editable-card" hideAdd destroyOnHidden activeKey={activeTabKey} onChange={setActiveTabKey} onEdit={(targetKey, action) => { if (action === 'remove' && typeof targetKey === 'string') { closeWorkspaceTab(targetKey) } }} items={workspaceTabs.map((tab) => ({ key: tab.key, label: tab.title, closable: true, children: tab.key === activeTabKey ? renderWorkspaceTab(tab) : null }))} />
                     )}
@@ -4607,7 +5027,7 @@ function App(): React.JSX.Element {
             type={updateInfo?.available ? 'info' : 'success'}
             showIcon
             message={updateStatusMessage}
-            description={updateMode === 'installer' ? '安装版支持自动下载并在重启后安装更新。' : '绿色版支持检测并下载新版 zip，下载后需要关闭应用并手动解压替换。'}
+            description={updateMode === 'installer' ? '安装版支持自动下载，并在重启后安装更新。' : '绿色版支持检测并下载新版 zip，下载后需要关闭应用并手动解压替换。'}
           />
           <Flex justify="space-between" align="center">
             <Typography.Text>当前版本：{updateSettings?.currentVersion ?? updateInfo?.currentVersion ?? '-'}</Typography.Text>
@@ -4675,7 +5095,7 @@ function App(): React.JSX.Element {
                   <Flex justify="space-between" align="center">
                     <Space direction="vertical" size={0}>
                       <Typography.Text>启用 JDBC Java 环境</Typography.Text>
-                      <Typography.Text type="secondary">关闭后启动应用时不会加载 Java，使用 JDBC 驱动连接时需要先开启并配置。</Typography.Text>
+                      <Typography.Text type="secondary">关闭后应用启动时不会加载 Java，使用 JDBC 驱动连接时需要先开启并配置。</Typography.Text>
                     </Space>
                     <Switch checked={jdbcJavaEnabled} onChange={setJdbcJavaEnabled} />
                   </Flex>
@@ -4753,16 +5173,15 @@ function App(): React.JSX.Element {
           </div>
         </Flex>
       </Modal>
-      <Modal title={editingTableName ? `修改表：${editingTableName}` : '修改表'} open={tableEditorOpen} okText="保存" cancelText="取消" confirmLoading={tableEditorLoading} onOk={() => void saveTableEditor()} onCancel={() => setTableEditorOpen(false)} width={760} maskClosable={false}>
-        <Alert message="支持 SQLite/MySQL 修改已有字段的类型、可空和单字段主键；当前不支持新增、删除或重命名字段。" type="warning" showIcon />
-        <Table className="table-editor-grid" size="small" loading={tableEditorLoading} rowKey="name" pagination={false} dataSource={editingColumns} columns={[{ title: '字段名', dataIndex: 'name', key: 'name', render: (value: string) => <Input value={value} disabled /> }, { title: '类型', dataIndex: 'type', key: 'type', render: (value: string, column: ColumnInfo) => <Input value={value} onChange={(event) => { setEditingColumns((current) => current.map((item) => (item.name === column.name ? { ...item, type: event.target.value } : item))) }} /> }, { title: '可空', dataIndex: 'nullable', key: 'nullable', width: 90, render: (value: boolean, column: ColumnInfo) => <Switch checked={value} disabled={column.primary_key} onChange={(checked) => { setEditingColumns((current) => current.map((item) => (item.name === column.name ? { ...item, nullable: checked } : item))) }} /> }, { title: '主键', dataIndex: 'primary_key', key: 'primary_key', width: 90, render: (value: boolean, column: ColumnInfo) => <Switch checked={value} onChange={(checked) => { setEditingColumns((current) => current.map((item) => ({ ...item, primary_key: item.name === column.name ? checked : false }))) }} /> }]} />
+      <Modal title={editingTableName ? `修改表：${editingTableName}` : '修改表'} open={tableEditorOpen} okText="保存" cancelText="取消" confirmLoading={tableEditorLoading} onOk={() => void saveTableEditor()} onCancel={() => setTableEditorOpen(false)} width={980} okButtonProps={{ disabled: !tableDesignerSupportsEdit(getConnection(editingConnectionId)?.database_type) }} maskClosable={false}>
+        {renderTableDesigner('edit', editingConnectionId, editingDatabaseName, editingPgDatabaseName, editingTableName ?? '', undefined, editingTableComment, setEditingTableComment, editingColumns, tableEditorLoading)}
       </Modal>
-      <Modal title={creatingSchemaDatabaseName ? '新建模式' : '新增数据库'} open={databaseCreateModalOpen} okText="创建" cancelText="取消" confirmLoading={databaseCreateLoading} onOk={() => void createDatabase()} onCancel={() => { setDatabaseCreateModalOpen(false); setCreatingSchemaDatabaseName('') }} okButtonProps={{ disabled: !databaseCreateName.trim() }} maskClosable={false}>
+      <Modal title={creatingSchemaDatabaseName ? '新建 Schema' : '新增数据库'} open={databaseCreateModalOpen} okText="创建" cancelText="取消" confirmLoading={databaseCreateLoading} onOk={() => void createDatabase()} onCancel={() => { setDatabaseCreateModalOpen(false); setCreatingSchemaDatabaseName('') }} okButtonProps={{ disabled: !databaseCreateName.trim() }} maskClosable={false}>
         <Form layout="vertical">
-          <Form.Item label={creatingSchemaDatabaseName ? '模式名称' : '数据库名称'} required>
-            <Input placeholder={creatingSchemaDatabaseName ? '请输入模式名称' : '请输入数据库名称'} value={databaseCreateName} onChange={(event) => setDatabaseCreateName(event.target.value)} onPressEnter={() => void createDatabase()} />
+          <Form.Item label={creatingSchemaDatabaseName ? 'Schema 名称' : '数据库名称'} required>
+            <Input placeholder={creatingSchemaDatabaseName ? '请输入 Schema 名称' : '请输入数据库名称'} value={databaseCreateName} onChange={(event) => setDatabaseCreateName(event.target.value)} onPressEnter={() => void createDatabase()} />
           </Form.Item>
-          <Typography.Text type="secondary">只允许字母、数字、下划线，首字符不能是数字，长度 1-64</Typography.Text>
+          <Typography.Text type="secondary">仅允许字母、数字、下划线，首字符不能是数字，长度 1-64。</Typography.Text>
         </Form>
       </Modal>
       <Modal title="运行 SQL 文件" open={sqlFileModalOpen} okText="执行" cancelText="取消" confirmLoading={sqlFileLoading} onOk={() => void runSqlFile()} onCancel={() => setSqlFileModalOpen(false)} okButtonProps={{ danger: true, disabled: sqlFileDatabases.length > 0 && !sqlFileDatabase }} footer={sqlFileResult ? undefined : (_, { OkBtn, CancelBtn }) => (<Space><CancelBtn /><OkBtn /></Space>)} maskClosable={false}>
@@ -4794,18 +5213,8 @@ function App(): React.JSX.Element {
       <Modal title={ddlModalTitle || '查看 DDL'} open={ddlModalOpen} footer={null} onCancel={() => setDdlModalOpen(false)} width={820} centered maskClosable={false}>
         <Input.TextArea value={ddlLoading ? '加载中...' : ddlContent} autoSize={{ minRows: 12, maxRows: 24 }} readOnly />
       </Modal>
-      <Modal title={getConnection(createTableConnectionId)?.database_type === 'mongodb' ? '新建集合' : '新建表'} open={createTableModalOpen} okText="创建" cancelText="取消" confirmLoading={createTableLoading} onOk={() => void createTable()} onCancel={() => setCreateTableModalOpen(false)} width={680} okButtonProps={{ disabled: !newTableName.trim() || (getConnection(createTableConnectionId)?.database_type !== 'mongodb' && newTableColumns.filter((c) => c.name.trim()).length === 0) }} maskClosable={false}>
-        <Form layout="vertical">
-          <Form.Item label={getConnection(createTableConnectionId)?.database_type === 'mongodb' ? '集合名' : '表名'} required><Input placeholder={getConnection(createTableConnectionId)?.database_type === 'mongodb' ? '请输入集合名' : '请输入表名'} value={newTableName} onChange={(event) => setNewTableName(event.target.value)} /></Form.Item>
-          {getConnection(createTableConnectionId)?.database_type !== 'mongodb' && (
-            <>
-              <Form.Item label="字段定义">
-                <Table size="small" rowKey="key" pagination={false} dataSource={newTableColumns} columns={[{ title: '字段名', dataIndex: 'name', width: 160, render: (value: string, col: ColumnDef) => <Input size="small" value={value} placeholder="字段名" onChange={(event) => updateNewColumn(col.key, { name: event.target.value })} /> }, { title: '类型', dataIndex: 'type', width: 160, render: (value: string, col: ColumnDef) => <Select size="small" style={{ width: '100%' }} value={value} onChange={(v) => updateNewColumn(col.key, { type: v })} options={COMMON_TYPES.map((t) => ({ label: t, value: t }))} /> }, { title: '可空', dataIndex: 'nullable', width: 60, render: (value: boolean, col: ColumnDef) => <Switch size="small" checked={value} disabled={col.primaryKey} onChange={(checked) => updateNewColumn(col.key, { nullable: checked })} /> }, { title: '主键', dataIndex: 'primaryKey', width: 60, render: (value: boolean, col: ColumnDef) => <Switch size="small" checked={value} onChange={(checked) => updateNewColumn(col.key, { primaryKey: checked, nullable: checked ? false : col.nullable })} /> }, { title: '', width: 40, render: (_: unknown, col: ColumnDef) => <Button type="text" danger size="small" icon={<DeleteOutlined />} onClick={() => removeNewColumn(col.key)} /> }]} />
-              </Form.Item>
-              <Button type="dashed" block icon={<PlusOutlined />} onClick={addNewColumn}>添加字段</Button>
-            </>
-          )}
-        </Form>
+      <Modal title={getConnection(createTableConnectionId)?.database_type === 'mongodb' ? '新建集合' : '新建表'} open={createTableModalOpen} okText="创建" cancelText="取消" confirmLoading={createTableLoading} onOk={() => void createTable()} onCancel={() => setCreateTableModalOpen(false)} width={980} okButtonProps={{ disabled: !newTableName.trim() || (getConnection(createTableConnectionId)?.database_type !== 'mongodb' && newTableColumns.filter((c) => c.name.trim()).length === 0) }} maskClosable={false}>
+        {renderTableDesigner('create', createTableConnectionId, createTableDatabaseName, createTablePgDatabaseName || undefined, newTableName, setNewTableName, newTableComment, setNewTableComment, newTableColumns, createTableLoading)}
       </Modal>
       <Modal title={connectionMode === 'edit' ? '编辑数据库连接' : '保存数据库连接'} open={connectionModalOpen} okText={connectionMode === 'edit' ? '保存修改' : '保存连接'} cancelText="取消" confirmLoading={connectionLoading} onOk={() => void saveConnection()} onCancel={() => setConnectionModalOpen(false)} footer={(_, { OkBtn, CancelBtn }) => (<Space><Button loading={testingConnection} onClick={() => void testConnection()}>测试连接</Button><CancelBtn /><OkBtn /></Space>)} maskClosable={false}>
         <Form form={form} layout="vertical" initialValues={{ database_type: 'sqlite' }}>
@@ -4819,7 +5228,7 @@ function App(): React.JSX.Element {
               <Form.Item name="port" label="端口" rules={[{ required: true, message: '请输入端口' }]}><InputNumber min={1} max={65535} className="full-width" placeholder={databaseType === 'postgresql' ? '5432' : databaseType === 'dm' ? '5236' : databaseType === 'mongodb' ? '27017' : databaseType === 'redis' ? '6379' : databaseType === 'clickhouse' ? '8123' : '3306'} /></Form.Item>
               <Form.Item name="username" label="用户名" rules={databaseType === 'mongodb' || databaseType === 'redis' ? undefined : [{ required: true, message: '请输入用户名' }]}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'dm' ? 'SYSDBA' : databaseType === 'redis' ? 'Redis ACL 用户名，可选' : databaseType === 'clickhouse' ? 'default' : undefined} /></Form.Item>
               <Form.Item name="password" label="密码"><Input.Password /></Form.Item>
-              <Form.Item name="database" label={databaseType === 'postgresql' ? '数据库名' : databaseType === 'dm' ? '默认 Schema（可选）' : databaseType === 'mongodb' ? '认证库/默认库（可选）' : databaseType === 'redis' ? '默认 DB 序号（可选）' : databaseType === 'clickhouse' ? '默认数据库' : '默认数据库（可选）'} rules={databaseType === 'postgresql' ? [{ required: true, message: '请输入数据库名' }] : undefined}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'dm' ? '不填则使用默认 Schema' : databaseType === 'mongodb' ? '默认 admin；也可填业务库名' : databaseType === 'redis' ? '默认 0；例如 0、1、2' : databaseType === 'clickhouse' ? '默认 default' : '不填则连接服务器并加载全部数据库'} /></Form.Item>
+              <Form.Item name="database" label={databaseType === 'postgresql' ? '数据库名' : databaseType === 'dm' ? '默认 Schema（可选）' : databaseType === 'mongodb' ? '认证库/默认库（可选）' : databaseType === 'redis' ? '默认 DB 序号（可选）' : databaseType === 'clickhouse' ? '默认数据库' : '默认数据库（可选）'} rules={databaseType === 'postgresql' ? [{ required: true, message: '请输入数据库名' }] : undefined}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'dm' ? '不填则使用默认 Schema' : databaseType === 'mongodb' ? '默认 admin，也可填业务库名' : databaseType === 'redis' ? '默认 0，例如 0、1、2' : databaseType === 'clickhouse' ? '默认 default' : '不填则连接服务器并加载全部数据库'} /></Form.Item>
               {databaseType === 'dm' && (
                 <>
                   <Form.Item name="dm_driver_id" label="达梦驱动" rules={[{ required: true, message: '请选择达梦驱动' }]}>
@@ -4833,7 +5242,7 @@ function App(): React.JSX.Element {
                   <Alert
                     type={selectedDmDriver ? 'info' : 'warning'}
                     showIcon
-                    message={selectedDmDriver ? `当前选择：${driverTypeLabel(selectedDmDriver.driver_type)} · ${selectedDmDriver.name}` : '未选择达梦驱动，请先在驱动管理中添加并选择 JDBC jar、dmPython pyd 或 dmPython whl 驱动'}
+                    message={selectedDmDriver ? `当前选择：${driverTypeLabel(selectedDmDriver.driver_type)} - ${selectedDmDriver.name}` : '未选择达梦驱动，请先在驱动管理中添加并选择 JDBC jar、dmPython pyd 或 dmPython whl 驱动'}
                     action={<Button size="small" onClick={openDriverManager}>驱动管理</Button>}
                   />
                 </>
@@ -4846,13 +5255,13 @@ function App(): React.JSX.Element {
         <Space direction="vertical" className="full-width">
           <Typography.Text><Typography.Text strong>连接：</Typography.Text>{getConnection(backupRestoreConnectionId)?.name}</Typography.Text>
           <Typography.Text><Typography.Text strong>数据库：</Typography.Text>{backupRestorePgDatabase || backupRestoreDatabase || '默认'}</Typography.Text>
-          <Alert type="info" message="备份将生成 SQL 脚本（含建表语句和数据），可随时通过导入功能恢复。" showIcon />
+          <Alert type="info" message="备份会生成 SQL 脚本，包含建表语句和数据，可随时通过导入功能恢复。" showIcon />
         </Space>
       </Modal>
       <Modal title="导出" open={exportModalOpen} okText="选择路径并导出" cancelText="取消" confirmLoading={exportLoading} onOk={() => void runExport()} onCancel={() => setExportModalOpen(false)} maskClosable={false}>
         <Space direction="vertical" className="full-width">
           <Typography.Text><Typography.Text strong>连接：</Typography.Text>{getConnection(exportConnectionId)?.name}</Typography.Text>
-          <Typography.Text><Typography.Text strong>范围：</Typography.Text>{exportScope === 'table' ? `表 ${exportTable}` : exportScope === 'schema' ? `模式 ${exportPgDatabase}` : `数据库 ${exportDatabase || '默认'}`}</Typography.Text>
+          <Typography.Text><Typography.Text strong>范围：</Typography.Text>{exportScope === 'table' ? `表 ${exportTable}` : exportScope === 'schema' ? `Schema ${exportPgDatabase}` : `数据库 ${exportDatabase || '默认'}`}</Typography.Text>
           <Form layout="vertical">
             <Form.Item label="导出格式">
               <Select value={exportFormat} onChange={(value) => setExportFormat(value)} options={getConnection(exportConnectionId)?.database_type === 'mongodb' || getConnection(exportConnectionId)?.database_type === 'redis' ? [{ label: 'JSON', value: 'json' }] : [{ label: 'SQL 脚本', value: 'sql' }, { label: 'CSV', value: 'csv' }]} />
@@ -4863,21 +5272,21 @@ function App(): React.JSX.Element {
               </Form.Item>
             )}
           </Form>
-          {exportFormat === 'csv' && exportScope !== 'table' && <Alert type="info" message="CSV 多表导出将创建目录，每表一个 CSV 文件" showIcon />}
-          {exportFormat === 'json' && <Alert type="info" message="Redis / MongoDB 导出为 JSON 文件，便于留档或迁移前查看。" showIcon />}
-          {exportFormat === 'sql' && <Alert type="info" message="SQL 导出用于迁移或查看，可选择仅结构、仅数据或结构+数据；完整可恢复请使用备份。" showIcon />}
+          {exportFormat === 'csv' && exportScope !== 'table' && <Alert type="info" message="CSV 多表导出会创建目录，每张表一个 CSV 文件。" showIcon />}
+          {exportFormat === 'json' && <Alert type="info" message="Redis / MongoDB 会导出为 JSON 文件，便于留档或迁移前查看。" showIcon />}
+          {exportFormat === 'sql' && <Alert type="info" message="SQL 导出用于迁移或查看，可选仅结构、仅数据或结构加数据；完整恢复请使用备份。" showIcon />}
         </Space>
       </Modal>
       <Modal title="导入" open={importModalOpen} okText="导入" cancelText="取消" confirmLoading={importLoading} onOk={() => void runImport()} onCancel={() => setImportModalOpen(false)} okButtonProps={{ disabled: !importPath }} maskClosable={false}>
         <Space direction="vertical" className="full-width">
           <Typography.Text><Typography.Text strong>连接：</Typography.Text>{getConnection(importConnectionId)?.name}</Typography.Text>
-          <Typography.Text><Typography.Text strong>目标：</Typography.Text>{importTable ? `表 ${importTable}` : importPgDatabase ? `模式 ${importPgDatabase}` : `数据库 ${importDatabase || '默认'}`}</Typography.Text>
+          <Typography.Text><Typography.Text strong>目标：</Typography.Text>{importTable ? `表 ${importTable}` : importPgDatabase ? `Schema ${importPgDatabase}` : `数据库 ${importDatabase || '默认'}`}</Typography.Text>
           <Form layout="vertical">
-            <Form.Item label="导入文件 (SQL/CSV，自动按扩展名识别)" required>
+            <Form.Item label="导入文件（SQL/CSV，自动按扩展名识别）" required>
               <Input readOnly placeholder="请选择导入文件" value={importPath} addonAfter={<Button type="link" size="small" onClick={() => void selectImportFilePath()}>选择</Button>} />
             </Form.Item>
           </Form>
-          <Alert type="warning" message="导入 SQL 会逐条执行文件内所有语句；导入 CSV 会 INSERT 到目标表，需确保表结构与 CSV 表头一致。" showIcon />
+          <Alert type="warning" message="导入 SQL 会逐条执行文件中的语句；导入 CSV 会 INSERT 到目标表，请确保表结构与 CSV 表头一致。" showIcon />
         </Space>
       </Modal>
       </Layout>
@@ -4886,3 +5295,5 @@ function App(): React.JSX.Element {
 }
 
 export default App
+
+

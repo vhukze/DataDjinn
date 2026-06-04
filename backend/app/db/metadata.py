@@ -1,6 +1,7 @@
-import json
+﻿import json
 import re
 
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy import Engine, inspect, text
@@ -10,6 +11,7 @@ from app.db.redis_utils import is_redis_client, parse_redis_database_name, redis
 from app.schemas.metadata import ColumnInfo, DatabaseInfo, DbObjectInfo, RedisDataChangeRequest, RedisKeyUpdate, TableDataChangeRequest, TableInfo, TableUpdateColumn
 
 COLUMN_TYPE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_ (),]*$")
+NUMERIC_LITERAL_PATTERN = re.compile(r"^-?\d+(?:\.\d+)?$")
 
 PG_SYSTEM_SCHEMAS = {"pg_catalog", "information_schema"}
 DM_SYSTEM_SCHEMAS = {"SYS", "SYSDBA", "SYSAUDITOR", "SYSSSO", "CTISYS"}
@@ -389,7 +391,7 @@ def drop_database(engine: Engine, database_name: str) -> None:
 
 def create_schema(engine: Engine, database_name: str, schema_name: str) -> DatabaseInfo:
     if engine.dialect.name != "postgresql":
-        raise ValueError("仅 PostgreSQL 支持新建模式")
+        raise ValueError("仅 PostgreSQL 支持新建 Schema")
 
     db_engine = _pg_engine(engine, database_name)
 
@@ -683,6 +685,245 @@ def list_db_objects(engine: Engine, database_name: str | None = None, pg_databas
     return objects
 
 
+def _clean_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _sql_string(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _constraint_name(prefix: str, table_name: str, column_name: str) -> str:
+    raw = re.sub(r"[^A-Za-z0-9_]+", "_", f"{prefix}_{table_name}_{column_name}").strip("_")
+    return raw[:60] or f"{prefix}_constraint"
+
+
+def _normalize_bound(value: str | None, label: str) -> str | None:
+    cleaned = _clean_optional_text(value)
+    if cleaned is None:
+        return None
+    if not NUMERIC_LITERAL_PATTERN.fullmatch(cleaned):
+        raise ValueError(f"{label} 必须是数字")
+    try:
+        Decimal(cleaned)
+    except InvalidOperation as exc:
+        raise ValueError(f"{label} 必须是有效数字") from exc
+    return cleaned
+
+
+def _is_integer_type(type_name: str) -> bool:
+    normalized = type_name.strip().lower()
+    return normalized.startswith(("int", "integer", "bigint", "smallint", "tinyint", "mediumint", "serial", "bigserial", "smallserial"))
+
+
+def _is_numeric_type(type_name: str) -> bool:
+    normalized = type_name.strip().lower()
+    return normalized.startswith((
+        "int", "integer", "bigint", "smallint", "tinyint", "mediumint",
+        "decimal", "numeric", "float", "double", "real", "serial", "bigserial", "smallserial",
+    ))
+
+
+def _column_comment_sql(column: TableUpdateColumn) -> str | None:
+    return _clean_optional_text(column.comment)
+
+
+def _column_minimum(column: TableUpdateColumn) -> str | None:
+    return _normalize_bound(column.minimum, f"字段 {column.name} 的最小值")
+
+
+def _column_maximum(column: TableUpdateColumn) -> str | None:
+    return _normalize_bound(column.maximum, f"字段 {column.name} 的最大值")
+
+
+def _validate_table_columns(next_columns: list[TableUpdateColumn], dialect_name: str) -> None:
+    if not next_columns:
+        raise ValueError("至少需要一个字段")
+
+    seen_names: set[str] = set()
+    primary_key_columns = [column.name.strip() for column in next_columns if column.primary_key]
+    auto_increment_columns = [column for column in next_columns if column.auto_increment]
+
+    for column in next_columns:
+        column_name = column.name.strip()
+        if not column_name:
+            raise ValueError("字段名不能为空")
+        if column_name in seen_names:
+            raise ValueError(f"字段 {column_name} 重复")
+        seen_names.add(column_name)
+        if not COLUMN_TYPE_PATTERN.fullmatch(column.type.strip()):
+            raise ValueError(f"字段 {column_name} 的类型不合法")
+
+        minimum = _column_minimum(column)
+        maximum = _column_maximum(column)
+        if minimum is not None or maximum is not None:
+            if not _is_numeric_type(column.type):
+                raise ValueError(f"字段 {column_name} 只有数值类型才能设置最小值和最大值")
+            if minimum is not None and maximum is not None and Decimal(minimum) > Decimal(maximum):
+                raise ValueError(f"字段 {column_name} 的最小值不能大于最大值")
+
+        if column.auto_increment:
+            if not _is_integer_type(column.type):
+                raise ValueError(f"字段 {column_name} 只有整数类型才能设置自增")
+            if dialect_name in {"mysql", "sqlite"} and column.auto_increment_step is not None:
+                raise ValueError(f"{dialect_name} 不支持列级自增步长")
+        if column.auto_increment_step is not None and column.auto_increment_step < 1:
+            raise ValueError(f"字段 {column_name} 的自增步长必须大于 0")
+
+    if dialect_name == "sqlite" and len(primary_key_columns) > 1:
+        raise ValueError("SQLite 暂不支持复合主键修改")
+    if dialect_name == "sqlite" and auto_increment_columns:
+        if len(auto_increment_columns) > 1:
+            raise ValueError("SQLite 只能有一个自增字段")
+        if not auto_increment_columns[0].primary_key:
+            raise ValueError("SQLite 自增字段必须是主键")
+
+
+def _extract_bounds_from_clause(clause: str, column_name: str) -> tuple[str | None, str | None]:
+    identifier_pattern = rf"(?:`|\"|\[)?{re.escape(column_name)}(?:`|\"|\])?"
+    minimum_match = re.search(rf"{identifier_pattern}\s*>=\s*(-?\d+(?:\.\d+)?)", clause, flags=re.IGNORECASE)
+    maximum_match = re.search(rf"{identifier_pattern}\s*<=\s*(-?\d+(?:\.\d+)?)", clause, flags=re.IGNORECASE)
+    return (minimum_match.group(1) if minimum_match else None, maximum_match.group(1) if maximum_match else None)
+
+
+def _unique_constraint_name(table_name: str, column_name: str) -> str:
+    return _constraint_name("uq", table_name, column_name)
+
+
+def _min_constraint_name(table_name: str, column_name: str) -> str:
+    return _constraint_name("chk", table_name, f"{column_name}_min")
+
+
+def _max_constraint_name(table_name: str, column_name: str) -> str:
+    return _constraint_name("chk", table_name, f"{column_name}_max")
+
+
+def _quote_table(preparer, table_name: str, database_name: str | None = None) -> str:
+    if database_name:
+        return f"{preparer.quote(database_name)}.{preparer.quote(table_name)}"
+    return preparer.quote(table_name)
+
+
+def _mysql_single_column_unique_indexes(engine: Engine, table_name: str, database_name: str | None) -> dict[str, str]:
+    target_db = database_name or engine.url.database
+    if not target_db:
+        return {}
+
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT INDEX_NAME, COLUMN_NAME, COUNT(*) OVER (PARTITION BY INDEX_NAME) AS COLUMN_COUNT "
+                "FROM information_schema.STATISTICS "
+                "WHERE TABLE_SCHEMA = :database_name AND TABLE_NAME = :table_name "
+                "AND NON_UNIQUE = 0 AND INDEX_NAME <> 'PRIMARY'"
+            ),
+            {"database_name": target_db, "table_name": table_name},
+        ).fetchall()
+
+    result: dict[str, str] = {}
+    for row in rows:
+        if int(row[2] or 0) == 1:
+            result[str(row[1])] = str(row[0])
+    return result
+
+
+def _pg_single_column_unique_constraints(engine: Engine, table_name: str, schema_name: str) -> dict[str, str]:
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT kcu.column_name, tc.constraint_name, COUNT(*) OVER (PARTITION BY tc.constraint_name) AS column_count "
+                "FROM information_schema.table_constraints tc "
+                "JOIN information_schema.key_column_usage kcu "
+                "ON tc.constraint_schema = kcu.constraint_schema AND tc.constraint_name = kcu.constraint_name "
+                "WHERE tc.table_schema = :schema_name AND tc.table_name = :table_name "
+                "AND tc.constraint_type = 'UNIQUE'"
+            ),
+            {"schema_name": schema_name, "table_name": table_name},
+        ).fetchall()
+
+    result: dict[str, str] = {}
+    for row in rows:
+        if int(row[2] or 0) == 1:
+            result[str(row[0])] = str(row[1])
+    return result
+
+
+def _sqlite_unique_columns(engine: Engine, table_name: str) -> set[str]:
+    escaped_table = table_name.replace('"', '""')
+    result: set[str] = set()
+
+    with engine.connect() as connection:
+        index_rows = connection.execute(text(f'PRAGMA index_list("{escaped_table}")')).fetchall()
+        for row in index_rows:
+            if len(row) < 3 or not bool(row[2]):
+                continue
+            index_name = str(row[1])
+            index_rows_inner = connection.execute(text(f'PRAGMA index_info("{index_name.replace("\"", "\"\"")}")')).fetchall()
+            if len(index_rows_inner) == 1:
+                result.add(str(index_rows_inner[0][2]))
+
+    return result
+
+
+def _pg_sequence_increment(engine: Engine, table_name: str, column_name: str, schema_name: str) -> int | None:
+    sequence_name = _pg_sequence_name(engine, table_name, column_name, schema_name)
+    if not sequence_name:
+        return None
+
+    cleaned = sequence_name.replace('"', "")
+    if "." in cleaned:
+        seq_schema, seq_name = cleaned.split(".", 1)
+    else:
+        seq_schema, seq_name = schema_name, cleaned
+
+    with engine.connect() as connection:
+        row = connection.execute(
+            text("SELECT increment_by FROM pg_sequences WHERE schemaname = :schema_name AND sequencename = :sequence_name"),
+            {"schema_name": seq_schema, "sequence_name": seq_name},
+        ).fetchone()
+    return int(row[0]) if row and row[0] is not None else None
+
+
+def get_table_comment(engine: Engine, table_name: str, database_name: str | None = None, pg_database: str | None = None) -> str | None:
+    if is_mongo_client(engine) or is_redis_client(engine) or _is_clickhouse_engine(engine):
+        return None
+
+    if pg_database and engine.dialect.name == "postgresql":
+        db_engine = _pg_engine(engine, pg_database)
+        try:
+            return get_table_comment(db_engine, table_name, database_name, None)
+        finally:
+            if db_engine is not engine:
+                db_engine.dispose()
+
+    if engine.dialect.name == "mysql":
+        target_db = database_name or engine.url.database
+        if not target_db:
+            return None
+        with engine.connect() as connection:
+            row = connection.execute(
+                text("SELECT TABLE_COMMENT FROM information_schema.TABLES WHERE TABLE_SCHEMA = :database_name AND TABLE_NAME = :table_name"),
+                {"database_name": target_db, "table_name": table_name},
+            ).fetchone()
+        return _clean_optional_text(_db_text(row[0])) if row and row[0] is not None else None
+
+    if engine.dialect.name == "postgresql":
+        schema_name = database_name or "public"
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT obj_description(format('%I.%I', :schema_name, :table_name)::regclass, 'pg_class')"
+                ),
+                {"schema_name": schema_name, "table_name": table_name},
+            ).fetchone()
+        return _clean_optional_text(_db_text(row[0])) if row and row[0] is not None else None
+
+    return None
+
+
 def list_columns(engine: Engine, table_name: str, database_name: str | None = None, pg_database: str | None = None) -> list[ColumnInfo]:
     if is_mongo_client(engine):
         target_db = database_name or mongo_default_database(engine)
@@ -711,7 +952,12 @@ def list_columns(engine: Engine, table_name: str, database_name: str | None = No
                 target.close()
 
     if pg_database and engine.dialect.name == "postgresql":
-        engine = _pg_engine(engine, pg_database)
+        db_engine = _pg_engine(engine, pg_database)
+        try:
+            return list_columns(db_engine, table_name, database_name, None)
+        finally:
+            if db_engine is not engine:
+                db_engine.dispose()
 
     if _is_clickhouse_engine(engine):
         target_db = database_name or engine.url.database or "default"
@@ -723,11 +969,18 @@ def list_columns(engine: Engine, table_name: str, database_name: str | None = No
                 ),
                 {"database_name": target_db, "table_name": table_name},
             ).fetchall()
-        return [ColumnInfo(name=str(row[0]), type=str(row[1]), nullable="Nullable(" in str(row[1]), primary_key=bool(row[2])) for row in rows]
+        return [
+            ColumnInfo(
+                name=str(row[0]),
+                type=str(row[1]),
+                nullable="Nullable(" in str(row[1]),
+                primary_key=bool(row[2]),
+            )
+            for row in rows
+        ]
 
     if engine.dialect.name in {"dm", "dmPython"}:
         schema_name = database_name or engine.url.username.upper() or "SYSDBA"
-
         with engine.connect() as connection:
             rows = connection.execute(
                 text(
@@ -744,9 +997,7 @@ def list_columns(engine: Engine, table_name: str, database_name: str | None = No
                 ),
                 {"schema_name": schema_name, "table_name": table_name},
             ).fetchall()
-
         primary_keys = {str(row[0]) for row in rows if row[3] == 1}
-
         return [
             ColumnInfo(
                 name=str(row[0]),
@@ -766,6 +1017,7 @@ def list_columns(engine: Engine, table_name: str, database_name: str | None = No
             type=str(column["type"]),
             nullable=bool(column.get("nullable", True)),
             primary_key=column["name"] in primary_keys,
+            comment=_clean_optional_text(_db_text(column.get("comment"))),
         )
         for column in inspector.get_columns(table_name, schema=database_name)
     ]
@@ -839,13 +1091,19 @@ def get_object_ddl(engine: Engine, object_name: str, object_type: str, database_
         with engine.connect() as connection:
             if object_type in {"table", "view"}:
                 if object_type == "view":
-                    row = connection.execute(text("SELECT pg_get_viewdef(format('%I.%I', :schema, :name)::regclass, true)"), {"schema": schema_name, "name": object_name}).fetchone()
+                    row = connection.execute(
+                        text("SELECT pg_get_viewdef(format('%I.%I', :schema, :name)::regclass, true)"),
+                        {"schema": schema_name, "name": object_name},
+                    ).fetchone()
                     body = row[0] if row else ""
                     return f"CREATE OR REPLACE VIEW {preparer.quote(schema_name)}.{preparer.quote(object_name)} AS\n{body};" if body else ""
+
                 columns = connection.execute(
                     text(
                         "SELECT column_name, data_type, is_nullable, column_default "
-                        "FROM information_schema.columns WHERE table_schema = :schema AND table_name = :name ORDER BY ordinal_position"
+                        "FROM information_schema.columns "
+                        "WHERE table_schema = :schema AND table_name = :name "
+                        "ORDER BY ordinal_position"
                     ),
                     {"schema": schema_name, "name": object_name},
                 ).fetchall()
@@ -860,6 +1118,7 @@ def get_object_ddl(engine: Engine, object_name: str, object_type: str, database_
                 if not column_defs:
                     return ""
                 return f"CREATE TABLE {preparer.quote(schema_name)}.{preparer.quote(object_name)} (\n{',\n'.join(column_defs)}\n);"
+
             if object_type in {"function", "procedure"}:
                 row = connection.execute(
                     text(
@@ -871,10 +1130,15 @@ def get_object_ddl(engine: Engine, object_name: str, object_type: str, database_
                     {"schema": schema_name, "name": object_name, "type": object_type},
                 ).fetchone()
                 return row[0] if row else ""
+
             if object_type == "sequence":
                 return f"CREATE SEQUENCE {preparer.quote(schema_name)}.{preparer.quote(object_name)};"
+
             if object_type == "index":
-                row = connection.execute(text("SELECT indexdef FROM pg_indexes WHERE schemaname = :schema AND indexname = :name"), {"schema": schema_name, "name": object_name}).fetchone()
+                row = connection.execute(
+                    text("SELECT indexdef FROM pg_indexes WHERE schemaname = :schema AND indexname = :name"),
+                    {"schema": schema_name, "name": object_name},
+                ).fetchone()
                 return row[0] if row else ""
         raise ValueError("当前对象类型不支持查看 DDL")
 
@@ -902,13 +1166,19 @@ def get_object_ddl(engine: Engine, object_name: str, object_type: str, database_
             raise ValueError("当前对象类型不支持查看 DDL")
 
         with engine.connect() as connection:
-            row = connection.execute(text("SELECT DBMS_METADATA.GET_DDL(:type, :name, :schema) FROM DUAL"), {"type": object_kind, "name": object_upper, "schema": schema_name}).fetchone()
+            row = connection.execute(
+                text("SELECT DBMS_METADATA.GET_DDL(:type, :name, :schema) FROM DUAL"),
+                {"type": object_kind, "name": object_upper, "schema": schema_name},
+            ).fetchone()
             return _db_text(row[0]).strip() if row and row[0] is not None else ""
 
     if engine.dialect.name == "sqlite":
         sqlite_type = "table" if object_type == "table" else object_type
         with engine.connect() as connection:
-            row = connection.execute(text("SELECT sql FROM sqlite_master WHERE type = :type AND name = :name"), {"type": sqlite_type, "name": object_name}).fetchone()
+            row = connection.execute(
+                text("SELECT sql FROM sqlite_master WHERE type = :type AND name = :name"),
+                {"type": sqlite_type, "name": object_name},
+            ).fetchone()
             return row[0] if row and row[0] else ""
 
     raise ValueError("当前数据库类型不支持查看 DDL")
@@ -955,15 +1225,76 @@ def drop_db_object(engine: Engine, object_name: str, object_type: str, database_
         connection.execute(text(f"DROP {keyword} {quoted_object}"))
 
 
-def update_table_columns(engine: Engine, table_name: str, next_columns: list[TableUpdateColumn], database_name: str | None = None) -> None:
-    _validate_update_columns(engine, table_name, next_columns, database_name)
+def create_table(engine: Engine, request: Any) -> None:
+    table_name = request.name.strip()
+    if not table_name:
+        raise ValueError("表名不能为空")
+
+    if is_mongo_client(engine):
+        target_db = request.database or mongo_default_database(engine)
+        if not target_db:
+            raise ValueError("请选择 MongoDB 数据库")
+        engine[target_db].create_collection(table_name)
+        return
+
+    if is_redis_client(engine):
+        raise ValueError("Redis 不支持创建表")
+
+    if request.pg_database and engine.dialect.name == "postgresql":
+        db_engine = _pg_engine(engine, request.pg_database)
+        try:
+            shadow_request = type("TableCreateShadow", (), request.model_dump())()
+            shadow_request.pg_database = None
+            create_table(db_engine, shadow_request)
+        finally:
+            if db_engine is not engine:
+                db_engine.dispose()
+        return
+
+    if not _is_clickhouse_engine(engine):
+        _validate_table_columns(request.columns, engine.dialect.name)
+
+    statements = _build_create_table_statements(
+        engine,
+        table_name,
+        request.columns,
+        request.database,
+        _clean_optional_text(request.table_comment),
+    )
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
+
+
+def update_table_columns(
+    engine: Engine,
+    table_name: str,
+    next_columns: list[TableUpdateColumn],
+    database_name: str | None = None,
+    pg_database: str | None = None,
+    table_comment: str | None = None,
+) -> None:
+    if pg_database and engine.dialect.name == "postgresql":
+        db_engine = _pg_engine(engine, pg_database)
+        try:
+            update_table_columns(db_engine, table_name, next_columns, database_name, None, table_comment)
+        finally:
+            if db_engine is not engine:
+                db_engine.dispose()
+        return
+
+    _validate_update_columns_v2(engine, table_name, next_columns, database_name)
 
     if engine.dialect.name == "sqlite":
-        _update_sqlite_table_columns(engine, table_name, next_columns)
+        _update_sqlite_table_columns_v2(engine, table_name, next_columns)
         return
 
     if engine.dialect.name == "mysql":
-        _update_mysql_table_columns(engine, table_name, next_columns, database_name)
+        _update_mysql_table_columns_v2(engine, table_name, next_columns, database_name, table_comment)
+        return
+
+    if engine.dialect.name == "postgresql":
+        _update_postgresql_table_columns_v2(engine, table_name, next_columns, database_name, table_comment)
         return
 
     raise ValueError(f"当前不支持修改 {engine.dialect.name} 表结构")
@@ -994,7 +1325,6 @@ def apply_table_data_changes(engine: Engine, table_name: str, changes: TableData
         for row in changes.updated:
             values = _filter_known_values(row.values, column_names)
             set_columns = [column for column in values if column not in primary_keys]
-
             if not set_columns:
                 continue
 
@@ -1005,7 +1335,6 @@ def apply_table_data_changes(engine: Engine, table_name: str, changes: TableData
 
         for row in changes.inserted:
             values = _filter_known_values(row, column_names)
-
             if not values:
                 continue
 
@@ -1147,32 +1476,184 @@ def _parse_redis_json(value: Any) -> Any:
         return value
 
 
-def build_mysql_update_statements(engine: Engine, table_name: str, next_columns: list[TableUpdateColumn], database_name: str | None = None) -> list[str]:
+def _build_mysql_constraints_sql(columns: list[TableUpdateColumn], table_name: str, preparer) -> list[str]:
+    constraints: list[str] = []
+    primary_keys = [column.name.strip() for column in columns if column.primary_key]
+    if primary_keys:
+        constraints.append(f"PRIMARY KEY ({', '.join(preparer.quote(column) for column in primary_keys)})")
+    for column in columns:
+        column_name = column.name.strip()
+        quoted_column = preparer.quote(column_name)
+        minimum = _column_minimum(column)
+        maximum = _column_maximum(column)
+        if column.unique and not column.primary_key:
+            constraints.append(f"CONSTRAINT {preparer.quote(_unique_constraint_name(table_name, column_name))} UNIQUE ({quoted_column})")
+        if minimum is not None:
+            constraints.append(f"CONSTRAINT {preparer.quote(_min_constraint_name(table_name, column_name))} CHECK ({quoted_column} >= {minimum})")
+        if maximum is not None:
+            constraints.append(f"CONSTRAINT {preparer.quote(_max_constraint_name(table_name, column_name))} CHECK ({quoted_column} <= {maximum})")
+    return constraints
+
+
+def _build_postgresql_constraints_sql(columns: list[TableUpdateColumn], table_name: str, preparer) -> list[str]:
+    constraints: list[str] = []
+    primary_keys = [column.name.strip() for column in columns if column.primary_key]
+    if primary_keys:
+        constraints.append(f"PRIMARY KEY ({', '.join(preparer.quote(column) for column in primary_keys)})")
+    for column in columns:
+        column_name = column.name.strip()
+        quoted_column = preparer.quote(column_name)
+        minimum = _column_minimum(column)
+        maximum = _column_maximum(column)
+        if column.unique and not column.primary_key:
+            constraints.append(f"CONSTRAINT {preparer.quote(_unique_constraint_name(table_name, column_name))} UNIQUE ({quoted_column})")
+        if minimum is not None:
+            constraints.append(f"CONSTRAINT {preparer.quote(_min_constraint_name(table_name, column_name))} CHECK ({quoted_column} >= {minimum})")
+        if maximum is not None:
+            constraints.append(f"CONSTRAINT {preparer.quote(_max_constraint_name(table_name, column_name))} CHECK ({quoted_column} <= {maximum})")
+    return constraints
+
+
+def _build_sqlite_constraints_sql(columns: list[TableUpdateColumn], table_name: str, preparer) -> list[str]:
+    constraints: list[str] = []
+    primary_keys = [column.name.strip() for column in columns if column.primary_key and not column.auto_increment]
+    if primary_keys:
+        constraints.append(f"PRIMARY KEY ({', '.join(preparer.quote(column) for column in primary_keys)})")
+    for column in columns:
+        column_name = column.name.strip()
+        quoted_column = preparer.quote(column_name)
+        minimum = _column_minimum(column)
+        maximum = _column_maximum(column)
+        if column.unique and not column.primary_key:
+            constraints.append(f"UNIQUE ({quoted_column})")
+        if minimum is not None:
+            constraints.append(f"CHECK ({quoted_column} >= {minimum})")
+        if maximum is not None:
+            constraints.append(f"CHECK ({quoted_column} <= {maximum})")
+    return constraints
+
+
+def _build_create_table_statements(
+    engine: Engine,
+    table_name: str,
+    columns: list[TableUpdateColumn],
+    database_name: str | None,
+    table_comment: str | None,
+) -> list[str]:
+    preparer = engine.dialect.identifier_preparer
+
+    if _is_clickhouse_engine(engine):
+        column_defs: list[str] = []
+        for column in columns:
+            column_name = column.name.strip()
+            type_name = column.type.strip()
+            if column.nullable and not type_name.startswith("Nullable("):
+                type_name = f"Nullable({type_name})"
+            column_defs.append(f"{preparer.quote(column_name)} {type_name}")
+        quoted_table = _quote_table(preparer, table_name, database_name or engine.url.database or "default")
+        body = ",\n  ".join(column_defs)
+        return [f"CREATE TABLE {quoted_table} (\n  {body}\n)\nENGINE = MergeTree\nORDER BY tuple();"]
+
+    if engine.dialect.name in {"dm", "dmPython"}:
+        quoted_table = _quote_table(preparer, table_name, database_name)
+        column_defs = [_dm_or_basic_column_definition(column, preparer) for column in columns]
+        primary_keys = [preparer.quote(column.name.strip()) for column in columns if column.primary_key]
+        if primary_keys:
+            column_defs.append(f"PRIMARY KEY ({', '.join(primary_keys)})")
+        body = ",\n  ".join(column_defs)
+        return [f"CREATE TABLE {quoted_table} (\n  {body}\n)"]
+
+    if engine.dialect.name == "mysql":
+        quoted_table = _quote_table(preparer, table_name, database_name)
+        column_defs = [_mysql_column_definition(column, preparer) for column in columns]
+        column_defs.extend(_build_mysql_constraints_sql(columns, table_name, preparer))
+        body = ",\n  ".join(column_defs)
+        suffix = f" COMMENT = {_sql_string(table_comment)}" if table_comment else ""
+        return [f"CREATE TABLE {quoted_table} (\n  {body}\n){suffix};"]
+
+    if engine.dialect.name == "postgresql":
+        schema_name = database_name or "public"
+        quoted_table = _quote_table(preparer, table_name, schema_name)
+        column_defs = [_postgresql_column_definition(column, preparer) for column in columns]
+        column_defs.extend(_build_postgresql_constraints_sql(columns, table_name, preparer))
+        body = ",\n  ".join(column_defs)
+        statements = [f"CREATE TABLE {quoted_table} (\n  {body}\n);"]
+        if table_comment:
+            statements.append(f"COMMENT ON TABLE {quoted_table} IS {_sql_string(table_comment)};")
+        for column in columns:
+            comment = _column_comment_sql(column)
+            if comment:
+                statements.append(f"COMMENT ON COLUMN {quoted_table}.{preparer.quote(column.name.strip())} IS {_sql_string(comment)};")
+        return statements
+
+    if engine.dialect.name == "sqlite":
+        quoted_table = _quote_table(preparer, table_name, database_name)
+        column_defs = [_sqlite_column_definition(column, preparer) for column in columns]
+        column_defs.extend(_build_sqlite_constraints_sql(columns, table_name, preparer))
+        body = ",\n  ".join(column_defs)
+        return [f"CREATE TABLE {quoted_table} (\n  {body}\n);"]
+
+    raise ValueError(f"当前不支持创建 {engine.dialect.name} 表")
+
+
+def build_mysql_update_statements(
+    engine: Engine,
+    table_name: str,
+    next_columns: list[TableUpdateColumn],
+    database_name: str | None = None,
+    table_comment: str | None = None,
+) -> list[str]:
     current_columns = list_columns(engine, table_name, database_name)
+    current_column_map = {column.name: column for column in current_columns}
     current_primary_keys = {column.name for column in current_columns if column.primary_key}
-    next_primary_keys = {column.name for column in next_columns if column.primary_key}
+    next_primary_keys = {column.name.strip() for column in next_columns if column.primary_key}
+    current_unique = _mysql_single_column_unique_indexes(engine, table_name, database_name)
+    next_unique = {column.name.strip() for column in next_columns if column.unique and not column.primary_key}
     preparer = engine.dialect.identifier_preparer
     quoted_table = _quote_table(preparer, table_name, database_name)
     statements: list[str] = []
+
+    for column_name, index_name in current_unique.items():
+        if column_name not in next_unique:
+            statements.append(f"ALTER TABLE {quoted_table} DROP INDEX {preparer.quote(index_name)}")
 
     if current_primary_keys != next_primary_keys and current_primary_keys:
         statements.append(f"ALTER TABLE {quoted_table} DROP PRIMARY KEY")
 
     for column in next_columns:
+        column_name = column.name.strip()
+        current = current_column_map[column_name]
+        if current.minimum is not None:
+            statements.append(f"ALTER TABLE {quoted_table} DROP CHECK {preparer.quote(_min_constraint_name(table_name, column_name))}")
+        if current.maximum is not None:
+            statements.append(f"ALTER TABLE {quoted_table} DROP CHECK {preparer.quote(_max_constraint_name(table_name, column_name))}")
         statements.append(f"ALTER TABLE {quoted_table} MODIFY COLUMN {_mysql_column_definition(column, preparer)}")
 
     if current_primary_keys != next_primary_keys and next_primary_keys:
-        primary_key_columns = ", ".join(preparer.quote(column) for column in next_primary_keys)
-        statements.append(f"ALTER TABLE {quoted_table} ADD PRIMARY KEY ({primary_key_columns})")
+        statements.append(f"ALTER TABLE {quoted_table} ADD PRIMARY KEY ({', '.join(preparer.quote(column) for column in next_primary_keys)})")
+
+    for column in next_columns:
+        column_name = column.name.strip()
+        quoted_column = preparer.quote(column_name)
+        minimum = _column_minimum(column)
+        maximum = _column_maximum(column)
+        if column_name in next_unique and column_name not in current_unique:
+            statements.append(
+                f"ALTER TABLE {quoted_table} ADD CONSTRAINT {preparer.quote(_unique_constraint_name(table_name, column_name))} UNIQUE ({quoted_column})"
+            )
+        if minimum is not None:
+            statements.append(
+                f"ALTER TABLE {quoted_table} ADD CONSTRAINT {preparer.quote(_min_constraint_name(table_name, column_name))} CHECK ({quoted_column} >= {minimum})"
+            )
+        if maximum is not None:
+            statements.append(
+                f"ALTER TABLE {quoted_table} ADD CONSTRAINT {preparer.quote(_max_constraint_name(table_name, column_name))} CHECK ({quoted_column} <= {maximum})"
+            )
+
+    if table_comment is not None:
+        statements.append(f"ALTER TABLE {quoted_table} COMMENT = {_sql_string(_clean_optional_text(table_comment) or '')}")
 
     return statements
-
-
-def _quote_table(preparer, table_name: str, database_name: str | None = None) -> str:
-    if database_name:
-        return f"{preparer.quote(database_name)}.{preparer.quote(table_name)}"
-
-    return preparer.quote(table_name)
 
 
 def _filter_known_values(row: dict, column_names: set[str]) -> dict:
@@ -1194,30 +1675,25 @@ def _primary_key_where(primary_keys: list[str], row: dict, prefix: str, preparer
     return " AND ".join(clauses), params
 
 
-def _validate_update_columns(engine: Engine, table_name: str, next_columns: list[TableUpdateColumn], database_name: str | None = None) -> None:
+def _validate_update_columns_v2(engine: Engine, table_name: str, next_columns: list[TableUpdateColumn], database_name: str | None = None) -> None:
     current_columns = list_columns(engine, table_name, database_name)
     current_names = [column.name for column in current_columns]
-    next_names = [column.name for column in next_columns]
+    next_names = [column.name.strip() for column in next_columns]
 
     if current_names != next_names:
         raise ValueError("当前只支持修改已有字段属性，不支持新增、删除或重命名字段")
 
-    primary_key_columns = [column.name for column in next_columns if column.primary_key]
-    if len(primary_key_columns) > 1:
-        raise ValueError("当前只支持单字段主键")
-
-    for column in next_columns:
-        if not COLUMN_TYPE_PATTERN.fullmatch(column.type.strip()):
-            raise ValueError(f"字段 {column.name} 的类型不合法")
+    _validate_table_columns(next_columns, engine.dialect.name)
 
 
-def _update_sqlite_table_columns(engine: Engine, table_name: str, next_columns: list[TableUpdateColumn]) -> None:
+def _update_sqlite_table_columns_v2(engine: Engine, table_name: str, next_columns: list[TableUpdateColumn]) -> None:
     preparer = engine.dialect.identifier_preparer
     quoted_table = preparer.quote(table_name)
     temp_table = f"__datadjinn_tmp_{table_name}"
     quoted_temp_table = preparer.quote(temp_table)
-    quoted_columns = [preparer.quote(column.name) for column in next_columns]
+    quoted_columns = [preparer.quote(column.name.strip()) for column in next_columns]
     column_definitions = [_sqlite_column_definition(column, preparer) for column in next_columns]
+    column_definitions.extend(_build_sqlite_constraints_sql(next_columns, table_name, preparer))
 
     with engine.begin() as connection:
         connection.execute(text(f"DROP TABLE IF EXISTS {quoted_temp_table}"))
@@ -1227,32 +1703,165 @@ def _update_sqlite_table_columns(engine: Engine, table_name: str, next_columns: 
         connection.execute(text(f"ALTER TABLE {quoted_temp_table} RENAME TO {preparer.quote(table_name)}"))
 
 
-def _update_mysql_table_columns(engine: Engine, table_name: str, next_columns: list[TableUpdateColumn], database_name: str | None = None) -> None:
-    statements = build_mysql_update_statements(engine, table_name, next_columns, database_name)
+def _update_mysql_table_columns_v2(
+    engine: Engine,
+    table_name: str,
+    next_columns: list[TableUpdateColumn],
+    database_name: str | None = None,
+    table_comment: str | None = None,
+) -> None:
+    statements = build_mysql_update_statements(engine, table_name, next_columns, database_name, table_comment)
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
 
+
+def _pg_primary_key_constraint_name(engine: Engine, table_name: str, schema_name: str) -> str | None:
+    inspector = inspect(engine)
+    constraint = inspector.get_pk_constraint(table_name, schema=schema_name)
+    return constraint.get("name")
+
+
+def _pg_sequence_name(engine: Engine, table_name: str, column_name: str, schema_name: str) -> str | None:
+    with engine.connect() as connection:
+        row = connection.execute(
+            text("SELECT pg_get_serial_sequence(format('%I.%I', :schema_name, :table_name), :column_name)"),
+            {"schema_name": schema_name, "table_name": table_name, "column_name": column_name},
+        ).fetchone()
+    return str(row[0]) if row and row[0] is not None else None
+
+
+def _build_postgresql_update_statements_v2(
+    engine: Engine,
+    table_name: str,
+    next_columns: list[TableUpdateColumn],
+    database_name: str | None = None,
+    table_comment: str | None = None,
+) -> list[str]:
+    schema_name = database_name or "public"
+    preparer = engine.dialect.identifier_preparer
+    quoted_table = _quote_table(preparer, table_name, schema_name)
+    current_columns = list_columns(engine, table_name, schema_name)
+    current_column_map = {column.name: column for column in current_columns}
+    current_unique = _pg_single_column_unique_constraints(engine, table_name, schema_name)
+    next_unique = {column.name.strip() for column in next_columns if column.unique and not column.primary_key}
+    current_primary_keys = {column.name for column in current_columns if column.primary_key}
+    next_primary_keys = {column.name.strip() for column in next_columns if column.primary_key}
+    pk_name = _pg_primary_key_constraint_name(engine, table_name, schema_name)
+    statements: list[str] = []
+
+    if pk_name and current_primary_keys != next_primary_keys and current_primary_keys:
+        statements.append(f"ALTER TABLE {quoted_table} DROP CONSTRAINT {preparer.quote(pk_name)}")
+
+    for column_name, constraint_name in current_unique.items():
+        if column_name not in next_unique:
+            statements.append(f"ALTER TABLE {quoted_table} DROP CONSTRAINT {preparer.quote(constraint_name)}")
+
+    for column in next_columns:
+        column_name = column.name.strip()
+        quoted_column = preparer.quote(column_name)
+        current = current_column_map[column_name]
+
+        if current.minimum is not None:
+            statements.append(f"ALTER TABLE {quoted_table} DROP CONSTRAINT IF EXISTS {preparer.quote(_min_constraint_name(table_name, column_name))}")
+        if current.maximum is not None:
+            statements.append(f"ALTER TABLE {quoted_table} DROP CONSTRAINT IF EXISTS {preparer.quote(_max_constraint_name(table_name, column_name))}")
+
+        statements.append(f"ALTER TABLE {quoted_table} ALTER COLUMN {quoted_column} TYPE {column.type.strip()}")
+        statements.append(
+            f"ALTER TABLE {quoted_table} ALTER COLUMN {quoted_column} {'DROP' if column.nullable and not column.primary_key else 'SET'} NOT NULL"
+        )
+
+        if current.auto_increment and not column.auto_increment:
+            statements.append(f"ALTER TABLE {quoted_table} ALTER COLUMN {quoted_column} DROP IDENTITY IF EXISTS")
+        elif not current.auto_increment and column.auto_increment:
+            identity_options = f" (INCREMENT BY {column.auto_increment_step})" if column.auto_increment_step else ""
+            statements.append(f"ALTER TABLE {quoted_table} ALTER COLUMN {quoted_column} ADD GENERATED BY DEFAULT AS IDENTITY{identity_options}")
+        elif current.auto_increment and column.auto_increment and column.auto_increment_step and current.auto_increment_step != column.auto_increment_step:
+            sequence_name = _pg_sequence_name(engine, table_name, column_name, schema_name)
+            if sequence_name:
+                statements.append(f"ALTER SEQUENCE {sequence_name} INCREMENT BY {column.auto_increment_step}")
+
+    if current_primary_keys != next_primary_keys and next_primary_keys:
+        statements.append(f"ALTER TABLE {quoted_table} ADD PRIMARY KEY ({', '.join(preparer.quote(column) for column in next_primary_keys)})")
+
+    for column in next_columns:
+        column_name = column.name.strip()
+        quoted_column = preparer.quote(column_name)
+        minimum = _column_minimum(column)
+        maximum = _column_maximum(column)
+        if column_name in next_unique and column_name not in current_unique:
+            statements.append(f"ALTER TABLE {quoted_table} ADD CONSTRAINT {preparer.quote(_unique_constraint_name(table_name, column_name))} UNIQUE ({quoted_column})")
+        if minimum is not None:
+            statements.append(f"ALTER TABLE {quoted_table} ADD CONSTRAINT {preparer.quote(_min_constraint_name(table_name, column_name))} CHECK ({quoted_column} >= {minimum})")
+        if maximum is not None:
+            statements.append(f"ALTER TABLE {quoted_table} ADD CONSTRAINT {preparer.quote(_max_constraint_name(table_name, column_name))} CHECK ({quoted_column} <= {maximum})")
+        comment = _column_comment_sql(column)
+        statements.append(f"COMMENT ON COLUMN {quoted_table}.{quoted_column} IS {(_sql_string(comment) if comment else 'NULL')};")
+
+    if table_comment is not None:
+        clean_comment = _clean_optional_text(table_comment)
+        statements.append(f"COMMENT ON TABLE {quoted_table} IS {(_sql_string(clean_comment) if clean_comment else 'NULL')};")
+
+    return statements
+
+
+def _update_postgresql_table_columns_v2(
+    engine: Engine,
+    table_name: str,
+    next_columns: list[TableUpdateColumn],
+    database_name: str | None = None,
+    table_comment: str | None = None,
+) -> None:
+    statements = _build_postgresql_update_statements_v2(engine, table_name, next_columns, database_name, table_comment)
     with engine.begin() as connection:
         for statement in statements:
             connection.execute(text(statement))
 
 
 def _sqlite_column_definition(column: TableUpdateColumn, preparer) -> str:
-    parts = [preparer.quote(column.name), column.type.strip()]
+    column_name = column.name.strip()
+    if column.auto_increment:
+        return f"{preparer.quote(column_name)} INTEGER PRIMARY KEY AUTOINCREMENT"
 
-    if column.primary_key:
-        parts.append("PRIMARY KEY")
-
+    parts = [preparer.quote(column_name), column.type.strip()]
     if not column.nullable and not column.primary_key:
         parts.append("NOT NULL")
-
     return " ".join(parts)
 
 
 def _mysql_column_definition(column: TableUpdateColumn, preparer) -> str:
-    parts = [preparer.quote(column.name), column.type.strip()]
+    parts = [preparer.quote(column.name.strip()), column.type.strip()]
 
     if not column.nullable or column.primary_key:
         parts.append("NOT NULL")
     else:
         parts.append("NULL")
 
+    if column.auto_increment:
+        parts.append("AUTO_INCREMENT")
+    comment = _column_comment_sql(column)
+    if comment:
+        parts.append(f"COMMENT {_sql_string(comment)}")
+
     return " ".join(parts)
+
+
+def _postgresql_column_definition(column: TableUpdateColumn, preparer) -> str:
+    parts = [preparer.quote(column.name.strip()), column.type.strip()]
+    if column.auto_increment:
+        options = f" (INCREMENT BY {column.auto_increment_step})" if column.auto_increment_step else ""
+        parts.append(f"GENERATED BY DEFAULT AS IDENTITY{options}")
+    if not column.nullable or column.primary_key:
+        parts.append("NOT NULL")
+    return " ".join(parts)
+
+
+def _dm_or_basic_column_definition(column: TableUpdateColumn, preparer) -> str:
+    parts = [preparer.quote(column.name.strip()), column.type.strip()]
+    if not column.nullable or column.primary_key:
+        parts.append("NOT NULL")
+    return " ".join(parts)
+
+
+
