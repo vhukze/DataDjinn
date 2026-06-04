@@ -430,8 +430,18 @@ class StoredConnection(BaseModel):
     encrypted_password: str | None = None
     database: str | None = None
     sqlite_path: str | None = None
+    driver_id: str | None = None
+    driver_path: str | None = None
     dm_driver_id: str | None = None
     dm_driver_path: str | None = None
+
+
+def _manual_driver_id(request: ConnectionRequest | StoredConnection) -> str | None:
+    return request.driver_id or request.dm_driver_id
+
+
+def _manual_driver_path(request: ConnectionRequest | StoredConnection) -> str | None:
+    return request.driver_path or request.dm_driver_path
 
 
 def _data_blob(data: bytes):
@@ -527,6 +537,8 @@ class ConnectionManager:
             password=_decrypt_password(stored.encrypted_password),
             database=stored.database,
             sqlite_path=stored.sqlite_path,
+            driver_id=_manual_driver_id(stored),
+            driver_path=_manual_driver_path(stored),
             dm_driver_id=stored.dm_driver_id,
             dm_driver_path=stored.dm_driver_path,
         )
@@ -583,6 +595,8 @@ class ConnectionManager:
             password=_decrypt_password(stored.encrypted_password),
             database=stored.database,
             sqlite_path=stored.sqlite_path,
+            driver_id=_manual_driver_id(stored),
+            driver_path=_manual_driver_path(stored),
             dm_driver_id=stored.dm_driver_id,
             dm_driver_path=stored.dm_driver_path,
         )
@@ -801,7 +815,8 @@ class ConnectionManager:
         if not request.username:
             raise ValueError("达梦用户名不能为空")
 
-        driver = driver_manager.get_driver(request.dm_driver_id) if request.dm_driver_id else None
+        driver_id = _manual_driver_id(request)
+        driver = driver_manager.get_driver(driver_id) if driver_id else None
         if driver is None:
             raise RuntimeError("请选择达梦驱动，请先在驱动管理中手动添加 JDBC jar、dmPython pyd 或 dmPython whl 驱动")
         if driver.database_type != "dm":
@@ -936,8 +951,10 @@ class ConnectionManager:
             encrypted_password=_encrypt_password(request.password),
             database=request.database,
             sqlite_path=str(_resolve_runtime_path(request.sqlite_path)) if request.sqlite_path else None,
+            driver_id=_manual_driver_id(request),
+            driver_path=_manual_driver_path(request),
             dm_driver_id=request.dm_driver_id,
-            dm_driver_path=None,
+            dm_driver_path=request.dm_driver_path,
         )
 
     def _display_database(self, request: ConnectionRequest) -> str:

@@ -64,7 +64,7 @@ import type { ColumnsType } from 'antd/es/table'
 import type { DataNode } from 'antd/es/tree'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTheme } from './context/ThemeContext'
 import AIPanel from './components/AIPanel'
 import SqlEditor from './components/SqlEditor'
@@ -78,6 +78,61 @@ import redisIcon from './assets/icons/redis.png'
 import clickhouseIcon from './assets/icons/clickhouse.png'
 import appIcon from '../../../resources/icon.svg'
 import appLogoHorizontal from '../../../resources/logo-horizontal.svg'
+
+const MemoAIPanel = memo(AIPanel, (prev, next) => (
+  prev.requestJson === next.requestJson &&
+  prev.connectionContext === next.connectionContext &&
+  prev.workspace === next.workspace &&
+  prev.contextSources === next.contextSources &&
+  prev.primaryContextSourceId === next.primaryContextSourceId
+))
+
+const RESOURCE_TREE_ITEM_HEIGHT = 30
+
+type WorkspaceTabsViewProps = {
+  workspaceTabs: WorkspaceTab[]
+  activeTabKey?: string
+  onActiveTabChange: (key: string) => void
+  onCloseTab: (key: string) => void
+  renderWorkspaceTab: (tab: WorkspaceTab) => React.ReactNode
+}
+
+const WorkspaceTabsView = memo(function WorkspaceTabsView({
+  workspaceTabs,
+  activeTabKey,
+  onActiveTabChange,
+  onCloseTab,
+  renderWorkspaceTab
+}: WorkspaceTabsViewProps) {
+  const items = useMemo(() => (
+    workspaceTabs.map((tab) => ({
+      key: tab.key,
+      label: tab.title,
+      closable: true,
+      children: tab.key === activeTabKey ? renderWorkspaceTab(tab) : null
+    }))
+  ), [activeTabKey, renderWorkspaceTab, workspaceTabs])
+
+  return (
+    <Tabs
+      className="workspace-tabs"
+      type="editable-card"
+      hideAdd
+      destroyOnHidden
+      activeKey={activeTabKey}
+      onChange={onActiveTabChange}
+      onEdit={(targetKey, action) => {
+        if (action === 'remove' && typeof targetKey === 'string') {
+          onCloseTab(targetKey)
+        }
+      }}
+      items={items}
+    />
+  )
+}, (prev, next) => (
+  prev.workspaceTabs === next.workspaceTabs &&
+  prev.activeTabKey === next.activeTabKey
+))
 
 type BackendStatus = {
   state: 'starting' | 'online' | 'failed' | 'stopped' | 'crashed'
@@ -162,6 +217,7 @@ const isNumericLikeType = (type: string): boolean => NUMERIC_TYPE_PREFIXES.some(
 const PREVIEW_DEFAULT_LIMIT = 300
 const QUERY_DEFAULT_LIMIT = 1000
 const REDIS_DEFAULT_LIMIT = 500
+const JDBC_COMPATIBLE_DATABASE_TYPES: DatabaseType[] = ['dm']
 
 type DatabaseType = 'sqlite' | 'mysql' | 'postgresql' | 'dm' | 'mongodb' | 'redis' | 'clickhouse'
 type WorkspaceTabKind = 'preview' | 'query' | 'redis-browser'
@@ -181,6 +237,8 @@ type ConnectionFormValues = {
   password?: string
   database?: string
   sqlite_path?: string
+  driver_id?: string
+  driver_path?: string
   dm_driver_id?: string
   dm_driver_path?: string
 }
@@ -731,7 +789,7 @@ function App(): React.JSX.Element {
   const selectedJavaRuntimeValues = new Set(javaRuntimeOptions.map((option) => option.value.toLowerCase()))
   const allDmDrivers = drivers.filter((driver) => driver.database_type === 'dm')
   const dmDrivers = allDmDrivers.filter((driver) => driver.enabled)
-  const selectedDmDriverId = Form.useWatch('dm_driver_id', form)
+  const selectedDmDriverId = Form.useWatch('driver_id', form) ?? Form.useWatch('dm_driver_id', form)
   const selectedDmDriver = allDmDrivers.find((driver) => driver.id === selectedDmDriverId)
   const [driversLoading, setDriversLoading] = useState(false)
   const [driverSaving, setDriverSaving] = useState(false)
@@ -754,11 +812,13 @@ function App(): React.JSX.Element {
   const [draftSelectedSchemas, setDraftSelectedSchemas] = useState<Record<string, string[]>>({})
   const [completionTables, setCompletionTables] = useState<Record<string, string[]>>({})
   const [tableBodyHeights, setTableBodyHeights] = useState<Record<string, number>>({})
+  const [resourceTreeHeight, setResourceTreeHeight] = useState(360)
   const [ddlModalOpen, setDdlModalOpen] = useState(false)
   const [ddlModalTitle, setDdlModalTitle] = useState('')
   const [ddlContent, setDdlContent] = useState('')
   const [ddlLoading, setDdlLoading] = useState(false)
   const tableBodyRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const resourceTreeViewportRef = useRef<HTMLDivElement | null>(null)
   const rowDragAnchorRefs = useRef<Record<string, string | undefined>>({})
   const rowSelectionDraftRefs = useRef<Record<string, React.Key[] | undefined>>({})
   const treeLoadingKeysRef = useRef<Set<React.Key>>(new Set())
@@ -835,7 +895,7 @@ function App(): React.JSX.Element {
     return error instanceof Error ? error : new Error(message)
   }
 
-  const requestJson = async <T,>(path: string, options?: RequestInit): Promise<T> => {
+  const requestJson = useCallback(async <T,>(path: string, options?: RequestInit): Promise<T> => {
     if (backendStatus.state !== 'online' || !backendStatus.apiBaseUrl) {
       throw new Error(backendStatus.message ?? '后端服务正在恢复，请稍后再试')
     }
@@ -849,7 +909,7 @@ function App(): React.JSX.Element {
     } catch (err) {
       throw normalizeRequestError(err)
     }
-  }
+  }, [backendStatus.apiBaseUrl, backendStatus.message, backendStatus.state])
 
   const buildSqlCompletionContext = (tab: WorkspaceTab): SqlCompletionContext => {
     const connection = getConnection(tab.connectionId)
@@ -889,6 +949,10 @@ function App(): React.JSX.Element {
   const renderConnectionTitle = (connection: ConnectionInfo): React.ReactNode => {
     const loadingText = connectionTreeLoading[connection.connection_id]
     const loading = Boolean(loadingText)
+    const isFocused = focusedTreeNode?.connectionId === connection.connection_id && focusedTreeNode?.kind === 'connection'
+    const connectionMeta = connection.database?.trim()
+      ? `${connection.name} · ${connection.database}`
+      : connection.name
 
     return (
       <>
@@ -932,49 +996,53 @@ function App(): React.JSX.Element {
         }
       }}
         */}
-      <Flex className="connection-tree-title" align="center">
+      <Flex className="connection-tree-title" align="center" title={connectionMeta}>
         <div className="connection-tree-main">
           <Typography.Text className="connection-tree-name" ellipsis title={connection.name}>
             {connection.name}
           </Typography.Text>
-          <Typography.Text type="secondary" className="connection-tree-address" ellipsis title={connection.database}>
-            {connection.database}
-          </Typography.Text>
+          {connection.database ? (
+            <Typography.Text type="secondary" className="connection-tree-address" ellipsis title={connection.database}>
+              {connection.database}
+            </Typography.Text>
+          ) : null}
         </div>
-        <Space className="connection-tree-actions" size={2}>
-          {renderDatabaseSelector(connection.connection_id)}
-          <Button
-            type="text"
-            size="small"
-            icon={<ReloadOutlined />}
-            loading={loading}
-            disabled={loading}
-            title={loadingText ?? '刷新连接'}
-            onClick={(event) => {
-              event.stopPropagation()
-              refreshConnectionNode(connection.connection_id)
-            }}
-          />
-          <Button
-            type="text"
-            size="small"
-            icon={<EditOutlined />}
-            onClick={(event) => {
-              event.stopPropagation()
-              void openEditConnectionModal(connection)
-            }}
-          />
-          <Button
-            type="text"
-            danger
-            size="small"
-            icon={<DeleteOutlined />}
-            onClick={(event) => {
-              event.stopPropagation()
-              void deleteConnection(connection.connection_id)
-            }}
-          />
-        </Space>
+        {isFocused && (
+          <Space className="connection-tree-actions" size={2}>
+            {renderDatabaseSelector(connection.connection_id)}
+            <Button
+              type="text"
+              size="small"
+              icon={<ReloadOutlined />}
+              loading={loading}
+              disabled={loading}
+              title={loadingText ?? '刷新连接'}
+              onClick={(event) => {
+                event.stopPropagation()
+                refreshConnectionNode(connection.connection_id)
+              }}
+            />
+            <Button
+              type="text"
+              size="small"
+              icon={<EditOutlined />}
+              onClick={(event) => {
+                event.stopPropagation()
+                void openEditConnectionModal(connection)
+              }}
+            />
+            <Button
+              type="text"
+              danger
+              size="small"
+              icon={<DeleteOutlined />}
+              onClick={(event) => {
+                event.stopPropagation()
+                void deleteConnection(connection.connection_id)
+              }}
+            />
+          </Space>
+        )}
       </Flex>
       </>
     )
@@ -1094,9 +1162,7 @@ function App(): React.JSX.Element {
             }
             return k.startsWith(`pg-schema:${connectionId}:`) || k.startsWith(`object-group:${connectionId}:`) || k.startsWith(`table:${connectionId}:`)
           })
-          startTransition(() => {
-            setExpandedKeys(Array.from(new Set([connKey, ...stillExpanded])))
-          })
+          setExpandedKeys(Array.from(new Set([connKey, ...stillExpanded])))
         } else {
           setTreeData((current) =>
             current.map((node) => {
@@ -1209,6 +1275,23 @@ function App(): React.JSX.Element {
 
     return () => observer.disconnect()
   }, [activeTabKey, workspaceTabs.length])
+
+  useEffect(() => {
+    const element = resourceTreeViewportRef.current
+    if (!element) {
+      return
+    }
+
+    const updateTreeHeight = (): void => {
+      setResourceTreeHeight(Math.max(240, Math.floor(element.clientHeight)))
+    }
+
+    updateTreeHeight()
+    const observer = new ResizeObserver(updateTreeHeight)
+    observer.observe(element)
+
+    return () => observer.disconnect()
+  }, [])
 
   useEffect(() => {
     if (!treeContextMenu) {
@@ -3040,9 +3123,7 @@ function App(): React.JSX.Element {
         setTreeData((current) => updateTreeNode(current, node.key as React.Key, children))
       }
       if (expand) {
-        startTransition(() => {
-          setExpandedKeys((current) => current.includes(node.key as React.Key) ? current : [...current, node.key as React.Key])
-        })
+        setExpandedKeys((current) => current.includes(node.key as React.Key) ? current : [...current, node.key as React.Key])
       }
     } finally {
       treeLoadingKeysRef.current.delete(node.key)
@@ -3062,9 +3143,7 @@ function App(): React.JSX.Element {
 
   const collapseTreeNode = (node: DatabaseTreeNode): void => {
     const key = node.key as React.Key
-    startTransition(() => {
-      setExpandedKeys((current) => current.filter((item) => item !== key))
-    })
+    setExpandedKeys((current) => current.filter((item) => item !== key))
   }
 
   const toggleOrLoadTreeNode = (node: DatabaseTreeNode): void => {
@@ -3085,9 +3164,7 @@ function App(): React.JSX.Element {
       return
     }
 
-    startTransition(() => {
-      setExpandedKeys((current) => current.includes(key) ? current : [...current, key])
-    })
+    setExpandedKeys((current) => current.includes(key) ? current : [...current, key])
   }
 
   const openConnectionModal = async (nextDatabaseType: DatabaseType): Promise<void> => {
@@ -3166,10 +3243,13 @@ function App(): React.JSX.Element {
       const formValues = { ...data }
       if (data.database_type === 'dm') {
         const loadedDrivers = await loadDrivers()
+        const currentDriverId = data.driver_id ?? data.dm_driver_id
         const hasSelectedDriver = loadedDrivers.some(
-          (driver) => driver.database_type === 'dm' && driver.id === data.dm_driver_id
+          (driver) => driver.database_type === 'dm' && driver.id === currentDriverId
         )
+        formValues.driver_id = currentDriverId
         if (!hasSelectedDriver) {
+          formValues.driver_id = undefined
           formValues.dm_driver_id = undefined
         }
       }
@@ -3187,10 +3267,11 @@ function App(): React.JSX.Element {
       { key: 'sqlite', label: 'SQLite', icon: <img src={sqliteIcon} alt="" style={{ width: 16, height: 16 }} /> },
       { key: 'mysql', label: 'MySQL', icon: <img src={mysqlIcon} alt="" style={{ width: 16, height: 16 }} /> },
       { key: 'postgresql', label: 'PostgreSQL', icon: <img src={postgresIcon} alt="" style={{ width: 16, height: 16 }} /> },
-      { key: 'dm', label: '达梦', icon: <img src={dmIcon} alt="" style={{ width: 16, height: 16 }} /> },
       { key: 'mongodb', label: 'MongoDB', icon: <img src={mongoIcon} alt="" style={{ width: 16, height: 16 }} /> },
       { key: 'redis', label: 'Redis', icon: <img src={redisIcon} alt="Redis" style={{ width: 16, height: 16 }} /> },
-      { key: 'clickhouse', label: 'ClickHouse', icon: <img src={clickhouseIcon} alt="ClickHouse" style={{ width: 16, height: 16 }} /> }
+      { key: 'clickhouse', label: 'ClickHouse', icon: <img src={clickhouseIcon} alt="ClickHouse" style={{ width: 16, height: 16 }} /> },
+      { type: 'divider' as const },
+      { key: 'dm', label: '达梦', icon: <img src={dmIcon} alt="" style={{ width: 16, height: 16 }} /> }
     ],
     onClick: ({ key }: { key: string }) => void openConnectionModal(key as DatabaseType)
   }
@@ -3225,7 +3306,7 @@ function App(): React.JSX.Element {
         username: values.username,
         password: values.password,
         database: values.database,
-        dm_driver_id: values.dm_driver_id
+        driver_id: values.driver_id ?? values.dm_driver_id
       }
     }
 
@@ -4798,6 +4879,23 @@ function App(): React.JSX.Element {
     serverVersion: connection.server_version
   }))
 
+  const aiWorkspacePayload = useMemo(() => ({
+    active_sql: activeTab?.sql,
+    active_tab_kind: activeTab?.kind,
+    selected_table: activeTab?.tableName,
+    current_connection_name: aiContextConnection?.name,
+    current_db_type: aiContextConnection?.database_type,
+    current_server_version: aiContextConnection?.server_version,
+    current_database: aiDatabase,
+    current_pg_database: aiPgDatabase,
+    focused_resource: focusedResource,
+    connections: connectionSummaries,
+    recent_queries: workspaceTabs.filter((tab) => tab.kind === 'query' && tab.sql.trim()).slice(-5).map((tab) => tab.sql),
+    visible_result_columns: activeTab?.result?.columns ?? [],
+    visible_result_sample: activeTab?.result?.rows.slice(0, 5) ?? [],
+    context_sources: effectiveAIContextSources
+  }), [activeTab, aiContextConnection, aiDatabase, aiPgDatabase, connectionSummaries, effectiveAIContextSources, focusedResource, workspaceTabs])
+
   return (
     <ConfigProvider
       theme={{
@@ -4812,6 +4910,9 @@ function App(): React.JSX.Element {
           borderRadius: 10
         },
         components: {
+          Tree: {
+            titleHeight: RESOURCE_TREE_ITEM_HEIGHT
+          },
           Modal: {
             contentBg: theme === 'dark' ? '#363a42' : '#ffffff',
             headerBg: theme === 'dark' ? '#363a42' : '#ffffff',
@@ -4862,14 +4963,16 @@ function App(): React.JSX.Element {
               <div className="summary-card accent"><span>{workspaceTabs.length}</span><small>工作页</small></div>
             </div>
             <div className="resource-tree-shell">
-              <div className="resource-tree-viewport">
+              <div ref={resourceTreeViewportRef} className="resource-tree-viewport">
                 {connections.length === 0 ? (
                   <Alert message="暂无数据库连接" description="先创建一个 SQLite 或 MySQL 连接。" type="info" showIcon />
                 ) : (
                   <Tree
                     showIcon
                     blockNode
-                    virtual={false}
+                    virtual
+                    height={resourceTreeHeight}
+                    itemHeight={RESOURCE_TREE_ITEM_HEIGHT}
                     motion={null}
                     treeData={treeData}
                     expandedKeys={expandedKeys}
@@ -4879,9 +4982,7 @@ function App(): React.JSX.Element {
                         collapseTreeNode(node)
                         return
                       }
-                      startTransition(() => {
-                        setExpandedKeys(keys)
-                      })
+                      setExpandedKeys(keys)
                       if (!isTreeNodeChildrenLoaded(node) && isLoadableTreeNode(node)) {
                         void reloadNodeChildren({ ...node, isLeaf: false }, false)
                       }
@@ -4971,13 +5072,19 @@ function App(): React.JSX.Element {
                     {workspaceTabs.length === 0 ? (
                       <div className="empty-workspace"><FileAddOutlined /><Typography.Text type="secondary">连接数据库后，可以浏览库表结构、预览数据、编写 SQL，并让 Djinn Agent 辅助分析与执行受控操作。</Typography.Text><Space><Dropdown menu={connectionCreateMenu} trigger={['click']}><Button icon={<PlusOutlined />}>创建连接</Button></Dropdown></Space></div>
                     ) : (
-                      <Tabs className="workspace-tabs" type="editable-card" hideAdd destroyOnHidden activeKey={activeTabKey} onChange={setActiveTabKey} onEdit={(targetKey, action) => { if (action === 'remove' && typeof targetKey === 'string') { closeWorkspaceTab(targetKey) } }} items={workspaceTabs.map((tab) => ({ key: tab.key, label: tab.title, closable: true, children: tab.key === activeTabKey ? renderWorkspaceTab(tab) : null }))} />
+                      <WorkspaceTabsView
+                        workspaceTabs={workspaceTabs}
+                        activeTabKey={activeTabKey}
+                        onActiveTabChange={setActiveTabKey}
+                        onCloseTab={closeWorkspaceTab}
+                        renderWorkspaceTab={renderWorkspaceTab}
+                      />
                     )}
                   </div>
                 </Splitter.Panel>
                 {aiPanelOpen && (
                   <Splitter.Panel size={aiPanelSize} min={260} max={720} className="ai-dock-panel">
-                    <AIPanel
+                    <MemoAIPanel
                       requestJson={requestJson}
                       connectionContext={{
                         connectionId: aiContextConnection?.is_open ? aiContextConnection.connection_id : undefined,
@@ -4988,22 +5095,7 @@ function App(): React.JSX.Element {
                         connectionName: aiContextConnection?.name,
                         serverVersion: aiContextConnection?.server_version
                       }}
-                      workspace={{
-                        active_sql: activeTab?.sql,
-                        active_tab_kind: activeTab?.kind,
-                        selected_table: activeTab?.tableName,
-                        current_connection_name: aiContextConnection?.name,
-                        current_db_type: aiContextConnection?.database_type,
-                        current_server_version: aiContextConnection?.server_version,
-                        current_database: aiDatabase,
-                        current_pg_database: aiPgDatabase,
-                        focused_resource: focusedResource,
-                        connections: connectionSummaries,
-                        recent_queries: workspaceTabs.filter((tab) => tab.kind === 'query' && tab.sql.trim()).slice(-5).map((tab) => tab.sql),
-                        visible_result_columns: activeTab?.result?.columns ?? [],
-                        visible_result_sample: activeTab?.result?.rows.slice(0, 5) ?? [],
-                        context_sources: effectiveAIContextSources
-                      }}
+                      workspace={aiWorkspacePayload}
                       contextSources={effectiveAIContextSources}
                       primaryContextSourceId={primaryAIContextSource?.id}
                       onRemoveContextSource={removeAIContextSource}
@@ -5229,20 +5321,20 @@ function App(): React.JSX.Element {
               <Form.Item name="username" label="用户名" rules={databaseType === 'mongodb' || databaseType === 'redis' ? undefined : [{ required: true, message: '请输入用户名' }]}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'dm' ? 'SYSDBA' : databaseType === 'redis' ? 'Redis ACL 用户名，可选' : databaseType === 'clickhouse' ? 'default' : undefined} /></Form.Item>
               <Form.Item name="password" label="密码"><Input.Password /></Form.Item>
               <Form.Item name="database" label={databaseType === 'postgresql' ? '数据库名' : databaseType === 'dm' ? '默认 Schema（可选）' : databaseType === 'mongodb' ? '认证库/默认库（可选）' : databaseType === 'redis' ? '默认 DB 序号（可选）' : databaseType === 'clickhouse' ? '默认数据库' : '默认数据库（可选）'} rules={databaseType === 'postgresql' ? [{ required: true, message: '请输入数据库名' }] : undefined}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'dm' ? '不填则使用默认 Schema' : databaseType === 'mongodb' ? '默认 admin，也可填业务库名' : databaseType === 'redis' ? '默认 0，例如 0、1、2' : databaseType === 'clickhouse' ? '默认 default' : '不填则连接服务器并加载全部数据库'} /></Form.Item>
-              {databaseType === 'dm' && (
+              {databaseType && JDBC_COMPATIBLE_DATABASE_TYPES.includes(databaseType) && (
                 <>
-                  <Form.Item name="dm_driver_id" label="达梦驱动" rules={[{ required: true, message: '请选择达梦驱动' }]}>
+                  <Form.Item name="driver_id" label={databaseType === 'dm' ? '达梦驱动' : '数据库驱动'} rules={[{ required: true, message: '请选择驱动' }]}>
                     <Select
                       loading={driversLoading}
-                      placeholder="请选择已添加的达梦驱动"
+                      placeholder={databaseType === 'dm' ? '请选择已添加的达梦驱动' : '请选择已添加的数据库驱动'}
                       options={dmDriverOptions}
-                      notFoundContent="暂无可用达梦驱动"
+                      notFoundContent={databaseType === 'dm' ? '暂无可用达梦驱动' : '暂无可用驱动'}
                     />
                   </Form.Item>
                   <Alert
                     type={selectedDmDriver ? 'info' : 'warning'}
                     showIcon
-                    message={selectedDmDriver ? `当前选择：${driverTypeLabel(selectedDmDriver.driver_type)} - ${selectedDmDriver.name}` : '未选择达梦驱动，请先在驱动管理中添加并选择 JDBC jar、dmPython pyd 或 dmPython whl 驱动'}
+                    message={selectedDmDriver ? `当前选择：${driverTypeLabel(selectedDmDriver.driver_type)} - ${selectedDmDriver.name}` : '未选择驱动，请先在驱动管理中添加并选择兼容驱动'}
                     action={<Button size="small" onClick={openDriverManager}>驱动管理</Button>}
                   />
                 </>
