@@ -85,13 +85,18 @@ def create_schema_endpoint(connection_id: str, request: DatabaseCreateRequest, d
 
 
 @router.get("/{connection_id}/tables", response_model=TablesResponse)
-def get_tables(connection_id: str, database: str | None = None, pg_database: str | None = None) -> TablesResponse:
+def get_tables(connection_id: str, database: str | None = None, pg_database: str | None = None, include_comment: bool = False) -> TablesResponse:
     engine = connection_manager.get_engine(connection_id)
 
     if engine is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="连接已关闭，请先打开连接")
 
-    return TablesResponse(tables=list_tables(engine, database, pg_database))
+    tables = list_tables(engine, database, pg_database)
+    if include_comment:
+        for table in tables:
+            table.comment = get_table_comment(engine, table.name, database, pg_database)
+
+    return TablesResponse(tables=tables)
 
 
 @router.post("/{connection_id}/tables", response_model=TableCreateResponse)

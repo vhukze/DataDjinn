@@ -13,6 +13,7 @@ class DatabaseInfo(BaseModel):
 
 class TableInfo(BaseModel):
     name: str
+    comment: str | None = None
     size_bytes: int | None = None
     size_display: str | None = None
     storage_size_bytes: int | None = None

@@ -64,7 +64,7 @@ import type { ColumnsType } from 'antd/es/table'
 import type { DataNode } from 'antd/es/tree'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { useTheme } from './context/ThemeContext'
 import AIPanel from './components/AIPanel'
 import SqlEditor from './components/SqlEditor'
@@ -220,7 +220,7 @@ const REDIS_DEFAULT_LIMIT = 500
 const JDBC_COMPATIBLE_DATABASE_TYPES: DatabaseType[] = ['dm']
 
 type DatabaseType = 'sqlite' | 'mysql' | 'postgresql' | 'dm' | 'mongodb' | 'redis' | 'clickhouse'
-type WorkspaceTabKind = 'preview' | 'query' | 'redis-browser'
+type WorkspaceTabKind = 'preview' | 'query' | 'redis-browser' | 'table-list'
 
 type HealthStatus = {
   status: string
@@ -270,6 +270,60 @@ type DriverInfo = {
   source: 'auto' | 'manual'
   enabled: boolean
   path?: string | null
+}
+
+const isDriverDatabaseType = (value: unknown): value is DriverDatabaseType => value === 'dm' || value === 'gaussdb'
+const isDriverType = (value: unknown): value is DriverType => value === 'jdbc' || value === 'python' || value === 'whl'
+const isDriverSource = (value: unknown): value is DriverInfo['source'] => value === 'auto' || value === 'manual'
+
+const normalizeDriverInfo = (value: unknown): DriverInfo | null => {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+
+  const candidate = value as Partial<DriverInfo> & Record<string, unknown>
+  if (typeof candidate.id !== 'string' || !candidate.id.trim()) {
+    return null
+  }
+
+  return {
+    id: candidate.id,
+    database_type: isDriverDatabaseType(candidate.database_type) ? candidate.database_type : 'dm',
+    driver_type: isDriverType(candidate.driver_type) ? candidate.driver_type : 'jdbc',
+    name: typeof candidate.name === 'string' && candidate.name.trim() ? candidate.name : '未命名驱动',
+    source: isDriverSource(candidate.source) ? candidate.source : 'manual',
+    enabled: candidate.enabled !== false,
+    path: typeof candidate.path === 'string' && candidate.path.trim() ? candidate.path : null
+  }
+}
+
+type DriverDatabaseMeta = {
+  label: string
+  shortLabel: string
+  description: string
+  supportedDriverTypes: DriverType[]
+  comingSoon?: boolean
+  icon: React.ReactNode
+}
+
+const DRIVER_DATABASE_ORDER: DriverDatabaseType[] = ['dm', 'gaussdb']
+
+const DRIVER_DATABASE_META: Record<DriverDatabaseType, DriverDatabaseMeta> = {
+  dm: {
+    label: '达梦 DM',
+    shortLabel: '达梦',
+    description: '适合需要手动配置 JDBC、dmPython pyd、dmPython whl 的达梦数据库连接。',
+    supportedDriverTypes: ['jdbc', 'python', 'whl'],
+    icon: <img src={dmIcon} alt="" style={{ width: 16, height: 16 }} />
+  },
+  gaussdb: {
+    label: '高斯数据库',
+    shortLabel: '高斯',
+    description: '当前先管理 JDBC 驱动配置，连接能力后续接入。后面新增同类国产库也会沿用这套管理方式。',
+    supportedDriverTypes: ['jdbc'],
+    comingSoon: true,
+    icon: <DatabaseOutlined />
+  }
 }
 
 type DriverFormValues = {
@@ -345,6 +399,7 @@ type DatabaseInfo = {
 
 type TableInfo = {
   name: string
+  comment?: string | null
   size_bytes?: number | null
   size_display?: string | null
   storage_size_bytes?: number | null
@@ -675,7 +730,6 @@ function App(): React.JSX.Element {
   const [form] = Form.useForm<ConnectionFormValues>()
   const [driverForm] = Form.useForm<DriverFormValues>()
   const databaseType = Form.useWatch('database_type', form) ?? 'sqlite'
-  const driverDatabaseType = Form.useWatch('database_type', driverForm) ?? 'dm'
   const driverType = Form.useWatch('driver_type', driverForm) ?? 'jdbc'
   const [messageApi, contextHolder] = message.useMessage()
   const showError = (error: unknown, fallback = '操作失败'): void => {
@@ -768,6 +822,7 @@ function App(): React.JSX.Element {
   const [newTableColumns, setNewTableColumns] = useState<ColumnDef[]>([])
   const [driverManagerOpen, setDriverManagerOpen] = useState(false)
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('app')
+  const [selectedDriverDatabaseType, setSelectedDriverDatabaseType] = useState<DriverDatabaseType>('dm')
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
   const [javaRestartRequired, setJavaRestartRequired] = useState(false)
   const [updateModalOpen, setUpdateModalOpen] = useState(false)
@@ -789,10 +844,18 @@ function App(): React.JSX.Element {
   const selectedJavaRuntimeValues = new Set(javaRuntimeOptions.map((option) => option.value.toLowerCase()))
   const allDmDrivers = drivers.filter((driver) => driver.database_type === 'dm')
   const dmDrivers = allDmDrivers.filter((driver) => driver.enabled)
-  const selectedDmDriverId = Form.useWatch('driver_id', form) ?? Form.useWatch('dm_driver_id', form)
+  const watchedDriverId = Form.useWatch('driver_id', form)
+  const watchedLegacyDmDriverId = Form.useWatch('dm_driver_id', form)
+  const selectedDmDriverId = databaseType === 'dm' ? (watchedDriverId ?? watchedLegacyDmDriverId) : undefined
   const selectedDmDriver = allDmDrivers.find((driver) => driver.id === selectedDmDriverId)
   const [driversLoading, setDriversLoading] = useState(false)
   const [driverSaving, setDriverSaving] = useState(false)
+  const selectedDriverDatabaseMeta = DRIVER_DATABASE_META[selectedDriverDatabaseType]
+  const selectedDatabaseDrivers = drivers.filter((driver) => driver.database_type === selectedDriverDatabaseType)
+  const selectedManualDriverCount = selectedDatabaseDrivers.filter((driver) => driver.source === 'manual').length
+  const selectedDriverTypeLabels = selectedDriverDatabaseMeta.supportedDriverTypes
+    .map((type) => type === 'python' ? 'dmPython pyd 驱动' : type === 'whl' ? 'dmPython whl 驱动' : 'JDBC jar 驱动')
+    .join('、')
   const [selectedDatabases, setSelectedDatabases] = useState<Record<string, string[]>>(() => readPersisted(STORAGE_DB))
   const [selectedSchemas, setSelectedSchemas] = useState<Record<string, string[]>>(() => readPersisted(STORAGE_SCHEMA))
   const selectedDatabasesRef = useRef(selectedDatabases)
@@ -819,6 +882,9 @@ function App(): React.JSX.Element {
   const [ddlLoading, setDdlLoading] = useState(false)
   const tableBodyRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const resourceTreeViewportRef = useRef<HTMLDivElement | null>(null)
+  const selectedColumnRefs = useRef<Record<string, string | undefined>>({})
+  const selectedCellRefs = useRef<Record<string, string[] | undefined>>({})
+  const cellDragAnchorRefs = useRef<Record<string, { rowKey: string; column: string } | undefined>>({})
   const rowDragAnchorRefs = useRef<Record<string, string | undefined>>({})
   const rowSelectionDraftRefs = useRef<Record<string, React.Key[] | undefined>>({})
   const treeLoadingKeysRef = useRef<Set<React.Key>>(new Set())
@@ -895,7 +961,7 @@ function App(): React.JSX.Element {
     return error instanceof Error ? error : new Error(message)
   }
 
-  const requestJson = useCallback(async <T,>(path: string, options?: RequestInit): Promise<T> => {
+  const requestJsonRaw = useCallback(async <T,>(path: string, options?: RequestInit): Promise<T> => {
     if (backendStatus.state !== 'online' || !backendStatus.apiBaseUrl) {
       throw new Error(backendStatus.message ?? '后端服务正在恢复，请稍后再试')
     }
@@ -910,6 +976,28 @@ function App(): React.JSX.Element {
       throw normalizeRequestError(err)
     }
   }, [backendStatus.apiBaseUrl, backendStatus.message, backendStatus.state])
+
+  const reopenConnectionSilently = useCallback(async (connectionId: string): Promise<void> => {
+    const connection = await requestJsonRaw<ConnectionInfo>(`/connections/${connectionId}/open`, { method: 'POST' })
+    setConnections((current) => current.map((item) => (item.connection_id === connectionId ? connection : item)))
+    setTreeData((current) => replaceConnectionNode(current, connection, true))
+  }, [requestJsonRaw])
+
+  const requestJson = useCallback(async <T,>(path: string, options?: RequestInit): Promise<T> => {
+    try {
+      return await requestJsonRaw<T>(path, options)
+    } catch (err) {
+      const error = normalizeRequestError(err)
+      const match = path.match(/^\/connections\/([^/]+)/)
+
+      if (match && (error.message.includes('连接已关闭') || error.message.includes('连接尚未打开'))) {
+        await reopenConnectionSilently(match[1])
+        return await requestJsonRaw<T>(path, options)
+      }
+
+      throw error
+    }
+  }, [normalizeRequestError, reopenConnectionSilently, requestJsonRaw])
 
   const buildSqlCompletionContext = (tab: WorkspaceTab): SqlCompletionContext => {
     const connection = getConnection(tab.connectionId)
@@ -1325,6 +1413,7 @@ function App(): React.JSX.Element {
   const getConnection = useCallback((connectionId?: string): ConnectionInfo | undefined => (
     connectionId ? connectionMap.get(connectionId) : undefined
   ), [connectionMap])
+  const deferredTreeData = useDeferredValue(treeData)
   const loadedCompletionIndex = useMemo(() => {
     const index = new Map<string, { tables: SqlCompletionTable[]; columns: SqlCompletionColumn[] }>()
 
@@ -1380,9 +1469,9 @@ function App(): React.JSX.Element {
       }
     }
 
-    walk(treeData)
+    walk(deferredTreeData)
     return index
-  }, [connectionMap, treeData])
+  }, [connectionMap, deferredTreeData])
   const ensureConnectionOpen = (connectionId?: string): boolean => {
     const connection = getConnection(connectionId)
 
@@ -1937,6 +2026,14 @@ function App(): React.JSX.Element {
     ]
   }
 
+  const getObjectGroupContextMenu = (node: DatabaseTreeNode): MenuProps['items'] => {
+    if (node.kind !== 'object-group' || !node.objectType || (node.objectType !== 'table' && node.objectType !== 'view')) {
+      return []
+    }
+
+    return [{ key: 'catalog', label: '查看列表' }]
+  }
+
   const getTreeContextMenuItems = (node: DatabaseTreeNode): MenuProps['items'] => {
     if (node.kind === 'connection' && node.connectionId) {
       const connection = getConnection(node.connectionId)
@@ -1944,6 +2041,9 @@ function App(): React.JSX.Element {
     }
     if (node.kind === 'database' || node.kind === 'pg-schema') {
       return getDatabaseContextMenu(node)
+    }
+    if (node.kind === 'object-group') {
+      return getObjectGroupContextMenu(node)
     }
     if (node.kind === 'table' || node.kind === 'db-object') {
       return getObjectContextMenu(node)
@@ -1964,6 +2064,8 @@ function App(): React.JSX.Element {
       }
     } else if (node.kind === 'database' || node.kind === 'pg-schema') {
       handleDatabaseContextMenuClick(key, node)
+    } else if (node.kind === 'object-group' && key === 'catalog' && node.connectionId && (node.objectType === 'table' || node.objectType === 'view')) {
+      void openTableCatalog(node.connectionId, node.databaseName, node.pgDatabaseName, node.objectType)
     } else if (node.kind === 'table' || node.kind === 'db-object') {
       handleObjectContextMenuClick(key, node)
     }
@@ -2102,6 +2204,8 @@ function App(): React.JSX.Element {
     const rowText = tab.result
       ? tab.kind === 'preview'
         ? `总行数 ${totalRows ?? 0} 行`
+        : tab.kind === 'table-list'
+          ? `${tab.result.row_count} 张表`
         : tab.kind === 'redis-browser'
           ? `${tab.result.row_count} 项`
           : `${tab.result.row_count} 行`
@@ -2111,9 +2215,14 @@ function App(): React.JSX.Element {
     return (
       <Flex align="center" justify="space-between" gap={8} className="result-status">
         <Space wrap>
-          <Tag color={tab.kind === 'query' ? 'blue' : tab.kind === 'redis-browser' ? 'red' : 'green'}>{tab.kind === 'query' ? 'SQL 查询' : tab.kind === 'redis-browser' ? 'Redis 浏览' : '表预览'}</Tag>
+          <Tag color={tab.kind === 'query' ? 'blue' : tab.kind === 'redis-browser' ? 'red' : tab.kind === 'table-list' ? 'gold' : 'green'}>
+            {tab.kind === 'query' ? 'SQL 查询' : tab.kind === 'redis-browser' ? 'Redis 浏览' : tab.kind === 'table-list' ? '表列表' : '表预览'}
+          </Tag>
           {connection && <Tag>{connection.name}</Tag>}
           {tab.kind === 'redis-browser' && tab.databaseName && <Tag>{tab.databaseName}</Tag>}
+          {tab.kind === 'table-list' && (tab.databaseName || tab.pgDatabaseName) && (
+            <Tag>{connection?.database_type === 'postgresql' ? [tab.pgDatabaseName, tab.databaseName].filter(Boolean).join('.') : (tab.databaseName || tab.pgDatabaseName)}</Tag>
+          )}
           {tab.tableName && tab.kind !== 'redis-browser' && <Tag>{tab.tableName}</Tag>}
           <Typography.Text type="secondary">{rowText}</Typography.Text>
           {tab.result?.limited && <Tag color="warning">已截断</Tag>}
@@ -2180,6 +2289,10 @@ function App(): React.JSX.Element {
   }
 
   const renderTableToolbar = (tab: WorkspaceTab): React.ReactNode => {
+    if (tab.kind === 'table-list') {
+      return null
+    }
+
     const connection = getConnection(tab.connectionId)
     const showPreviewActions = tab.kind === 'preview' && tab.connectionId && tab.tableName && connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis'
     const showRedisRefresh = tab.kind === 'redis-browser' && tab.connectionId && tab.databaseName
@@ -2321,10 +2434,71 @@ function App(): React.JSX.Element {
           value={limit}
           className="result-limit-select"
           options={[300, 500, 1000].map((value) => ({ label: `${value} 条/页`, value }))}
+          disabled={tab.loading}
           onChange={(value) => void changeTabLimit(tab, value)}
         />
       </Space>
     )
+  }
+
+  const clearRuntimeColumnSelection = (tabKey: string): void => {
+    selectedColumnRefs.current[tabKey] = undefined
+    const container = tableBodyRefs.current[tabKey]
+    if (!container) {
+      return
+    }
+    container.querySelectorAll('.column-selected-runtime').forEach((element) => element.classList.remove('column-selected-runtime'))
+    container.querySelectorAll('.column-select-button-runtime-selected').forEach((element) => element.classList.remove('column-select-button-runtime-selected'))
+  }
+
+  const applyRuntimeColumnSelection = (tabKey: string, column: string): void => {
+    const container = tableBodyRefs.current[tabKey]
+    if (!container) {
+      return
+    }
+    clearRuntimeColumnSelection(tabKey)
+    selectedColumnRefs.current[tabKey] = column
+    container.querySelectorAll<HTMLElement>(`[data-column-key="${CSS.escape(column)}"]`).forEach((element) => {
+      element.classList.add('column-selected-runtime')
+    })
+    container.querySelectorAll<HTMLElement>(`[data-column-button="${CSS.escape(column)}"]`).forEach((element) => {
+      element.classList.add('column-select-button-runtime-selected')
+    })
+  }
+
+  const clearRuntimeCellSelection = (tabKey: string): void => {
+    selectedCellRefs.current[tabKey] = undefined
+    const container = tableBodyRefs.current[tabKey]
+    if (!container) {
+      return
+    }
+    container.querySelectorAll('.cell-selected-runtime').forEach((element) => element.classList.remove('cell-selected-runtime'))
+  }
+
+  const applyRuntimeCellSelection = (tabKey: string, rowKey: string, column: string): void => {
+    const container = tableBodyRefs.current[tabKey]
+    if (!container) {
+      return
+    }
+    clearRuntimeCellSelection(tabKey)
+    selectedCellRefs.current[tabKey] = [`${rowKey}:${column}`]
+    container.querySelectorAll<HTMLElement>(`[data-cell-key="${CSS.escape(`${rowKey}:${column}`)}"]`).forEach((element) => {
+      element.classList.add('cell-selected-runtime')
+    })
+  }
+
+  const applyRuntimeCellRangeSelection = (tabKey: string, cellKeys: string[]): void => {
+    const container = tableBodyRefs.current[tabKey]
+    if (!container) {
+      return
+    }
+    clearRuntimeCellSelection(tabKey)
+    selectedCellRefs.current[tabKey] = cellKeys
+    for (const cellKey of cellKeys) {
+      container.querySelectorAll<HTMLElement>(`[data-cell-key="${CSS.escape(cellKey)}"]`).forEach((element) => {
+        element.classList.add('cell-selected-runtime')
+      })
+    }
   }
 
   const renderRedisBrowser = (tab: WorkspaceTab): React.ReactNode => {
@@ -2335,7 +2509,6 @@ function App(): React.JSX.Element {
         {renderResultStatus(tab)}
         {renderTableToolbar(tab)}
         {tab.error && <Alert message="加载失败" description={tab.error} type="error" showIcon />}
-        {tab.result?.limited && <Alert message="还有更多 Key，可以点击下一页继续查看" type="warning" showIcon />}
         <div className="redis-browser-list">
           {tab.loading && <Typography.Text type="secondary">加载中...</Typography.Text>}
           {!tab.loading && Object.values(edits).filter((edit) => !edit.deleted).length === 0 && <Typography.Text type="secondary">当前 DB 暂无 Key</Typography.Text>}
@@ -2379,7 +2552,6 @@ function App(): React.JSX.Element {
   const renderResultTable = (tab: WorkspaceTab): React.ReactNode => {
     const baseTableRows: EditableRow[] = tab.kind === 'preview' ? (tab.editRows ?? []) : (tab.result?.rows.map((row, index) => ({ ...row, __rowKey: `query:${index}` })) ?? [])
     const selectedRowKeyMap = tab.selectedRowKeyMap ?? Object.fromEntries((tab.selectedRowKeys ?? []).map((key) => [String(key), true]))
-    const selectedColumnMap = tab.selectedColumnMap ?? Object.fromEntries((tab.selectedColumns ?? []).map((column) => [column, true]))
     const resultColumns = tab.result?.columns ?? []
     const orderedColumns = [...(tab.columnOrder ?? []).filter((column) => resultColumns.includes(column)), ...resultColumns.filter((column) => !(tab.columnOrder ?? []).includes(column))]
     const columnFilters = tab.columnFilters ?? {}
@@ -2405,6 +2577,8 @@ function App(): React.JSX.Element {
         })
       : filteredRows
     const rowNumberOffset = ((tab.page ?? 1) - 1) * (tab.limit ?? (tab.kind === 'preview' ? PREVIEW_DEFAULT_LIMIT : QUERY_DEFAULT_LIMIT))
+    const orderedRowKeys = tableRows.map((row) => row.__rowKey)
+    const orderedColumnIndexMap = Object.fromEntries(orderedColumns.map((column, index) => [column, index]))
 
     const applySelectedRows = (nextSelectedRowKeys: React.Key[]): void => {
       const nextSelectedRowKeyMap = Object.fromEntries(nextSelectedRowKeys.map((key) => [String(key), true as const]))
@@ -2437,34 +2611,16 @@ function App(): React.JSX.Element {
         return
       }
       rowSelectionDraftRefs.current[tab.key] = undefined
-      applySelectedRows(draft)
+      setTimeout(() => applySelectedRows(draft), 0)
     }
 
     const clearSelectedRows = (): void => {
       if (!tab.selectedRowKeys?.length && !rowSelectionDraftRefs.current[tab.key]?.length) {
         return
       }
+      previewSelectedRows([])
       rowSelectionDraftRefs.current[tab.key] = undefined
-      applySelectedRows([])
-    }
-
-    const selectCurrentRow = (rowKey: string): void => {
-      previewSelectedRows([rowKey])
-    }
-
-    const selectCurrentColumn = (column: string): void => {
-      updateWorkspaceTab(tab.key, {
-        selectedColumns: [column],
-        selectedColumnMap: { [column]: true },
-        editingCell: undefined
-      })
-    }
-
-    const clearSelectedColumns = (): void => {
-      if (!tab.selectedColumns?.length && !Object.keys(tab.selectedColumnMap ?? {}).length) {
-        return
-      }
-      updateWorkspaceTab(tab.key, { selectedColumns: [], selectedColumnMap: {} })
+      setTimeout(() => applySelectedRows([]), 0)
     }
 
     const toggleColumnSort = (column: string): void => {
@@ -2510,6 +2666,44 @@ function App(): React.JSX.Element {
       previewSelectedRows(nextSelected)
     }
 
+    const updateDragCellSelection = (rowKey: string, column: string): void => {
+      const anchor = cellDragAnchorRefs.current[tab.key]
+      if (!anchor) {
+        return
+      }
+      const startRowIndex = orderedRowKeys.indexOf(anchor.rowKey)
+      const endRowIndex = orderedRowKeys.indexOf(rowKey)
+      const startColumnIndex = orderedColumnIndexMap[anchor.column]
+      const endColumnIndex = orderedColumnIndexMap[column]
+      if (startRowIndex < 0 || endRowIndex < 0 || startColumnIndex === undefined || endColumnIndex === undefined) {
+        return
+      }
+      const rowStart = Math.min(startRowIndex, endRowIndex)
+      const rowEnd = Math.max(startRowIndex, endRowIndex)
+      const columnStart = Math.min(startColumnIndex, endColumnIndex)
+      const columnEnd = Math.max(startColumnIndex, endColumnIndex)
+      const nextCellKeys: string[] = []
+      for (let rowIndex = rowStart; rowIndex <= rowEnd; rowIndex += 1) {
+        for (let columnIndex = columnStart; columnIndex <= columnEnd; columnIndex += 1) {
+          nextCellKeys.push(`${orderedRowKeys[rowIndex]}:${orderedColumns[columnIndex]}`)
+        }
+      }
+      const currentCellKeys = selectedCellRefs.current[tab.key] ?? []
+      if (currentCellKeys.length === nextCellKeys.length && currentCellKeys.every((key, index) => key === nextCellKeys[index])) {
+        return
+      }
+      applyRuntimeCellRangeSelection(tab.key, nextCellKeys)
+    }
+
+    const copyColumnName = async (column: string): Promise<void> => {
+      try {
+        await navigator.clipboard.writeText(column)
+        messageApi.success('列名称已复制')
+      } catch {
+        showError('复制列名称失败')
+      }
+    }
+
     const moveColumn = (fromColumn: string, toColumn: string): void => {
       if (fromColumn === toColumn) {
         return
@@ -2549,66 +2743,83 @@ function App(): React.JSX.Element {
         : <span className="column-sort-default-icon" aria-hidden="true">⇅</span>
 
       return (
-        <Flex align="center" gap={4} className="column-header-content">
-          <button
-            type="button"
-            className={`column-select-button${selectedColumnMap[column] ? ' selected' : ''}${tab.draggingColumn === column ? ' dragging' : ''}`}
-            title="点击选中当前列，拖动可调整列顺序"
-            draggable
-            onClick={(event) => {
-              event.stopPropagation()
-              selectCurrentColumn(column)
-            }}
-            onDragStart={(event) => {
-              event.dataTransfer.effectAllowed = 'move'
-              event.dataTransfer.setData('text/plain', column)
-              updateWorkspaceTab(tab.key, { draggingColumn: column })
-            }}
-            onDragOver={(event) => {
-              event.preventDefault()
-              event.dataTransfer.dropEffect = 'move'
-            }}
-            onDrop={(event) => {
-              event.preventDefault()
-              moveColumn(event.dataTransfer.getData('text/plain') || tab.draggingColumn || column, column)
-            }}
-            onDragEnd={() => updateWorkspaceTab(tab.key, { draggingColumn: undefined })}
-          >
-            {column}
-          </button>
-          <button type="button" className={`column-sort-button${tab.sortState?.column === column ? ' active' : ''}`} title="切换排序" onClick={(event) => { event.stopPropagation(); toggleColumnSort(column) }}>
-            {sortIcon}
-          </button>
-          <Popover
-            trigger="click"
-            placement="bottomRight"
-            onOpenChange={(open) => {
-              if (open) {
-                prepareColumnFilterOptions(column)
+        <Dropdown
+          trigger={['contextMenu']}
+          menu={{
+            items: [{ key: 'copy-column-name', label: '复制列名称' }],
+            onClick: ({ key }) => {
+              if (key === 'copy-column-name') {
+                void copyColumnName(column)
               }
-            }}
-            content={(
-              <Space direction="vertical" className="column-filter-popover">
-                <Typography.Text strong>{column} 筛选</Typography.Text>
-                <Checkbox.Group value={checkedValues} onChange={(values) => updateColumnFilter(column, values.map(String))}>
-                  <Space direction="vertical" className="column-filter-options">
-                    {filterOptions.length > 0 ? filterOptions.map((option) => (
-                      <Checkbox key={option.value} value={option.value}>{option.label} <Typography.Text type="secondary">({option.count})</Typography.Text></Checkbox>
-                    )) : <Typography.Text type="secondary">点击筛选后加载选项</Typography.Text>}
-                  </Space>
-                </Checkbox.Group>
-                <Flex justify="space-between" align="center">
-                  <Button size="small" type="link" onClick={() => updateColumnFilter(column, filterOptions.map((option) => option.value))} disabled={filterOptions.length === 0}>全选</Button>
-                  <Button size="small" type="link" onClick={() => clearColumnFilter(column)}>清空</Button>
-                </Flex>
-              </Space>
-            )}
-          >
-            <button type="button" className={`column-filter-button${checkedValues.length > 0 ? ' active' : ''}`} title="筛选本页数据" onClick={(event) => event.stopPropagation()}>
-              <FilterOutlined />
+            }
+          }}
+        >
+          <Flex align="center" gap={4} className="column-header-content" onContextMenu={(event) => event.stopPropagation()}>
+            <button
+              type="button"
+              className={`column-select-button${tab.draggingColumn === column ? ' dragging' : ''}`}
+              data-column-button={column}
+              title="点击选中当前列，拖动可调整列顺序"
+              draggable
+              onClick={(event) => {
+                event.stopPropagation()
+                applyRuntimeColumnSelection(tab.key, column)
+                clearRuntimeCellSelection(tab.key)
+                if (tab.editingCell) {
+                  updateWorkspaceTab(tab.key, { editingCell: undefined })
+                }
+              }}
+              onDragStart={(event) => {
+                event.dataTransfer.effectAllowed = 'move'
+                event.dataTransfer.setData('text/plain', column)
+                updateWorkspaceTab(tab.key, { draggingColumn: column })
+              }}
+              onDragOver={(event) => {
+                event.preventDefault()
+                event.dataTransfer.dropEffect = 'move'
+              }}
+              onDrop={(event) => {
+                event.preventDefault()
+                moveColumn(event.dataTransfer.getData('text/plain') || tab.draggingColumn || column, column)
+              }}
+              onDragEnd={() => updateWorkspaceTab(tab.key, { draggingColumn: undefined })}
+            >
+              {column}
             </button>
-          </Popover>
-        </Flex>
+            <button type="button" className={`column-sort-button${tab.sortState?.column === column ? ' active' : ''}`} title="切换排序" onClick={(event) => { event.stopPropagation(); toggleColumnSort(column) }}>
+              {sortIcon}
+            </button>
+            <Popover
+              trigger="click"
+              placement="bottomRight"
+              onOpenChange={(open) => {
+                if (open) {
+                  prepareColumnFilterOptions(column)
+                }
+              }}
+              content={(
+                <Space direction="vertical" className="column-filter-popover">
+                  <Typography.Text strong>{column} 筛选</Typography.Text>
+                  <Checkbox.Group value={checkedValues} onChange={(values) => updateColumnFilter(column, values.map(String))}>
+                    <Space direction="vertical" className="column-filter-options">
+                      {filterOptions.length > 0 ? filterOptions.map((option) => (
+                        <Checkbox key={option.value} value={option.value}>{option.label} <Typography.Text type="secondary">({option.count})</Typography.Text></Checkbox>
+                      )) : <Typography.Text type="secondary">点击筛选后加载选项</Typography.Text>}
+                    </Space>
+                  </Checkbox.Group>
+                  <Flex justify="space-between" align="center">
+                    <Button size="small" type="link" onClick={() => updateColumnFilter(column, filterOptions.map((option) => option.value))} disabled={filterOptions.length === 0}>全选</Button>
+                    <Button size="small" type="link" onClick={() => clearColumnFilter(column)}>清空</Button>
+                  </Flex>
+                </Space>
+              )}
+            >
+              <button type="button" className={`column-filter-button${checkedValues.length > 0 ? ' active' : ''}`} title="筛选本页数据" onClick={(event) => event.stopPropagation()}>
+                <FilterOutlined />
+              </button>
+            </Popover>
+          </Flex>
+        </Dropdown>
       )
     }
 
@@ -2628,8 +2839,21 @@ function App(): React.JSX.Element {
             onMouseDown={(event) => {
               event.preventDefault()
               event.stopPropagation()
+              if (event.ctrlKey || event.metaKey) {
+                rowDragAnchorRefs.current[tab.key] = undefined
+                const currentSelection = new Set((rowSelectionDraftRefs.current[tab.key] ?? tab.selectedRowKeys ?? []).map(String))
+                if (currentSelection.has(row.__rowKey)) {
+                  currentSelection.delete(row.__rowKey)
+                } else {
+                  currentSelection.add(row.__rowKey)
+                }
+                const nextSelected = orderedRowKeys.filter((key) => currentSelection.has(key))
+                previewSelectedRows(nextSelected)
+                setTimeout(() => applySelectedRows(nextSelected), 0)
+                return
+              }
               rowDragAnchorRefs.current[tab.key] = row.__rowKey
-              selectCurrentRow(row.__rowKey)
+              previewSelectedRows([row.__rowKey])
             }}
             onMouseEnter={() => updateDragRowSelection(row.__rowKey)}
           >
@@ -2646,7 +2870,26 @@ function App(): React.JSX.Element {
         key: column,
         width: 180,
         ellipsis: true,
-        className: selectedColumnMap[column] ? 'column-selected-cell' : undefined,
+        onCell: (row: EditableRow) => ({
+          'data-column-key': column,
+          'data-row-key': row.__rowKey,
+          'data-cell-key': `${row.__rowKey}:${column}`,
+          onMouseDown: (event: React.MouseEvent<HTMLElement>) => {
+            if (event.button !== 0) {
+              return
+            }
+            cellDragAnchorRefs.current[tab.key] = { rowKey: row.__rowKey, column }
+            applyRuntimeCellSelection(tab.key, row.__rowKey, column)
+            clearRuntimeColumnSelection(tab.key)
+          },
+          onMouseEnter: () => {
+            updateDragCellSelection(row.__rowKey, column)
+          },
+          onClick: () => {
+            applyRuntimeCellSelection(tab.key, row.__rowKey, column)
+            clearRuntimeColumnSelection(tab.key)
+          }
+        }),
         render: (value: unknown, row: EditableRow) => (tab.kind === 'preview' ? renderEditableCell(tab, row, column, value) : <span className="table-cell-text">{value === null || value === undefined ? 'NULL' : String(value)}</span>)
       })) ?? []
     const tableColumns: ColumnsType<EditableRow> = tab.kind === 'preview' ? [rowNumberColumn, ...dataColumns] : dataColumns
@@ -2662,7 +2905,6 @@ function App(): React.JSX.Element {
         {renderResultStatus(tab)}
         {renderTableToolbar(tab)}
         {tab.error && <Alert message="执行失败" description={tab.error} type="error" showIcon />}
-        {tab.result?.limited && <Alert message="还有更多数据，可以点击下一页继续查看" type="warning" showIcon />}
         <div
           ref={(element) => { tableBodyRefs.current[tab.key] = element }}
           className="result-table-body"
@@ -2673,15 +2915,20 @@ function App(): React.JSX.Element {
               clearSelectedRows()
             }
             if (!target.closest('.column-header-content')) {
-              clearSelectedColumns()
+              clearRuntimeColumnSelection(tab.key)
+            }
+            if (!target.closest('[data-cell-key]')) {
+              clearRuntimeCellSelection(tab.key)
             }
           }}
           onMouseUp={() => {
             rowDragAnchorRefs.current[tab.key] = undefined
+            cellDragAnchorRefs.current[tab.key] = undefined
             commitPreviewSelectedRows()
           }}
           onMouseLeave={() => {
             rowDragAnchorRefs.current[tab.key] = undefined
+            cellDragAnchorRefs.current[tab.key] = undefined
             commitPreviewSelectedRows()
           }}
         >
@@ -2790,6 +3037,10 @@ function App(): React.JSX.Element {
   }
 
   const renderWorkspaceTab = (tab: WorkspaceTab): React.ReactNode => {
+    if (tab.kind === 'table-list') {
+      return <div className="query-workspace">{renderResultTable(tab)}</div>
+    }
+
     if (tab.kind === 'query') {
       const connection = getConnection(tab.connectionId)
       const isMysql = connection?.database_type === 'mysql'
@@ -3193,7 +3444,9 @@ function App(): React.JSX.Element {
         name: '达梦',
         host: '127.0.0.1',
         port: 5236,
-        username: 'SYSDBA'
+        username: 'SYSDBA',
+        driver_id: undefined,
+        dm_driver_id: undefined
       })
     } else if (nextDatabaseType === 'mongodb') {
       form.setFieldsValue({
@@ -3235,6 +3488,7 @@ function App(): React.JSX.Element {
   const openEditConnectionModal = async (connection: ConnectionInfo): Promise<void> => {
     setConnectionMode('edit')
     setEditingConnectionInfoId(connection.connection_id)
+    form.resetFields()
     setConnectionModalOpen(true)
     setConnectionLoading(true)
 
@@ -3248,6 +3502,7 @@ function App(): React.JSX.Element {
           (driver) => driver.database_type === 'dm' && driver.id === currentDriverId
         )
         formValues.driver_id = currentDriverId
+        formValues.dm_driver_id = currentDriverId
         if (!hasSelectedDriver) {
           formValues.driver_id = undefined
           formValues.dm_driver_id = undefined
@@ -3434,14 +3689,40 @@ function App(): React.JSX.Element {
     setDriversLoading(true)
     try {
       const result = await requestJson<{ drivers: DriverInfo[] }>('/drivers')
-      setDrivers(result.drivers)
-      return result.drivers
+      const normalizedDrivers = Array.isArray(result.drivers)
+        ? result.drivers.map((driver) => normalizeDriverInfo(driver)).filter((driver): driver is DriverInfo => driver !== null)
+        : []
+      setDrivers(normalizedDrivers)
+      return normalizedDrivers
     } catch (err) {
       showError(err instanceof Error ? err.message : '加载驱动失败')
+      setDrivers([])
       return []
     } finally {
       setDriversLoading(false)
     }
+  }
+
+  const driverTypeOptionsForDatabase = (databaseType: DriverDatabaseType): { label: string; value: DriverType }[] =>
+    DRIVER_DATABASE_META[databaseType].supportedDriverTypes.map((type) => ({
+      value: type,
+      label: type === 'python' ? 'dmPython pyd 驱动' : type === 'whl' ? 'dmPython whl 驱动' : 'JDBC jar 驱动'
+    }))
+
+  const resetDriverForm = (databaseType: DriverDatabaseType): void => {
+    const defaultDriverType = DRIVER_DATABASE_META[databaseType].supportedDriverTypes[0] ?? 'jdbc'
+    driverForm.setFieldsValue({
+      database_type: databaseType,
+      driver_type: defaultDriverType,
+      name: '',
+      path: undefined,
+      enabled: true
+    })
+  }
+
+  const selectDriverDatabaseType = (databaseType: DriverDatabaseType): void => {
+    setSelectedDriverDatabaseType(databaseType)
+    resetDriverForm(databaseType)
   }
 
   const openSettings = (section: SettingsSection = 'app'): void => {
@@ -3450,7 +3731,7 @@ function App(): React.JSX.Element {
     void window.api.getAppInfo().then(setAppInfo).catch(() => undefined)
 
     if (section === 'drivers') {
-      driverForm.setFieldsValue({ database_type: 'dm', driver_type: 'jdbc', name: '', enabled: true })
+      resetDriverForm(selectedDriverDatabaseType)
       void loadDrivers()
       void loadJavaRuntimes()
     }
@@ -3463,7 +3744,7 @@ function App(): React.JSX.Element {
   const switchSettingsSection = (section: SettingsSection): void => {
     setSettingsSection(section)
     if (section === 'drivers') {
-      driverForm.setFieldsValue({ database_type: driverForm.getFieldValue('database_type') ?? 'dm', driver_type: driverForm.getFieldValue('driver_type') ?? 'jdbc', enabled: true })
+      resetDriverForm(selectedDriverDatabaseType)
       void loadDrivers()
       void loadJavaRuntimes()
     }
@@ -3475,7 +3756,7 @@ function App(): React.JSX.Element {
       const values = await driverForm.validateFields()
       const body = { database_type: values.database_type, driver_type: values.driver_type, name: values.name, path: values.path, enabled: values.enabled }
       await requestJson('/drivers', { method: 'POST', body: JSON.stringify(body) })
-      driverForm.setFieldsValue({ database_type: values.database_type, driver_type: 'jdbc', name: '', path: undefined, enabled: true })
+      resetDriverForm(values.database_type)
       await loadDrivers()
       messageApi.success('驱动已添加')
     } catch (err) {
@@ -3511,6 +3792,26 @@ function App(): React.JSX.Element {
       return 'dmPython whl'
     }
     return 'JDBC jar'
+  }
+
+  const driverPathLabel = (databaseType: DriverDatabaseType, driverTypeValue: DriverType): string => {
+    if (driverTypeValue === 'python') {
+      return 'dmPython pyd 文件'
+    }
+    if (driverTypeValue === 'whl') {
+      return 'dmPython whl 文件'
+    }
+    return `${DRIVER_DATABASE_META[databaseType].shortLabel} JDBC jar 文件`
+  }
+
+  const driverPathPlaceholder = (databaseType: DriverDatabaseType, driverTypeValue: DriverType): string => {
+    if (driverTypeValue === 'python') {
+      return '请选择 dmPython.pyd'
+    }
+    if (driverTypeValue === 'whl') {
+      return '请选择 dmPython whl 文件'
+    }
+    return databaseType === 'gaussdb' ? '请选择高斯 JDBC jar' : '请选择 DmJdbcDriver.jar'
   }
 
   const dmDriverOptionDrivers = selectedDmDriver && !selectedDmDriver.enabled ? [selectedDmDriver, ...dmDrivers] : dmDrivers
@@ -4565,6 +4866,69 @@ function App(): React.JSX.Element {
     }
   }
 
+  const openTableCatalog = async (connectionId: string, databaseName?: string, pgDatabaseName?: string, objectType: 'table' | 'view' = 'table'): Promise<void> => {
+    if (!ensureConnectionOpen(connectionId)) {
+      return
+    }
+
+    const connection = getConnection(connectionId)
+    const scopeTitle = connection?.database_type === 'postgresql'
+      ? [pgDatabaseName, databaseName].filter(Boolean).join('.')
+      : (databaseName || pgDatabaseName || connection?.database || connection?.name || '当前库')
+    const tabKey = `table-list:${connectionId}:${pgDatabaseName ?? ''}:${databaseName ?? ''}:${objectType}`
+
+    setSelectedConnectionId(connectionId)
+    setActiveTabKey(tabKey)
+    setWorkspaceTabs((current) => {
+      const exists = current.some((tab) => tab.key === tabKey)
+      if (exists) {
+        return current.map((tab) => (tab.key === tabKey ? { ...tab, loading: true, error: undefined } : tab))
+      }
+
+      return [
+        ...current,
+        {
+          key: tabKey,
+          title: objectType === 'view' ? `${scopeTitle} 视图列表` : `${scopeTitle} 列表`,
+          kind: 'table-list',
+          connectionId,
+          databaseName,
+          pgDatabaseName,
+          sql: '',
+          loading: true
+        }
+      ]
+    })
+
+    try {
+      const rows = objectType === 'view'
+        ? (await requestJson<{ objects: DbObjectInfo[] }>(`${withPgDatabase(`/connections/${connectionId}/objects`, databaseName, pgDatabaseName)}${databaseName || pgDatabaseName ? '&' : '?'}type=view`)).objects.map((object, index) => ({
+            __rowKey: `view-list:${index}`,
+            名称: object.name,
+            注释: ''
+          }))
+        : (await requestJson<{ tables: TableInfo[] }>(`${withPgDatabase(`/connections/${connectionId}/tables`, databaseName, pgDatabaseName)}${databaseName || pgDatabaseName ? '&' : '?'}include_comment=true`)).tables.map((table, index) => ({
+        __rowKey: `table-list:${index}`,
+        名称: table.name,
+        注释: table.comment ?? ''
+          }))
+      updateWorkspaceTab(tabKey, {
+        result: {
+          columns: ['名称', '注释'],
+          rows,
+          row_count: rows.length,
+          total_count: rows.length,
+          limited: false
+        },
+        loading: false,
+        error: undefined
+      })
+    } catch (err) {
+      updateWorkspaceTab(tabKey, { loading: false, error: err instanceof Error ? err.message : '加载表列表失败' })
+      showError(err instanceof Error ? err.message : '加载表列表失败')
+    }
+  }
+
   const openQueryWorkspace = (initialSql = 'select * from users;', title?: string, connectionId?: string, databaseName?: string, pgDatabaseName?: string): string => {
     const nextIndex = queryCounter
     const tabKey = `query:${Date.now()}:${nextIndex}`
@@ -4661,7 +5025,7 @@ function App(): React.JSX.Element {
   }
 
   const changeTabLimit = async (tab: WorkspaceTab, limit: number): Promise<void> => {
-    updateWorkspaceTab(tab.key, { limit, page: 1 })
+    updateWorkspaceTab(tab.key, { limit, page: 1, loading: true, error: undefined })
 
     if (tab.kind === 'query') {
       await runQuery({ ...tab, limit, page: 1 })
@@ -4680,7 +5044,7 @@ function App(): React.JSX.Element {
 
   const changeTabPage = async (tab: WorkspaceTab, page: number): Promise<void> => {
     const nextPage = Math.max(1, page)
-    updateWorkspaceTab(tab.key, { page: nextPage })
+    updateWorkspaceTab(tab.key, { page: nextPage, loading: true, error: undefined })
 
     if (tab.kind === 'query') {
       await runQuery({ ...tab, page: nextPage })
@@ -4947,8 +5311,8 @@ function App(): React.JSX.Element {
         </Flex>
       </Layout.Header>
       <Layout.Content className="app-content">
-        <Splitter className="workspace" onResize={(sizes) => setResourcePanelSize(sizes[0] as number)}>
-          <Splitter.Panel size={resourcePanelSize} min={220} max={500} className="resource-panel">
+        <Splitter className="workspace" onResizeEnd={(sizes) => setResourcePanelSize(sizes[0] as number)}>
+          <Splitter.Panel defaultSize={resourcePanelSize} min={220} max={500} className="resource-panel">
             <div className="resource-header">
               <Space direction="vertical" size={2}>
                 <Typography.Text className="panel-kicker">DATABASE EXPLORER</Typography.Text>
@@ -4973,7 +5337,7 @@ function App(): React.JSX.Element {
                     virtual
                     height={resourceTreeHeight}
                     itemHeight={RESOURCE_TREE_ITEM_HEIGHT}
-                    motion={null}
+                    motion={false}
                     treeData={treeData}
                     expandedKeys={expandedKeys}
                     onExpand={(keys, info) => {
@@ -4991,10 +5355,12 @@ function App(): React.JSX.Element {
                     selectedKeys={selectedConnectionId ? [`connection:${selectedConnectionId}`] : []}
                     onSelect={(_, info) => {
                       const node = info.node as DatabaseTreeNode
-                      setFocusedTreeNode(node)
-                      if (node.connectionId) {
-                        setSelectedConnectionId(node.connectionId)
-                      }
+                      startTransition(() => {
+                        setFocusedTreeNode(node)
+                        if (node.connectionId) {
+                          setSelectedConnectionId(node.connectionId)
+                        }
+                      })
                     }}
                     onRightClick={({ node, event }) => {
                       event.preventDefault()
@@ -5003,10 +5369,12 @@ function App(): React.JSX.Element {
                       if (!items || items.length === 0) {
                         return
                       }
-                      setFocusedTreeNode(treeNode)
-                      if (treeNode.connectionId) {
-                        setSelectedConnectionId(treeNode.connectionId)
-                      }
+                      startTransition(() => {
+                        setFocusedTreeNode(treeNode)
+                        if (treeNode.connectionId) {
+                          setSelectedConnectionId(treeNode.connectionId)
+                        }
+                      })
                       setTreeContextMenu({
                         x: event.clientX,
                         y: event.clientY,
@@ -5015,7 +5383,12 @@ function App(): React.JSX.Element {
                     }}
                     onDoubleClick={(_, node) => {
                       const treeNode = node as DatabaseTreeNode
-                      setFocusedTreeNode(treeNode)
+                      startTransition(() => {
+                        setFocusedTreeNode(treeNode)
+                        if (treeNode.connectionId) {
+                          setSelectedConnectionId(treeNode.connectionId)
+                        }
+                      })
                       if (treeNode.kind === 'database' || treeNode.kind === 'pg-schema') {
                         activateAIContextFromNode(treeNode)
                       }
@@ -5062,7 +5435,7 @@ function App(): React.JSX.Element {
           </Splitter.Panel>
           <Splitter.Panel>
             <div className="main-panel">
-              <Splitter className="studio-shell" onResize={(sizes) => {
+              <Splitter className="studio-shell" onResizeEnd={(sizes) => {
                 if (aiPanelOpen) {
                   setAiPanelSize(sizes[1] as number)
                 }
@@ -5083,7 +5456,7 @@ function App(): React.JSX.Element {
                   </div>
                 </Splitter.Panel>
                 {aiPanelOpen && (
-                  <Splitter.Panel size={aiPanelSize} min={260} max={720} className="ai-dock-panel">
+                  <Splitter.Panel defaultSize={aiPanelSize} min={260} max={720} className="ai-dock-panel">
                     <MemoAIPanel
                       requestJson={requestJson}
                       connectionContext={{
@@ -5191,8 +5564,8 @@ function App(): React.JSX.Element {
                     </Space>
                     <Switch checked={jdbcJavaEnabled} onChange={setJdbcJavaEnabled} />
                   </Flex>
-                  <Space.Compact className="full-width">
-                    <AutoComplete
+                <Space.Compact className="full-width">
+                  <AutoComplete
                       value={jdbcJavaHome}
                       options={javaRuntimeOptions}
                       placeholder="请选择项目启动后 JDBC 统一使用的 JDK/JRE 目录"
@@ -5211,55 +5584,109 @@ function App(): React.JSX.Element {
                     <Button type="primary" onClick={() => void saveJdbcJavaConfig()}>保存</Button>
                   </Space.Compact>
                 </Space>
-                <Flex justify="space-between" align="center">
-                  <Typography.Title level={5} style={{ margin: 0 }}>数据库驱动</Typography.Title>
-                  <Button loading={driversLoading} onClick={() => void loadDrivers()}>刷新</Button>
-                </Flex>
-                <Table<DriverInfo>
-                  size="small"
-                  rowKey="id"
-                  loading={driversLoading}
-                  pagination={false}
-                  tableLayout="fixed"
-                  scroll={{ x: 980 }}
-                  dataSource={drivers}
-                  columns={[
-                    { title: '数据库', dataIndex: 'database_type', width: 100, render: (value: DriverDatabaseType) => value === 'dm' ? '达梦' : '高斯' },
-                    { title: '名称', dataIndex: 'name', width: 160, ellipsis: true, render: (value: string) => <Typography.Text ellipsis title={value}>{value}</Typography.Text> },
-                    { title: '类型', dataIndex: 'driver_type', width: 120, render: (value: DriverInfo['driver_type']) => driverTypeLabel(value) },
-                    { title: '来源', dataIndex: 'source', width: 90, render: () => '手动添加' },
-                    { title: '驱动文件', width: 330, ellipsis: true, render: (_: unknown, driver) => <Typography.Text ellipsis title={driver.path ?? undefined}>{driver.path}</Typography.Text> },
-                    { title: '状态', dataIndex: 'enabled', width: 80, render: (value: boolean) => value ? <Tag color="success">启用</Tag> : <Tag>停用</Tag> },
-                    { title: '操作', width: 150, fixed: 'right', render: (_: unknown, driver) => <Space size={4} wrap={false}><Button size="small" onClick={() => void testDriver(driver)}>测试</Button><Button danger size="small" onClick={() => void deleteDriver(driver)}>删除</Button></Space> }
-                  ]}
-                />
-                <Form form={driverForm} layout="vertical" initialValues={{ database_type: 'dm', driver_type: 'jdbc', enabled: true }}>
-                  <Form.Item name="database_type" label="数据库类型" rules={[{ required: true, message: '请选择数据库类型' }]}>
-                    <Select
-                      options={[{ label: '达梦 DM', value: 'dm' }, { label: '高斯数据库（预留）', value: 'gaussdb' }]}
-                      onChange={(value: DriverDatabaseType) => {
-                        if (value === 'gaussdb') {
-                          driverForm.setFieldValue('driver_type', 'jdbc')
-                        }
-                      }}
-                    />
-                  </Form.Item>
-                  <Form.Item name="driver_type" label="添加驱动类型" rules={[{ required: true, message: '请选择驱动类型' }]}>
-                    <Select options={driverDatabaseType === 'gaussdb' ? [{ label: 'JDBC jar 驱动', value: 'jdbc' }] : [{ label: 'JDBC jar 驱动', value: 'jdbc' }, { label: 'dmPython pyd 驱动', value: 'python' }, { label: 'dmPython whl 驱动', value: 'whl' }]} />
-                  </Form.Item>
-                  {driverDatabaseType === 'gaussdb' && <Alert type="warning" showIcon message="高斯数据库驱动当前仅保存配置，连接功能后续接入。" />}
-                  <Form.Item name="name" label="显示名称" rules={[{ required: true, message: '请输入显示名称' }]}>
-                    <Input placeholder={driverDatabaseType === 'gaussdb' ? '例如：高斯 JDBC' : '例如：达梦 JDBC / 本机 dmPython'} />
-                  </Form.Item>
-                  <Form.Item
-                    name="path"
-                    label={driverType === 'python' ? 'dmPython pyd 文件' : driverType === 'whl' ? 'dmPython whl 文件' : 'JDBC jar 文件'}
-                    rules={[{ required: true, message: driverType === 'python' ? '请选择 dmPython pyd 文件' : driverType === 'whl' ? '请选择 dmPython whl 文件' : '请选择 JDBC jar 文件' }]}
-                  >
-                    <Input readOnly placeholder={driverType === 'python' ? '请选择 dmPython.pyd' : driverType === 'whl' ? '请选择 dmPython whl 文件' : driverDatabaseType === 'gaussdb' ? '请选择高斯 JDBC jar' : '请选择 DmJdbcDriver.jar'} addonAfter={<Button type="link" size="small" onClick={() => void selectDriverFile()}>选择</Button>} />
-                  </Form.Item>
-                  <Button type="primary" loading={driverSaving} onClick={() => void addDriver()}>添加驱动</Button>
-                </Form>
+                <div className="driver-manager-shell">
+                  <div className="driver-manager-nav">
+                    <div className="driver-manager-nav-panel">
+                      <Typography.Text strong>数据库类型</Typography.Text>
+                    </div>
+                    {DRIVER_DATABASE_ORDER.map((databaseType) => {
+                      const meta = DRIVER_DATABASE_META[databaseType]
+                      const databaseDrivers = drivers.filter((driver) => driver.database_type === databaseType)
+                      return (
+                        <button
+                          key={databaseType}
+                          type="button"
+                          className={`driver-manager-nav-item${selectedDriverDatabaseType === databaseType ? ' active' : ''}`}
+                          onClick={() => selectDriverDatabaseType(databaseType)}
+                        >
+                          <span className="driver-manager-nav-icon">{meta.icon}</span>
+                          <span className="driver-manager-nav-copy">
+                            <Typography.Text strong>{meta.shortLabel}</Typography.Text>
+                          </span>
+                          <span className="driver-manager-nav-meta">
+                            <Tag>{databaseDrivers.length}</Tag>
+                            {meta.comingSoon && <Tag color="warning">预留</Tag>}
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <div className="driver-manager-main">
+                    <div className="driver-manager-summary-grid">
+                      <div className="driver-manager-summary-card">
+                        <span>{selectedDatabaseDrivers.length}</span>
+                        <small>当前已配置</small>
+                      </div>
+                      <div className="driver-manager-summary-card accent">
+                        <span>{selectedManualDriverCount}</span>
+                        <small>手动添加</small>
+                      </div>
+                      <div className="driver-manager-summary-card">
+                        <span>{driverTypeOptionsForDatabase(selectedDriverDatabaseType).length}</span>
+                        <small>支持格式</small>
+                      </div>
+                    </div>
+                    <div className="driver-manager-section-card">
+                      <Flex justify="space-between" align="center" gap={12}>
+                        <Space direction="vertical" size={2}>
+                          <Typography.Title level={5} style={{ margin: 0 }}>{selectedDriverDatabaseMeta.label}驱动</Typography.Title>
+                          <Typography.Text type="secondary">{selectedDriverDatabaseMeta.description}</Typography.Text>
+                        </Space>
+                        <Space size={8} wrap>
+                          <Tag>{selectedDriverDatabaseMeta.shortLabel}</Tag>
+                          <Tag color={selectedDriverDatabaseMeta.comingSoon ? 'warning' : 'success'}>
+                            {selectedDriverDatabaseMeta.comingSoon ? '预留接入' : '已支持连接'}
+                          </Tag>
+                          <Button loading={driversLoading} onClick={() => void loadDrivers()}>刷新</Button>
+                        </Space>
+                      </Flex>
+                      {selectedDriverDatabaseMeta.comingSoon && <Alert type="warning" showIcon message="当前先管理驱动配置，实际连接能力会在后续版本接入。" />}
+                      <Table<DriverInfo>
+                        size="small"
+                        rowKey="id"
+                        loading={driversLoading}
+                        pagination={false}
+                        tableLayout="fixed"
+                        scroll={{ x: 860 }}
+                        locale={{ emptyText: `${selectedDriverDatabaseMeta.shortLabel} 暂无已配置驱动` }}
+                        dataSource={selectedDatabaseDrivers}
+                        columns={[
+                          { title: '名称', dataIndex: 'name', width: 180, ellipsis: true, render: (value: string) => <Typography.Text ellipsis title={value}>{value}</Typography.Text> },
+                          { title: '驱动类型', dataIndex: 'driver_type', width: 120, render: (value: DriverInfo['driver_type']) => driverTypeLabel(value) },
+                          { title: '来源', dataIndex: 'source', width: 90, render: () => '手动添加' },
+                          { title: '驱动文件', width: 330, ellipsis: true, render: (_: unknown, driver) => <Typography.Text ellipsis title={driver.path ?? undefined}>{driver.path}</Typography.Text> },
+                          { title: '操作', width: 150, fixed: 'right', render: (_: unknown, driver) => <Space size={4} wrap={false}><Button size="small" onClick={() => void testDriver(driver)}>测试</Button><Button danger size="small" onClick={() => void deleteDriver(driver)}>删除</Button></Space> }
+                        ]}
+                      />
+                    </div>
+                    <div className="driver-manager-section-card">
+                      <Space direction="vertical" size={2} className="full-width">
+                        <Typography.Title level={5} style={{ margin: 0 }}>添加 {selectedDriverDatabaseMeta.shortLabel} 驱动</Typography.Title>
+                        <Typography.Text type="secondary">当前类型支持 {selectedDriverTypeLabels}。后续新增国产库时，只需要补充数据库元数据和对应驱动类型，不用再重做界面。</Typography.Text>
+                      </Space>
+                      <Form form={driverForm} layout="vertical" initialValues={{ database_type: 'dm', driver_type: 'jdbc', enabled: true }}>
+                        <Form.Item name="database_type" style={{ display: 'none' }}>
+                          <Input />
+                        </Form.Item>
+                        <Form.Item name="driver_type" label="驱动类型" rules={[{ required: true, message: '请选择驱动类型' }]}>
+                          <Select options={driverTypeOptionsForDatabase(selectedDriverDatabaseType)} />
+                        </Form.Item>
+                        {selectedDriverDatabaseMeta.comingSoon && <Alert type="info" showIcon message={`${selectedDriverDatabaseMeta.shortLabel} 当前先保存驱动配置，连接能力后续接入。`} />}
+                        <Form.Item name="name" label="显示名称" rules={[{ required: true, message: '请输入显示名称' }]}>
+                          <Input placeholder={selectedDriverDatabaseType === 'gaussdb' ? '例如：高斯 JDBC 生产环境' : '例如：达梦 JDBC / 本机 dmPython'} />
+                        </Form.Item>
+                        <Form.Item
+                          name="path"
+                          label={driverPathLabel(selectedDriverDatabaseType, driverType)}
+                          rules={[{ required: true, message: `请选择${driverPathLabel(selectedDriverDatabaseType, driverType)}` }]}
+                        >
+                          <Input readOnly placeholder={driverPathPlaceholder(selectedDriverDatabaseType, driverType)} addonAfter={<Button type="link" size="small" onClick={() => void selectDriverFile()}>选择</Button>} />
+                        </Form.Item>
+                        <Button type="primary" loading={driverSaving} onClick={() => void addDriver()}>添加驱动</Button>
+                      </Form>
+                    </div>
+                  </div>
+                </div>
               </Space>
             )}
           </div>
@@ -5329,6 +5756,12 @@ function App(): React.JSX.Element {
                       placeholder={databaseType === 'dm' ? '请选择已添加的达梦驱动' : '请选择已添加的数据库驱动'}
                       options={dmDriverOptions}
                       notFoundContent={databaseType === 'dm' ? '暂无可用达梦驱动' : '暂无可用驱动'}
+                      onChange={(value) => {
+                        form.setFieldsValue({
+                          driver_id: value,
+                          dm_driver_id: value
+                        })
+                      }}
                     />
                   </Form.Item>
                   <Alert

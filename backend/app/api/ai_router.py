@@ -14,11 +14,19 @@ from app.db.error_utils import friendly_error
 router = APIRouter(prefix="/ai", tags=["ai"])
 
 
+def _ensure_open_engine(connection_id: str):
+    engine = connection_manager.get_engine(connection_id)
+    if engine is not None:
+        return engine
+    connection_manager.open_connection(connection_id)
+    return connection_manager.get_engine(connection_id)
+
+
 def _agent_for_request(request: AIChatRequest) -> DatabaseAgent:
     if not request.connection_id:
         return DatabaseAgent(None, request.config, workspace=request.workspace)
 
-    engine = connection_manager.get_engine(request.connection_id)
+    engine = _ensure_open_engine(request.connection_id)
 
     if engine is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="连接已关闭，请先打开连接")
@@ -108,7 +116,7 @@ def confirm_agent_action(request: AgentConfirmRequest) -> dict[str, Any]:
     if pending.connection_id != request.connection_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="确认请求与当前连接不匹配")
 
-    engine = connection_manager.get_engine(request.connection_id)
+    engine = _ensure_open_engine(request.connection_id)
     if engine is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="连接已关闭，请先打开连接")
 
