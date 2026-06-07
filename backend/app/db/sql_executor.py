@@ -4,6 +4,10 @@ from sqlalchemy import Engine, text
 from app.schemas.query import SqlFileRunResponse
 
 
+def _is_schema_scoped_engine(engine: Engine) -> bool:
+    return engine.dialect.name in {"postgresql", "gaussdb"}
+
+
 def execute_sql_file(engine: Engine, sql: str, database: str | None = None, pg_database: str | None = None) -> SqlFileRunResponse:
     statements = [str(s).strip() for s in sqlparse.parse(sql) if str(s).strip()]
 
@@ -29,7 +33,7 @@ def execute_sql_file(engine: Engine, sql: str, database: str | None = None, pg_d
                     preparer = engine.dialect.identifier_preparer
                     quoted = preparer.quote(database)
 
-                    if engine.dialect.name == "postgresql":
+                    if _is_schema_scoped_engine(engine):
                         connection.execute(text(f"SET search_path TO {quoted}"))
                     elif engine.dialect.name in {"dm", "dmPython"}:
                         connection.execute(text(f"SET SCHEMA {quoted}"))

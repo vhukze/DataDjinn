@@ -33,6 +33,14 @@ def friendly_error(exc: Exception) -> str:
             return dm_message
 
     cause_message = str(cause)
+    network_message = _database_network_error_message(causes)
+    if network_message:
+        return network_message
+
+    postgres_message = _postgres_like_error_message(causes)
+    if postgres_message:
+        return postgres_message
+
     if 'UnsupportedClassVersionError' in cause_message:
         match = re.search(r'class file version (\d+)\.0.*up to (\d+)\.0', cause_message)
         if match:
@@ -122,6 +130,59 @@ def _collect_causes(exc: Exception) -> list[Exception]:
                 stack.append(next_exc)
 
     return causes or [exc]
+
+
+def _all_error_messages(causes: list[Exception]) -> str:
+    return "\n".join(str(cause) for cause in causes if str(cause))
+
+
+def _host_port_from_message(message: str) -> str | None:
+    match = re.search(r'Connection to ([^\s:]+):(\d+) refused', message, re.IGNORECASE)
+    if match:
+        return f'{match.group(1)}:{match.group(2)}'
+
+    match = re.search(r'([\w.\-]+):(\d+)', message)
+    if match:
+        return f'{match.group(1)}:{match.group(2)}'
+
+    return None
+
+
+def _database_network_error_message(causes: list[Exception]) -> str | None:
+    message = _all_error_messages(causes)
+    lower_message = message.lower()
+    endpoint = _host_port_from_message(message)
+
+    if 'connection refused' in lower_message or 'connection to' in lower_message and 'refused' in lower_message:
+        target = f'（{endpoint}）' if endpoint else ''
+        return f'无法连接到数据库服务{target}：目标主机拒绝连接。请检查主机和端口是否正确、数据库服务是否已启动、是否监听远程地址，以及防火墙是否放行该端口。'
+
+    if any(keyword in lower_message for keyword in ['timed out', 'timeout expired', 'the connection attempt failed', 'no route to host', 'network is unreachable']):
+        target = f'（{endpoint}）' if endpoint else ''
+        return f'连接数据库服务超时{target}：请检查网络是否可达、主机和端口是否正确、数据库服务是否允许远程访问，以及防火墙或安全组是否放行。'
+
+    return None
+
+
+def _postgres_like_error_message(causes: list[Exception]) -> str | None:
+    message = _all_error_messages(causes)
+    lower_message = message.lower()
+
+    if 'password authentication failed' in lower_message:
+        return 'PostgreSQL / 高斯数据库用户名或密码错误，连接被拒绝。'
+
+    if 'database' in lower_message and 'does not exist' in lower_message:
+        return 'PostgreSQL / 高斯数据库不存在，请检查填写的数据库名。'
+
+    if 'no pg_hba.conf entry' in lower_message:
+        return 'PostgreSQL / 高斯数据库拒绝当前客户端访问，请检查服务端 pg_hba.conf 白名单、用户、数据库和认证方式配置。'
+
+    if 'psqlexception' in lower_message and 'fatal:' in lower_message:
+        fatal = re.search(r'FATAL:\s*([^\n\r]+)', message, re.IGNORECASE)
+        if fatal:
+            return f'PostgreSQL / 高斯数据库连接失败：{fatal.group(1).strip()}'
+
+    return None
 
 
 def _dm_error_message(exc: Exception) -> str | None:

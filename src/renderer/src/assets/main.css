@@ -147,6 +147,38 @@ body[data-theme="dark"] {
   background: #25272c;
 }
 
+.app-error-boundary {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  color: var(--dj-text-primary);
+  background: var(--dj-bg-shell);
+}
+
+.app-error-card {
+  width: min(560px, 100%);
+  padding: 24px;
+  border: 1px solid var(--dj-border-subtle);
+  border-radius: var(--dj-radius-lg);
+  background: var(--dj-bg-panel);
+  box-shadow: var(--dj-shadow-soft);
+}
+
+.app-error-card pre {
+  max-height: 180px;
+  margin: 12px 0 18px;
+  padding: 12px;
+  overflow: auto;
+  color: var(--dj-danger);
+  border: 1px solid var(--dj-border-subtle);
+  border-radius: var(--dj-radius-md);
+  background: var(--dj-bg-surface);
+  user-select: text;
+  white-space: pre-wrap;
+}
+
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -1241,7 +1273,7 @@ body[data-theme="dark"] .ant-popover-message {
 
 .connection-summary-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   margin-bottom: 10px;
   flex-shrink: 0;
@@ -1301,6 +1333,7 @@ body[data-theme="dark"] .ant-popover-message {
   align-items: center;
   width: 100%;
   padding: 1px 0;
+  border-radius: 8px;
 }
 
 .resource-tree-shell .ant-tree-node-content-wrapper {
@@ -1314,17 +1347,45 @@ body[data-theme="dark"] .ant-popover-message {
   line-height: 30px;
   border-radius: 8px;
   padding: 0 7px;
-  transition: background 0.16s ease, color 0.16s ease;
+  border: 1px solid transparent;
+  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.resource-tree-shell .ant-tree-node-content-wrapper:focus,
+.resource-tree-shell .ant-tree-node-content-wrapper:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.resource-tree-shell .ant-tree-list:focus-visible,
+.resource-tree-shell .ant-tree-list:focus-visible .ant-tree-treenode-active .ant-tree-node-content-wrapper {
+  outline: none !important;
+  box-shadow: none !important;
 }
 
 .resource-tree-shell .ant-tree-node-content-wrapper:hover {
   color: var(--dj-text-primary);
   background: var(--dj-tree-hover-bg);
+  border-color: var(--dj-border-subtle);
+}
+
+.resource-tree-shell .ant-tree-treenode-selected {
+  background: var(--dj-tree-selected-bg) !important;
 }
 
 .resource-tree-shell .ant-tree-node-content-wrapper.ant-tree-node-selected {
   color: var(--dj-text-primary);
-  background: var(--dj-tree-selected-bg);
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+.resource-tree-shell .ant-tree-treenode.dragging::after {
+  display: none !important;
+}
+
+.resource-tree-shell .ant-tree-treenode.drop-container > [draggable] {
+  box-shadow: none !important;
 }
 
 .resource-tree-shell .ant-tree-iconEle {
@@ -1332,6 +1393,57 @@ body[data-theme="dark"] .ant-popover-message {
   align-items: center;
   flex-shrink: 0;
   color: var(--dj-tree-icon);
+}
+
+.tree-icon-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  font-size: 11px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22);
+}
+
+.tree-icon-database {
+  color: #7c2d12;
+  background: linear-gradient(180deg, #fed7aa 0%, #fb923c 100%);
+}
+
+.tree-icon-schema {
+  color: #0b4f75;
+  background: linear-gradient(180deg, #bae6fd 0%, #7dd3fc 100%);
+}
+
+.tree-icon-table {
+  color: #0f5e4a;
+  background: linear-gradient(180deg, #bbf7d0 0%, #86efac 100%);
+}
+
+.tree-icon-view {
+  color: #5b21b6;
+  background: linear-gradient(180deg, #ddd6fe 0%, #a78bfa 100%);
+}
+
+.tree-icon-trigger {
+  color: #9a3412;
+  background: linear-gradient(180deg, #fdba74 0%, #fb923c 100%);
+}
+
+.tree-icon-routine {
+  color: #7c2d12;
+  background: linear-gradient(180deg, #fecaca 0%, #fca5a5 100%);
+}
+
+.tree-icon-sequence {
+  color: #155e75;
+  background: linear-gradient(180deg, #a5f3fc 0%, #67e8f9 100%);
+}
+
+.tree-icon-index {
+  color: #1d4ed8;
+  background: linear-gradient(180deg, #bfdbfe 0%, #60a5fa 100%);
 }
 
 .resource-tree-shell .ant-tree-switcher {
@@ -1380,21 +1492,59 @@ body[data-theme="dark"] .ant-popover-message {
 }
 
 .connection-tree-title {
+  position: relative;
   display: flex;
   align-items: center;
   width: 100%;
   min-width: 0;
   height: 100%;
-  gap: 6px;
+  gap: 7px;
+  padding-left: 2px;
+}
+
+.connection-tree-title.connection-drop-before::before,
+.connection-tree-title.connection-drop-after::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--dj-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--dj-accent-soft) 70%, transparent);
+}
+
+.connection-tree-title.connection-drop-before::before {
+  top: -2px;
+}
+
+.connection-tree-title.connection-drop-after::after {
+  bottom: -2px;
 }
 
 .connection-tree-main {
   flex: 1 1 auto;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
   min-width: 0;
   overflow: hidden;
+}
+
+.connection-tree-title::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--dj-text-tertiary);
+  opacity: 0.42;
+}
+
+.connection-tree-title.is-open::before {
+  background: var(--dj-success);
+  opacity: 0.95;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--dj-success) 16%, transparent);
 }
 
 .connection-tree-name {
@@ -1404,8 +1554,23 @@ body[data-theme="dark"] .ant-popover-message {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--dj-text-primary) !important;
   font-size: 12px;
+  font-weight: 650;
   line-height: 18px;
+}
+
+.connection-tree-type {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  color: var(--dj-accent);
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 16px;
+  letter-spacing: 0.03em;
+  border: 1px solid color-mix(in srgb, var(--dj-accent) 24%, transparent);
+  border-radius: 999px;
+  background: var(--dj-accent-soft);
 }
 
 .connection-tree-address {
@@ -1417,7 +1582,18 @@ body[data-theme="dark"] .ant-popover-message {
   white-space: nowrap;
   font-size: 10px;
   line-height: 16px;
-  opacity: 0.68;
+  opacity: 0.72;
+}
+
+.connection-tree-title.is-closed .connection-tree-name,
+.connection-tree-title.is-closed .connection-tree-address {
+  color: var(--dj-text-secondary) !important;
+}
+
+.connection-tree-title.is-closed .connection-tree-type {
+  color: var(--dj-text-secondary);
+  border-color: var(--dj-border-subtle);
+  background: var(--dj-bg-glass);
 }
 
 .connection-tree-address::before {
@@ -1488,6 +1664,52 @@ body[data-theme="dark"] .ant-popover-message {
   min-width: 0;
 }
 
+.folder-count-tag {
+  min-width: 24px;
+  margin-inline-end: 0;
+  font-size: 10px;
+  text-align: center;
+}
+
+.folder-title-row {
+  position: relative;
+  border-radius: 8px;
+}
+
+.folder-title-row.folder-drop-before::before,
+.folder-title-row.folder-drop-after::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--dj-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--dj-accent-soft) 70%, transparent);
+}
+
+.folder-title-row.folder-drop-before::before {
+  top: -2px;
+}
+
+.folder-title-row.folder-drop-after::after {
+  bottom: -2px;
+}
+
+.folder-drop-placeholder-node {
+  height: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.folder-drop-placeholder-node .ant-tree-node-content-wrapper,
+.folder-drop-placeholder-node .ant-tree-switcher,
+.folder-drop-placeholder-node .ant-tree-indent,
+.folder-drop-placeholder-title {
+  display: none !important;
+}
+
 .tree-node-actions {
   flex: 0 0 auto;
   display: inline-flex;
@@ -1531,6 +1753,7 @@ body[data-theme="dark"] .ant-popover-message {
   position: fixed;
   inset: 0;
   z-index: 1400;
+  pointer-events: none;
 }
 
 .tree-context-menu-panel {
@@ -1542,6 +1765,7 @@ body[data-theme="dark"] .ant-popover-message {
   border-radius: 10px;
   box-shadow: var(--dj-shadow-card);
   overflow: hidden;
+  pointer-events: auto;
 }
 
 .tree-context-menu-panel .ant-menu {

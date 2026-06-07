@@ -21,6 +21,10 @@ def _is_clickhouse_engine(engine: Engine) -> bool:
     return engine.dialect.name in {"clickhouse", "clickhousedb"}
 
 
+def _is_schema_scoped_engine(engine: Engine) -> bool:
+    return engine.dialect.name in {"postgresql", "gaussdb"}
+
+
 def _dm_current_user(connection: Any) -> str:
     row = connection.execute(text("SELECT USER FROM DUAL")).fetchone()
     return str(row[0]).upper() if row and row[0] is not None else "SYSDBA"
@@ -191,7 +195,7 @@ def list_databases(engine: Engine) -> list[DatabaseInfo]:
             for row in rows
         ]
 
-    if engine.dialect.name == "postgresql":
+    if _is_schema_scoped_engine(engine):
         with engine.connect() as connection:
             rows = connection.execute(
                 text("SELECT datname, pg_database_size(datname) FROM pg_database WHERE datistemplate = false AND datallowconn = true ORDER BY datname")
@@ -265,7 +269,7 @@ def list_databases(engine: Engine) -> list[DatabaseInfo]:
 
 
 def list_schemas(engine: Engine, database_name: str | None = None) -> list[DatabaseInfo]:
-    if engine.dialect.name != "postgresql":
+    if not _is_schema_scoped_engine(engine):
         return [DatabaseInfo(name="main")]
 
     target_db = database_name or engine.url.database or "postgres"
@@ -341,13 +345,13 @@ def create_database(engine: Engine, database_name: str) -> DatabaseInfo:
             connection.execute(text(f"CREATE DATABASE {quoted}"))
         return DatabaseInfo(name=str(database_name))
 
-    if engine.dialect.name not in {"mysql", "postgresql"}:
+    if engine.dialect.name not in {"mysql", "postgresql", "gaussdb"}:
         raise ValueError("SQLite 请通过新增文件连接创建数据库")
 
     preparer = engine.dialect.identifier_preparer
     quoted = preparer.quote(database_name)
 
-    if engine.dialect.name == "postgresql":
+    if _is_schema_scoped_engine(engine):
         with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
             connection.execute(text(f"CREATE DATABASE {quoted}"))
     else:
@@ -371,7 +375,7 @@ def drop_database(engine: Engine, database_name: str) -> None:
                 target.close()
         return
 
-    if engine.dialect.name == "postgresql":
+    if _is_schema_scoped_engine(engine):
         with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
             connection.execute(text(f"DROP DATABASE {engine.dialect.identifier_preparer.quote(database_name)}"))
         return
@@ -390,8 +394,8 @@ def drop_database(engine: Engine, database_name: str) -> None:
 
 
 def create_schema(engine: Engine, database_name: str, schema_name: str) -> DatabaseInfo:
-    if engine.dialect.name != "postgresql":
-        raise ValueError("仅 PostgreSQL 支持新建 Schema")
+    if not _is_schema_scoped_engine(engine):
+        raise ValueError("仅 PostgreSQL / 高斯数据库支持新建 Schema")
 
     db_engine = _pg_engine(engine, database_name)
 
@@ -486,7 +490,7 @@ def list_tables(engine: Engine, database_name: str | None = None, pg_database: s
             for row in rows
         ]
 
-    if engine.dialect.name == "postgresql":
+    if _is_schema_scoped_engine(engine):
         schema_name = database_name or "public"
         with engine.connect() as connection:
             rows = connection.execute(
@@ -620,7 +624,7 @@ def list_db_objects(engine: Engine, database_name: str | None = None, pg_databas
                 objects.extend(DbObjectInfo(name=str(row[0]), type="index") for row in rows)
         return objects
 
-    if engine.dialect.name == "postgresql":
+    if _is_schema_scoped_engine(engine):
         target_schema = schema_name or "public"
         with engine.connect() as connection:
             if object_type in {None, "view"}:
@@ -910,12 +914,12 @@ def get_table_comment(engine: Engine, table_name: str, database_name: str | None
             ).fetchone()
         return _clean_optional_text(_db_text(row[0])) if row and row[0] is not None else None
 
-    if engine.dialect.name == "postgresql":
+    if _is_schema_scoped_engine(engine):
         schema_name = database_name or "public"
         with engine.connect() as connection:
             row = connection.execute(
                 text(
-                    "SELECT obj_description(format('%I.%I', :schema_name, :table_name)::regclass, 'pg_class')"
+                    "SELECT obj_description(to_regclass(quote_ident(:schema_name) || '.' || quote_ident(:table_name)), 'pg_class')"
                 ),
                 {"schema_name": schema_name, "table_name": table_name},
             ).fetchone()
@@ -1008,6 +1012,37 @@ def list_columns(engine: Engine, table_name: str, database_name: str | None = No
             for row in rows
         ]
 
+    if _is_schema_scoped_engine(engine):
+        schema_name = database_name or "public"
+        with engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT c.column_name, c.data_type, c.is_nullable, "
+                    "CASE WHEN kcu.column_name IS NULL THEN 0 ELSE 1 END AS primary_key, "
+                    "c.column_default, col_description(format('%I.%I', c.table_schema, c.table_name)::regclass, c.ordinal_position) AS comment "
+                    "FROM information_schema.columns c "
+                    "LEFT JOIN information_schema.table_constraints tc "
+                    "  ON tc.table_schema = c.table_schema AND tc.table_name = c.table_name AND tc.constraint_type = 'PRIMARY KEY' "
+                    "LEFT JOIN information_schema.key_column_usage kcu "
+                    "  ON kcu.constraint_schema = tc.constraint_schema AND kcu.constraint_name = tc.constraint_name "
+                    " AND kcu.table_schema = c.table_schema AND kcu.table_name = c.table_name AND kcu.column_name = c.column_name "
+                    "WHERE c.table_schema = :schema_name AND c.table_name = :table_name "
+                    "ORDER BY c.ordinal_position"
+                ),
+                {"schema_name": schema_name, "table_name": table_name},
+            ).fetchall()
+        return [
+            ColumnInfo(
+                name=str(row[0]),
+                type=str(row[1]),
+                nullable=str(row[2]).upper() == "YES",
+                primary_key=bool(row[3]),
+                default=_clean_optional_text(_db_text(row[4])),
+                comment=_clean_optional_text(_db_text(row[5])),
+            )
+            for row in rows
+        ]
+
     inspector = inspect(engine)
     primary_keys = set(inspector.get_pk_constraint(table_name, schema=database_name).get("constrained_columns") or [])
 
@@ -1086,7 +1121,7 @@ def get_object_ddl(engine: Engine, object_name: str, object_type: str, database_
                 return row[2] if row and len(row) > 2 else ""
         raise ValueError("当前对象类型不支持查看 DDL")
 
-    if engine.dialect.name == "postgresql":
+    if _is_schema_scoped_engine(engine):
         schema_name = database_name or "public"
         with engine.connect() as connection:
             if object_type in {"table", "view"}:

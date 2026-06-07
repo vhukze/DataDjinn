@@ -172,11 +172,12 @@ class AIPingResponse(BaseModel):
     message: str
 
 
-MAX_AGENT_TURNS = 24
+MAX_AGENT_TURNS = 48
 MAX_TABLES_IN_TOOL_RESULT = 200
 MAX_COLUMNS_IN_TOOL_RESULT = 200
 MAX_ROWS_IN_TOOL_RESULT = 20
-MAX_QUERY_ROWS_FOR_AGENT = 200
+DEFAULT_QUERY_ROWS_FOR_AGENT = 200
+MAX_QUERY_ROWS_FOR_AGENT = 10000
 MAX_SAMPLE_ROWS_FOR_AGENT = 50
 MAX_CELL_CHARS_IN_TOOL_RESULT = 500
 WRITE_SQL_TYPES = {"INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP", "TRUNCATE", "REPLACE", "MERGE"}
@@ -264,6 +265,18 @@ DATABASE_TOOLS = [
                 "properties": {
                     "sql": {"type": "string", "description": "要执行的 SQL"},
                     "readonly": {"type": "boolean", "description": "是否只读执行", "default": True},
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_QUERY_ROWS_FOR_AGENT,
+                        "default": DEFAULT_QUERY_ROWS_FOR_AGENT,
+                        "description": "默认查询行数。用户没有明确要求全部数据时使用该限制。",
+                    },
+                    "fetch_all": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "只有用户明确要求获取全部、所有、全量数据时才设置为 true。",
+                    },
                 },
                 "required": ["sql"],
                 "additionalProperties": False,
@@ -818,14 +831,19 @@ class DatabaseAgent:
             if name == "execute_query":
                 sql = str(arguments["sql"])
                 readonly = bool(arguments.get("readonly", True))
+                fetch_all = bool(arguments.get("fetch_all", False))
+                requested_limit = max(1, min(int(arguments.get("limit", DEFAULT_QUERY_ROWS_FOR_AGENT)), MAX_QUERY_ROWS_FOR_AGENT))
+                effective_limit = None if fetch_all else requested_limit
                 validation = self._validate_sql(sql, readonly)
                 if validation["risk_level"] == "dangerous" and validation["statement_type"] not in WRITE_SQL_TYPES:
                     return validation
                 if validation["risk_level"] == "dangerous":
                     return self._confirmation_required_result(sql, validation)
-                result = self._execute_query(sql, readonly)
-                summarized = _summarize_query_response(result, MAX_QUERY_ROWS_FOR_AGENT)
+                result = self._execute_query(sql, readonly, effective_limit)
+                summarized = _summarize_query_response(result, effective_limit)
                 summarized["executed"] = True
+                summarized["fetch_all_requested"] = fetch_all
+                summarized["query_limit_applied"] = effective_limit
                 return summarized
 
             if name == "get_sample_data":
@@ -1007,12 +1025,12 @@ class DatabaseAgent:
             "has_limit": has_limit,
         }
 
-    def _execute_query(self, sql: str, readonly: bool) -> QueryResponse:
+    def _execute_query(self, sql: str, readonly: bool, limit: int | None = DEFAULT_QUERY_ROWS_FOR_AGENT) -> QueryResponse:
         if readonly:
-            return execute_readonly_query(self.engine, sql, MAX_QUERY_ROWS_FOR_AGENT, 0, self.database, self.pg_database)
+            return execute_readonly_query(self.engine, sql, limit, 0, self.database, self.pg_database)
 
         if is_mongo_client(self.engine) or is_redis_client(self.engine):
-            return execute_readonly_query(self.engine, sql, MAX_QUERY_ROWS_FOR_AGENT, 0, self.database, self.pg_database)
+            return execute_readonly_query(self.engine, sql, limit, 0, self.database, self.pg_database)
 
         with self.engine.begin() as connection:
             if self.database and self.engine.dialect.name == "mysql":
@@ -1022,9 +1040,14 @@ class DatabaseAgent:
             if not result.returns_rows:
                 return QueryResponse(columns=[], rows=[], row_count=result.rowcount if result.rowcount >= 0 else 0, limited=False)
             columns = list(result.keys())
-            rows = [dict(row) for row in result.mappings().fetchmany(MAX_QUERY_ROWS_FOR_AGENT + 1)]
-            limited = len(rows) > MAX_QUERY_ROWS_FOR_AGENT
-            visible_rows = rows[:MAX_QUERY_ROWS_FOR_AGENT]
+            if limit is None:
+                rows = [dict(row) for row in result.mappings().fetchall()]
+                limited = False
+                visible_rows = rows
+            else:
+                rows = [dict(row) for row in result.mappings().fetchmany(limit + 1)]
+                limited = len(rows) > limit
+                visible_rows = rows[:limit]
             return QueryResponse(columns=columns, rows=visible_rows, row_count=len(visible_rows), limited=limited)
 
 
@@ -1061,6 +1084,12 @@ def build_system_prompt(db_type: str, db_name: str, workspace: AgentWorkspaceCon
 
     workspace_context = "\n".join(workspace_lines) if workspace_lines else "暂无额外工作区上下文。"
     context_label = f"当前连接的是 {db_type} 数据库 {db_name}" if db_type != "none" else "当前未选择数据库上下文"
+    query_limit_rule = (
+        "规则补充：查询数据时默认只读取一部分数据，调用 execute_query 时使用 limit 参数；"
+        "只有用户明确说获取全部、所有、全量数据时，才允许设置 fetch_all=true。"
+        "即使执行了全量查询，工具返回给 AI 的内容仍可能只展示摘要，看到 truncated=true 时要说明这一点。"
+    )
+    workspace_context = f"{query_limit_rule}\n{workspace_context}"
     return (
         f"你是 DataDjinn 内置数据库 Agent，{context_label}。\n"
         "你的职责是帮助用户理解数据库结构、生成安全 SQL、分析查询结果、执行可控数据库操作。\n"

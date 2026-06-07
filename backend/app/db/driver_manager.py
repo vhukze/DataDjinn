@@ -105,7 +105,7 @@ class DriverManager:
 
     def add_driver(self, request: DriverCreateRequest, source: str = "manual") -> DriverInfo:
         if request.database_type == "gaussdb" and request.driver_type != "jdbc":
-            raise ValueError("高斯数据库当前仅预留 JDBC jar 驱动配置")
+            raise ValueError("高斯数据库当前仅支持 JDBC jar 驱动配置")
         if request.driver_type in {"python", "jdbc", "whl"} and not request.path:
             raise ValueError("请选择驱动文件")
 

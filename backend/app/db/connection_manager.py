@@ -31,6 +31,10 @@ def _is_clickhouse_engine(engine: Any) -> bool:
     return getattr(getattr(engine, "dialect", None), "name", "") in {"clickhouse", "clickhousedb"}
 
 
+def _is_schema_scoped_engine(engine: Any) -> bool:
+    return getattr(getattr(engine, "dialect", None), "name", "") in {"postgresql", "gaussdb"}
+
+
 def _ensure_clickhouse_dialect_registered() -> None:
     try:
         registry.load("clickhousedb")
@@ -393,6 +397,33 @@ class DmJdbcConnectionAdapter:
         return getattr(self._connection, name)
 
 
+GAUSSDB_JDBC_DRIVER_CANDIDATES = [
+    ("com.huawei.gaussdb.jdbc.Driver", "jdbc:gaussdb"),
+    ("org.opengauss.Driver", "jdbc:opengauss"),
+    ("org.postgresql.Driver", "jdbc:postgresql"),
+]
+
+
+def _detect_gaussdb_jdbc_driver(jar_path: Path) -> tuple[str, str]:
+    class_candidates = {
+        "com/huawei/gaussdb/jdbc/Driver.class": ("com.huawei.gaussdb.jdbc.Driver", "jdbc:gaussdb"),
+        "org/opengauss/Driver.class": ("org.opengauss.Driver", "jdbc:opengauss"),
+        "org/postgresql/Driver.class": ("org.postgresql.Driver", "jdbc:postgresql"),
+    }
+
+    try:
+        with zipfile.ZipFile(jar_path) as archive:
+            names = set(archive.namelist())
+    except Exception:
+        return GAUSSDB_JDBC_DRIVER_CANDIDATES[0]
+
+    for class_path, driver in class_candidates.items():
+        if class_path in names:
+            return driver
+
+    return GAUSSDB_JDBC_DRIVER_CANDIDATES[0]
+
+
 crypt32 = ctypes.windll.crypt32
 kernel32 = ctypes.windll.kernel32
 
@@ -680,6 +711,9 @@ class ConnectionManager:
         if request.database_type == "dm":
             return self._create_dm_engine(request)
 
+        if request.database_type == "gaussdb":
+            return self._create_gaussdb_engine(request)
+
         if request.database_type == "mongodb":
             return self._create_mongodb_client(request)
 
@@ -889,6 +923,73 @@ class ConnectionManager:
 
         raise RuntimeError("未配置达梦驱动，请先在驱动管理中手动添加 JDBC jar、dmPython pyd 或 dmPython whl 驱动")
 
+    def _create_gaussdb_engine(self, request: ConnectionRequest) -> Engine:
+        if not request.host:
+            raise ValueError("高斯数据库主机不能为空")
+        if not request.port:
+            raise ValueError("高斯数据库端口不能为空")
+        if not request.username:
+            raise ValueError("高斯数据库用户名不能为空")
+        if not request.database:
+            raise ValueError("高斯数据库名不能为空")
+
+        driver_id = _manual_driver_id(request)
+        driver = driver_manager.get_driver(driver_id) if driver_id else None
+        if driver is None:
+            raise RuntimeError("请选择高斯数据库 JDBC 驱动，请先在驱动管理中手动添加 JDBC jar 驱动")
+        if driver.database_type != "gaussdb":
+            raise RuntimeError("请选择高斯数据库驱动")
+        if not driver.enabled:
+            raise RuntimeError("当前选择的高斯数据库驱动已停用，请重新选择可用驱动")
+        if driver.driver_type != "jdbc":
+            raise RuntimeError("高斯数据库当前仅支持 JDBC jar 驱动")
+        if not driver.path:
+            raise RuntimeError("当前选择的高斯数据库驱动路径为空，请重新添加驱动")
+
+        java_enabled, java_home = driver_manager.get_jdbc_runtime_config()
+        if not java_enabled or not java_home:
+            raise RuntimeError("JDBC Java 环境未开启或未配置，请先在驱动管理中开启并配置全局 JDBC Java 环境")
+
+        jdbc_path = _resolve_runtime_path(driver.path)
+        if not jdbc_path.exists():
+            raise RuntimeError(f"高斯数据库 JDBC 驱动文件不存在：{jdbc_path}")
+
+        required_java_major = java_runtime.required_java_major_from_jar(jdbc_path)
+        jvm_path = java_runtime.prepare_jdbc_runtime(required_java_major, java_home)
+        if jvm_path is None:
+            raise RuntimeError("未找到可用的 Java JVM，请先在驱动管理中配置全局 JDBC Java 环境")
+
+        driver_class, jdbc_scheme = _detect_gaussdb_jdbc_driver(jdbc_path)
+        jdbc_url = f"{jdbc_scheme}://{request.host}:{request.port}/{request.database}"
+
+        try:
+            import jpype
+            jpype_support_library = _ensure_jpype_support_library(jpype)
+            if jpype.isJVMStarted():
+                jpype.addClassPath(str(jpype_support_library))
+                jpype.addClassPath(str(jdbc_path))
+            else:
+                jpype.startJVM(jvm_path, classpath=[str(jpype_support_library), str(jdbc_path)])
+            import jaydebeapi
+        except ImportError as exc:
+            raise RuntimeError("缺少 JDBC 桥接依赖 jaydebeapi/JPype1，请安装后重试") from exc
+
+        def connect_jdbc():
+            connection = jaydebeapi.connect(driver_class, jdbc_url, [request.username, request.password or ""], str(jdbc_path))
+            return DmJdbcConnectionAdapter(connection)
+
+        dialect = default.DefaultDialect(paramstyle="qmark")
+        dialect.name = "gaussdb"
+        dialect.dbapi = DmJdbcDbApi
+        dialect.loaded_dbapi = DmJdbcDbApi
+        dialect.bind_typing = BindTyping.NONE
+        dialect.supports_statement_cache = False
+        return Engine(
+            QueuePool(connect_jdbc, pre_ping=False),
+            dialect,
+            URL.create("gaussdb-jdbc", username=request.username, host=request.host, port=request.port, database=request.database),
+        )
+
     def _detect_server_version(self, engine: Engine | MongoClient | Redis) -> str | None:
         if is_redis_client(engine):
             try:
@@ -900,7 +1001,7 @@ class ConnectionManager:
         if is_mongo_client(engine):
             return None
 
-        if _is_clickhouse_engine(engine):
+        if _is_clickhouse_engine(engine) or engine.dialect.name == "gaussdb":
             try:
                 with engine.connect() as connection:
                     version = connection.execute(text("SELECT version()")).scalar()
@@ -966,6 +1067,9 @@ class ConnectionManager:
 
         if request.database_type == "dm":
             return request.database or f"{request.host}:{request.port}"
+
+        if request.database_type == "gaussdb":
+            return f"{request.database}@{request.host}:{request.port}"
 
         if request.database_type == "mongodb":
             return request.database or f"{request.host}:{request.port}"

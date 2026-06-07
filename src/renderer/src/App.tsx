@@ -14,6 +14,8 @@
   DoubleLeftOutlined,
   DoubleRightOutlined,
   EyeOutlined,
+  FolderAddOutlined,
+  FolderOpenOutlined,
   MinusOutlined,
   MoonOutlined,
   LeftOutlined,
@@ -59,6 +61,7 @@ import {
   Typography,
   message
 } from 'antd'
+import { ApartmentOutlined } from '@ant-design/icons'
 import type { MenuProps } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { DataNode } from 'antd/es/tree'
@@ -88,6 +91,7 @@ const MemoAIPanel = memo(AIPanel, (prev, next) => (
 ))
 
 const RESOURCE_TREE_ITEM_HEIGHT = 30
+const FOLDER_DROP_PLACEHOLDER_KEY_PREFIX = 'folder-drop-placeholder:'
 
 type WorkspaceTabsViewProps = {
   workspaceTabs: WorkspaceTab[]
@@ -161,6 +165,12 @@ const BACKEND_COLORS: Record<BackendStatus['state'], 'success' | 'processing' | 
 }
 const STORAGE_DB = 'datadjinn-selected-databases'
 const STORAGE_SCHEMA = 'datadjinn-selected-schemas'
+const STORAGE_CONNECTION_FOLDERS = 'datadjinn-connection-folders'
+const STORAGE_CONNECTION_FOLDER_ASSIGNMENTS = 'datadjinn-connection-folder-assignments'
+const STORAGE_CONNECTION_FOLDER_ORDER = 'datadjinn-connection-folder-order'
+const STORAGE_ROOT_CONNECTION_ORDER = 'datadjinn-root-connection-order'
+const STORAGE_ROOT_ITEM_ORDER = 'datadjinn-root-item-order'
+const STORAGE_FOLDER_CONNECTION_ORDER = 'datadjinn-folder-connection-order'
 const readPersisted = (key: string): Record<string, string[]> => {
   try {
     const stored = localStorage.getItem(key)
@@ -168,6 +178,45 @@ const readPersisted = (key: string): Record<string, string[]> => {
   } catch {
     return {}
   }
+}
+
+const readPersistedJson = <T,>(key: string, fallback: T): T => {
+  try {
+    const stored = localStorage.getItem(key)
+    return stored ? JSON.parse(stored) as T : fallback
+  } catch {
+    return fallback
+  }
+}
+
+const mergeOrderedIds = (availableIds: string[], preferredIds: string[]): string[] => {
+  const available = new Set(availableIds)
+  const ordered = preferredIds.filter((id) => available.has(id))
+  const orderedSet = new Set(ordered)
+  return [...ordered, ...availableIds.filter((id) => !orderedSet.has(id))]
+}
+
+const stringArrayEquals = (left: string[], right: string[]): boolean =>
+  left.length === right.length && left.every((item, index) => item === right[index])
+
+const stringRecordArrayEquals = (left: Record<string, string[]>, right: Record<string, string[]>): boolean => {
+  const leftKeys = Object.keys(left).sort()
+  const rightKeys = Object.keys(right).sort()
+  return stringArrayEquals(leftKeys, rightKeys) && leftKeys.every((key) => stringArrayEquals(left[key] ?? [], right[key] ?? []))
+}
+
+const rootFolderOrderId = (folderId: string): string => `folder:${folderId}`
+const rootConnectionOrderId = (connectionId: string): string => `connection:${connectionId}`
+
+const insertIdsAroundTarget = (ids: string[], movingIds: string[], targetId: string, placeAfter: boolean): string[] => {
+  const movingSet = new Set(movingIds)
+  const filtered = ids.filter((id) => !movingSet.has(id))
+  const targetIndex = filtered.indexOf(targetId)
+  if (targetIndex < 0) {
+    return [...filtered, ...movingIds]
+  }
+  const insertIndex = placeAfter ? targetIndex + 1 : targetIndex
+  return [...filtered.slice(0, insertIndex), ...movingIds, ...filtered.slice(insertIndex)]
 }
 
 const filterPersistedValues = (persisted: string[], available: string[]): string[] => {
@@ -217,10 +266,27 @@ const isNumericLikeType = (type: string): boolean => NUMERIC_TYPE_PREFIXES.some(
 const PREVIEW_DEFAULT_LIMIT = 300
 const QUERY_DEFAULT_LIMIT = 1000
 const REDIS_DEFAULT_LIMIT = 500
-const JDBC_COMPATIBLE_DATABASE_TYPES: DatabaseType[] = ['dm']
+const JDBC_COMPATIBLE_DATABASE_TYPES: DatabaseType[] = ['dm', 'gaussdb']
 
-type DatabaseType = 'sqlite' | 'mysql' | 'postgresql' | 'dm' | 'mongodb' | 'redis' | 'clickhouse'
+type DatabaseType = 'sqlite' | 'mysql' | 'postgresql' | 'dm' | 'gaussdb' | 'mongodb' | 'redis' | 'clickhouse'
 type WorkspaceTabKind = 'preview' | 'query' | 'redis-browser' | 'table-list'
+
+const DATABASE_TYPE_LABELS: Record<DatabaseType, string> = {
+  sqlite: 'SQLite',
+  mysql: 'MySQL',
+  postgresql: 'PG',
+  dm: 'DM',
+  gaussdb: 'Gauss',
+  mongodb: 'Mongo',
+  redis: 'Redis',
+  clickhouse: 'CK'
+}
+
+const isDatabaseScopedType = (databaseType?: DatabaseType): databaseType is 'mysql' | 'mongodb' | 'redis' | 'clickhouse' =>
+  databaseType === 'mysql' || databaseType === 'mongodb' || databaseType === 'redis' || databaseType === 'clickhouse'
+
+const isSchemaScopedType = (databaseType?: DatabaseType): databaseType is 'postgresql' | 'gaussdb' =>
+  databaseType === 'postgresql' || databaseType === 'gaussdb'
 
 type HealthStatus = {
   status: string
@@ -300,9 +366,7 @@ const normalizeDriverInfo = (value: unknown): DriverInfo | null => {
 type DriverDatabaseMeta = {
   label: string
   shortLabel: string
-  description: string
   supportedDriverTypes: DriverType[]
-  comingSoon?: boolean
   icon: React.ReactNode
 }
 
@@ -312,16 +376,13 @@ const DRIVER_DATABASE_META: Record<DriverDatabaseType, DriverDatabaseMeta> = {
   dm: {
     label: '达梦 DM',
     shortLabel: '达梦',
-    description: '适合需要手动配置 JDBC、dmPython pyd、dmPython whl 的达梦数据库连接。',
     supportedDriverTypes: ['jdbc', 'python', 'whl'],
     icon: <img src={dmIcon} alt="" style={{ width: 16, height: 16 }} />
   },
   gaussdb: {
     label: '高斯数据库',
     shortLabel: '高斯',
-    description: '当前先管理 JDBC 驱动配置，连接能力后续接入。后面新增同类国产库也会沿用这套管理方式。',
     supportedDriverTypes: ['jdbc'],
-    comingSoon: true,
     icon: <DatabaseOutlined />
   }
 }
@@ -523,7 +584,12 @@ type ColumnDef = {
 type TableDesignerMode = 'create' | 'edit'
 
 type DbObjectType = 'table' | 'view' | 'trigger' | 'procedure' | 'function' | 'sequence' | 'index'
-type TreeNodeKind = 'connection' | 'database' | 'pg-schema' | 'object-group' | 'table' | 'db-object' | 'column'
+type TreeNodeKind = 'folder' | 'folder-drop-placeholder' | 'connection' | 'database' | 'pg-schema' | 'object-group' | 'table' | 'db-object' | 'column'
+
+type ConnectionFolder = {
+  id: string
+  name: string
+}
 
 type DbObjectGroupMeta = {
   type: DbObjectType
@@ -531,17 +597,33 @@ type DbObjectGroupMeta = {
   icon: React.ReactNode
 }
 
+const treeIconBadge = (icon: React.ReactNode, tone: 'database' | 'schema' | 'table' | 'view' | 'trigger' | 'routine' | 'sequence' | 'index'): React.ReactNode => (
+  <span className={`tree-icon-badge tree-icon-${tone}`}>
+    {icon}
+  </span>
+)
+
 const DB_OBJECT_GROUPS: DbObjectGroupMeta[] = [
-  { type: 'table', title: '表', icon: <TableOutlined /> },
-  { type: 'view', title: '视图', icon: <EyeOutlined /> },
-  { type: 'trigger', title: '触发器', icon: <ThunderboltOutlined /> },
-  { type: 'procedure', title: '存储过程', icon: <FunctionOutlined /> },
-  { type: 'function', title: '函数', icon: <FunctionOutlined /> },
-  { type: 'sequence', title: '序列', icon: <DatabaseOutlined /> },
-  { type: 'index', title: '索引', icon: <BranchesOutlined /> }
+  { type: 'table', title: '表', icon: treeIconBadge(<TableOutlined />, 'table') },
+  { type: 'view', title: '视图', icon: treeIconBadge(<EyeOutlined />, 'view') },
+  { type: 'trigger', title: '触发器', icon: treeIconBadge(<ThunderboltOutlined />, 'trigger') },
+  { type: 'procedure', title: '存储过程', icon: treeIconBadge(<FunctionOutlined />, 'routine') },
+  { type: 'function', title: '函数', icon: treeIconBadge(<FunctionOutlined />, 'routine') },
+  { type: 'sequence', title: '序列', icon: treeIconBadge(<DatabaseOutlined />, 'sequence') },
+  { type: 'index', title: '索引', icon: treeIconBadge(<BranchesOutlined />, 'index') }
 ]
 
 const DB_OBJECT_GROUP_BY_TYPE = Object.fromEntries(DB_OBJECT_GROUPS.map((group) => [group.type, group])) as Record<DbObjectType, DbObjectGroupMeta>
+
+const plainObjectIconByType: Record<DbObjectType, React.ReactNode> = {
+  table: <TableOutlined />,
+  view: <EyeOutlined />,
+  trigger: <ThunderboltOutlined />,
+  procedure: <FunctionOutlined />,
+  function: <FunctionOutlined />,
+  sequence: <DatabaseOutlined />,
+  index: <BranchesOutlined />
+}
 
 const objectGroupTitle = (type: DbObjectType, databaseType?: DatabaseType): string => {
   if (databaseType === 'redis' && type === 'table') {
@@ -558,6 +640,7 @@ const DB_OBJECT_TYPES_BY_DATABASE: Record<DatabaseType, DbObjectType[]> = {
   mysql: ['table', 'view', 'trigger', 'procedure', 'function', 'index'],
   postgresql: ['table', 'view', 'trigger', 'procedure', 'function', 'sequence', 'index'],
   dm: ['table', 'view', 'trigger', 'procedure', 'function', 'sequence', 'index'],
+  gaussdb: ['table', 'view', 'trigger', 'procedure', 'function', 'sequence', 'index'],
   clickhouse: ['table', 'view'],
   mongodb: ['table'],
   redis: ['table']
@@ -592,7 +675,9 @@ type AIWorkspaceAction = {
 
 type DatabaseTreeNode = DataNode & {
   kind: TreeNodeKind
+  folderId?: string
   connectionId?: string
+  'data-connection-id'?: string
   databaseName?: string
   pgDatabaseName?: string
   tableName?: string
@@ -750,6 +835,10 @@ function App(): React.JSX.Element {
   const [healthLoading, setHealthLoading] = useState(false)
   const [connections, setConnections] = useState<ConnectionInfo[]>([])
   const [selectedConnectionId, setSelectedConnectionId] = useState<string>()
+  const [connectionsInitialized, setConnectionsInitialized] = useState(false)
+  const [selectedConnectionIds, setSelectedConnectionIds] = useState<string[]>([])
+  const [selectedTreeKeys, setSelectedTreeKeys] = useState<React.Key[]>([])
+  const [connectionSelectionAnchorId, setConnectionSelectionAnchorId] = useState<string>()
   const [treeData, setTreeData] = useState<DatabaseTreeNode[]>([])
   const [expandedKeys, setExpandedKeys] = useState<React.Key[]>([])
   const [connectionTreeLoading, setConnectionTreeLoading] = useState<Record<string, string>>({})
@@ -823,6 +912,16 @@ function App(): React.JSX.Element {
   const [driverManagerOpen, setDriverManagerOpen] = useState(false)
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('app')
   const [selectedDriverDatabaseType, setSelectedDriverDatabaseType] = useState<DriverDatabaseType>('dm')
+  const [connectionFolders, setConnectionFolders] = useState<ConnectionFolder[]>(() => readPersistedJson<ConnectionFolder[]>(STORAGE_CONNECTION_FOLDERS, []))
+  const [connectionFolderAssignments, setConnectionFolderAssignments] = useState<Record<string, string>>(() => readPersistedJson<Record<string, string>>(STORAGE_CONNECTION_FOLDER_ASSIGNMENTS, {}))
+  const [connectionFolderOrder, setConnectionFolderOrder] = useState<string[]>(() => readPersistedJson<string[]>(STORAGE_CONNECTION_FOLDER_ORDER, []))
+  const [rootConnectionOrder, setRootConnectionOrder] = useState<string[]>(() => readPersistedJson<string[]>(STORAGE_ROOT_CONNECTION_ORDER, []))
+  const [rootItemOrder, setRootItemOrder] = useState<string[]>(() => readPersistedJson<string[]>(STORAGE_ROOT_ITEM_ORDER, []))
+  const [folderConnectionOrder, setFolderConnectionOrder] = useState<Record<string, string[]>>(() => readPersistedJson<Record<string, string[]>>(STORAGE_FOLDER_CONNECTION_ORDER, {}))
+  const [folderEditorOpen, setFolderEditorOpen] = useState(false)
+  const [folderEditorMode, setFolderEditorMode] = useState<'create' | 'rename'>('create')
+  const [editingFolderId, setEditingFolderId] = useState<string>()
+  const [folderNameDraft, setFolderNameDraft] = useState('')
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
   const [javaRestartRequired, setJavaRestartRequired] = useState(false)
   const [updateModalOpen, setUpdateModalOpen] = useState(false)
@@ -842,12 +941,16 @@ function App(): React.JSX.Element {
     value: runtime.home
   }))
   const selectedJavaRuntimeValues = new Set(javaRuntimeOptions.map((option) => option.value.toLowerCase()))
-  const allDmDrivers = drivers.filter((driver) => driver.database_type === 'dm')
-  const dmDrivers = allDmDrivers.filter((driver) => driver.enabled)
+  const driverDatabaseTypeForConnection = (value?: DatabaseType): DriverDatabaseType | undefined => (
+    value === 'dm' || value === 'gaussdb' ? value : undefined
+  )
+  const currentDriverDatabaseType = driverDatabaseTypeForConnection(databaseType)
+  const currentAllDrivers = currentDriverDatabaseType ? drivers.filter((driver) => driver.database_type === currentDriverDatabaseType) : []
+  const currentEnabledDrivers = currentAllDrivers.filter((driver) => driver.enabled)
   const watchedDriverId = Form.useWatch('driver_id', form)
   const watchedLegacyDmDriverId = Form.useWatch('dm_driver_id', form)
-  const selectedDmDriverId = databaseType === 'dm' ? (watchedDriverId ?? watchedLegacyDmDriverId) : undefined
-  const selectedDmDriver = allDmDrivers.find((driver) => driver.id === selectedDmDriverId)
+  const selectedManualDriverId = currentDriverDatabaseType ? (watchedDriverId ?? watchedLegacyDmDriverId) : undefined
+  const selectedManualDriver = currentAllDrivers.find((driver) => driver.id === selectedManualDriverId)
   const [driversLoading, setDriversLoading] = useState(false)
   const [driverSaving, setDriverSaving] = useState(false)
   const selectedDriverDatabaseMeta = DRIVER_DATABASE_META[selectedDriverDatabaseType]
@@ -868,6 +971,108 @@ function App(): React.JSX.Element {
   useEffect(() => {
     selectedSchemasRef.current = selectedSchemas
   }, [selectedSchemas])
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_CONNECTION_FOLDERS, JSON.stringify(connectionFolders))
+  }, [connectionFolders])
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_CONNECTION_FOLDER_ASSIGNMENTS, JSON.stringify(connectionFolderAssignments))
+  }, [connectionFolderAssignments])
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_CONNECTION_FOLDER_ORDER, JSON.stringify(connectionFolderOrder))
+  }, [connectionFolderOrder])
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_ROOT_CONNECTION_ORDER, JSON.stringify(rootConnectionOrder))
+  }, [rootConnectionOrder])
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_ROOT_ITEM_ORDER, JSON.stringify(rootItemOrder))
+  }, [rootItemOrder])
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_FOLDER_CONNECTION_ORDER, JSON.stringify(folderConnectionOrder))
+  }, [folderConnectionOrder])
+
+  useEffect(() => {
+    if (!connectionsInitialized) {
+      return
+    }
+
+    const validConnectionIds = new Set(connections.map((connection) => connection.connection_id))
+    const validFolderIds = new Set(connectionFolders.map((folder) => folder.id))
+
+    setConnectionFolderAssignments((current) => {
+      let changed = false
+      const next = Object.fromEntries(Object.entries(current).filter(([connectionId, folderId]) => {
+        const keep = validConnectionIds.has(connectionId) && validFolderIds.has(folderId)
+        if (!keep) {
+          changed = true
+        }
+        return keep
+      }))
+      return changed ? next : current
+    })
+
+    setSelectedConnectionIds((current) => {
+      const next = current.filter((connectionId) => validConnectionIds.has(connectionId))
+      return stringArrayEquals(current, next) ? current : next
+    })
+    setSelectedTreeKeys((current) => {
+      const next = current.filter((key) => {
+        const value = String(key)
+        if (value.startsWith('connection:')) {
+          return validConnectionIds.has(value.slice('connection:'.length))
+        }
+        if (value.startsWith('folder:')) {
+          return validFolderIds.has(value.slice('folder:'.length))
+        }
+        return true
+      })
+      return current.length === next.length && current.every((item, index) => item === next[index]) ? current : next
+    })
+    setConnectionSelectionAnchorId((current) => current && validConnectionIds.has(current) ? current : undefined)
+    setConnectionFolderOrder((current) => {
+      const next = mergeOrderedIds(connectionFolders.map((folder) => folder.id), current)
+      return stringArrayEquals(current, next) ? current : next
+    })
+    setRootConnectionOrder((current) => {
+      const next = mergeOrderedIds(
+        connections
+        .filter((connection) => !connectionFolderAssignments[connection.connection_id] || !validFolderIds.has(connectionFolderAssignments[connection.connection_id]))
+        .map((connection) => connection.connection_id),
+        current
+      )
+      return stringArrayEquals(current, next) ? current : next
+    })
+    setRootItemOrder((current) => {
+      const rootConnectionIds = connections
+        .filter((connection) => !connectionFolderAssignments[connection.connection_id] || !validFolderIds.has(connectionFolderAssignments[connection.connection_id]))
+        .map((connection) => rootConnectionOrderId(connection.connection_id))
+      const folderIds = connectionFolders.map((folder) => rootFolderOrderId(folder.id))
+      const migratedOrder = current.length > 0
+        ? current
+        : [
+            ...connectionFolderOrder.map(rootFolderOrderId),
+            ...rootConnectionOrder.map(rootConnectionOrderId)
+          ]
+      const next = mergeOrderedIds([...folderIds, ...rootConnectionIds], migratedOrder)
+      return stringArrayEquals(current, next) ? current : next
+    })
+    setFolderConnectionOrder((current) => {
+      const next: Record<string, string[]> = {}
+      for (const folderId of connectionFolders.map((folder) => folder.id)) {
+        const folderConnectionIds = connections
+          .filter((connection) => connectionFolderAssignments[connection.connection_id] === folderId)
+          .map((connection) => connection.connection_id)
+        next[folderId] = mergeOrderedIds(folderConnectionIds, current[folderId] ?? [])
+      }
+      return stringRecordArrayEquals(current, next) ? current : next
+    })
+  }, [connectionsInitialized, connections, connectionFolders, connectionFolderAssignments, connectionFolderOrder, rootConnectionOrder])
+
   const [allDatabases, setAllDatabases] = useState<Record<string, string[]>>({})
   const [allSchemas, setAllSchemas] = useState<Record<string, string[]>>({})
   const [activeSelector, setActiveSelector] = useState<string | null>(null)
@@ -876,6 +1081,8 @@ function App(): React.JSX.Element {
   const [completionTables, setCompletionTables] = useState<Record<string, string[]>>({})
   const [tableBodyHeights, setTableBodyHeights] = useState<Record<string, number>>({})
   const [resourceTreeHeight, setResourceTreeHeight] = useState(360)
+  const [dragOverFolderTarget, setDragOverFolderTarget] = useState<{ folderId: string; zone: 'before' | 'after' }>()
+  const [dragOverConnectionTarget, setDragOverConnectionTarget] = useState<{ connectionId: string; folderId?: string; zone: 'before' | 'after' }>()
   const [ddlModalOpen, setDdlModalOpen] = useState(false)
   const [ddlModalTitle, setDdlModalTitle] = useState('')
   const [ddlContent, setDdlContent] = useState('')
@@ -888,6 +1095,10 @@ function App(): React.JSX.Element {
   const rowDragAnchorRefs = useRef<Record<string, string | undefined>>({})
   const rowSelectionDraftRefs = useRef<Record<string, React.Key[] | undefined>>({})
   const treeLoadingKeysRef = useRef<Set<React.Key>>(new Set())
+  const dragOverFolderTargetRef = useRef<{ folderId: string; zone: 'before' | 'after' } | undefined>(undefined)
+  const dragOverConnectionTargetRef = useRef<{ connectionId: string; folderId?: string; zone: 'before' | 'after' } | undefined>(undefined)
+  const draggingConnectionIdsRef = useRef<string[]>([])
+  const draggingConnectionFolderIdRef = useRef<string | undefined>(undefined)
 
   const { theme, toggleTheme } = useTheme()
 
@@ -1026,7 +1237,7 @@ function App(): React.JSX.Element {
       connectionId: tab.connectionId,
       databaseName: tab.databaseName,
       pgDatabaseName: tab.pgDatabaseName,
-      schemaName: connection?.database_type === 'postgresql' ? tab.databaseName : undefined,
+      schemaName: isSchemaScopedType(connection?.database_type) ? tab.databaseName : undefined,
       databases: databaseNames,
       schemas: schemaKey ? allSchemas[schemaKey] ?? [] : [],
       tables,
@@ -1041,6 +1252,10 @@ function App(): React.JSX.Element {
     const connectionMeta = connection.database?.trim()
       ? `${connection.name} · ${connection.database}`
       : connection.name
+    const currentFolderId = connectionFolderAssignments[connection.connection_id]
+    const connectionDropZone = dragOverConnectionTarget?.connectionId === connection.connection_id
+      ? dragOverConnectionTarget.zone
+      : undefined
 
     return (
       <>
@@ -1084,16 +1299,58 @@ function App(): React.JSX.Element {
         }
       }}
         */}
-      <Flex className="connection-tree-title" align="center" title={connectionMeta}>
+      <Flex
+        className={`connection-tree-title ${connection.is_open ? 'is-open' : 'is-closed'}${connectionDropZone ? ` connection-drop-${connectionDropZone}` : ''}`}
+        align="center"
+        title={connectionMeta}
+        data-connection-id={connection.connection_id}
+        onDragOver={(event) => {
+          const movingConnectionIds = draggingConnectionIdsRef.current
+          if (movingConnectionIds.length === 0 || movingConnectionIds.includes(connection.connection_id)) {
+            return
+          }
+          if (!currentFolderId || draggingConnectionFolderIdRef.current !== currentFolderId) {
+            return
+          }
+          event.preventDefault()
+          event.stopPropagation()
+          const rect = event.currentTarget.getBoundingClientRect()
+          updateDragOverConnectionTarget({
+            connectionId: connection.connection_id,
+            folderId: currentFolderId,
+            zone: event.clientY - rect.top >= rect.height / 2 ? 'after' : 'before'
+          })
+        }}
+        onDrop={(event) => {
+          const movingConnectionIds = draggingConnectionIdsRef.current
+          if (movingConnectionIds.length === 0 || movingConnectionIds.includes(connection.connection_id)) {
+            clearConnectionDragState()
+            return
+          }
+          if (!currentFolderId || draggingConnectionFolderIdRef.current !== currentFolderId) {
+            clearConnectionDragState()
+            return
+          }
+          event.preventDefault()
+          event.stopPropagation()
+          const rect = event.currentTarget.getBoundingClientRect()
+          reorderFolderConnections(
+            currentFolderId,
+            movingConnectionIds,
+            connection.connection_id,
+            event.clientY - rect.top >= rect.height / 2
+          )
+          clearConnectionDragState()
+        }}
+      >
         <div className="connection-tree-main">
           <Typography.Text className="connection-tree-name" ellipsis title={connection.name}>
             {connection.name}
           </Typography.Text>
-          {connection.database ? (
-            <Typography.Text type="secondary" className="connection-tree-address" ellipsis title={connection.database}>
-              {connection.database}
-            </Typography.Text>
-          ) : null}
+          <span className="connection-tree-type">{DATABASE_TYPE_LABELS[connection.database_type]}</span>
+          <Typography.Text type="secondary" className="connection-tree-address" ellipsis title={connection.database || '未设置默认库'}>
+            {connection.database || '默认'}
+          </Typography.Text>
         </div>
         {isFocused && (
           <Space className="connection-tree-actions" size={2}>
@@ -1154,11 +1411,11 @@ function App(): React.JSX.Element {
     }))
   }
 
-  const buildDatabaseNode = (connection: ConnectionInfo, database: DatabaseInfo): DatabaseTreeNode => ({
-    key: `database:${connection.connection_id}:${database.name}`,
-    title: database.name,
-    icon: <DatabaseOutlined />,
-    kind: 'database',
+const buildDatabaseNode = (connection: ConnectionInfo, database: DatabaseInfo): DatabaseTreeNode => ({
+  key: `database:${connection.connection_id}:${database.name}`,
+  title: database.name,
+  icon: treeIconBadge(<DatabaseOutlined />, 'database'),
+  kind: 'database',
     connectionId: connection.connection_id,
     databaseName: database.name,
     sizeDisplay: database.size_display,
@@ -1169,11 +1426,11 @@ function App(): React.JSX.Element {
     isLeaf: connection.database_type === 'redis'
   })
 
-  const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, schema: DatabaseInfo): DatabaseTreeNode => ({
-    key: `pg-schema:${connection.connection_id}:${pgDatabaseName}:${schema.name}`,
-    title: schema.name,
-    icon: <BranchesOutlined />,
-    kind: 'pg-schema',
+const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, schema: DatabaseInfo): DatabaseTreeNode => ({
+  key: `pg-schema:${connection.connection_id}:${pgDatabaseName}:${schema.name}`,
+  title: schema.name,
+  icon: treeIconBadge(<ApartmentOutlined />, 'schema'),
+  kind: 'pg-schema',
     connectionId: connection.connection_id,
     databaseName: schema.name,
     pgDatabaseName,
@@ -1186,7 +1443,7 @@ function App(): React.JSX.Element {
   })
 
   const buildConnectionNode = (connection: ConnectionInfo): DatabaseTreeNode => {
-    const children = connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm' || connection.database_type === 'mongodb' || connection.database_type === 'redis' || connection.database_type === 'clickhouse'
+    const children = connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm' || connection.database_type === 'gaussdb' || connection.database_type === 'mongodb' || connection.database_type === 'redis' || connection.database_type === 'clickhouse'
       ? undefined
       : buildObjectGroupNodes(connection.connection_id, undefined, undefined, connection.database_type)
 
@@ -1194,7 +1451,7 @@ function App(): React.JSX.Element {
       key: `connection:${connection.connection_id}`,
       title: connection.name,
       icon:
-        connection.database_type === 'postgresql' ? (
+        connection.database_type === 'postgresql' || connection.database_type === 'gaussdb' ? (
           <img src={postgresIcon} alt="PG" style={{ width: 16, height: 16 }} />
         ) : connection.database_type === 'mongodb' ? (
           <img src={mongoIcon} alt="MongoDB" style={{ width: 16, height: 16 }} />
@@ -1211,17 +1468,134 @@ function App(): React.JSX.Element {
         ),
       kind: 'connection',
       connectionId: connection.connection_id,
+      'data-connection-id': connection.connection_id,
+      className: `${connection.is_open ? '' : 'tree-node-closed '}tree-connection-row`.trim(),
       children,
-      className: connection.is_open ? undefined : 'tree-node-closed',
       closed: !connection.is_open,
       childrenLoaded: Boolean(children),
       isLeaf: !connection.is_open
     }
   }
 
-  const refreshTree = (nextConnections: ConnectionInfo[]): void => {
-    setTreeData(nextConnections.map(buildConnectionNode))
+  const buildFolderDropPlaceholderNode = (folderId: string): DatabaseTreeNode => ({
+    key: `${FOLDER_DROP_PLACEHOLDER_KEY_PREFIX}${folderId}`,
+    title: '',
+    kind: 'folder-drop-placeholder',
+    folderId,
+    className: 'folder-drop-placeholder-node',
+    childrenLoaded: true,
+    isLeaf: true
+  })
+
+  const buildFolderNode = (folder: ConnectionFolder, children: DatabaseTreeNode[]): DatabaseTreeNode => ({
+    key: `folder:${folder.id}`,
+    title: folder.name,
+    icon: <FolderOpenOutlined />,
+    kind: 'folder',
+    folderId: folder.id,
+    children: children.length > 0 ? children : [buildFolderDropPlaceholderNode(folder.id)],
+    childrenLoaded: true,
+    isLeaf: false
+  })
+
+  const collectConnectionNodesById = (nodes: DatabaseTreeNode[]): Map<string, DatabaseTreeNode> => {
+    const map = new Map<string, DatabaseTreeNode>()
+    const visit = (currentNodes: DatabaseTreeNode[]): void => {
+      for (const node of currentNodes) {
+        if (node.kind === 'connection' && node.connectionId) {
+          map.set(node.connectionId, node)
+        }
+        if (node.children?.length) {
+          visit(node.children)
+        }
+      }
+    }
+    visit(nodes)
+    return map
   }
+
+  const buildResourceTree = (nextConnections: ConnectionInfo[], currentNodes: DatabaseTreeNode[] = []): DatabaseTreeNode[] => {
+    const existingConnectionNodes = collectConnectionNodesById(currentNodes)
+    const groupedNodes = new Map<string, DatabaseTreeNode[]>()
+    const rootNodeMap = new Map<string, DatabaseTreeNode>()
+
+    for (const connection of nextConnections) {
+      const existingNode = existingConnectionNodes.get(connection.connection_id)
+      const nextNode = buildConnectionNode(connection)
+      const folderId = connectionFolderAssignments[connection.connection_id]
+      const node = existingNode && connection.is_open
+        ? { ...nextNode, folderId, children: existingNode.children, childrenLoaded: existingNode.childrenLoaded }
+        : { ...nextNode, folderId }
+
+      if (folderId && connectionFolders.some((folder) => folder.id === folderId)) {
+        const items = groupedNodes.get(folderId) ?? []
+        items.push(node)
+        groupedNodes.set(folderId, items)
+      } else {
+        rootNodeMap.set(connection.connection_id, node)
+      }
+    }
+
+    const folderIds = connectionFolders.map((folder) => folder.id)
+    const rootConnectionIds = [...rootNodeMap.keys()]
+    const orderedRootItems = mergeOrderedIds([...folderIds.map(rootFolderOrderId), ...rootConnectionIds.map(rootConnectionOrderId)], rootItemOrder)
+
+    return orderedRootItems
+      .map((itemId) => {
+        if (itemId.startsWith('connection:')) {
+          return rootNodeMap.get(itemId.slice('connection:'.length))
+        }
+
+        const folderId = itemId.slice('folder:'.length)
+        const folder = connectionFolders.find((item) => item.id === folderId)
+        if (!folder) {
+          return undefined
+        }
+
+          const childNodes = groupedNodes.get(folder.id) ?? []
+          const childNodeMap = new Map(childNodes.map((node) => [node.connectionId ?? String(node.key), node]))
+          const orderedChildIds = mergeOrderedIds(childNodes.map((node) => node.connectionId ?? String(node.key)), folderConnectionOrder[folder.id] ?? [])
+          return buildFolderNode(
+            folder,
+            orderedChildIds
+              .map((connectionId) => childNodeMap.get(connectionId))
+              .filter((node): node is DatabaseTreeNode => Boolean(node))
+          )
+      })
+      .filter((node): node is DatabaseTreeNode => Boolean(node))
+  }
+
+  const refreshTree = (nextConnections: ConnectionInfo[]): void => {
+    setTreeData((current) => buildResourceTree(nextConnections, current))
+  }
+
+  useEffect(() => {
+    refreshTree(connections)
+  }, [connections, connectionFolders, connectionFolderAssignments, rootItemOrder, folderConnectionOrder])
+
+  useEffect(() => {
+    const closedConnectionIds = new Set(
+      connections
+        .filter((connection) => !connection.is_open)
+        .map((connection) => connection.connection_id)
+    )
+    if (closedConnectionIds.size === 0) {
+      return
+    }
+
+    setExpandedKeys((current) => {
+      const next = current.filter((key) => {
+        const value = String(key)
+        for (const connectionId of closedConnectionIds) {
+          if (value === `connection:${connectionId}` || value.includes(`:${connectionId}:`)) {
+            return false
+          }
+        }
+        return true
+      })
+      return current.length === next.length && current.every((item, index) => item === next[index]) ? current : next
+    })
+  }, [connections])
 
   const refreshConnectionNode = (connectionId: string, selectedDatabaseOverride?: string[]): void => {
     const connection = getConnection(connectionId)
@@ -1236,7 +1610,7 @@ function App(): React.JSX.Element {
         const connKey = `connection:${connectionId}`
         const snapshot = expandedKeys.map(String)
 
-        if (connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm' || connection.database_type === 'mongodb' || connection.database_type === 'redis' || connection.database_type === 'clickhouse') {
+        if (connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm' || connection.database_type === 'gaussdb' || connection.database_type === 'mongodb' || connection.database_type === 'redis' || connection.database_type === 'clickhouse') {
           const databaseNodes = await preloadConnectionTree(connection, selectedDatabaseOverride)
           const selectedNames = new Set(databaseNodes.map((node) => node.databaseName).filter(Boolean))
           const stillExpanded = snapshot.filter((k) => {
@@ -1290,15 +1664,37 @@ function App(): React.JSX.Element {
     })()
   }
 
-  const replaceConnectionNode = (nodes: DatabaseTreeNode[], connection: ConnectionInfo, preserveChildren?: boolean): DatabaseTreeNode[] =>
-    nodes.map((node) => {
-      if (node.key !== `connection:${connection.connection_id}`) {
-        return node
-      }
+  const replaceConnectionNode = (nodes: DatabaseTreeNode[], connection: ConnectionInfo, preserveChildren?: boolean): DatabaseTreeNode[] => {
+    const visit = (currentNodes: DatabaseTreeNode[]): [DatabaseTreeNode[], boolean] => {
+      let changed = false
 
-      const nextNode = buildConnectionNode(connection)
-      return preserveChildren && connection.is_open ? { ...nextNode, children: node.children, childrenLoaded: node.childrenLoaded } : nextNode
-    })
+      const nextNodes = currentNodes.map((node) => {
+        if (node.kind === 'connection' && node.connectionId === connection.connection_id) {
+          changed = true
+          const nextNode = buildConnectionNode(connection)
+          return preserveChildren && connection.is_open
+            ? { ...nextNode, folderId: node.folderId, children: node.children, childrenLoaded: node.childrenLoaded }
+            : { ...nextNode, folderId: node.folderId }
+        }
+
+        if (!node.children?.length) {
+          return node
+        }
+
+        const [nextChildren, childChanged] = visit(node.children)
+        if (!childChanged) {
+          return node
+        }
+
+        changed = true
+        return { ...node, children: nextChildren }
+      })
+
+      return [changed ? nextNodes : currentNodes, changed]
+    }
+
+    return visit(nodes)[0]
+  }
 
   const updateTreeNode = (nodes: DatabaseTreeNode[], key: React.Key, children: DatabaseTreeNode[]): DatabaseTreeNode[] => {
     const visit = (currentNodes: DatabaseTreeNode[]): [DatabaseTreeNode[], boolean] => {
@@ -1337,6 +1733,522 @@ function App(): React.JSX.Element {
       }
       return { ...current, [connectionId]: text }
     })
+  }
+
+  const folderNameExists = (name: string, excludeFolderId?: string): boolean =>
+    connectionFolders.some((folder) => folder.id !== excludeFolderId && folder.name.trim().toLowerCase() === name.trim().toLowerCase())
+
+  const openCreateFolderModal = (): void => {
+    setFolderEditorMode('create')
+    setEditingFolderId(undefined)
+    setFolderNameDraft('')
+    setFolderEditorOpen(true)
+  }
+
+  const openRenameFolderModal = (folderId: string): void => {
+    const folder = connectionFolders.find((item) => item.id === folderId)
+    if (!folder) {
+      return
+    }
+    setFolderEditorMode('rename')
+    setEditingFolderId(folderId)
+    setFolderNameDraft(folder.name)
+    setFolderEditorOpen(true)
+  }
+
+  const saveFolder = (): void => {
+    const nextName = folderNameDraft.trim()
+    if (!nextName) {
+      messageApi.warning('请输入分组名称')
+      return
+    }
+    if (folderNameExists(nextName, editingFolderId)) {
+      messageApi.warning('分组名称已存在')
+      return
+    }
+
+    if (folderEditorMode === 'rename' && editingFolderId) {
+      setConnectionFolders((current) => current.map((folder) => (
+        folder.id === editingFolderId ? { ...folder, name: nextName } : folder
+      )))
+    } else {
+      const folderId = globalThis.crypto?.randomUUID?.() ?? `folder-${Date.now()}`
+      setConnectionFolders((current) => [{ id: folderId, name: nextName }, ...current])
+      setConnectionFolderOrder((current) => [folderId, ...current.filter((id) => id !== folderId)])
+      setExpandedKeys((current) => current.includes(`folder:${folderId}`) ? current : [...current, `folder:${folderId}`])
+      setSelectedTreeKeys([`folder:${folderId}`])
+    }
+
+    setFolderEditorOpen(false)
+    setEditingFolderId(undefined)
+    setFolderNameDraft('')
+  }
+
+  const deleteFolder = (folderId: string): void => {
+    const folder = connectionFolders.find((item) => item.id === folderId)
+    if (!folder) {
+      return
+    }
+
+    Modal.confirm({
+      title: `删除分组“${folder.name}”`,
+      content: '删除后，里面的连接会自动移回根目录，不会删除连接本身。是否继续？',
+      okText: '删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      centered: true,
+      onOk: () => {
+        setConnectionFolders((current) => current.filter((item) => item.id !== folderId))
+        setConnectionFolderOrder((current) => current.filter((id) => id !== folderId))
+        setFolderConnectionOrder((current) => {
+          const { [folderId]: _removed, ...rest } = current
+          return rest
+        })
+        setConnectionFolderAssignments((current) => Object.fromEntries(
+          Object.entries(current).filter(([, value]) => value !== folderId)
+        ))
+        setExpandedKeys((current) => current.filter((key) => key !== `folder:${folderId}`))
+        setSelectedTreeKeys((current) => current.filter((key) => key !== `folder:${folderId}`))
+        setFocusedTreeNode((current) => current?.kind === 'folder' && current.folderId === folderId ? undefined : current)
+      }
+    })
+  }
+
+  const moveConnectionsToFolder = (connectionIds: string[], folderId?: string): void => {
+    if (connectionIds.length === 0) {
+      return
+    }
+
+    setConnectionFolderAssignments((current) => {
+      const next = { ...current }
+      for (const connectionId of connectionIds) {
+        if (folderId) {
+          next[connectionId] = folderId
+        } else {
+          delete next[connectionId]
+        }
+      }
+      return next
+    })
+
+    setRootConnectionOrder((current) => {
+      if (folderId) {
+        return current.filter((id) => !connectionIds.includes(id))
+      }
+      const remaining = current.filter((id) => !connectionIds.includes(id))
+      return [...remaining, ...connectionIds]
+    })
+
+    setRootItemOrder((current) => {
+      const connectionItemIds = connectionIds.map(rootConnectionOrderId)
+      if (folderId) {
+        return current.filter((id) => !connectionItemIds.includes(id))
+      }
+      const remaining = current.filter((id) => !connectionItemIds.includes(id))
+      return [...remaining, ...connectionItemIds]
+    })
+
+    setFolderConnectionOrder((current) => {
+      const next: Record<string, string[]> = Object.fromEntries(
+        Object.entries(current).map(([currentFolderId, ids]) => [currentFolderId, ids.filter((id) => !connectionIds.includes(id))])
+      )
+
+      if (folderId) {
+        next[folderId] = [...(next[folderId] ?? []), ...connectionIds.filter((id) => !(next[folderId] ?? []).includes(id))]
+      }
+
+      return next
+    })
+  }
+
+  const reorderFolderNodes = (movingFolderId: string, targetFolderId: string, placeAfter: boolean): void => {
+    setConnectionFolderOrder((current) => {
+      const ordered = mergeOrderedIds(connectionFolders.map((folder) => folder.id), current)
+      return insertIdsAroundTarget(ordered, [movingFolderId], targetFolderId, placeAfter)
+    })
+    setRootItemOrder((current) => {
+      const available = [
+        ...connectionFolders.map((folder) => rootFolderOrderId(folder.id)),
+        ...connections
+          .filter((connection) => !connectionFolderAssignments[connection.connection_id])
+          .map((connection) => rootConnectionOrderId(connection.connection_id))
+      ]
+      return insertIdsAroundTarget(mergeOrderedIds(available, current), [rootFolderOrderId(movingFolderId)], rootFolderOrderId(targetFolderId), placeAfter)
+    })
+  }
+
+  const reorderRootFolderAroundConnection = (movingFolderId: string, targetConnectionId: string, placeAfter: boolean): void => {
+    if (connectionFolderAssignments[targetConnectionId]) {
+      return
+    }
+
+    setRootItemOrder((current) => {
+      const available = [
+        ...connectionFolders.map((folder) => rootFolderOrderId(folder.id)),
+        ...connections
+          .filter((connection) => !connectionFolderAssignments[connection.connection_id])
+          .map((connection) => rootConnectionOrderId(connection.connection_id))
+      ]
+      return insertIdsAroundTarget(mergeOrderedIds(available, current), [rootFolderOrderId(movingFolderId)], rootConnectionOrderId(targetConnectionId), placeAfter)
+    })
+  }
+
+  const reorderRootConnections = (movingConnectionIds: string[], targetConnectionId: string, placeAfter: boolean): void => {
+    setRootConnectionOrder((current) => {
+      const rootIds = connections
+        .filter((connection) => !connectionFolderAssignments[connection.connection_id])
+        .map((connection) => connection.connection_id)
+      const ordered = mergeOrderedIds(rootIds, current)
+      return insertIdsAroundTarget(ordered, movingConnectionIds, targetConnectionId, placeAfter)
+    })
+    setRootItemOrder((current) => {
+      const available = [
+        ...connectionFolders.map((folder) => rootFolderOrderId(folder.id)),
+        ...connections
+          .filter((connection) => !connectionFolderAssignments[connection.connection_id] || movingConnectionIds.includes(connection.connection_id))
+          .map((connection) => rootConnectionOrderId(connection.connection_id))
+      ]
+      return insertIdsAroundTarget(mergeOrderedIds(available, current), movingConnectionIds.map(rootConnectionOrderId), rootConnectionOrderId(targetConnectionId), placeAfter)
+    })
+  }
+
+  const reorderRootConnectionsAroundFolder = (movingConnectionIds: string[], targetFolderId: string, placeAfter: boolean): void => {
+    const movableConnectionIds = movingConnectionIds.filter((connectionId) => !connectionFolderAssignments[connectionId])
+    if (movableConnectionIds.length === 0) {
+      return
+    }
+    setRootItemOrder((current) => {
+      const available = [
+        ...connectionFolders.map((folder) => rootFolderOrderId(folder.id)),
+        ...connections
+          .filter((connection) => !connectionFolderAssignments[connection.connection_id])
+          .map((connection) => rootConnectionOrderId(connection.connection_id))
+      ]
+      return insertIdsAroundTarget(mergeOrderedIds(available, current), movableConnectionIds.map(rootConnectionOrderId), rootFolderOrderId(targetFolderId), placeAfter)
+    })
+  }
+
+  const reorderFolderConnections = (folderId: string, movingConnectionIds: string[], targetConnectionId: string, placeAfter: boolean): void => {
+    const movableConnectionIds = movingConnectionIds.filter((connectionId) => connectionFolderAssignments[connectionId] === folderId)
+    if (movableConnectionIds.length === 0) {
+      return
+    }
+    setFolderConnectionOrder((current) => {
+      const folderIds = Array.from(new Set([
+        ...(current[folderId] ?? []),
+        ...connections
+          .filter((connection) => connectionFolderAssignments[connection.connection_id] === folderId)
+          .map((connection) => connection.connection_id)
+      ])).filter((connectionId) => connections.some((connection) => connection.connection_id === connectionId))
+      const ordered = mergeOrderedIds(folderIds, current[folderId] ?? [])
+      return {
+        ...current,
+        [folderId]: insertIdsAroundTarget(ordered, movableConnectionIds, targetConnectionId, placeAfter)
+      }
+    })
+  }
+
+  const getVisibleFolderConnectionOrder = (folderId: string, movingConnectionIds: string[]): string[] => {
+    const movingSet = new Set(movingConnectionIds)
+    const treeElement = resourceTreeViewportRef.current
+    if (!treeElement) {
+      return []
+    }
+
+    return Array.from(treeElement.querySelectorAll<HTMLElement>('.connection-tree-title[data-connection-id]'))
+      .map((titleElement) => {
+        const connectionId = titleElement.dataset.connectionId
+        const rect = titleElement.getBoundingClientRect()
+        return connectionId
+          && connectionFolderAssignments[connectionId] === folderId
+          && !movingSet.has(connectionId)
+          && rect.height > 0
+          && rect.width > 0
+          ? { connectionId, titleElement, rect }
+          : undefined
+      })
+      .filter((item): item is { connectionId: string; titleElement: HTMLElement; rect: DOMRect } => Boolean(item))
+      .sort((left, right) => left.rect.top - right.rect.top)
+      .map((item) => item.connectionId)
+  }
+
+  const reorderFolderConnectionsByPointer = (folderId: string, movingConnectionIds: string[], clientY: number): boolean => {
+    const visibleOrderedIds = getVisibleFolderConnectionOrder(folderId, movingConnectionIds)
+    if (visibleOrderedIds.length === 0) {
+      return false
+    }
+
+    const movingSet = new Set(movingConnectionIds)
+    const currentOrder = folderConnectionOrder[folderId] ?? []
+    const allFolderIds = mergeOrderedIds(
+      connections
+        .filter((connection) => connectionFolderAssignments[connection.connection_id] === folderId)
+        .map((connection) => connection.connection_id),
+      currentOrder
+    )
+    const stationaryIds = allFolderIds.filter((connectionId) => !movingSet.has(connectionId))
+    const visibleIndexById = new Map(visibleOrderedIds.map((connectionId, index) => [connectionId, index]))
+    const stationaryVisibleIds = stationaryIds.filter((connectionId) => visibleIndexById.has(connectionId))
+    if (stationaryVisibleIds.length === 0) {
+      return false
+    }
+
+    const treeElement = resourceTreeViewportRef.current
+    if (!treeElement) {
+      return false
+    }
+
+    const rowElements = Array.from(treeElement.querySelectorAll<HTMLElement>('.connection-tree-title[data-connection-id]'))
+      .filter((element) => {
+        const connectionId = element.dataset.connectionId
+        return connectionId ? stationaryVisibleIds.includes(connectionId) : false
+      })
+      .sort((left, right) => left.getBoundingClientRect().top - right.getBoundingClientRect().top)
+
+    const insertVisibleIndex = rowElements.findIndex((element) => clientY < element.getBoundingClientRect().top + element.getBoundingClientRect().height / 2)
+    const targetVisibleIndex = insertVisibleIndex >= 0 ? insertVisibleIndex : stationaryVisibleIds.length
+    const beforeIds = stationaryVisibleIds.slice(0, targetVisibleIndex)
+    const afterIds = stationaryVisibleIds.slice(targetVisibleIndex)
+    const hiddenIds = stationaryIds.filter((connectionId) => !visibleIndexById.has(connectionId))
+    const nextOrder = [...beforeIds, ...movingConnectionIds, ...afterIds, ...hiddenIds]
+
+    if (stringArrayEquals(currentOrder, nextOrder)) {
+      return false
+    }
+
+    setFolderConnectionOrder((current) => (
+      stringArrayEquals(current[folderId] ?? [], nextOrder)
+        ? current
+        : {
+            ...current,
+            [folderId]: nextOrder
+          }
+    ))
+    return true
+  }
+
+  const getVisibleConnectionIds = (): string[] => {
+    const result: string[] = []
+    for (const node of treeData) {
+      if (node.kind === 'connection' && node.connectionId) {
+        result.push(node.connectionId)
+        continue
+      }
+      if (node.kind === 'folder' && node.folderId && expandedKeys.includes(node.key as React.Key)) {
+        for (const child of node.children ?? []) {
+          if (child.kind === 'connection' && child.connectionId) {
+            result.push(child.connectionId)
+          }
+        }
+      }
+    }
+    return result
+  }
+
+  const selectConnectionNodes = (connectionIds: string[], anchorId?: string): void => {
+    const nextConnectionIds = Array.from(new Set(connectionIds))
+    setSelectedConnectionIds(nextConnectionIds)
+    setSelectedTreeKeys(nextConnectionIds.map((connectionId) => `connection:${connectionId}`))
+    setConnectionSelectionAnchorId(anchorId ?? nextConnectionIds.at(-1))
+  }
+
+  const handleTreeSelection = (node: DatabaseTreeNode, nativeEvent?: MouseEvent): void => {
+    startTransition(() => {
+      setFocusedTreeNode(node)
+      if (node.connectionId) {
+        setSelectedConnectionId(node.connectionId)
+      }
+    })
+
+    if (node.kind !== 'connection' || !node.connectionId) {
+      setSelectedConnectionIds([])
+      setSelectedTreeKeys([node.key as React.Key])
+      return
+    }
+
+    const event = nativeEvent
+    if (event?.shiftKey && connectionSelectionAnchorId) {
+      const visibleConnectionIds = getVisibleConnectionIds()
+      const anchorIndex = visibleConnectionIds.indexOf(connectionSelectionAnchorId)
+      const currentIndex = visibleConnectionIds.indexOf(node.connectionId)
+      if (anchorIndex >= 0 && currentIndex >= 0) {
+        const [startIndex, endIndex] = anchorIndex <= currentIndex ? [anchorIndex, currentIndex] : [currentIndex, anchorIndex]
+        selectConnectionNodes(visibleConnectionIds.slice(startIndex, endIndex + 1), connectionSelectionAnchorId)
+        return
+      }
+    }
+
+    if (event?.ctrlKey || event?.metaKey) {
+      const nextConnectionIds = selectedConnectionIds.includes(node.connectionId)
+        ? selectedConnectionIds.filter((connectionId) => connectionId !== node.connectionId)
+        : [...selectedConnectionIds, node.connectionId]
+      selectConnectionNodes(nextConnectionIds.length > 0 ? nextConnectionIds : [node.connectionId], node.connectionId)
+      return
+    }
+
+    selectConnectionNodes([node.connectionId], node.connectionId)
+  }
+
+  const getTreeNodeKindFromKey = (node: Partial<DatabaseTreeNode>): TreeNodeKind | undefined => {
+    const key = String(node.key ?? '')
+    if (node.kind) {
+      return node.kind
+    }
+    if (key.startsWith('folder:')) {
+      return 'folder'
+    }
+    if (key.startsWith(FOLDER_DROP_PLACEHOLDER_KEY_PREFIX)) {
+      return 'folder-drop-placeholder'
+    }
+    if (key.startsWith('connection:')) {
+      return 'connection'
+    }
+    return undefined
+  }
+
+  const getRelativeDropPosition = (node: DatabaseTreeNode, dropPosition: number): number => {
+    const pos = (node as DatabaseTreeNode & { pos?: string }).pos
+    const index = Number(pos?.split('-').at(-1))
+    return Number.isFinite(index) ? dropPosition - index : Math.sign(dropPosition)
+  }
+
+  const allowTreeDrop = (): boolean => true
+
+  const updateDragOverFolderTarget = (target?: { folderId: string; zone: 'before' | 'after' }): void => {
+    dragOverFolderTargetRef.current = target
+    setDragOverFolderTarget((current) => (
+      current?.folderId === target?.folderId && current?.zone === target?.zone ? current : target
+    ))
+  }
+
+  const updateDragOverConnectionTarget = (target?: { connectionId: string; folderId?: string; zone: 'before' | 'after' }): void => {
+    dragOverConnectionTargetRef.current = target
+    setDragOverConnectionTarget((current) => (
+      current?.connectionId === target?.connectionId
+      && current?.folderId === target?.folderId
+      && current?.zone === target?.zone
+        ? current
+        : target
+    ))
+  }
+
+  const clearConnectionDragState = (): void => {
+    draggingConnectionIdsRef.current = []
+    draggingConnectionFolderIdRef.current = undefined
+    updateDragOverConnectionTarget(undefined)
+  }
+
+  const handleTreeDrop = (info: {
+    node: unknown
+    dragNode: unknown
+    dropToGap?: boolean
+    dropPosition?: number
+    event?: React.MouseEvent<HTMLElement>
+  }): void => {
+    const targetNode = info.node as DatabaseTreeNode
+    const draggedNode = info.dragNode as DatabaseTreeNode
+    const dropPosition = info.dropPosition ?? 0
+    const relativeDropPosition = getRelativeDropPosition(targetNode, dropPosition)
+    const placeAfter = relativeDropPosition > 0
+
+    const targetFolderId = targetNode.folderId ?? (String(targetNode.key).startsWith('folder:') ? String(targetNode.key).slice('folder:'.length) : undefined)
+    const targetConnectionId = targetNode.connectionId ?? (String(targetNode.key).startsWith('connection:') ? String(targetNode.key).slice('connection:'.length) : undefined)
+    const draggedFolderId = draggedNode.folderId ?? (String(draggedNode.key).startsWith('folder:') ? String(draggedNode.key).slice('folder:'.length) : undefined)
+    const draggedConnectionId = draggedNode.connectionId ?? (String(draggedNode.key).startsWith('connection:') ? String(draggedNode.key).slice('connection:'.length) : undefined)
+    const targetNodeKind = getTreeNodeKindFromKey(targetNode)
+    const folderDragTarget = dragOverFolderTargetRef.current
+    const dropConnectionElement = info.event?.target instanceof HTMLElement
+      ? info.event.target.closest<HTMLElement>('[data-connection-id]')
+      : undefined
+    const dropConnectionId = dropConnectionElement?.dataset.connectionId
+    const dropConnectionTarget = dropConnectionId
+      ? {
+          connectionId: dropConnectionId,
+          folderId: connectionFolderAssignments[dropConnectionId],
+          zone: (() => {
+            const rect = dropConnectionElement.getBoundingClientRect()
+            return info.event && info.event.clientY - rect.top >= rect.height / 2 ? 'after' as const : 'before' as const
+          })()
+        }
+      : undefined
+    const connectionDragTarget = dropConnectionTarget ?? dragOverConnectionTargetRef.current
+    updateDragOverFolderTarget(undefined)
+    updateDragOverConnectionTarget(undefined)
+
+    if ((draggedNode.kind === 'folder' || draggedFolderId) && draggedFolderId) {
+      if (connectionDragTarget) {
+        reorderRootFolderAroundConnection(draggedFolderId, connectionDragTarget.connectionId, connectionDragTarget.zone === 'after')
+        return
+      }
+      if (targetConnectionId) {
+        reorderRootFolderAroundConnection(draggedFolderId, targetConnectionId, placeAfter)
+        return
+      }
+      if (folderDragTarget && draggedFolderId !== folderDragTarget.folderId) {
+        reorderFolderNodes(draggedFolderId, folderDragTarget.folderId, folderDragTarget.zone === 'after')
+        return
+      }
+      if ((targetNodeKind === 'folder' || targetFolderId) && targetFolderId && draggedFolderId !== targetFolderId && relativeDropPosition !== 0) {
+        reorderFolderNodes(draggedFolderId, targetFolderId, placeAfter)
+      }
+      return
+    }
+
+    if ((draggedNode.kind !== 'connection' && !draggedConnectionId) || !draggedConnectionId) {
+      return
+    }
+
+    const movingConnectionIds = selectedConnectionIds.includes(draggedConnectionId)
+      ? selectedConnectionIds
+      : [draggedConnectionId]
+
+    const draggedConnectionFolderId = connectionFolderAssignments[draggedConnectionId]
+    if (connectionDragTarget && !movingConnectionIds.includes(connectionDragTarget.connectionId)) {
+      const targetConnectionFolderId = connectionDragTarget.folderId ?? connectionFolderAssignments[connectionDragTarget.connectionId]
+      if (targetConnectionFolderId) {
+        if (draggedConnectionFolderId === targetConnectionFolderId) {
+          reorderFolderConnections(targetConnectionFolderId, movingConnectionIds, connectionDragTarget.connectionId, connectionDragTarget.zone === 'after')
+        }
+      } else if (!draggedConnectionFolderId) {
+        reorderRootConnections(movingConnectionIds, connectionDragTarget.connectionId, connectionDragTarget.zone === 'after')
+      }
+      return
+    }
+
+    if (targetNodeKind === 'connection' || targetConnectionId) {
+      if (!targetConnectionId || movingConnectionIds.includes(targetConnectionId)) {
+        return
+      }
+      const targetConnectionFolderId = targetNode.folderId ?? connectionFolderAssignments[targetConnectionId]
+      if (targetConnectionFolderId) {
+        if (draggedConnectionFolderId === targetConnectionFolderId) {
+          reorderFolderConnections(targetConnectionFolderId, movingConnectionIds, targetConnectionId, placeAfter)
+        }
+      } else {
+        if (!draggedConnectionFolderId) {
+          reorderRootConnections(movingConnectionIds, targetConnectionId, placeAfter)
+        }
+      }
+      return
+    }
+
+    if (draggedConnectionFolderId && info.event) {
+      if (reorderFolderConnectionsByPointer(draggedConnectionFolderId, movingConnectionIds, info.event.clientY)) {
+        return
+      }
+    }
+
+    if (folderDragTarget && !targetConnectionId) {
+      reorderRootConnectionsAroundFolder(movingConnectionIds, folderDragTarget.folderId, folderDragTarget.zone === 'after')
+      return
+    }
+
+    if (info.dropToGap) {
+      if ((targetNodeKind === 'folder' || targetFolderId) && targetFolderId && relativeDropPosition !== 0) {
+        reorderRootConnectionsAroundFolder(movingConnectionIds, targetFolderId, placeAfter)
+        return
+      }
+    }
   }
 
   const updateWorkspaceTab = (key: string, patch: Partial<WorkspaceTab>): void => {
@@ -1386,14 +2298,26 @@ function App(): React.JSX.Element {
       return
     }
 
+    const handleMouseDown = (event: MouseEvent): void => {
+      const target = event.target as HTMLElement | null
+      if (target?.closest('.tree-context-menu-panel') || target?.closest('.ant-menu-submenu-popup')) {
+        return
+      }
+      setTreeContextMenu(null)
+    }
+
     const handleEscape = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
         setTreeContextMenu(null)
       }
     }
 
+    window.addEventListener('mousedown', handleMouseDown)
     window.addEventListener('keydown', handleEscape)
-    return () => window.removeEventListener('keydown', handleEscape)
+    return () => {
+      window.removeEventListener('mousedown', handleMouseDown)
+      window.removeEventListener('keydown', handleEscape)
+    }
   }, [treeContextMenu])
 
   const closeWorkspaceTab = (key: string): void => {
@@ -1439,8 +2363,8 @@ function App(): React.JSX.Element {
 
         if (node.kind === 'table' && node.tableName && node.connectionId) {
           const connection = connectionMap.get(node.connectionId)
-          const databaseName = connection?.database_type === 'postgresql' ? node.pgDatabaseName : node.databaseName
-          const schemaName = connection?.database_type === 'postgresql' ? node.databaseName : undefined
+          const databaseName = isSchemaScopedType(connection?.database_type) ? node.pgDatabaseName : node.databaseName
+          const schemaName = isSchemaScopedType(connection?.database_type) ? node.databaseName : undefined
           const scope = ensureScope(getScopeKey(node.connectionId, node.databaseName, node.pgDatabaseName))
           const tableColumns = ((node.children as DatabaseTreeNode[] | undefined) ?? [])
             .filter((child) => child.kind === 'column' && child.columnName)
@@ -1530,7 +2454,7 @@ function App(): React.JSX.Element {
       return `GET ${tableName}`
     }
 
-    if (connection?.database_type === 'postgresql') {
+    if (isSchemaScopedType(connection?.database_type)) {
       const quotedTable = `"${tableName.replaceAll('"', '""')}"`
       return databaseName ? `"${databaseName.replaceAll('"', '""')}".${quotedTable}` : quotedTable
     }
@@ -1567,7 +2491,7 @@ function App(): React.JSX.Element {
       dbType: connection.database_type,
       database: node.kind === 'pg-schema' ? node.pgDatabaseName : node.databaseName,
       schema: node.kind === 'pg-schema' ? node.databaseName : undefined,
-      pgDatabase: node.kind === 'pg-schema' ? node.pgDatabaseName : connection.database_type === 'postgresql' ? node.databaseName : undefined,
+      pgDatabase: node.kind === 'pg-schema' ? node.pgDatabaseName : isSchemaScopedType(connection.database_type) ? node.databaseName : undefined,
       sizeDisplay: node.sizeDisplay,
       sizeBytes: node.sizeBytes,
       storageSizeDisplay: node.storageSizeDisplay,
@@ -1599,9 +2523,6 @@ function App(): React.JSX.Element {
     setAiContextSources((current) => current.filter((source) => source.id !== sourceId))
   }
 
-  const isDatabaseScopedType = (databaseType?: DatabaseType): databaseType is 'mysql' | 'mongodb' | 'redis' | 'clickhouse' =>
-    databaseType === 'mysql' || databaseType === 'mongodb' || databaseType === 'redis' || databaseType === 'clickhouse'
-
   const activateAIContextFromNode = (node: DatabaseTreeNode): void => {
     if (!node.connectionId) {
       return
@@ -1616,7 +2537,7 @@ function App(): React.JSX.Element {
       setAiActiveContext({
         connectionId: node.connectionId,
         databaseName: isDatabaseScopedType(connection.database_type) ? getDefaultDatabaseName(connection) : undefined,
-        pgDatabaseName: connection.database_type === 'postgresql' ? getDefaultPgDatabase(connection) : undefined
+        pgDatabaseName: isSchemaScopedType(connection.database_type) ? getDefaultPgDatabase(connection) : undefined
       })
       return
     }
@@ -1626,8 +2547,8 @@ function App(): React.JSX.Element {
       const schemas = selectedSchemas[schemaKey] ?? allSchemas[schemaKey] ?? []
       setAiActiveContext({
         connectionId: node.connectionId,
-        databaseName: connection.database_type === 'postgresql' ? getDefaultPgSchema(schemas) : node.databaseName,
-        pgDatabaseName: connection.database_type === 'postgresql' ? node.databaseName : undefined
+        databaseName: isSchemaScopedType(connection.database_type) ? getDefaultPgSchema(schemas) : node.databaseName,
+        pgDatabaseName: isSchemaScopedType(connection.database_type) ? node.databaseName : undefined
       })
       return
     }
@@ -1823,6 +2744,10 @@ function App(): React.JSX.Element {
   }
 
   const handleConnectionContextMenuClick = (key: string, connection: ConnectionInfo): void => {
+    const targetConnectionIds = selectedConnectionIds.includes(connection.connection_id)
+      ? selectedConnectionIds
+      : [connection.connection_id]
+
     if (key === 'open') {
       void openConnectionById(connection.connection_id)
     }
@@ -1842,6 +2767,16 @@ function App(): React.JSX.Element {
     if (key === 'run-sql') {
       void openSqlFileDialog(connection.connection_id)
     }
+    if (key === 'move-root') {
+      moveConnectionsToFolder(targetConnectionIds, undefined)
+    }
+    if (key.startsWith('move-folder:')) {
+      const folderId = key.slice('move-folder:'.length)
+      if (connectionFolders.some((folder) => folder.id === folderId)) {
+        moveConnectionsToFolder(targetConnectionIds, folderId)
+        setExpandedKeys((current) => current.includes(`folder:${folderId}`) ? current : [...current, `folder:${folderId}`])
+      }
+    }
   }
 
   const getDatabaseContextMenu = (node: DatabaseTreeNode): MenuProps['items'] => {
@@ -1850,7 +2785,7 @@ function App(): React.JSX.Element {
     }
 
     const connection = getConnection(node.connectionId)
-    const isPgDb = node.kind === 'database' && connection?.database_type === 'postgresql'
+    const isPgDb = node.kind === 'database' && isSchemaScopedType(connection?.database_type)
 
     return [
       { key: 'refresh', label: '刷新', icon: <ReloadOutlined /> },
@@ -1869,7 +2804,7 @@ function App(): React.JSX.Element {
       ...(connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis'
         ? [{ key: 'import', label: '导入', icon: <PlayCircleOutlined /> }]
         : []),
-      ...(!isPgDb && (connection?.database_type === 'mysql' || connection?.database_type === 'postgresql')
+      ...(!isPgDb && (connection?.database_type === 'mysql' || connection?.database_type === 'postgresql' || connection?.database_type === 'gaussdb')
         ? [{ type: 'divider' as const }, { key: 'delete', label: '删除', danger: true, icon: <DeleteOutlined /> }]
         : [])
     ]
@@ -1884,7 +2819,7 @@ function App(): React.JSX.Element {
     const databaseName = node.databaseName
     const pgDbName = node.pgDatabaseName
     const connection = getConnection(connectionId)
-    const isPgDb = node.kind === 'database' && connection?.database_type === 'postgresql'
+    const isPgDb = node.kind === 'database' && isSchemaScopedType(connection?.database_type)
 
     if (key === 'refresh') {
       refreshDatabaseNode(connectionId, databaseName)
@@ -1907,7 +2842,7 @@ function App(): React.JSX.Element {
             {
               key: 'col-0',
               name: 'id',
-              type: connection?.database_type === 'postgresql' ? 'INTEGER' : connection?.database_type === 'clickhouse' ? 'UInt64' : 'INT',
+              type: isSchemaScopedType(connection?.database_type) ? 'INTEGER' : connection?.database_type === 'clickhouse' ? 'UInt64' : 'INT',
               nullable: false,
               primaryKey: connection?.database_type !== 'clickhouse',
               comment: '',
@@ -2011,6 +2946,13 @@ function App(): React.JSX.Element {
 
   const getConnectionContextMenu = (connection: ConnectionInfo): MenuProps['items'] => {
     const loading = Boolean(connectionTreeLoading[connection.connection_id])
+    const currentFolderId = connectionFolderAssignments[connection.connection_id]
+    const folderMenuItems = connectionFolders.map((folder) => ({
+      key: `move-folder:${folder.id}`,
+      label: folder.name,
+      disabled: currentFolderId === folder.id
+    }))
+
     return [
       ...(connection.is_open
         ? [{ key: 'close', label: '关闭连接', icon: <CloseCircleOutlined />, disabled: loading }]
@@ -2022,6 +2964,19 @@ function App(): React.JSX.Element {
       }]),
       ...(connection.database_type !== 'mongodb' && connection.database_type !== 'redis'
         ? [{ key: 'run-sql', label: '运行 SQL 文件', icon: <PlayCircleOutlined /> }]
+        : []),
+      ...(connectionFolders.length > 0
+        ? [{
+            type: 'divider' as const
+          }, {
+            key: 'move-folder',
+            label: '添加到分组',
+            icon: <FolderAddOutlined />,
+            children: folderMenuItems
+          }]
+        : []),
+      ...(currentFolderId
+        ? [{ type: 'divider' as const }, { key: 'move-root', label: '移出分组', icon: <FolderOpenOutlined /> }]
         : [])
     ]
   }
@@ -2034,7 +2989,21 @@ function App(): React.JSX.Element {
     return [{ key: 'catalog', label: '查看列表' }]
   }
 
+  const getFolderContextMenu = (node: DatabaseTreeNode): MenuProps['items'] => {
+    if (node.kind !== 'folder' || !node.folderId) {
+      return []
+    }
+
+    return [
+      { key: 'rename-folder', label: '重命名分组', icon: <EditOutlined /> },
+      { key: 'delete-folder', label: '删除分组', icon: <DeleteOutlined />, danger: true }
+    ]
+  }
+
   const getTreeContextMenuItems = (node: DatabaseTreeNode): MenuProps['items'] => {
+    if (node.kind === 'folder') {
+      return getFolderContextMenu(node)
+    }
     if (node.kind === 'connection' && node.connectionId) {
       const connection = getConnection(node.connectionId)
       return connection ? getConnectionContextMenu(connection) : []
@@ -2057,7 +3026,14 @@ function App(): React.JSX.Element {
     }
 
     const node = treeContextMenu.node
-    if (node.kind === 'connection' && node.connectionId) {
+    if (node.kind === 'folder' && node.folderId) {
+      if (key === 'rename-folder') {
+        openRenameFolderModal(node.folderId)
+      }
+      if (key === 'delete-folder') {
+        deleteFolder(node.folderId)
+      }
+    } else if (node.kind === 'connection' && node.connectionId) {
       const connection = getConnection(node.connectionId)
       if (connection) {
         handleConnectionContextMenuClick(key, connection)
@@ -2074,15 +3050,55 @@ function App(): React.JSX.Element {
   }
 
   const renderTreeTitle = (node: DatabaseTreeNode): React.ReactNode => {
+    if (node.kind === 'folder' && node.folderId) {
+      const folderChildren = (node.children as DatabaseTreeNode[] | undefined) ?? []
+      const connectionCount = folderChildren.filter((child) => child.kind === 'connection').length
+      const folderDropZone = dragOverFolderTarget?.folderId === node.folderId ? dragOverFolderTarget.zone : undefined
+      return (
+        <Flex
+          align="center"
+          justify="space-between"
+          className={`tree-title-row folder-title-row${folderDropZone ? ` folder-drop-${folderDropZone}` : ''}`}
+          data-folder-id={node.folderId}
+          onDragOver={(event) => {
+            const rect = event.currentTarget.getBoundingClientRect()
+            const offsetY = event.clientY - rect.top
+            updateDragOverFolderTarget({
+              folderId: node.folderId!,
+              zone: offsetY >= rect.height / 2 ? 'after' : 'before'
+            })
+          }}
+          onDragLeave={(event) => {
+            const relatedTarget = event.relatedTarget
+            if (!(relatedTarget instanceof Node) || !event.currentTarget.contains(relatedTarget)) {
+              updateDragOverFolderTarget(undefined)
+            }
+          }}
+        >
+          <span className="table-tree-title">{node.title as React.ReactNode}</span>
+          <Tag className="folder-count-tag">{connectionCount}</Tag>
+        </Flex>
+      )
+    }
+
+    if (node.kind === 'folder-drop-placeholder') {
+      return <span className="folder-drop-placeholder-title" />
+    }
+
     if (node.kind === 'connection' && node.connectionId) {
       const connection = getConnection(node.connectionId)
       return connection ? renderConnectionTitle(connection) : (node.title as React.ReactNode)
     }
 
+    if (node.kind === 'column') {
+      const title = String(node.title ?? '')
+      return <span className="table-tree-title" title={title}>{title}</span>
+    }
+
     if ((node.kind === 'database' || node.kind === 'pg-schema') && node.connectionId && node.databaseName) {
       const connectionId = node.connectionId
       const databaseName = node.databaseName
-      const isPgDb = node.kind === 'database' && getConnection(connectionId)?.database_type === 'postgresql'
+      const isPgDb = node.kind === 'database' && isSchemaScopedType(getConnection(connectionId)?.database_type)
       const selKey = `${connectionId}:${databaseName}`
       const schemas = allSchemas[selKey] ?? []
       const selectedSchemaList = selectedSchemas[selKey] ?? schemas
@@ -2095,7 +3111,7 @@ function App(): React.JSX.Element {
           <div className="tree-title-with-size">
             <span className="table-tree-title">{node.title as React.ReactNode}</span>
             <span className="tree-node-actions">
-              {focusedTreeNode?.key === node.key && renderAIContextButton(node)}
+              {renderAIContextButton(node)}
               {node.sizeDisplay && <span className="tree-size-badge" title={`数据大小：${node.sizeDisplay}${node.storageSizeDisplay ? `，物理占用：${node.storageSizeDisplay}` : ''}`}>{node.sizeDisplay}</span>}
             </span>
           </div>
@@ -2221,7 +3237,7 @@ function App(): React.JSX.Element {
           {connection && <Tag>{connection.name}</Tag>}
           {tab.kind === 'redis-browser' && tab.databaseName && <Tag>{tab.databaseName}</Tag>}
           {tab.kind === 'table-list' && (tab.databaseName || tab.pgDatabaseName) && (
-            <Tag>{connection?.database_type === 'postgresql' ? [tab.pgDatabaseName, tab.databaseName].filter(Boolean).join('.') : (tab.databaseName || tab.pgDatabaseName)}</Tag>
+            <Tag>{isSchemaScopedType(connection?.database_type) ? [tab.pgDatabaseName, tab.databaseName].filter(Boolean).join('.') : (tab.databaseName || tab.pgDatabaseName)}</Tag>
           )}
           {tab.tableName && tab.kind !== 'redis-browser' && <Tag>{tab.tableName}</Tag>}
           <Typography.Text type="secondary">{rowText}</Typography.Text>
@@ -3045,7 +4061,7 @@ function App(): React.JSX.Element {
       const connection = getConnection(tab.connectionId)
       const isMysql = connection?.database_type === 'mysql'
       const isDm = connection?.database_type === 'dm'
-      const isPg = connection?.database_type === 'postgresql'
+      const isPg = isSchemaScopedType(connection?.database_type)
       const isMongo = connection?.database_type === 'mongodb'
       const isRedis = connection?.database_type === 'redis'
       const isClickHouse = connection?.database_type === 'clickhouse'
@@ -3064,7 +4080,7 @@ function App(): React.JSX.Element {
                 const nextConn = getConnection(connectionId)
                 void ensureDatabasesLoaded(connectionId)
                 const nextDb = isDatabaseScopedType(nextConn?.database_type) ? getDefaultDatabaseName(nextConn) : undefined
-                const nextPgDb = nextConn?.database_type === 'postgresql' ? getDefaultPgDatabase(nextConn!) : undefined
+                const nextPgDb = isSchemaScopedType(nextConn?.database_type) ? getDefaultPgDatabase(nextConn!) : undefined
                 updateWorkspaceTab(tab.key, {
                   connectionId,
                   databaseName: nextDb,
@@ -3199,17 +4215,20 @@ function App(): React.JSX.Element {
   const loadConnections = async (): Promise<void> => {
     const data = await requestJson<{ connections: ConnectionInfo[] }>('/connections')
     setConnections(data.connections)
+    setConnectionsInitialized(true)
     setSelectedConnectionId((current) => current ?? data.connections[0]?.connection_id)
+    setSelectedConnectionIds((current) => current.length > 0 ? current : (data.connections[0]?.connection_id ? [data.connections[0].connection_id] : []))
+    setSelectedTreeKeys((current) => current.length > 0 ? current : (data.connections[0]?.connection_id ? [`connection:${data.connections[0].connection_id}`] : []))
 
     for (const connection of data.connections) {
-      if (connection.is_open && (connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm' || connection.database_type === 'mongodb' || connection.database_type === 'redis' || connection.database_type === 'clickhouse')) {
+      if (connection.is_open && (connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'gaussdb' || connection.database_type === 'dm' || connection.database_type === 'mongodb' || connection.database_type === 'redis' || connection.database_type === 'clickhouse')) {
         try {
           const dbData = await requestJson<{ databases: DatabaseInfo[] }>(`/connections/${connection.connection_id}/databases`)
           const dbNames = dbData.databases.map((d) => d.name)
           setAllDatabases((current) => ({ ...current, [connection.connection_id]: dbNames }))
           setSelectedDatabases((current) => {
             if (!current[connection.connection_id]) {
-              if (connection.database_type === 'postgresql') {
+              if (isSchemaScopedType(connection.database_type)) {
                 const connDb = connection.database.split('@')[0]
                 if (dbNames.includes(connDb)) {
                   return { ...current, [connection.connection_id]: [connDb] }
@@ -3235,26 +4254,27 @@ function App(): React.JSX.Element {
     const path = withPgDatabase(`/connections/${connectionId}/objects`, databaseName, pgDatabaseName)
     const data = await requestJson<{ objects: DbObjectInfo[] }>(`${path}${databaseName || pgDatabaseName ? '&' : '?'}type=${objectType}`)
     return data.objects.map<DatabaseTreeNode>((object) => {
-      const kind = object.type === 'table' ? 'table' : 'db-object'
-      const group = DB_OBJECT_GROUP_BY_TYPE[object.type]
+      const resolvedType = DB_OBJECT_GROUP_BY_TYPE[object.type as DbObjectType] ? object.type as DbObjectType : objectType
+      const kind = resolvedType === 'table' ? 'table' : 'db-object'
+      const group = DB_OBJECT_GROUP_BY_TYPE[resolvedType]
 
       return {
-        key: `${kind}:${connectionId}:${pgDatabaseName ?? ''}:${databaseName ?? ''}:${object.type}:${object.name}`,
+        key: `${kind}:${connectionId}:${pgDatabaseName ?? ''}:${databaseName ?? ''}:${resolvedType}:${object.name}`,
         title: object.name,
-        icon: group.icon,
+        icon: plainObjectIconByType[resolvedType] ?? group.icon,
         kind,
         connectionId,
         databaseName,
         pgDatabaseName,
         tableName: object.name,
-        objectType: object.type,
+        objectType: resolvedType,
         sizeDisplay: object.size_display,
         sizeBytes: object.size_bytes,
         storageSizeDisplay: object.storage_size_display,
         storageSizeBytes: object.storage_size_bytes,
         rowCount: object.row_count,
         childrenLoaded: false,
-        isLeaf: object.type !== 'table'
+        isLeaf: resolvedType !== 'table'
       }
     })
   }
@@ -3268,7 +4288,7 @@ function App(): React.JSX.Element {
       return []
     }
 
-    if (connection.database_type === 'postgresql') {
+    if (isSchemaScopedType(connection.database_type)) {
       const data = await requestJson<{ databases: DatabaseInfo[] }>(`/connections/${connection.connection_id}/schemas?database=${encodeURIComponent(databaseName)}`)
       const selKey = `${connection.connection_id}:${databaseName}`
       const schemaNames = data.databases.map((schema) => schema.name)
@@ -3320,7 +4340,7 @@ function App(): React.JSX.Element {
     if (node.kind === 'connection' && node.connectionId) {
       const connection = getConnection(node.connectionId)
 
-      if (connection?.database_type !== 'mysql' && connection?.database_type !== 'postgresql' && connection?.database_type !== 'dm' && connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis' && connection?.database_type !== 'clickhouse') {
+      if (connection?.database_type !== 'mysql' && connection?.database_type !== 'postgresql' && connection?.database_type !== 'gaussdb' && connection?.database_type !== 'dm' && connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis' && connection?.database_type !== 'clickhouse') {
         return []
       }
 
@@ -3376,6 +4396,8 @@ function App(): React.JSX.Element {
       if (expand) {
         setExpandedKeys((current) => current.includes(node.key as React.Key) ? current : [...current, node.key as React.Key])
       }
+    } catch (err) {
+      showError(err instanceof Error ? err.message : '加载树节点失败')
     } finally {
       treeLoadingKeysRef.current.delete(node.key)
     }
@@ -3389,7 +4411,7 @@ function App(): React.JSX.Element {
       return false
     }
 
-    return node.kind === 'connection' || node.kind === 'database' || node.kind === 'pg-schema' || node.kind === 'object-group' || node.kind === 'table'
+    return node.kind === 'folder' || node.kind === 'connection' || node.kind === 'database' || node.kind === 'pg-schema' || node.kind === 'object-group' || node.kind === 'table'
   }
 
   const collapseTreeNode = (node: DatabaseTreeNode): void => {
@@ -3448,6 +4470,17 @@ function App(): React.JSX.Element {
         driver_id: undefined,
         dm_driver_id: undefined
       })
+    } else if (nextDatabaseType === 'gaussdb') {
+      await loadDrivers()
+      form.setFieldsValue({
+        database_type: 'gaussdb',
+        name: '高斯数据库',
+        host: '127.0.0.1',
+        port: 8000,
+        username: 'gaussdb',
+        database: 'postgres',
+        driver_id: undefined
+      })
     } else if (nextDatabaseType === 'mongodb') {
       form.setFieldsValue({
         database_type: 'mongodb',
@@ -3495,17 +4528,21 @@ function App(): React.JSX.Element {
     try {
       const data = await requestJson<ConnectionFormValues>(`/connections/${connection.connection_id}`)
       const formValues = { ...data }
-      if (data.database_type === 'dm') {
+      if (data.database_type === 'dm' || data.database_type === 'gaussdb') {
         const loadedDrivers = await loadDrivers()
         const currentDriverId = data.driver_id ?? data.dm_driver_id
         const hasSelectedDriver = loadedDrivers.some(
-          (driver) => driver.database_type === 'dm' && driver.id === currentDriverId
+          (driver) => driver.database_type === data.database_type && driver.id === currentDriverId
         )
         formValues.driver_id = currentDriverId
-        formValues.dm_driver_id = currentDriverId
+        if (data.database_type === 'dm') {
+          formValues.dm_driver_id = currentDriverId
+        }
         if (!hasSelectedDriver) {
           formValues.driver_id = undefined
-          formValues.dm_driver_id = undefined
+          if (data.database_type === 'dm') {
+            formValues.dm_driver_id = undefined
+          }
         }
       }
       form.setFieldsValue(formValues)
@@ -3526,9 +4563,25 @@ function App(): React.JSX.Element {
       { key: 'redis', label: 'Redis', icon: <img src={redisIcon} alt="Redis" style={{ width: 16, height: 16 }} /> },
       { key: 'clickhouse', label: 'ClickHouse', icon: <img src={clickhouseIcon} alt="ClickHouse" style={{ width: 16, height: 16 }} /> },
       { type: 'divider' as const },
-      { key: 'dm', label: '达梦', icon: <img src={dmIcon} alt="" style={{ width: 16, height: 16 }} /> }
+      { key: 'dm', label: '达梦', icon: <img src={dmIcon} alt="" style={{ width: 16, height: 16 }} /> },
+      { key: 'gaussdb', label: '高斯数据库', icon: <DatabaseOutlined /> }
     ],
     onClick: ({ key }: { key: string }) => void openConnectionModal(key as DatabaseType)
+  }
+
+  const resourceCreateMenu = {
+    items: [
+      { key: 'folder', label: '新建分组', icon: <FolderAddOutlined /> },
+      { type: 'divider' as const },
+      ...connectionCreateMenu.items
+    ],
+    onClick: ({ key }: { key: string }) => {
+      if (key === 'folder') {
+        openCreateFolderModal()
+        return
+      }
+      void openConnectionModal(key as DatabaseType)
+    }
   }
 
   const cleanFormValues = (values: ConnectionFormValues): ConnectionFormValues => {
@@ -3562,6 +4615,19 @@ function App(): React.JSX.Element {
         password: values.password,
         database: values.database,
         driver_id: values.driver_id ?? values.dm_driver_id
+      }
+    }
+
+    if (values.database_type === 'gaussdb') {
+      return {
+        name: values.name,
+        database_type: 'gaussdb',
+        host: values.host,
+        port: values.port,
+        username: values.username,
+        password: values.password,
+        database: values.database,
+        driver_id: values.driver_id
       }
     }
 
@@ -3814,8 +4880,8 @@ function App(): React.JSX.Element {
     return databaseType === 'gaussdb' ? '请选择高斯 JDBC jar' : '请选择 DmJdbcDriver.jar'
   }
 
-  const dmDriverOptionDrivers = selectedDmDriver && !selectedDmDriver.enabled ? [selectedDmDriver, ...dmDrivers] : dmDrivers
-  const dmDriverOptions = dmDriverOptionDrivers.map((driver) => ({
+  const manualDriverOptionDrivers = selectedManualDriver && !selectedManualDriver.enabled ? [selectedManualDriver, ...currentEnabledDrivers] : currentEnabledDrivers
+  const manualDriverOptions = manualDriverOptionDrivers.map((driver) => ({
     label: `${driverTypeLabel(driver.driver_type)} - ${driver.name}${driver.enabled ? '' : '（已禁用）'}`,
     value: driver.id,
     disabled: !driver.enabled
@@ -3868,7 +4934,8 @@ function App(): React.JSX.Element {
       const nextConnections = [...connections, connection]
       setConnections(nextConnections)
       setSelectedConnectionId(connection.connection_id)
-      setTreeData((current) => [...current, buildConnectionNode(connection)])
+      selectConnectionNodes([connection.connection_id], connection.connection_id)
+      refreshTree(nextConnections)
       setConnectionModalOpen(false)
     } catch (err) {
       showError(err instanceof Error ? err.message : connectionMode === 'edit' ? '更新连接失败' : '保存连接失败')
@@ -3919,6 +4986,8 @@ function App(): React.JSX.Element {
     const nextConnections = connections.filter((connection) => connection.connection_id !== connectionId)
     setConnections(nextConnections)
     setSelectedConnectionId((current) => (current === connectionId ? nextConnections[0]?.connection_id : current))
+    setSelectedConnectionIds((current) => current.filter((id) => id !== connectionId))
+    setSelectedTreeKeys((current) => current.filter((key) => key !== `connection:${connectionId}`))
     setWorkspaceTabs((current) => current.filter((tab) => tab.connectionId !== connectionId))
     refreshTree(nextConnections)
   }
@@ -4058,7 +5127,7 @@ function App(): React.JSX.Element {
           const schemaChildren: DatabaseTreeNode[] = schemaNames.map((name) => ({
             key: `pg-schema:${creatingDatabaseConnectionId}:${creatingSchemaDatabaseName}:${name}`,
             title: name,
-            icon: <BranchesOutlined />,
+            icon: treeIconBadge(<ApartmentOutlined />, 'schema'),
             kind: 'pg-schema' as const,
             connectionId: creatingDatabaseConnectionId,
             databaseName: name,
@@ -4142,7 +5211,7 @@ function App(): React.JSX.Element {
     const supportsAutoIncrement = tableDesignerSupportsAutoIncrement(connection?.database_type)
     const supportsAutoIncrementStep = tableDesignerSupportsAutoIncrementStep(connection?.database_type)
     const supportsMinMax = tableDesignerSupportsMinMax(connection?.database_type)
-    const scopeLabel = connection?.database_type === 'postgresql'
+    const scopeLabel = isSchemaScopedType(connection?.database_type)
       ? (databaseName ? `${pgDatabaseName ?? '-'} / ${databaseName}` : (pgDatabaseName ?? '-'))
       : (databaseName || '默认')
     const validColumns = columns.filter((column) => column.name.trim())
@@ -4434,7 +5503,7 @@ function App(): React.JSX.Element {
               <Typography.Text strong>{connection?.name ?? '-'}</Typography.Text>
             </div>
             <div className="table-designer-meta-card">
-              <Typography.Text type="secondary">{connection?.database_type === 'postgresql' ? '数据库 / Schema' : '数据库'}</Typography.Text>
+              <Typography.Text type="secondary">{isSchemaScopedType(connection?.database_type) ? '数据库 / Schema' : '数据库'}</Typography.Text>
               <Typography.Text strong>{scopeLabel}</Typography.Text>
             </div>
             <div className="table-designer-meta-card">
@@ -4465,7 +5534,7 @@ function App(): React.JSX.Element {
 
     setCreateTableLoading(true)
     const conn = getConnection(createTableConnectionId)
-    const isPg = conn?.database_type === 'postgresql'
+    const isPg = isSchemaScopedType(conn?.database_type)
 
     try {
       await requestJson<{ name: string; message: string }>(`/connections/${createTableConnectionId}/tables`, {
@@ -4537,7 +5606,7 @@ function App(): React.JSX.Element {
     let defaultDb = databaseName ?? ''
     let defaultPgDb = pgDatabaseName ?? ''
 
-    if (connection?.database_type === 'mysql' || connection?.database_type === 'postgresql' || connection?.database_type === 'mongodb' || connection?.database_type === 'redis' || connection?.database_type === 'clickhouse') {
+    if (connection?.database_type === 'mysql' || connection?.database_type === 'postgresql' || connection?.database_type === 'gaussdb' || connection?.database_type === 'mongodb' || connection?.database_type === 'redis' || connection?.database_type === 'clickhouse') {
       try {
         const data = await requestJson<{ databases: DatabaseInfo[] }>(`/connections/${connectionId}/databases`)
         databases = data.databases
@@ -4545,7 +5614,7 @@ function App(): React.JSX.Element {
         databases = []
       }
 
-      if (!defaultDb && connection.database_type === 'postgresql') {
+      if (!defaultDb && isSchemaScopedType(connection.database_type)) {
         defaultDb = 'public'
       } else if (!defaultDb) {
         const hasDefault = !connection.database.includes(':')
@@ -4872,7 +5941,7 @@ function App(): React.JSX.Element {
     }
 
     const connection = getConnection(connectionId)
-    const scopeTitle = connection?.database_type === 'postgresql'
+    const scopeTitle = isSchemaScopedType(connection?.database_type)
       ? [pgDatabaseName, databaseName].filter(Boolean).join('.')
       : (databaseName || pgDatabaseName || connection?.database || connection?.name || '当前库')
     const tabKey = `table-list:${connectionId}:${pgDatabaseName ?? ''}:${databaseName ?? ''}:${objectType}`
@@ -4942,11 +6011,11 @@ function App(): React.JSX.Element {
       finalDb = getDefaultDatabaseName(connection)
     }
 
-    if (connection?.database_type === 'postgresql' && !finalPgDb) {
+    if (isSchemaScopedType(connection?.database_type) && !finalPgDb) {
       finalPgDb = getDefaultPgDatabase(connection)
     }
 
-    if (connection?.database_type === 'postgresql' && !finalDb && finalPgDb) {
+    if (isSchemaScopedType(connection?.database_type) && !finalDb && finalPgDb) {
       const cachedSchemas = allSchemas[`${connId}:${finalPgDb}`]
       if (cachedSchemas) {
         finalDb = getDefaultPgSchema(cachedSchemas)
@@ -4978,7 +6047,7 @@ function App(): React.JSX.Element {
         void preloadCompletionForDatabase(connId, finalDb)
       }
 
-      if (connection?.database_type === 'postgresql' && finalPgDb && !finalDb) {
+      if (isSchemaScopedType(connection?.database_type) && finalPgDb && !finalDb) {
         ensureSchemasLoaded(connId, finalPgDb).then((schemaNames) => {
           const defaultSchema = getDefaultPgSchema(schemaNames)
           if (defaultSchema) {
@@ -5078,11 +6147,11 @@ function App(): React.JSX.Element {
       return
     }
 
-    if (connection?.database_type === 'postgresql' && !tab.pgDatabaseName) {
+    if (isSchemaScopedType(connection?.database_type) && !tab.pgDatabaseName) {
       return
     }
 
-    if (connection?.database_type === 'postgresql' && !tab.databaseName) {
+    if (isSchemaScopedType(connection?.database_type) && !tab.databaseName) {
       return
     }
 
@@ -5097,8 +6166,8 @@ function App(): React.JSX.Element {
           sql: sqlToExecute,
           limit: tab.limit ?? QUERY_DEFAULT_LIMIT,
           offset: Math.max(0, (tab.page ?? 1) - 1) * (tab.limit ?? QUERY_DEFAULT_LIMIT),
-          database: connection?.database_type === 'mysql' || connection?.database_type === 'postgresql' || connection?.database_type === 'mongodb' || connection?.database_type === 'redis' || connection?.database_type === 'clickhouse' ? (tab.databaseName || undefined) : undefined,
-          pg_database: connection?.database_type === 'postgresql' ? (tab.pgDatabaseName || undefined) : undefined
+          database: connection?.database_type === 'mysql' || isSchemaScopedType(connection?.database_type) || connection?.database_type === 'mongodb' || connection?.database_type === 'redis' || connection?.database_type === 'clickhouse' ? (tab.databaseName || undefined) : undefined,
+          pg_database: isSchemaScopedType(connection?.database_type) ? (tab.pgDatabaseName || undefined) : undefined
         })
       })
       updateWorkspaceTab(tab.key, { result, page: tab.page ?? 1, selectedRowKeys: [], selectedRowKeyMap: {}, columnFilterOptions: undefined, loading: false, error: undefined })
@@ -5187,31 +6256,31 @@ function App(): React.JSX.Element {
   const activeTab = workspaceTabs.find((tab) => tab.key === activeTabKey)
   const activeAIConnection = getConnection(aiActiveContext?.connectionId)
   const aiContextConnection = activeAIConnection?.is_open ? activeAIConnection : undefined
-  const aiDatabase = aiContextConnection?.database_type === 'postgresql'
+  const aiDatabase = isSchemaScopedType(aiContextConnection?.database_type)
     ? aiActiveContext?.databaseName
     : aiActiveContext?.databaseName
-  const aiPgDatabase = aiContextConnection?.database_type === 'postgresql' && aiContextConnection
+  const aiPgDatabase = isSchemaScopedType(aiContextConnection?.database_type) && aiContextConnection
     ? aiActiveContext?.pgDatabaseName
     : undefined
-  const aiDbName = aiContextConnection?.database_type === 'postgresql'
+  const aiDbName = isSchemaScopedType(aiContextConnection?.database_type)
     ? [aiPgDatabase, aiDatabase].filter(Boolean).join('.')
     : aiDatabase
   const primaryAIContextSource: AIContextSource | undefined = aiContextConnection && aiDbName
     ? {
         id: contextSourceId({
-          type: aiContextConnection.database_type === 'postgresql' && aiDatabase ? 'schema' : 'database',
+          type: isSchemaScopedType(aiContextConnection.database_type) && aiDatabase ? 'schema' : 'database',
           connectionId: aiContextConnection.connection_id,
-          database: aiContextConnection.database_type === 'postgresql' ? aiPgDatabase : aiDatabase,
-          schema: aiContextConnection.database_type === 'postgresql' ? aiDatabase : undefined,
-          pgDatabase: aiContextConnection.database_type === 'postgresql' ? aiPgDatabase : undefined
+          database: isSchemaScopedType(aiContextConnection.database_type) ? aiPgDatabase : aiDatabase,
+          schema: isSchemaScopedType(aiContextConnection.database_type) ? aiDatabase : undefined,
+          pgDatabase: isSchemaScopedType(aiContextConnection.database_type) ? aiPgDatabase : undefined
         }),
-        type: aiContextConnection.database_type === 'postgresql' && aiDatabase ? 'schema' : 'database',
+        type: isSchemaScopedType(aiContextConnection.database_type) && aiDatabase ? 'schema' : 'database',
         connectionId: aiContextConnection.connection_id,
         connectionName: aiContextConnection.name,
         dbType: aiContextConnection.database_type,
-        database: aiContextConnection.database_type === 'postgresql' ? aiPgDatabase : aiDatabase,
-        schema: aiContextConnection.database_type === 'postgresql' ? aiDatabase : undefined,
-        pgDatabase: aiContextConnection.database_type === 'postgresql' ? aiPgDatabase : undefined
+        database: isSchemaScopedType(aiContextConnection.database_type) ? aiPgDatabase : aiDatabase,
+        schema: isSchemaScopedType(aiContextConnection.database_type) ? aiDatabase : undefined,
+        pgDatabase: isSchemaScopedType(aiContextConnection.database_type) ? aiPgDatabase : undefined
       }
     : undefined
   const effectiveAIContextSources = primaryAIContextSource
@@ -5224,8 +6293,8 @@ function App(): React.JSX.Element {
         connectionId: focusedTreeNode.connectionId,
         connectionName: focusedConnection?.name,
         dbType: focusedConnection?.database_type,
-        database: focusedConnection?.database_type === 'postgresql' ? focusedTreeNode.pgDatabaseName : focusedTreeNode.databaseName,
-        schema: focusedConnection?.database_type === 'postgresql' ? focusedTreeNode.databaseName : undefined,
+        database: isSchemaScopedType(focusedConnection?.database_type) ? focusedTreeNode.pgDatabaseName : focusedTreeNode.databaseName,
+        schema: isSchemaScopedType(focusedConnection?.database_type) ? focusedTreeNode.databaseName : undefined,
         pgDatabase: focusedTreeNode.pgDatabaseName,
         table: focusedTreeNode.tableName,
         objectType: focusedTreeNode.objectType,
@@ -5318,23 +6387,91 @@ function App(): React.JSX.Element {
                 <Typography.Text className="panel-kicker">DATABASE EXPLORER</Typography.Text>
                 <Typography.Title level={5} className="panel-title">数据资产</Typography.Title>
               </Space>
-              <Dropdown menu={connectionCreateMenu} trigger={['click']}>
+              <Dropdown menu={resourceCreateMenu} trigger={['click']}>
                 <Button className="resource-add" type="primary" size="small" icon={<PlusOutlined />}>新建</Button>
               </Dropdown>
             </div>
             <div className="connection-summary-grid">
               <div className="summary-card"><span>{connections.length}</span><small>连接</small></div>
+              <div className="summary-card"><span>{connectionFolders.length}</span><small>分组</small></div>
               <div className="summary-card accent"><span>{workspaceTabs.length}</span><small>工作页</small></div>
             </div>
             <div className="resource-tree-shell">
               <div ref={resourceTreeViewportRef} className="resource-tree-viewport">
-                {connections.length === 0 ? (
-                  <Alert message="暂无数据库连接" description="先创建一个 SQLite 或 MySQL 连接。" type="info" showIcon />
+                {treeData.length === 0 ? (
+                  <Alert message="暂无数据库连接或分组" description="先创建一个连接，或者新建分组开始整理。" type="info" showIcon />
                 ) : (
                   <Tree
+                    multiple
                     showIcon
                     blockNode
                     virtual
+                    draggable={{
+                      icon: false,
+                      nodeDraggable: (node) => {
+                        const treeNode = node as unknown as Partial<DatabaseTreeNode>
+                        const nodeKind = getTreeNodeKindFromKey(treeNode)
+                        return nodeKind === 'connection' || nodeKind === 'folder'
+                      }
+                    }}
+                    allowDrop={allowTreeDrop}
+                    dropIndicatorRender={(props) => (
+                      <div
+                        style={{
+                          pointerEvents: 'none',
+                          position: 'absolute',
+                          right: 0,
+                          height: 2,
+                          background: 'var(--dj-accent)',
+                          top: props.dropPosition === -1 ? 0 : undefined,
+                          bottom: props.dropPosition === 1 || props.dropPosition === 0 ? 0 : undefined,
+                          left: props.dropPosition === -1 ? -props.dropLevelOffset * props.indent : props.dropPosition === 0 ? props.indent : -props.dropLevelOffset * props.indent
+                        }}
+                      />
+                    )}
+                    onDragOver={({ event }) => {
+                      if (draggingConnectionIdsRef.current.length === 0) {
+                        const target = event.target as HTMLElement | null
+                        const draggedConnectionElement = target?.closest<HTMLElement>('[data-connection-id]')
+                        const draggedConnectionId = draggedConnectionElement?.dataset.connectionId
+                        if (draggedConnectionId) {
+                          draggingConnectionIdsRef.current = selectedConnectionIds.includes(draggedConnectionId)
+                            ? selectedConnectionIds
+                            : [draggedConnectionId]
+                          draggingConnectionFolderIdRef.current = connectionFolderAssignments[draggedConnectionId]
+                        }
+                      }
+                      const target = event.target as HTMLElement | null
+                      const connectionElement = target?.closest<HTMLElement>('[data-connection-id]')
+                      const connectionId = connectionElement?.dataset.connectionId
+                      if (connectionElement && connectionId) {
+                        const rect = connectionElement.getBoundingClientRect()
+                        updateDragOverConnectionTarget({
+                          connectionId,
+                          folderId: connectionFolderAssignments[connectionId],
+                          zone: event.clientY - rect.top >= rect.height / 2 ? 'after' : 'before'
+                        })
+                        updateDragOverFolderTarget(undefined)
+                      } else {
+                        updateDragOverConnectionTarget(undefined)
+                      }
+
+                      const folderElement = target?.closest<HTMLElement>('[data-folder-id]')
+                      const folderId = folderElement?.dataset.folderId
+                      if (!folderElement || !folderId) {
+                        return
+                      }
+                      const rect = folderElement.getBoundingClientRect()
+                      const offsetY = event.clientY - rect.top
+                      updateDragOverFolderTarget({
+                        folderId,
+                        zone: offsetY >= rect.height / 2 ? 'after' : 'before'
+                      })
+                    }}
+                    onDragEnd={() => {
+                      updateDragOverFolderTarget(undefined)
+                      clearConnectionDragState()
+                    }}
                     height={resourceTreeHeight}
                     itemHeight={RESOURCE_TREE_ITEM_HEIGHT}
                     motion={false}
@@ -5347,20 +6484,18 @@ function App(): React.JSX.Element {
                         return
                       }
                       setExpandedKeys(keys)
+                      if (node.kind === 'database' || node.kind === 'pg-schema') {
+                        activateAIContextFromNode(node)
+                      }
                       if (!isTreeNodeChildrenLoaded(node) && isLoadableTreeNode(node)) {
                         void reloadNodeChildren({ ...node, isLeaf: false }, false)
                       }
                     }}
                     titleRender={(node) => renderTreeTitle(node as DatabaseTreeNode)}
-                    selectedKeys={selectedConnectionId ? [`connection:${selectedConnectionId}`] : []}
+                    selectedKeys={selectedTreeKeys}
                     onSelect={(_, info) => {
                       const node = info.node as DatabaseTreeNode
-                      startTransition(() => {
-                        setFocusedTreeNode(node)
-                        if (node.connectionId) {
-                          setSelectedConnectionId(node.connectionId)
-                        }
-                      })
+                      handleTreeSelection(node, info.nativeEvent as MouseEvent)
                     }}
                     onRightClick={({ node, event }) => {
                       event.preventDefault()
@@ -5368,6 +6503,11 @@ function App(): React.JSX.Element {
                       const items = getTreeContextMenuItems(treeNode)
                       if (!items || items.length === 0) {
                         return
+                      }
+                      if (treeNode.kind === 'connection' && treeNode.connectionId && !selectedConnectionIds.includes(treeNode.connectionId)) {
+                        selectConnectionNodes([treeNode.connectionId], treeNode.connectionId)
+                      } else if (treeNode.kind !== 'connection') {
+                        setSelectedTreeKeys([treeNode.key as React.Key])
                       }
                       startTransition(() => {
                         setFocusedTreeNode(treeNode)
@@ -5381,6 +6521,7 @@ function App(): React.JSX.Element {
                         node: treeNode
                       })
                     }}
+                    onDrop={handleTreeDrop}
                     onDoubleClick={(_, node) => {
                       const treeNode = node as DatabaseTreeNode
                       startTransition(() => {
@@ -5420,7 +6561,7 @@ function App(): React.JSX.Element {
                 )}
               </div>
               {treeContextMenu && (
-                <div className="tree-context-menu-backdrop" onMouseDown={() => setTreeContextMenu(null)}>
+                <div className="tree-context-menu-backdrop">
                   <div
                     className="tree-context-menu-panel"
                     style={{ left: treeContextMenu.x, top: treeContextMenu.y }}
@@ -5605,7 +6746,6 @@ function App(): React.JSX.Element {
                           </span>
                           <span className="driver-manager-nav-meta">
                             <Tag>{databaseDrivers.length}</Tag>
-                            {meta.comingSoon && <Tag color="warning">预留</Tag>}
                           </span>
                         </button>
                       )
@@ -5630,17 +6770,12 @@ function App(): React.JSX.Element {
                       <Flex justify="space-between" align="center" gap={12}>
                         <Space direction="vertical" size={2}>
                           <Typography.Title level={5} style={{ margin: 0 }}>{selectedDriverDatabaseMeta.label}驱动</Typography.Title>
-                          <Typography.Text type="secondary">{selectedDriverDatabaseMeta.description}</Typography.Text>
                         </Space>
                         <Space size={8} wrap>
                           <Tag>{selectedDriverDatabaseMeta.shortLabel}</Tag>
-                          <Tag color={selectedDriverDatabaseMeta.comingSoon ? 'warning' : 'success'}>
-                            {selectedDriverDatabaseMeta.comingSoon ? '预留接入' : '已支持连接'}
-                          </Tag>
                           <Button loading={driversLoading} onClick={() => void loadDrivers()}>刷新</Button>
                         </Space>
                       </Flex>
-                      {selectedDriverDatabaseMeta.comingSoon && <Alert type="warning" showIcon message="当前先管理驱动配置，实际连接能力会在后续版本接入。" />}
                       <Table<DriverInfo>
                         size="small"
                         rowKey="id"
@@ -5662,7 +6797,7 @@ function App(): React.JSX.Element {
                     <div className="driver-manager-section-card">
                       <Space direction="vertical" size={2} className="full-width">
                         <Typography.Title level={5} style={{ margin: 0 }}>添加 {selectedDriverDatabaseMeta.shortLabel} 驱动</Typography.Title>
-                        <Typography.Text type="secondary">当前类型支持 {selectedDriverTypeLabels}。后续新增国产库时，只需要补充数据库元数据和对应驱动类型，不用再重做界面。</Typography.Text>
+                        <Typography.Text type="secondary">支持 {selectedDriverTypeLabels}</Typography.Text>
                       </Space>
                       <Form form={driverForm} layout="vertical" initialValues={{ database_type: 'dm', driver_type: 'jdbc', enabled: true }}>
                         <Form.Item name="database_type" style={{ display: 'none' }}>
@@ -5671,7 +6806,6 @@ function App(): React.JSX.Element {
                         <Form.Item name="driver_type" label="驱动类型" rules={[{ required: true, message: '请选择驱动类型' }]}>
                           <Select options={driverTypeOptionsForDatabase(selectedDriverDatabaseType)} />
                         </Form.Item>
-                        {selectedDriverDatabaseMeta.comingSoon && <Alert type="info" showIcon message={`${selectedDriverDatabaseMeta.shortLabel} 当前先保存驱动配置，连接能力后续接入。`} />}
                         <Form.Item name="name" label="显示名称" rules={[{ required: true, message: '请输入显示名称' }]}>
                           <Input placeholder={selectedDriverDatabaseType === 'gaussdb' ? '例如：高斯 JDBC 生产环境' : '例如：达梦 JDBC / 本机 dmPython'} />
                         </Form.Item>
@@ -5722,8 +6856,8 @@ function App(): React.JSX.Element {
             <Typography.Text><Typography.Text strong>文件：</Typography.Text>{sqlFileName}</Typography.Text>
             <Typography.Text><Typography.Text strong>SQL 行数：</Typography.Text>{sqlFileContent ? sqlFileContent.split('\n').length : 0}</Typography.Text>
             <Form layout="vertical">
-              <Form.Item label={getConnection(sqlFileConnectionId)?.database_type === 'postgresql' ? '目标 Schema' : '目标数据库'} required={sqlFileDatabases.length > 0} rules={sqlFileDatabases.length > 0 ? [{ required: true, message: getConnection(sqlFileConnectionId)?.database_type === 'postgresql' ? '请选择目标 Schema' : '请选择目标数据库' }] : undefined}>
-                {sqlFileDatabases.length > 0 ? (<Select placeholder={getConnection(sqlFileConnectionId)?.database_type === 'postgresql' ? '请选择目标 Schema' : '请选择目标数据库'} value={sqlFileDatabase || undefined} onChange={(value) => setSqlFileDatabase(value)} options={sqlFileDatabases.map((db) => ({ label: db.name, value: db.name }))} />) : (<Input placeholder="留空则使用连接默认数据库" value={sqlFileDatabase} onChange={(event) => setSqlFileDatabase(event.target.value)} />)}
+              <Form.Item label={isSchemaScopedType(getConnection(sqlFileConnectionId)?.database_type) ? '目标 Schema' : '目标数据库'} required={sqlFileDatabases.length > 0} rules={sqlFileDatabases.length > 0 ? [{ required: true, message: isSchemaScopedType(getConnection(sqlFileConnectionId)?.database_type) ? '请选择目标 Schema' : '请选择目标数据库' }] : undefined}>
+                {sqlFileDatabases.length > 0 ? (<Select placeholder={isSchemaScopedType(getConnection(sqlFileConnectionId)?.database_type) ? '请选择目标 Schema' : '请选择目标数据库'} value={sqlFileDatabase || undefined} onChange={(value) => setSqlFileDatabase(value)} options={sqlFileDatabases.map((db) => ({ label: db.name, value: db.name }))} />) : (<Input placeholder="留空则使用连接默认数据库" value={sqlFileDatabase} onChange={(event) => setSqlFileDatabase(event.target.value)} />)}
               </Form.Item>
             </Form>
           </Space>
@@ -5731,6 +6865,35 @@ function App(): React.JSX.Element {
       </Modal>
       <Modal title={ddlModalTitle || '查看 DDL'} open={ddlModalOpen} footer={null} onCancel={() => setDdlModalOpen(false)} width={820} centered maskClosable={false}>
         <Input.TextArea value={ddlLoading ? '加载中...' : ddlContent} autoSize={{ minRows: 12, maxRows: 24 }} readOnly />
+      </Modal>
+      <Modal
+        title={folderEditorMode === 'rename' ? '重命名分组' : '新建分组'}
+        open={folderEditorOpen}
+        okText={folderEditorMode === 'rename' ? '保存' : '创建'}
+        cancelText="取消"
+        onOk={saveFolder}
+        onCancel={() => {
+          setFolderEditorOpen(false)
+          setEditingFolderId(undefined)
+          setFolderNameDraft('')
+        }}
+        okButtonProps={{ disabled: !folderNameDraft.trim() }}
+        centered
+        maskClosable={false}
+      >
+        <Form layout="vertical">
+          <Form.Item label="分组名称" required>
+            <Input
+              value={folderNameDraft}
+              placeholder="例如：生产环境 / 测试环境 / 客户项目"
+              onChange={(event) => setFolderNameDraft(event.target.value)}
+              onPressEnter={(event) => {
+                event.preventDefault()
+                saveFolder()
+              }}
+            />
+          </Form.Item>
+        </Form>
       </Modal>
       <Modal title={getConnection(createTableConnectionId)?.database_type === 'mongodb' ? '新建集合' : '新建表'} open={createTableModalOpen} okText="创建" cancelText="取消" confirmLoading={createTableLoading} onOk={() => void createTable()} onCancel={() => setCreateTableModalOpen(false)} width={980} okButtonProps={{ disabled: !newTableName.trim() || (getConnection(createTableConnectionId)?.database_type !== 'mongodb' && newTableColumns.filter((c) => c.name.trim()).length === 0) }} maskClosable={false}>
         {renderTableDesigner('create', createTableConnectionId, createTableDatabaseName, createTablePgDatabaseName || undefined, newTableName, setNewTableName, newTableComment, setNewTableComment, newTableColumns, createTableLoading)}
@@ -5744,30 +6907,30 @@ function App(): React.JSX.Element {
           ) : (
             <>
               <Form.Item name="host" label="主机" rules={[{ required: true, message: '请输入主机' }]}><Input placeholder="127.0.0.1" /></Form.Item>
-              <Form.Item name="port" label="端口" rules={[{ required: true, message: '请输入端口' }]}><InputNumber min={1} max={65535} className="full-width" placeholder={databaseType === 'postgresql' ? '5432' : databaseType === 'dm' ? '5236' : databaseType === 'mongodb' ? '27017' : databaseType === 'redis' ? '6379' : databaseType === 'clickhouse' ? '8123' : '3306'} /></Form.Item>
-              <Form.Item name="username" label="用户名" rules={databaseType === 'mongodb' || databaseType === 'redis' ? undefined : [{ required: true, message: '请输入用户名' }]}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'dm' ? 'SYSDBA' : databaseType === 'redis' ? 'Redis ACL 用户名，可选' : databaseType === 'clickhouse' ? 'default' : undefined} /></Form.Item>
+              <Form.Item name="port" label="端口" rules={[{ required: true, message: '请输入端口' }]}><InputNumber min={1} max={65535} className="full-width" placeholder={databaseType === 'postgresql' ? '5432' : databaseType === 'gaussdb' ? '8000' : databaseType === 'dm' ? '5236' : databaseType === 'mongodb' ? '27017' : databaseType === 'redis' ? '6379' : databaseType === 'clickhouse' ? '8123' : '3306'} /></Form.Item>
+              <Form.Item name="username" label="用户名" rules={databaseType === 'mongodb' || databaseType === 'redis' ? undefined : [{ required: true, message: '请输入用户名' }]}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'gaussdb' ? 'gaussdb' : databaseType === 'dm' ? 'SYSDBA' : databaseType === 'redis' ? 'Redis ACL 用户名，可选' : databaseType === 'clickhouse' ? 'default' : undefined} /></Form.Item>
               <Form.Item name="password" label="密码"><Input.Password /></Form.Item>
-              <Form.Item name="database" label={databaseType === 'postgresql' ? '数据库名' : databaseType === 'dm' ? '默认 Schema（可选）' : databaseType === 'mongodb' ? '认证库/默认库（可选）' : databaseType === 'redis' ? '默认 DB 序号（可选）' : databaseType === 'clickhouse' ? '默认数据库' : '默认数据库（可选）'} rules={databaseType === 'postgresql' ? [{ required: true, message: '请输入数据库名' }] : undefined}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'dm' ? '不填则使用默认 Schema' : databaseType === 'mongodb' ? '默认 admin，也可填业务库名' : databaseType === 'redis' ? '默认 0，例如 0、1、2' : databaseType === 'clickhouse' ? '默认 default' : '不填则连接服务器并加载全部数据库'} /></Form.Item>
+              <Form.Item name="database" label={databaseType === 'postgresql' || databaseType === 'gaussdb' ? '数据库名' : databaseType === 'dm' ? '默认 Schema（可选）' : databaseType === 'mongodb' ? '认证库/默认库（可选）' : databaseType === 'redis' ? '默认 DB 序号（可选）' : databaseType === 'clickhouse' ? '默认数据库' : '默认数据库（可选）'} rules={databaseType === 'postgresql' || databaseType === 'gaussdb' ? [{ required: true, message: '请输入数据库名' }] : undefined}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'gaussdb' ? 'postgres' : databaseType === 'dm' ? '不填则使用默认 Schema' : databaseType === 'mongodb' ? '默认 admin，也可填业务库名' : databaseType === 'redis' ? '默认 0，例如 0、1、2' : databaseType === 'clickhouse' ? '默认 default' : '不填则连接服务器并加载全部数据库'} /></Form.Item>
               {databaseType && JDBC_COMPATIBLE_DATABASE_TYPES.includes(databaseType) && (
                 <>
-                  <Form.Item name="driver_id" label={databaseType === 'dm' ? '达梦驱动' : '数据库驱动'} rules={[{ required: true, message: '请选择驱动' }]}>
+                  <Form.Item name="driver_id" label={`${DRIVER_DATABASE_META[driverDatabaseTypeForConnection(databaseType) ?? 'dm'].shortLabel}驱动`} rules={[{ required: true, message: '请选择驱动' }]}>
                     <Select
                       loading={driversLoading}
-                      placeholder={databaseType === 'dm' ? '请选择已添加的达梦驱动' : '请选择已添加的数据库驱动'}
-                      options={dmDriverOptions}
-                      notFoundContent={databaseType === 'dm' ? '暂无可用达梦驱动' : '暂无可用驱动'}
+                      placeholder={`请选择已添加的${DRIVER_DATABASE_META[driverDatabaseTypeForConnection(databaseType) ?? 'dm'].shortLabel}驱动`}
+                      options={manualDriverOptions}
+                      notFoundContent={`暂无可用${DRIVER_DATABASE_META[driverDatabaseTypeForConnection(databaseType) ?? 'dm'].shortLabel}驱动`}
                       onChange={(value) => {
                         form.setFieldsValue({
                           driver_id: value,
-                          dm_driver_id: value
+                          dm_driver_id: databaseType === 'dm' ? value : undefined
                         })
                       }}
                     />
                   </Form.Item>
                   <Alert
-                    type={selectedDmDriver ? 'info' : 'warning'}
+                    type={selectedManualDriver ? 'info' : 'warning'}
                     showIcon
-                    message={selectedDmDriver ? `当前选择：${driverTypeLabel(selectedDmDriver.driver_type)} - ${selectedDmDriver.name}` : '未选择驱动，请先在驱动管理中添加并选择兼容驱动'}
+                    message={selectedManualDriver ? `当前选择：${driverTypeLabel(selectedManualDriver.driver_type)} - ${selectedManualDriver.name}` : '未选择驱动，请先在驱动管理中添加并选择兼容驱动'}
                     action={<Button size="small" onClick={openDriverManager}>驱动管理</Button>}
                   />
                 </>

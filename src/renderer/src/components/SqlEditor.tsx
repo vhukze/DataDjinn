@@ -5,7 +5,7 @@ import { useEffect, useRef } from 'react'
 
 loader.config({ monaco })
 
-export type SqlDialect = 'sqlite' | 'mysql' | 'postgresql' | 'dm' | 'mongodb' | 'redis' | 'clickhouse'
+export type SqlDialect = 'sqlite' | 'mysql' | 'postgresql' | 'dm' | 'gaussdb' | 'mongodb' | 'redis' | 'clickhouse'
 
 export interface SqlCompletionColumn {
   name: string
@@ -127,6 +127,7 @@ const DIALECT_KEYWORDS: Record<SqlDialect, string[]> = {
   mysql: ['AUTO_INCREMENT', 'ENGINE', 'UNSIGNED', 'SHOW DATABASES', 'SHOW TABLES', 'DESCRIBE'],
   postgresql: ['SERIAL', 'BIGSERIAL', 'RETURNING', 'ILIKE', 'ON CONFLICT', 'JSONB', 'UUID'],
   dm: ['ROWNUM', 'CONNECT BY', 'START WITH', 'SYSDATE', 'SYSTIMESTAMP', 'NVL', 'DECODE', 'DUAL'],
+  gaussdb: ['SERIAL', 'BIGSERIAL', 'RETURNING', 'ILIKE', 'ON CONFLICT', 'JSONB', 'UUID', 'DISTRIBUTE BY', 'PARTITION BY'],
   mongodb: ['db', 'find', 'aggregate', 'countDocuments', 'distinct', 'sort', 'limit', 'skip', 'ObjectId'],
   redis: ['SCAN', 'KEYS', 'GET', 'SET', 'HGETALL', 'HSET', 'LRANGE', 'LPUSH', 'RPUSH', 'SMEMBERS', 'SADD', 'ZRANGE', 'ZADD', 'DEL', 'EXPIRE', 'TTL', 'TYPE'],
   clickhouse: ['MergeTree', 'ReplacingMergeTree', 'ORDER BY', 'PARTITION BY', 'UInt8', 'UInt32', 'UInt64', 'Int64', 'String', 'DateTime', 'Nullable', 'SHOW CREATE TABLE', 'DESCRIBE TABLE']
@@ -160,7 +161,7 @@ const quoteIdentifier = (name: string, dialect?: SqlDialect): string => {
     return name
   }
 
-  if (dialect === 'postgresql' || dialect === 'dm') {
+  if (dialect === 'postgresql' || dialect === 'dm' || dialect === 'gaussdb') {
     return `"${name.replaceAll('"', '""')}"`
   }
 

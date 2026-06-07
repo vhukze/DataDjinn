@@ -16,6 +16,10 @@ READONLY_TYPES = {"SELECT", "WITH"}
 INTERNAL_PAGING_COLUMNS = {"__DATADJINN_RN", "_DATADJINN_RN"}
 
 
+def _is_schema_scoped_engine(engine: Engine) -> bool:
+    return engine.dialect.name in {"postgresql", "gaussdb"}
+
+
 def _is_internal_paging_column(column: Any) -> bool:
     return str(column).upper() in INTERNAL_PAGING_COLUMNS
 
@@ -74,7 +78,7 @@ def _query_rows(raw_rows: list[Any], columns: list[tuple[Any, str]]) -> list[dic
     return [{column_name: _serialize_sql_value(row[column]) for column, column_name in columns if column in row} for row in raw_rows]
 
 
-def execute_readonly_query(engine: Engine, sql: str, limit: int, offset: int = 0, database: str | None = None, pg_database: str | None = None) -> QueryResponse:
+def execute_readonly_query(engine: Engine, sql: str, limit: int | None, offset: int = 0, database: str | None = None, pg_database: str | None = None) -> QueryResponse:
     if is_mongo_client(engine):
         return _execute_mongo_readonly_query(engine, sql, limit, offset, database)
 
@@ -92,7 +96,7 @@ def execute_readonly_query(engine: Engine, sql: str, limit: int, offset: int = 0
     try:
         statement = _validate_readonly_sql(sql)
 
-        if database and engine.dialect.name in {"mysql", "postgresql", "dm", "dmPython", "clickhouse", "clickhousedb"}:
+        if database and engine.dialect.name in {"mysql", "postgresql", "gaussdb", "dm", "dmPython", "clickhouse", "clickhousedb"}:
             return _execute_on_connection_with_context(engine, statement, limit, offset, database)
 
         return _execute_limited_query(engine, statement, limit, offset)
@@ -106,15 +110,17 @@ def _mongo_response_from_documents(documents: list[dict[str, Any]], limited: boo
     return QueryResponse(columns=columns, rows=documents, row_count=len(documents), limited=limited)
 
 
-def _preview_mongo_collection(engine: Engine, collection_name: str, limit: int, offset: int, database_name: str | None = None) -> QueryResponse:
+def _preview_mongo_collection(engine: Engine, collection_name: str, limit: int | None, offset: int, database_name: str | None = None) -> QueryResponse:
     target_db = database_name or mongo_default_database(engine)
     if not target_db:
         raise ValueError("请选择 MongoDB 数据库")
 
-    cursor = engine[target_db][collection_name].find({}).skip(offset).limit(limit + 1)
+    cursor = engine[target_db][collection_name].find({}).skip(offset)
+    if limit is not None:
+        cursor = cursor.limit(limit + 1)
     raw_documents = [serialize_mongo_document(document) for document in cursor]
-    limited = len(raw_documents) > limit
-    return _mongo_response_from_documents(raw_documents[:limit], limited)
+    limited = limit is not None and len(raw_documents) > limit
+    return _mongo_response_from_documents(raw_documents[:limit] if limit is not None else raw_documents, limited)
 
 
 def _redis_response(rows: list[dict[str, Any]], limited: bool) -> QueryResponse:
@@ -157,9 +163,13 @@ def _redis_value_preview(target: Any, key: str, key_type: str) -> Any:
     return None
 
 
-def _preview_redis_database(engine: Engine, limit: int, offset: int = 0, database_name: str | None = None) -> QueryResponse:
+def _preview_redis_database(engine: Engine, limit: int | None, offset: int = 0, database_name: str | None = None) -> QueryResponse:
     target = redis_client_for_database(engine, database_name)
     try:
+        if limit is None:
+            keys = [redis_text(key) for key in target.scan_iter(count=500)]
+            return _redis_response([_redis_key_summary(target, key) for key in keys[offset:]], False)
+
         keys = redis_scan_keys(target, offset + limit + 1)
         sliced = keys[offset:offset + limit + 1]
         return _redis_response([_redis_key_summary(target, key) for key in sliced[:limit]], len(sliced) > limit)
@@ -168,7 +178,7 @@ def _preview_redis_database(engine: Engine, limit: int, offset: int = 0, databas
             target.close()
 
 
-def _preview_redis_key(engine: Engine, key: str, limit: int, offset: int = 0, database_name: str | None = None) -> QueryResponse:
+def _preview_redis_key(engine: Engine, key: str, limit: int | None, offset: int = 0, database_name: str | None = None) -> QueryResponse:
     target = redis_client_for_database(engine, database_name)
     try:
         key_type = redis_key_type(target, key)
@@ -183,30 +193,36 @@ def _preview_redis_key(engine: Engine, key: str, limit: int, offset: int = 0, da
 
         if key_type == "hash":
             items = list(target.hscan_iter(key, count=500))
-            sliced = items[offset:offset + limit + 1]
-            rows = [{"field": redis_text(field), "value": serialize_redis_value(value)} for field, value in sliced[:limit]]
-            return _redis_response(rows, len(sliced) > limit)
+            sliced = items[offset:] if limit is None else items[offset:offset + limit + 1]
+            visible_items = sliced if limit is None else sliced[:limit]
+            rows = [{"field": redis_text(field), "value": serialize_redis_value(value)} for field, value in visible_items]
+            return _redis_response(rows, limit is not None and len(sliced) > limit)
 
         if key_type == "list":
-            values = target.lrange(key, offset, offset + limit)
-            rows = [{"index": offset + index, "value": serialize_redis_value(value)} for index, value in enumerate(values[:limit])]
-            return _redis_response(rows, len(values) > limit)
+            values = target.lrange(key, offset, -1 if limit is None else offset + limit)
+            visible_values = values if limit is None else values[:limit]
+            rows = [{"index": offset + index, "value": serialize_redis_value(value)} for index, value in enumerate(visible_values)]
+            return _redis_response(rows, limit is not None and len(values) > limit)
 
         if key_type == "set":
             members = list(target.sscan_iter(key, count=500))
-            sliced = members[offset:offset + limit + 1]
-            rows = [{"value": serialize_redis_value(value)} for value in sliced[:limit]]
-            return _redis_response(rows, len(sliced) > limit)
+            sliced = members[offset:] if limit is None else members[offset:offset + limit + 1]
+            visible_members = sliced if limit is None else sliced[:limit]
+            rows = [{"value": serialize_redis_value(value)} for value in visible_members]
+            return _redis_response(rows, limit is not None and len(sliced) > limit)
 
         if key_type == "zset":
-            values = target.zrange(key, offset, offset + limit, withscores=True)
-            rows = [{"member": serialize_redis_value(member), "score": score} for member, score in values[:limit]]
-            return _redis_response(rows, len(values) > limit)
+            values = target.zrange(key, offset, -1 if limit is None else offset + limit, withscores=True)
+            visible_values = values if limit is None else values[:limit]
+            rows = [{"member": serialize_redis_value(member), "score": score} for member, score in visible_values]
+            return _redis_response(rows, limit is not None and len(values) > limit)
 
         if key_type == "stream":
-            entries = target.xrange(key, count=offset + limit + 1)[offset:offset + limit + 1]
-            rows = [{"id": redis_text(entry_id), **serialize_redis_value(fields)} for entry_id, fields in entries[:limit]]
-            return _redis_response(rows, len(entries) > limit)
+            entries = target.xrange(key, count=None if limit is None else offset + limit + 1)
+            entries = entries[offset:] if limit is None else entries[offset:offset + limit + 1]
+            visible_entries = entries if limit is None else entries[:limit]
+            rows = [{"id": redis_text(entry_id), **serialize_redis_value(fields)} for entry_id, fields in visible_entries]
+            return _redis_response(rows, limit is not None and len(entries) > limit)
 
         return _redis_response([{"key": key, "type": key_type, "length": redis_key_length(target, key, key_type), "ttl": ttl}], False)
     finally:
@@ -214,7 +230,7 @@ def _preview_redis_key(engine: Engine, key: str, limit: int, offset: int = 0, da
             target.close()
 
 
-def _execute_redis_query(engine: Engine, sql: str, limit: int, offset: int = 0, database_name: str | None = None) -> QueryResponse:
+def _execute_redis_query(engine: Engine, sql: str, limit: int | None, offset: int = 0, database_name: str | None = None) -> QueryResponse:
     statement = sql.strip().rstrip(";")
     if not statement:
         raise ValueError("Redis 命令不能为空")
@@ -225,12 +241,16 @@ def _execute_redis_query(engine: Engine, sql: str, limit: int, offset: int = 0, 
     try:
         if command in {"SCAN", "KEYS"}:
             pattern = parts[1] if len(parts) > 1 and command == "KEYS" else "*"
-            keys = redis_scan_keys(target, 10000 if pattern != "*" else offset + limit + 1)
+            if limit is None:
+                keys = [redis_text(key) for key in target.scan_iter(count=500)]
+            else:
+                keys = redis_scan_keys(target, 10000 if pattern != "*" else offset + limit + 1)
             if pattern != "*":
                 keys = [key for key in keys if fnmatch.fnmatch(key, pattern)]
-            sliced = keys[offset:offset + limit + 1]
-            rows = [_redis_key_summary(target, key) for key in sliced[:limit]]
-            return _redis_response(rows, len(sliced) > limit)
+            sliced = keys[offset:] if limit is None else keys[offset:offset + limit + 1]
+            visible_keys = sliced if limit is None else sliced[:limit]
+            rows = [_redis_key_summary(target, key) for key in visible_keys]
+            return _redis_response(rows, limit is not None and len(sliced) > limit)
 
         if command in {"GET", "HGETALL", "LRANGE", "SMEMBERS", "ZRANGE", "XRANGE", "TYPE", "TTL"}:
             if len(parts) < 2:
@@ -247,7 +267,7 @@ def _execute_redis_query(engine: Engine, sql: str, limit: int, offset: int = 0, 
     raise ValueError("Redis 当前支持 SCAN/KEYS 预览 Key，GET/HGETALL/LRANGE/SMEMBERS/ZRANGE/XRANGE 查看数据，以及 SET/HSET/LPUSH/RPUSH/SADD/ZADD/DEL/EXPIRE 基础写入命令")
 
 
-def _execute_mongo_readonly_query(engine: Engine, sql: str, limit: int, offset: int = 0, database_name: str | None = None) -> QueryResponse:
+def _execute_mongo_readonly_query(engine: Engine, sql: str, limit: int | None, offset: int = 0, database_name: str | None = None) -> QueryResponse:
     statements = _split_mongo_statements(sql)
     target_db = database_name or mongo_default_database(engine)
     if not target_db:
@@ -266,7 +286,7 @@ def _execute_mongo_readonly_query(engine: Engine, sql: str, limit: int, offset: 
     return QueryResponse(columns=["index", "statement", "message", "inserted_count"], rows=rows, row_count=len(rows), limited=False)
 
 
-def _execute_mongo_statement(engine: Engine, statement: str, limit: int, offset: int, target_db: str) -> QueryResponse:
+def _execute_mongo_statement(engine: Engine, statement: str, limit: int | None, offset: int, target_db: str) -> QueryResponse:
     if not statement.startswith("db."):
         raise ValueError("MongoDB 当前支持 db.<collection>.find({...}) 查询、db.createCollection(\"collection\") 创建集合、insertOne/insertMany 插入文档")
 
@@ -381,15 +401,15 @@ def _parse_mongo_python_literal(value: str) -> Any:
         raise ValueError("MongoDB 文档参数必须是可解析的对象字面量，字符串键和值请使用引号") from exc
 
 
-def _execute_on_connection_with_context(engine: Engine, sql: str, limit: int, offset: int, database: str) -> QueryResponse:
-    limited_sql = _with_limit(engine, sql, limit + 1, offset)
+def _execute_on_connection_with_context(engine: Engine, sql: str, limit: int | None, offset: int, database: str) -> QueryResponse:
+    limited_sql = sql if limit is None else _with_limit(engine, sql, limit + 1, offset)
 
     with engine.connect() as connection:
         preparer = engine.dialect.identifier_preparer
         quoted = preparer.quote(database)
         if engine.dialect.name == "mysql":
             connection.execute(text(f"USE {quoted}"))
-        elif engine.dialect.name == "postgresql":
+        elif _is_schema_scoped_engine(engine):
             connection.execute(text(f"SET search_path TO {quoted}"))
         elif engine.dialect.name in {"dm", "dmPython"}:
             connection.execute(text(f"SET SCHEMA {quoted}"))
@@ -399,8 +419,8 @@ def _execute_on_connection_with_context(engine: Engine, sql: str, limit: int, of
         columns = _visible_result_columns(result.keys())
         raw_rows = result.mappings().fetchall()
 
-    limited = len(raw_rows) > limit
-    visible_rows = raw_rows[:limit]
+    limited = limit is not None and len(raw_rows) > limit
+    visible_rows = raw_rows if limit is None else raw_rows[:limit]
     rows = _query_rows(visible_rows, columns)
 
     return QueryResponse(columns=[column_name for _, column_name in columns], rows=rows, row_count=len(rows), limited=limited)
@@ -473,16 +493,16 @@ def _count_preview_rows(engine: Engine, quoted_table: str, where_sql: str) -> in
         return None
 
 
-def _execute_limited_query(engine: Engine, sql: str, limit: int, offset: int = 0) -> QueryResponse:
-    limited_sql = _with_limit(engine, sql, limit + 1, offset)
+def _execute_limited_query(engine: Engine, sql: str, limit: int | None, offset: int = 0) -> QueryResponse:
+    limited_sql = sql if limit is None else _with_limit(engine, sql, limit + 1, offset)
 
     with engine.connect() as connection:
         result = connection.execute(text(limited_sql))
         columns = _visible_result_columns(result.keys())
         raw_rows = result.mappings().fetchall()
 
-    limited = len(raw_rows) > limit
-    visible_rows = raw_rows[:limit]
+    limited = limit is not None and len(raw_rows) > limit
+    visible_rows = raw_rows if limit is None else raw_rows[:limit]
     rows = _query_rows(visible_rows, columns)
 
     return QueryResponse(columns=[column_name for _, column_name in columns], rows=rows, row_count=len(rows), limited=limited)
