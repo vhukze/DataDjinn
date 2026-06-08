@@ -87,11 +87,17 @@ def execute_readonly_query(engine: Engine, sql: str, limit: int | None, offset: 
 
     cleanup_engine = False
 
-    if pg_database and engine.dialect.name == "postgresql":
-        from sqlalchemy import create_engine
+    if pg_database and _is_schema_scoped_engine(engine):
+        if engine.dialect.name == "postgresql":
+            from sqlalchemy import create_engine
 
-        engine = create_engine(engine.url.set(database=pg_database), pool_pre_ping=True)
-        cleanup_engine = True
+            engine = create_engine(engine.url.set(database=pg_database), pool_pre_ping=True)
+            cleanup_engine = True
+        else:
+            factory = getattr(engine, "_datadjinn_engine_factory", None)
+            if callable(factory):
+                engine = factory(pg_database)
+                cleanup_engine = True
 
     try:
         statement = _validate_readonly_sql(sql)
@@ -435,14 +441,23 @@ def preview_table(engine: Engine, table_name: str, limit: int, offset: int = 0, 
             return _preview_redis_database(engine, limit, offset, database_name)
         return _preview_redis_key(engine, table_name, limit, offset, database_name)
 
-    if pg_database and engine.dialect.name == "postgresql":
-        from sqlalchemy import create_engine
+    if pg_database and _is_schema_scoped_engine(engine):
+        if engine.dialect.name == "postgresql":
+            from sqlalchemy import create_engine
 
-        engine = create_engine(engine.url.set(database=pg_database), pool_pre_ping=True)
-        try:
-            return _preview_table_impl(engine, table_name, limit, offset, database_name, where)
-        finally:
-            engine.dispose()
+            engine = create_engine(engine.url.set(database=pg_database), pool_pre_ping=True)
+            try:
+                return _preview_table_impl(engine, table_name, limit, offset, database_name, where)
+            finally:
+                engine.dispose()
+
+        factory = getattr(engine, "_datadjinn_engine_factory", None)
+        if callable(factory):
+            next_engine = factory(pg_database)
+            try:
+                return _preview_table_impl(next_engine, table_name, limit, offset, database_name, where)
+            finally:
+                next_engine.dispose()
 
     return _preview_table_impl(engine, table_name, limit, offset, database_name, where)
 

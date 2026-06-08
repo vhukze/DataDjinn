@@ -11,6 +11,7 @@
   EditOutlined,
   DeleteOutlined,
   BorderOutlined,
+  AimOutlined,
   DoubleLeftOutlined,
   DoubleRightOutlined,
   EyeOutlined,
@@ -26,6 +27,7 @@
   CloudDownloadOutlined,
   ReloadOutlined,
   RobotOutlined,
+  SearchOutlined,
   SortAscendingOutlined,
   SortDescendingOutlined,
   SunOutlined,
@@ -254,12 +256,12 @@ const COMMON_TYPES = [
 const INTEGER_TYPE_PREFIXES = ['int', 'integer', 'bigint', 'smallint', 'tinyint', 'mediumint', 'serial', 'bigserial', 'smallserial']
 const NUMERIC_TYPE_PREFIXES = [...INTEGER_TYPE_PREFIXES, 'decimal', 'numeric', 'float', 'double', 'real']
 
-const tableDesignerSupportsComments = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql'
-const tableDesignerSupportsUnique = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'sqlite'
-const tableDesignerSupportsAutoIncrement = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'sqlite'
-const tableDesignerSupportsAutoIncrementStep = (databaseType?: DatabaseType): boolean => databaseType === 'postgresql'
-const tableDesignerSupportsMinMax = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'sqlite'
-const tableDesignerSupportsEdit = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'sqlite'
+const tableDesignerSupportsComments = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'gaussdb'
+const tableDesignerSupportsUnique = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'gaussdb' || databaseType === 'sqlite'
+const tableDesignerSupportsAutoIncrement = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'gaussdb' || databaseType === 'sqlite'
+const tableDesignerSupportsAutoIncrementStep = (databaseType?: DatabaseType): boolean => databaseType === 'postgresql' || databaseType === 'gaussdb'
+const tableDesignerSupportsMinMax = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'gaussdb' || databaseType === 'sqlite'
+const tableDesignerSupportsEdit = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'gaussdb' || databaseType === 'sqlite'
 const isIntegerLikeType = (type: string): boolean => INTEGER_TYPE_PREFIXES.some((prefix) => type.trim().toLowerCase().startsWith(prefix))
 const isNumericLikeType = (type: string): boolean => NUMERIC_TYPE_PREFIXES.some((prefix) => type.trim().toLowerCase().startsWith(prefix))
 
@@ -559,13 +561,14 @@ type WorkspaceTab = {
   columnFilters?: Record<string, string[]>
   columnFilterOptions?: Record<string, ColumnFilterOption[]>
   draggingColumn?: string
-  editingCell?: { rowKey: string; column: string }
   error?: string
   redisMode?: RedisBrowserMode
   redisExpandedValues?: RedisExpandedValues
   redisEdits?: Record<string, RedisKeyEdit>
   where?: string
 }
+
+type EditingCellState = Record<string, { rowKey: string; column: string } | undefined>
 
 type ColumnDef = {
   key: string
@@ -853,6 +856,10 @@ function App(): React.JSX.Element {
   const [resourcePanelSize, setResourcePanelSize] = useState(340)
   const [aiPanelSize, setAiPanelSize] = useState(360)
   const [aiPanelOpen, setAiPanelOpen] = useState(true)
+  const [treeSearchOpen, setTreeSearchOpen] = useState(false)
+  const [treeSearchText, setTreeSearchText] = useState('')
+  const [resizingResourcePanel, setResizingResourcePanel] = useState(false)
+  const [resizingAiPanel, setResizingAiPanel] = useState(false)
   const [aiContextSources, setAiContextSources] = useState<AIContextSource[]>([])
   const [aiActiveContext, setAiActiveContext] = useState<AIActiveContext | undefined>()
   const [focusedTreeNode, setFocusedTreeNode] = useState<DatabaseTreeNode | undefined>()
@@ -1080,6 +1087,7 @@ function App(): React.JSX.Element {
   const [draftSelectedSchemas, setDraftSelectedSchemas] = useState<Record<string, string[]>>({})
   const [completionTables, setCompletionTables] = useState<Record<string, string[]>>({})
   const [tableBodyHeights, setTableBodyHeights] = useState<Record<string, number>>({})
+  const [editingCells, setEditingCells] = useState<EditingCellState>({})
   const [resourceTreeHeight, setResourceTreeHeight] = useState(360)
   const [dragOverFolderTarget, setDragOverFolderTarget] = useState<{ folderId: string; zone: 'before' | 'after' }>()
   const [dragOverConnectionTarget, setDragOverConnectionTarget] = useState<{ connectionId: string; folderId?: string; zone: 'before' | 'after' }>()
@@ -1088,16 +1096,25 @@ function App(): React.JSX.Element {
   const [ddlContent, setDdlContent] = useState('')
   const [ddlLoading, setDdlLoading] = useState(false)
   const tableBodyRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const resourceTreeContainerRef = useRef<HTMLDivElement | null>(null)
   const resourceTreeViewportRef = useRef<HTMLDivElement | null>(null)
   const selectedColumnRefs = useRef<Record<string, string | undefined>>({})
   const selectedCellRefs = useRef<Record<string, string[] | undefined>>({})
+  const runtimeSelectedCellRefs = useRef<Record<string, string[] | undefined>>({})
   const cellDragAnchorRefs = useRef<Record<string, { rowKey: string; column: string } | undefined>>({})
+  const pendingCellDragTargetRefs = useRef<Record<string, { rowKey: string; column: string } | undefined>>({})
+  const pendingCellDragFrameRefs = useRef<Record<string, number | undefined>>({})
+  const pendingRenderedCellSelectionFrameRefs = useRef<Record<string, number | undefined>>({})
+  const committingEditingCellRefs = useRef<Record<string, boolean | undefined>>({})
+  const inlineCellEditorRefs = useRef<Record<string, { rowKey: string; column: string; input: HTMLInputElement; host: HTMLElement; originalContent: string } | undefined>>({})
+  const committedSelectedCellRangeRefs = useRef<Record<string, string[] | undefined>>({})
   const rowDragAnchorRefs = useRef<Record<string, string | undefined>>({})
   const rowSelectionDraftRefs = useRef<Record<string, React.Key[] | undefined>>({})
   const treeLoadingKeysRef = useRef<Set<React.Key>>(new Set())
   const dragOverFolderTargetRef = useRef<{ folderId: string; zone: 'before' | 'after' } | undefined>(undefined)
   const dragOverConnectionTargetRef = useRef<{ connectionId: string; folderId?: string; zone: 'before' | 'after' } | undefined>(undefined)
   const draggingConnectionIdsRef = useRef<string[]>([])
+  const aiPanelResizeRef = useRef<{ startX: number; startSize: number } | null>(null)
   const draggingConnectionFolderIdRef = useRef<string | undefined>(undefined)
 
   const { theme, toggleTheme } = useTheme()
@@ -1345,11 +1362,11 @@ function App(): React.JSX.Element {
       >
         <div className="connection-tree-main">
           <Typography.Text className="connection-tree-name" ellipsis title={connection.name}>
-            {connection.name}
+            {highlightTreeSearchText(connection.name)}
           </Typography.Text>
           <span className="connection-tree-type">{DATABASE_TYPE_LABELS[connection.database_type]}</span>
           <Typography.Text type="secondary" className="connection-tree-address" ellipsis title={connection.database || '未设置默认库'}>
-            {connection.database || '默认'}
+            {highlightTreeSearchText(connection.database || '默认')}
           </Typography.Text>
         </div>
         {isFocused && (
@@ -1514,6 +1531,158 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     return map
   }
 
+  const collectTreeNodesByKey = (nodes: DatabaseTreeNode[]): Map<string, DatabaseTreeNode> => {
+    const map = new Map<string, DatabaseTreeNode>()
+    const visit = (currentNodes: DatabaseTreeNode[]): void => {
+      for (const node of currentNodes) {
+        map.set(String(node.key), node)
+        if (node.children?.length) {
+          visit(node.children as DatabaseTreeNode[])
+        }
+      }
+    }
+    visit(nodes)
+    return map
+  }
+
+  const getTreeNodeCopyName = (node: DatabaseTreeNode): string => {
+    if (node.kind === 'column' && node.columnName) {
+      return node.columnName
+    }
+    if ((node.kind === 'table' || node.kind === 'db-object') && node.tableName) {
+      return node.tableName
+    }
+    if ((node.kind === 'database' || node.kind === 'pg-schema') && node.databaseName) {
+      return node.databaseName
+    }
+    if (node.kind === 'object-group') {
+      return String(node.title ?? (node.objectType ? objectGroupTitle(node.objectType) : '对象'))
+    }
+    return String(node.title ?? '')
+  }
+
+  const highlightTreeSearchText = (text: string): React.ReactNode => {
+    const keyword = treeSearchText.trim()
+    if (!keyword) {
+      return text
+    }
+    const lowerText = text.toLowerCase()
+    const lowerKeyword = keyword.toLowerCase()
+    const matchIndex = lowerText.indexOf(lowerKeyword)
+    if (matchIndex < 0) {
+      return text
+    }
+    const matchEnd = matchIndex + keyword.length
+    return (
+      <>
+        {text.slice(0, matchIndex)}
+        <mark className="tree-search-highlight">{text.slice(matchIndex, matchEnd)}</mark>
+        {text.slice(matchEnd)}
+      </>
+    )
+  }
+
+  const locateActiveTreeNode = async (): Promise<void> => {
+    const currentTab = workspaceTabs.find((tab) => tab.key === activeTabKey)
+    if (!currentTab?.connectionId) {
+      return
+    }
+
+    let targetPath: string[] | undefined
+    if (currentTab.kind === 'preview' && currentTab.tableName) {
+      targetPath = [
+        `connection:${currentTab.connectionId}`,
+        ...(currentTab.pgDatabaseName ? [`database:${currentTab.connectionId}:${currentTab.pgDatabaseName}`] : []),
+        ...(currentTab.databaseName && currentTab.pgDatabaseName ? [`pg-schema:${currentTab.connectionId}:${currentTab.pgDatabaseName}:${currentTab.databaseName}`] : currentTab.databaseName ? [`database:${currentTab.connectionId}:${currentTab.databaseName}`] : []),
+        `object-group:${currentTab.connectionId}:${currentTab.pgDatabaseName ?? ''}:${currentTab.databaseName ?? ''}:table`,
+        `table:${currentTab.connectionId}:${currentTab.pgDatabaseName ?? ''}:${currentTab.databaseName ?? ''}:table:${currentTab.tableName}`
+      ]
+    } else if (currentTab.kind === 'table-list') {
+      const objectType: DbObjectType = currentTab.title.includes('视图列表') ? 'view' : 'table'
+      targetPath = [
+        `connection:${currentTab.connectionId}`,
+        ...(currentTab.pgDatabaseName ? [`database:${currentTab.connectionId}:${currentTab.pgDatabaseName}`] : []),
+        ...(currentTab.databaseName && currentTab.pgDatabaseName ? [`pg-schema:${currentTab.connectionId}:${currentTab.pgDatabaseName}:${currentTab.databaseName}`] : currentTab.databaseName ? [`database:${currentTab.connectionId}:${currentTab.databaseName}`] : []),
+        `object-group:${currentTab.connectionId}:${currentTab.pgDatabaseName ?? ''}:${currentTab.databaseName ?? ''}:${objectType}`
+      ]
+    } else if (currentTab.kind === 'redis-browser' && currentTab.databaseName) {
+      targetPath = [
+        `connection:${currentTab.connectionId}`,
+        `database:${currentTab.connectionId}:${currentTab.databaseName}`
+      ]
+    } else if (currentTab.kind === 'query') {
+      targetPath = [`connection:${currentTab.connectionId}`]
+    }
+
+    if (!targetPath || targetPath.length === 0) {
+      return
+    }
+
+    for (let index = 0; index < targetPath.length - 1; index += 1) {
+      const currentMap = collectTreeNodesByKey(treeData)
+      const currentNode = currentMap.get(targetPath[index])
+      if (!currentNode) {
+        return
+      }
+      if (!isTreeNodeChildrenLoaded(currentNode) && isLoadableTreeNode(currentNode)) {
+        await reloadNodeChildren({ ...currentNode, isLeaf: false })
+      } else {
+        setExpandedKeys((current) => current.includes(currentNode.key as React.Key) ? current : [...current, currentNode.key as React.Key])
+      }
+    }
+
+    const nodeMap = collectTreeNodesByKey(treeData)
+    const targetNode = nodeMap.get(targetPath[targetPath.length - 1])
+    if (!targetNode) {
+      return
+    }
+
+    handleTreeSelection(targetNode)
+    resourceTreeContainerRef.current?.focus()
+    requestAnimationFrame(() => {
+      const selectedNode = resourceTreeViewportRef.current?.querySelector('.ant-tree-node-content-wrapper.ant-tree-node-selected')
+      selectedNode?.scrollIntoView({ block: 'center' })
+    })
+  }
+
+  const findTreeKeyPathByPredicate = (nodes: DatabaseTreeNode[], predicate: (node: DatabaseTreeNode) => boolean, parentPath: string[] = []): string[] | undefined => {
+    for (const node of nodes) {
+      const nextPath = [...parentPath, String(node.key)]
+      if (predicate(node)) {
+        return nextPath
+      }
+      if (node.children?.length) {
+        const childPath = findTreeKeyPathByPredicate(node.children as DatabaseTreeNode[], predicate, nextPath)
+        if (childPath) {
+          return childPath
+        }
+      }
+    }
+    return undefined
+  }
+
+  useEffect(() => {
+    const keyword = treeSearchText.trim().toLowerCase()
+    if (!keyword) {
+      return
+    }
+    const path = findTreeKeyPathByPredicate(treeData, (node) => getTreeNodeCopyName(node).toLowerCase().includes(keyword))
+    if (!path || path.length === 0) {
+      return
+    }
+    setExpandedKeys((current) => Array.from(new Set([...current, ...path.slice(0, -1)])))
+    setSelectedTreeKeys([path[path.length - 1]])
+    const nodeMap = collectTreeNodesByKey(treeData)
+    const targetNode = nodeMap.get(path[path.length - 1])
+    if (targetNode) {
+      setFocusedTreeNode(targetNode)
+    }
+    requestAnimationFrame(() => {
+      const highlighted = resourceTreeViewportRef.current?.querySelector('.tree-search-highlight')
+      highlighted?.scrollIntoView({ block: 'center' })
+    })
+  }, [treeData, treeSearchText])
+
   const buildResourceTree = (nextConnections: ConnectionInfo[], currentNodes: DatabaseTreeNode[] = []): DatabaseTreeNode[] => {
     const existingConnectionNodes = collectConnectionNodesById(currentNodes)
     const groupedNodes = new Map<string, DatabaseTreeNode[]>()
@@ -1572,6 +1741,28 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
   useEffect(() => {
     refreshTree(connections)
   }, [connections, connectionFolders, connectionFolderAssignments, rootItemOrder, folderConnectionOrder])
+
+  useEffect(() => {
+    const treeNodesByKey = collectTreeNodesByKey(treeData)
+    if (treeNodesByKey.size === 0) {
+      return
+    }
+
+    setExpandedKeys((current) => {
+      const next = current.filter((key) => {
+        const node = treeNodesByKey.get(String(key))
+        if (!node || node.closed || node.isLeaf) {
+          return false
+        }
+        if (node.kind === 'folder') {
+          return true
+        }
+        return Boolean(node.childrenLoaded || node.children?.length)
+      })
+
+      return current.length === next.length && current.every((item, index) => item === next[index]) ? current : next
+    })
+  }, [treeData])
 
   useEffect(() => {
     const closedConnectionIds = new Set(
@@ -2053,6 +2244,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
   }
 
   const handleTreeSelection = (node: DatabaseTreeNode, nativeEvent?: MouseEvent): void => {
+    resourceTreeContainerRef.current?.focus()
     startTransition(() => {
       setFocusedTreeNode(node)
       if (node.connectionId) {
@@ -2255,6 +2447,104 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     setWorkspaceTabs((current) => current.map((tab) => (tab.key === key ? { ...tab, ...patch } : tab)))
   }
 
+  const updateSelectedCells = (tabKey: string, cellKeys: string[]): void => {
+    const currentCellKeys = selectedCellRefs.current[tabKey] ?? []
+    if (currentCellKeys.length === cellKeys.length && currentCellKeys.every((key, index) => key === cellKeys[index])) {
+      return
+    }
+    selectedCellRefs.current[tabKey] = cellKeys.length > 0 ? cellKeys : undefined
+  }
+
+  const syncRenderedCellSelection = (tabKey: string): void => {
+    if (inlineCellEditorRefs.current[tabKey]) {
+      clearRenderedCellSelection(tabKey)
+      return
+    }
+
+    const runtimeCellKeys = runtimeSelectedCellRefs.current[tabKey] ?? []
+    if (runtimeCellKeys.length > 0) {
+      updateRenderedCellSelection(tabKey, runtimeCellKeys)
+      return
+    }
+
+    const committedCellKeys = selectedCellRefs.current[tabKey] ?? []
+    if (committedCellKeys.length > 0) {
+      updateRenderedCellSelection(tabKey, committedCellKeys)
+      return
+    }
+
+    clearRenderedCellSelection(tabKey)
+  }
+
+  const closeInlineCellEditor = (tabKey: string, displayValue?: string): void => {
+    const current = inlineCellEditorRefs.current[tabKey]
+    if (!current) {
+      return
+    }
+    current.host.textContent = displayValue ?? current.originalContent
+    current.host.classList.remove('editable-cell-inline-editing')
+    inlineCellEditorRefs.current[tabKey] = undefined
+  }
+
+  const closeEditingCell = (tabKey: string, displayValue?: string): void => {
+    closeInlineCellEditor(tabKey, displayValue)
+    requestAnimationFrame(() => {
+      committingEditingCellRefs.current[tabKey] = undefined
+      syncRenderedCellSelection(tabKey)
+    })
+  }
+
+  const commitInlineCellEditor = (tabKey: string): void => {
+    const current = inlineCellEditorRefs.current[tabKey]
+    if (!current || committingEditingCellRefs.current[tabKey]) {
+      return
+    }
+    committingEditingCellRefs.current[tabKey] = true
+    const nextValue = current.input.value
+    const { rowKey, column } = current
+    closeEditingCell(tabKey, nextValue)
+    window.setTimeout(() => {
+      updatePreviewCell(tabKey, rowKey, column, editableValue(nextValue))
+    }, 0)
+  }
+
+  const openInlineCellEditor = (tabKey: string, rowKey: string, column: string, host: HTMLElement, rawValue: unknown): void => {
+    closeInlineCellEditor(tabKey)
+    clearRenderedCellSelection(tabKey)
+    rowDragAnchorRefs.current[tabKey] = undefined
+    cellDragAnchorRefs.current[tabKey] = undefined
+    pendingCellDragTargetRefs.current[tabKey] = undefined
+    runtimeSelectedCellRefs.current[tabKey] = undefined
+    const originalContent = host.textContent ?? ''
+    const input = document.createElement('input')
+    input.className = 'editable-cell-dom-input'
+    input.value = rawValue === null || rawValue === undefined ? '' : String(rawValue)
+    input.dataset.columnKey = column
+    input.dataset.rowKey = rowKey
+    input.dataset.cellKey = `${rowKey}:${column}`
+    input.addEventListener('mousedown', (event) => event.stopPropagation())
+    input.addEventListener('dblclick', (event) => event.stopPropagation())
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        commitInlineCellEditor(tabKey)
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        closeEditingCell(tabKey)
+      }
+    })
+    input.addEventListener('blur', () => commitInlineCellEditor(tabKey))
+    host.textContent = ''
+    host.classList.add('editable-cell-inline-editing')
+    host.appendChild(input)
+    inlineCellEditorRefs.current[tabKey] = { rowKey, column, input, host, originalContent }
+    requestAnimationFrame(() => {
+      input.focus()
+      input.select()
+    })
+  }
+
   useEffect(() => {
     if (!activeTabKey) {
       return
@@ -2275,6 +2565,14 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
 
     return () => observer.disconnect()
   }, [activeTabKey, workspaceTabs.length])
+
+  useEffect(() => {
+    for (const tab of workspaceTabs) {
+      requestAnimationFrame(() => {
+        syncRenderedCellSelection(tab.key)
+      })
+    }
+  }, [workspaceTabs])
 
   useEffect(() => {
     const element = resourceTreeViewportRef.current
@@ -2319,6 +2617,39 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       window.removeEventListener('keydown', handleEscape)
     }
   }, [treeContextMenu])
+
+  useEffect(() => {
+    if (!resizingResourcePanel) {
+      return
+    }
+    const handleMouseUp = (): void => setResizingResourcePanel(false)
+    window.addEventListener('mouseup', handleMouseUp)
+    return () => window.removeEventListener('mouseup', handleMouseUp)
+  }, [resizingResourcePanel])
+
+  useEffect(() => {
+    if (!resizingAiPanel) {
+      return
+    }
+    const handleMouseMove = (event: MouseEvent): void => {
+      const resizeState = aiPanelResizeRef.current
+      if (!resizeState) {
+        return
+      }
+      const nextSize = Math.min(720, Math.max(260, resizeState.startSize - (event.clientX - resizeState.startX)))
+      setAiPanelSize(nextSize)
+    }
+    const handleMouseUp = (): void => {
+      aiPanelResizeRef.current = null
+      setResizingAiPanel(false)
+    }
+    window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mouseup', handleMouseUp)
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [resizingAiPanel])
 
   const closeWorkspaceTab = (key: string): void => {
     setWorkspaceTabs((current) => {
@@ -2465,6 +2796,28 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
   const copyTableName = async (tableName: string): Promise<void> => {
     try {
       await navigator.clipboard.writeText(tableName)
+    } catch {
+      showError('复制失败')
+    }
+  }
+
+  const copyTreeNodeNames = async (): Promise<void> => {
+    const nodeMap = collectTreeNodesByKey(treeData)
+    const nodeKeys = selectedTreeKeys.length > 0
+      ? selectedTreeKeys.map(String)
+      : focusedTreeNode?.key
+        ? [String(focusedTreeNode.key)]
+        : []
+    const names = nodeKeys
+      .map((key) => nodeMap.get(key))
+      .filter((node): node is DatabaseTreeNode => Boolean(node))
+      .map((node) => getTreeNodeCopyName(node).trim())
+      .filter(Boolean)
+    if (names.length === 0) {
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(names.join('\n'))
     } catch {
       showError('复制失败')
     }
@@ -2847,8 +3200,8 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
               primaryKey: connection?.database_type !== 'clickhouse',
               comment: '',
               unique: false,
-              autoIncrement: connection?.database_type === 'mysql' || connection?.database_type === 'postgresql' || connection?.database_type === 'sqlite',
-              autoIncrementStep: connection?.database_type === 'postgresql' ? 1 : undefined,
+              autoIncrement: connection?.database_type === 'mysql' || connection?.database_type === 'postgresql' || connection?.database_type === 'gaussdb' || connection?.database_type === 'sqlite',
+              autoIncrementStep: connection?.database_type === 'postgresql' || connection?.database_type === 'gaussdb' ? 1 : undefined,
               minimum: '',
               maximum: ''
             },
@@ -3075,7 +3428,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             }
           }}
         >
-          <span className="table-tree-title">{node.title as React.ReactNode}</span>
+          <span className="table-tree-title">{highlightTreeSearchText(String(node.title ?? ''))}</span>
           <Tag className="folder-count-tag">{connectionCount}</Tag>
         </Flex>
       )
@@ -3092,7 +3445,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
 
     if (node.kind === 'column') {
       const title = String(node.title ?? '')
-      return <span className="table-tree-title" title={title}>{title}</span>
+      return <span className="table-tree-title" title={title}>{highlightTreeSearchText(title)}</span>
     }
 
     if ((node.kind === 'database' || node.kind === 'pg-schema') && node.connectionId && node.databaseName) {
@@ -3109,7 +3462,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       return (
         <Flex align="center" justify="space-between" className="tree-title-row">
           <div className="tree-title-with-size">
-            <span className="table-tree-title">{node.title as React.ReactNode}</span>
+            <span className="table-tree-title">{highlightTreeSearchText(String(node.title ?? ''))}</span>
             <span className="tree-node-actions">
               {renderAIContextButton(node)}
               {node.sizeDisplay && <span className="tree-size-badge" title={`数据大小：${node.sizeDisplay}${node.storageSizeDisplay ? `，物理占用：${node.storageSizeDisplay}` : ''}`}>{node.sizeDisplay}</span>}
@@ -3187,13 +3540,13 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     }
 
     if ((node.kind !== 'table' && node.kind !== 'db-object') || !node.connectionId || !node.tableName) {
-      return node.title as React.ReactNode
+      return highlightTreeSearchText(String(node.title ?? ''))
     }
 
     return (
       <Flex align="center" justify="space-between" className="tree-title-with-size">
         <span className="table-tree-title">
-          {node.title as React.ReactNode}
+          {highlightTreeSearchText(String(node.title ?? ''))}
         </span>
         <span className="tree-node-actions">
           {node.sizeDisplay && <span className="tree-size-badge" title={`数据大小：${node.sizeDisplay}${node.storageSizeDisplay ? `，物理占用：${node.storageSizeDisplay}` : ''}`}>{node.sizeDisplay}</span>}
@@ -3248,28 +3601,59 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     )
   }
 
-  const renderEditableCell = (tab: WorkspaceTab, row: EditableRow, column: string, value: unknown): React.ReactNode => {
-    const isEditing = tab.editingCell?.rowKey === row.__rowKey && tab.editingCell.column === column
-
-    if (isEditing) {
-      return (
-        <Input
-          autoFocus
-          size="small"
-          defaultValue={value === null || value === undefined ? '' : String(value)}
-          onPressEnter={(event) => updatePreviewCell(tab.key, row.__rowKey, column, editableValue(event.currentTarget.value))}
-          onKeyDown={(event) => {
-            if (event.key === 'Escape') {
-              updateWorkspaceTab(tab.key, { editingCell: undefined })
-            }
-          }}
-          onBlur={(event) => updatePreviewCell(tab.key, row.__rowKey, column, editableValue(event.currentTarget.value))}
-        />
-      )
-    }
-
+  const renderEditableCell = (
+    tabKey: string,
+    rowKey: string,
+    column: string,
+    value: unknown,
+    onCellDragEnter: () => void
+  ): React.ReactNode => {
     return (
-      <span className="editable-cell" onDoubleClick={() => updateWorkspaceTab(tab.key, { editingCell: { rowKey: row.__rowKey, column } })}>
+      <span
+        className="editable-cell"
+        data-column-key={column}
+        data-row-key={rowKey}
+        data-cell-key={`${rowKey}:${column}`}
+        onMouseDown={(event) => {
+          if (event.button !== 0 || inlineCellEditorRefs.current[tabKey]) {
+            return
+          }
+          event.stopPropagation()
+          if (event.detail >= 2) {
+            event.preventDefault()
+            rowDragAnchorRefs.current[tabKey] = undefined
+            cellDragAnchorRefs.current[tabKey] = undefined
+            pendingCellDragTargetRefs.current[tabKey] = undefined
+            runtimeSelectedCellRefs.current[tabKey] = undefined
+            openInlineCellEditor(tabKey, rowKey, column, event.currentTarget, value)
+            return
+          }
+          cellDragAnchorRefs.current[tabKey] = { rowKey, column }
+          applyRuntimeCellSelection(tabKey, rowKey, column)
+          clearRuntimeColumnSelection(tabKey)
+        }}
+        onDoubleClick={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          rowDragAnchorRefs.current[tabKey] = undefined
+          cellDragAnchorRefs.current[tabKey] = undefined
+          pendingCellDragTargetRefs.current[tabKey] = undefined
+          runtimeSelectedCellRefs.current[tabKey] = undefined
+          openInlineCellEditor(tabKey, rowKey, column, event.currentTarget, value)
+        }}
+        onMouseEnter={onCellDragEnter}
+        onMouseUp={(event) => {
+          event.stopPropagation()
+          rowDragAnchorRefs.current[tabKey] = undefined
+          cellDragAnchorRefs.current[tabKey] = undefined
+          if (pendingCellDragFrameRefs.current[tabKey]) {
+            window.cancelAnimationFrame(pendingCellDragFrameRefs.current[tabKey]!)
+            pendingCellDragFrameRefs.current[tabKey] = undefined
+          }
+          pendingCellDragTargetRefs.current[tabKey] = undefined
+          commitRuntimeCellSelection(tabKey, runtimeSelectedCellRefs.current[tabKey] ?? [])
+        }}
+      >
         {value === null || value === undefined ? <Typography.Text type="secondary">NULL</Typography.Text> : String(value)}
       </span>
     )
@@ -3467,6 +3851,27 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     container.querySelectorAll('.column-select-button-runtime-selected').forEach((element) => element.classList.remove('column-select-button-runtime-selected'))
   }
 
+  const clearRenderedCellSelection = (tabKey: string): void => {
+    const container = tableBodyRefs.current[tabKey]
+    if (!container) {
+      return
+    }
+    container.querySelectorAll('.cell-selected-runtime').forEach((element) => element.classList.remove('cell-selected-runtime'))
+  }
+
+  const updateRenderedCellSelection = (tabKey: string, cellKeys: string[]): void => {
+    const container = tableBodyRefs.current[tabKey]
+    if (!container) {
+      return
+    }
+    clearRenderedCellSelection(tabKey)
+    for (const cellKey of cellKeys) {
+      container
+        .querySelector<HTMLElement>(`.editable-cell[data-cell-key="${CSS.escape(cellKey)}"]`)
+        ?.classList.add('cell-selected-runtime')
+    }
+  }
+
   const applyRuntimeColumnSelection = (tabKey: string, column: string): void => {
     const container = tableBodyRefs.current[tabKey]
     if (!container) {
@@ -3483,38 +3888,49 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
   }
 
   const clearRuntimeCellSelection = (tabKey: string): void => {
-    selectedCellRefs.current[tabKey] = undefined
-    const container = tableBodyRefs.current[tabKey]
-    if (!container) {
-      return
-    }
-    container.querySelectorAll('.cell-selected-runtime').forEach((element) => element.classList.remove('cell-selected-runtime'))
+    runtimeSelectedCellRefs.current[tabKey] = undefined
+    clearRenderedCellSelection(tabKey)
   }
 
-  const applyRuntimeCellSelection = (tabKey: string, rowKey: string, column: string): void => {
-    const container = tableBodyRefs.current[tabKey]
-    if (!container) {
+  const clearCommittedCellSelection = (tabKey: string): void => {
+    committedSelectedCellRangeRefs.current[tabKey] = undefined
+    clearRenderedCellSelection(tabKey)
+    updateSelectedCells(tabKey, [])
+  }
+
+  const setRuntimeCellSelection = (tabKey: string, cellKeys: string[]): void => {
+    runtimeSelectedCellRefs.current[tabKey] = cellKeys.length > 0 ? cellKeys : undefined
+    updateRenderedCellSelection(tabKey, cellKeys)
+  }
+
+  const setCommittedCellSelection = (tabKey: string, cellKeys: string[]): void => {
+    committedSelectedCellRangeRefs.current[tabKey] = cellKeys.length > 0 ? cellKeys : undefined
+    updateSelectedCells(tabKey, cellKeys)
+    updateRenderedCellSelection(tabKey, cellKeys)
+  }
+
+  const scheduleRenderedCellSelectionSync = (tabKey: string): void => {
+    if (pendingRenderedCellSelectionFrameRefs.current[tabKey]) {
       return
     }
-    clearRuntimeCellSelection(tabKey)
-    selectedCellRefs.current[tabKey] = [`${rowKey}:${column}`]
-    container.querySelectorAll<HTMLElement>(`[data-cell-key="${CSS.escape(`${rowKey}:${column}`)}"]`).forEach((element) => {
-      element.classList.add('cell-selected-runtime')
+    pendingRenderedCellSelectionFrameRefs.current[tabKey] = window.requestAnimationFrame(() => {
+      pendingRenderedCellSelectionFrameRefs.current[tabKey] = undefined
+      syncRenderedCellSelection(tabKey)
     })
   }
 
+  const applyRuntimeCellSelection = (tabKey: string, rowKey: string, column: string): void => {
+    const nextCellKeys = [`${rowKey}:${column}`]
+    setRuntimeCellSelection(tabKey, nextCellKeys)
+  }
+
   const applyRuntimeCellRangeSelection = (tabKey: string, cellKeys: string[]): void => {
-    const container = tableBodyRefs.current[tabKey]
-    if (!container) {
-      return
-    }
+    setRuntimeCellSelection(tabKey, cellKeys)
+  }
+
+  const commitRuntimeCellSelection = (tabKey: string, cellKeys: string[]): void => {
     clearRuntimeCellSelection(tabKey)
-    selectedCellRefs.current[tabKey] = cellKeys
-    for (const cellKey of cellKeys) {
-      container.querySelectorAll<HTMLElement>(`[data-cell-key="${CSS.escape(cellKey)}"]`).forEach((element) => {
-        element.classList.add('cell-selected-runtime')
-      })
-    }
+    setCommittedCellSelection(tabKey, cellKeys)
   }
 
   const renderRedisBrowser = (tab: WorkspaceTab): React.ReactNode => {
@@ -3687,28 +4103,46 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       if (!anchor) {
         return
       }
-      const startRowIndex = orderedRowKeys.indexOf(anchor.rowKey)
-      const endRowIndex = orderedRowKeys.indexOf(rowKey)
-      const startColumnIndex = orderedColumnIndexMap[anchor.column]
-      const endColumnIndex = orderedColumnIndexMap[column]
-      if (startRowIndex < 0 || endRowIndex < 0 || startColumnIndex === undefined || endColumnIndex === undefined) {
+      const pendingTarget = pendingCellDragTargetRefs.current[tab.key]
+      if (pendingTarget?.rowKey === rowKey && pendingTarget.column === column) {
         return
       }
-      const rowStart = Math.min(startRowIndex, endRowIndex)
-      const rowEnd = Math.max(startRowIndex, endRowIndex)
-      const columnStart = Math.min(startColumnIndex, endColumnIndex)
-      const columnEnd = Math.max(startColumnIndex, endColumnIndex)
-      const nextCellKeys: string[] = []
-      for (let rowIndex = rowStart; rowIndex <= rowEnd; rowIndex += 1) {
-        for (let columnIndex = columnStart; columnIndex <= columnEnd; columnIndex += 1) {
-          nextCellKeys.push(`${orderedRowKeys[rowIndex]}:${orderedColumns[columnIndex]}`)
+      pendingCellDragTargetRefs.current[tab.key] = { rowKey, column }
+      if (pendingCellDragFrameRefs.current[tab.key]) {
+        return
+      }
+      pendingCellDragFrameRefs.current[tab.key] = window.requestAnimationFrame(() => {
+        pendingCellDragFrameRefs.current[tab.key] = undefined
+        const latestAnchor = cellDragAnchorRefs.current[tab.key]
+        const latestTarget = pendingCellDragTargetRefs.current[tab.key]
+        if (!latestAnchor || !latestTarget) {
+          return
         }
-      }
-      const currentCellKeys = selectedCellRefs.current[tab.key] ?? []
-      if (currentCellKeys.length === nextCellKeys.length && currentCellKeys.every((key, index) => key === nextCellKeys[index])) {
-        return
-      }
-      applyRuntimeCellRangeSelection(tab.key, nextCellKeys)
+        pendingCellDragTargetRefs.current[tab.key] = undefined
+        const startRowIndex = orderedRowKeys.indexOf(latestAnchor.rowKey)
+        const endRowIndex = orderedRowKeys.indexOf(latestTarget.rowKey)
+        const startColumnIndex = orderedColumnIndexMap[latestAnchor.column]
+        const endColumnIndex = orderedColumnIndexMap[latestTarget.column]
+        if (startRowIndex < 0 || endRowIndex < 0 || startColumnIndex === undefined || endColumnIndex === undefined) {
+          return
+        }
+        const rowStart = Math.min(startRowIndex, endRowIndex)
+        const rowEnd = Math.max(startRowIndex, endRowIndex)
+        const columnStart = Math.min(startColumnIndex, endColumnIndex)
+        const columnEnd = Math.max(startColumnIndex, endColumnIndex)
+        const nextCellKeys: string[] = []
+        for (let rowIndex = rowStart; rowIndex <= rowEnd; rowIndex += 1) {
+          for (let columnIndex = columnStart; columnIndex <= columnEnd; columnIndex += 1) {
+            nextCellKeys.push(`${orderedRowKeys[rowIndex]}:${orderedColumns[columnIndex]}`)
+          }
+        }
+        const committedCellKeys = selectedCellRefs.current[tab.key] ?? []
+        const runtimeCellKeys = runtimeSelectedCellRefs.current[tab.key] ?? committedCellKeys
+        if (runtimeCellKeys.length === nextCellKeys.length && runtimeCellKeys.every((key, index) => key === nextCellKeys[index])) {
+          return
+        }
+        applyRuntimeCellRangeSelection(tab.key, nextCellKeys)
+      })
     }
 
     const copyColumnName = async (column: string): Promise<void> => {
@@ -3781,8 +4215,8 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                 event.stopPropagation()
                 applyRuntimeColumnSelection(tab.key, column)
                 clearRuntimeCellSelection(tab.key)
-                if (tab.editingCell) {
-                  updateWorkspaceTab(tab.key, { editingCell: undefined })
+                if (editingCells[tab.key]) {
+                  setEditingCells((current) => ({ ...current, [tab.key]: undefined }))
                 }
               }}
               onDragStart={(event) => {
@@ -3890,23 +4324,12 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           'data-column-key': column,
           'data-row-key': row.__rowKey,
           'data-cell-key': `${row.__rowKey}:${column}`,
-          onMouseDown: (event: React.MouseEvent<HTMLElement>) => {
-            if (event.button !== 0) {
-              return
-            }
-            cellDragAnchorRefs.current[tab.key] = { rowKey: row.__rowKey, column }
-            applyRuntimeCellSelection(tab.key, row.__rowKey, column)
-            clearRuntimeColumnSelection(tab.key)
-          },
-          onMouseEnter: () => {
-            updateDragCellSelection(row.__rowKey, column)
-          },
-          onClick: () => {
-            applyRuntimeCellSelection(tab.key, row.__rowKey, column)
-            clearRuntimeColumnSelection(tab.key)
-          }
-        }),
-        render: (value: unknown, row: EditableRow) => (tab.kind === 'preview' ? renderEditableCell(tab, row, column, value) : <span className="table-cell-text">{value === null || value === undefined ? 'NULL' : String(value)}</span>)
+        } as React.TdHTMLAttributes<HTMLElement>),
+        render: (value: unknown, row: EditableRow) => (
+          tab.kind === 'preview'
+            ? renderEditableCell(tab.key, row.__rowKey, column, value, () => updateDragCellSelection(row.__rowKey, column))
+            : <span className="table-cell-text">{value === null || value === undefined ? 'NULL' : String(value)}</span>
+        )
       })) ?? []
     const tableColumns: ColumnsType<EditableRow> = tab.kind === 'preview' ? [rowNumberColumn, ...dataColumns] : dataColumns
     const tableScrollX = Math.max((tab.result?.columns.length ?? 0) * 180 + (tab.kind === 'preview' ? 34 : 0), 720)
@@ -3925,8 +4348,13 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           ref={(element) => { tableBodyRefs.current[tab.key] = element }}
           className="result-table-body"
           style={{ '--result-table-scroll-y': `${tableScrollY}px` } as React.CSSProperties}
+          onScrollCapture={() => scheduleRenderedCellSelectionSync(tab.key)}
           onMouseDown={(event) => {
             const target = event.target as HTMLElement
+            const activeInlineEditor = inlineCellEditorRefs.current[tab.key]
+            if (activeInlineEditor && !target.closest('.editable-cell-dom-input')) {
+              commitInlineCellEditor(tab.key)
+            }
             if (!target.closest('.row-number-button')) {
               clearSelectedRows()
             }
@@ -3935,16 +4363,38 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             }
             if (!target.closest('[data-cell-key]')) {
               clearRuntimeCellSelection(tab.key)
+              clearCommittedCellSelection(tab.key)
             }
           }}
           onMouseUp={() => {
+            if (editingCells[tab.key]) {
+              rowDragAnchorRefs.current[tab.key] = undefined
+              cellDragAnchorRefs.current[tab.key] = undefined
+              pendingCellDragTargetRefs.current[tab.key] = undefined
+              return
+            }
             rowDragAnchorRefs.current[tab.key] = undefined
             cellDragAnchorRefs.current[tab.key] = undefined
+            if (pendingCellDragFrameRefs.current[tab.key]) {
+              window.cancelAnimationFrame(pendingCellDragFrameRefs.current[tab.key]!)
+              pendingCellDragFrameRefs.current[tab.key] = undefined
+            }
+            pendingCellDragTargetRefs.current[tab.key] = undefined
+            commitRuntimeCellSelection(tab.key, runtimeSelectedCellRefs.current[tab.key] ?? [])
             commitPreviewSelectedRows()
           }}
           onMouseLeave={() => {
+            if (!cellDragAnchorRefs.current[tab.key] && !rowDragAnchorRefs.current[tab.key]) {
+              return
+            }
             rowDragAnchorRefs.current[tab.key] = undefined
             cellDragAnchorRefs.current[tab.key] = undefined
+            if (pendingCellDragFrameRefs.current[tab.key]) {
+              window.cancelAnimationFrame(pendingCellDragFrameRefs.current[tab.key]!)
+              pendingCellDragFrameRefs.current[tab.key] = undefined
+            }
+            pendingCellDragTargetRefs.current[tab.key] = undefined
+            commitRuntimeCellSelection(tab.key, runtimeSelectedCellRefs.current[tab.key] ?? [])
             commitPreviewSelectedRows()
           }}
         >
@@ -3987,7 +4437,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
   }
 
   const getDefaultPgDatabase = (connection: ConnectionInfo): string | undefined => {
-    if (connection.database_type !== 'postgresql') {
+    if (connection.database_type !== 'postgresql' && connection.database_type !== 'gaussdb') {
       return undefined
     }
 
@@ -4944,7 +5394,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     }
   }
 
-  const openConnectionById = async (connectionId: string): Promise<void> => {
+  const openConnectionById = async (connectionId: string): Promise<ConnectionInfo | undefined> => {
     setConnectionTreeLoadingText(connectionId, '正在打开连接...')
     try {
       const connection = await requestJson<ConnectionInfo>(`/connections/${connectionId}/open`, { method: 'POST' })
@@ -4961,8 +5411,10 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         setConnectionTreeLoadingText(connectionId, '正在加载库表...')
         await preloadConnectionTree(connection)
       }
+      return connection
     } catch (err) {
       showError(err instanceof Error ? err.message : '打开连接失败')
+      return undefined
     } finally {
       setConnectionTreeLoadingText(connectionId)
     }
@@ -5777,6 +6229,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
   }
 
   const updatePreviewCell = (tabKey: string, rowKey: string, column: string, value: unknown): void => {
+    setEditingCells((current) => ({ ...current, [tabKey]: undefined }))
     setWorkspaceTabs((current) =>
       current.map((tab) => {
         if (tab.key !== tabKey) {
@@ -5786,7 +6239,6 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         return {
           ...tab,
           columnFilterOptions: undefined,
-          editingCell: undefined,
           editRows: tab.editRows?.map((row) => {
             if (row.__rowKey !== rowKey) {
               return row
@@ -5882,7 +6334,9 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         method: 'PUT',
         body: JSON.stringify({ inserted, updated, deleted })
       })
-      updateWorkspaceTab(tab.key, { result, editRows: buildEditableRows(result.rows), selectedRowKeys: [], selectedRowKeyMap: {}, columnFilterOptions: undefined, editingCell: undefined, where: tab.where?.trim() ?? '', loading: false, error: undefined })
+      setEditingCells((current) => ({ ...current, [tab.key]: undefined }))
+      requestAnimationFrame(() => syncRenderedCellSelection(tab.key))
+      updateWorkspaceTab(tab.key, { result, editRows: buildEditableRows(result.rows), selectedRowKeys: [], selectedRowKeyMap: {}, columnFilterOptions: undefined, where: tab.where?.trim() ?? '', loading: false, error: undefined })
     } catch (err) {
       updateWorkspaceTab(tab.key, { loading: false, error: err instanceof Error ? err.message : '提交表数据失败' })
       showError(err instanceof Error ? err.message : '提交表数据失败')
@@ -5928,7 +6382,9 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     try {
       const previewPath = withWhereQuery(withPageQuery(withPgDatabase(`/connections/${connectionId}/tables/${encodeURIComponent(tableName)}/preview`, databaseName, pgDatabaseName), limit, page), whereCondition)
       const result = await requestJson<QueryResponse>(previewPath)
-      updateWorkspaceTab(tabKey, { result, editRows: buildEditableRows(result.rows), selectedRowKeys: [], selectedRowKeyMap: {}, columnFilterOptions: undefined, editingCell: undefined, where: whereCondition, loading: false, error: undefined })
+      setEditingCells((current) => ({ ...current, [tabKey]: undefined }))
+      requestAnimationFrame(() => syncRenderedCellSelection(tabKey))
+      updateWorkspaceTab(tabKey, { result, editRows: buildEditableRows(result.rows), selectedRowKeys: [], selectedRowKeyMap: {}, columnFilterOptions: undefined, where: whereCondition, loading: false, error: undefined })
     } catch (err) {
       updateWorkspaceTab(tabKey, { loading: false, error: err instanceof Error ? err.message : '加载表数据失败' })
       showError(err instanceof Error ? err.message : '加载表数据失败')
@@ -6380,7 +6836,14 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         </Flex>
       </Layout.Header>
       <Layout.Content className="app-content">
-        <Splitter className="workspace" onResizeEnd={(sizes) => setResourcePanelSize(sizes[0] as number)}>
+        <Splitter
+          className="workspace"
+          onResizeStart={() => setResizingResourcePanel(true)}
+          onResizeEnd={(sizes) => {
+            setResourcePanelSize(sizes[0] as number)
+            setResizingResourcePanel(false)
+          }}
+        >
           <Splitter.Panel defaultSize={resourcePanelSize} min={220} max={500} className="resource-panel">
             <div className="resource-header">
               <Space direction="vertical" size={2}>
@@ -6391,12 +6854,61 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                 <Button className="resource-add" type="primary" size="small" icon={<PlusOutlined />}>新建</Button>
               </Dropdown>
             </div>
-            <div className="connection-summary-grid">
-              <div className="summary-card"><span>{connections.length}</span><small>连接</small></div>
-              <div className="summary-card"><span>{connectionFolders.length}</span><small>分组</small></div>
-              <div className="summary-card accent"><span>{workspaceTabs.length}</span><small>工作页</small></div>
+            <div className="connection-summary-strip">
+              <span className="summary-pill"><strong>{connections.length}</strong> 连接</span>
+              <span className="summary-pill"><strong>{connectionFolders.length}</strong> 分组</span>
+              <span className="summary-pill accent"><strong>{workspaceTabs.length}</strong> 工作页</span>
             </div>
-            <div className="resource-tree-shell">
+            <div className="resource-toolbar">
+              <Space size={4}>
+                <Button
+                  size="small"
+                  type={treeSearchOpen ? 'primary' : 'text'}
+                  icon={<SearchOutlined />}
+                  title="搜索当前树"
+                  aria-label="搜索当前树"
+                  onClick={() => {
+                    setTreeSearchOpen((open) => !open)
+                    if (treeSearchOpen) {
+                      setTreeSearchText('')
+                    }
+                  }}
+                />
+                <Button
+                  size="small"
+                  type="text"
+                  icon={<AimOutlined />}
+                  title="定位当前对象"
+                  aria-label="定位当前对象"
+                  onClick={() => locateActiveTreeNode()}
+                />
+              </Space>
+              {treeSearchOpen && (
+                    <Input
+                      size="small"
+                      allowClear
+                      className="tree-search-input"
+                      value={treeSearchText}
+                      onChange={(event) => setTreeSearchText(event.target.value)}
+                    />
+              )}
+            </div>
+            <div
+              ref={resourceTreeContainerRef}
+              className="resource-tree-shell"
+              tabIndex={0}
+              onKeyDown={(event) => {
+                if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'c') {
+                  return
+                }
+                const target = event.target as HTMLElement | null
+                if (target?.closest('input, textarea, [contenteditable="true"], .monaco-editor')) {
+                  return
+                }
+                event.preventDefault()
+                void copyTreeNodeNames()
+              }}
+            >
               <div ref={resourceTreeViewportRef} className="resource-tree-viewport">
                 {treeData.length === 0 ? (
                   <Alert message="暂无数据库连接或分组" description="先创建一个连接，或者新建分组开始整理。" type="info" showIcon />
@@ -6499,6 +7011,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                     }}
                     onRightClick={({ node, event }) => {
                       event.preventDefault()
+                      resourceTreeContainerRef.current?.focus()
                       const treeNode = node as DatabaseTreeNode
                       const items = getTreeContextMenuItems(treeNode)
                       if (!items || items.length === 0) {
@@ -6551,7 +7064,11 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                       if (treeNode.kind === 'connection' && treeNode.connectionId) {
                         const conn = getConnection(treeNode.connectionId)
                         if (conn && !conn.is_open) {
-                          void openConnectionById(treeNode.connectionId)
+                          void openConnectionById(treeNode.connectionId).then((openedConnection) => {
+                            if (openedConnection?.is_open) {
+                              toggleOrLoadTreeNode({ ...treeNode, childrenLoaded: openedConnection.database_type === 'sqlite' })
+                            }
+                          })
                           return
                         }
                       }
@@ -6576,53 +7093,56 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           </Splitter.Panel>
           <Splitter.Panel>
             <div className="main-panel">
-              <Splitter className="studio-shell" onResizeEnd={(sizes) => {
-                if (aiPanelOpen) {
-                  setAiPanelSize(sizes[1] as number)
-                }
-              }}>
-                <Splitter.Panel>
-                  <div className="editor-placeholder">
-                    {workspaceTabs.length === 0 ? (
-                      <div className="empty-workspace"><FileAddOutlined /><Typography.Text type="secondary">连接数据库后，可以浏览库表结构、预览数据、编写 SQL，并让 Djinn Agent 辅助分析与执行受控操作。</Typography.Text><Space><Dropdown menu={connectionCreateMenu} trigger={['click']}><Button icon={<PlusOutlined />}>创建连接</Button></Dropdown></Space></div>
-                    ) : (
-                      <WorkspaceTabsView
-                        workspaceTabs={workspaceTabs}
-                        activeTabKey={activeTabKey}
-                        onActiveTabChange={setActiveTabKey}
-                        onCloseTab={closeWorkspaceTab}
-                        renderWorkspaceTab={renderWorkspaceTab}
-                      />
-                    )}
-                  </div>
-                </Splitter.Panel>
-                {aiPanelOpen && (
-                  <Splitter.Panel defaultSize={aiPanelSize} min={260} max={720} className="ai-dock-panel">
-                    <MemoAIPanel
-                      requestJson={requestJson}
-                      connectionContext={{
-                        connectionId: aiContextConnection?.is_open ? aiContextConnection.connection_id : undefined,
-                        dbType: aiContextConnection?.database_type,
-                        dbName: aiDbName,
-                        database: aiDatabase,
-                        pgDatabase: aiPgDatabase,
-                        connectionName: aiContextConnection?.name,
-                        serverVersion: aiContextConnection?.server_version
-                      }}
-                      workspace={aiWorkspacePayload}
-                      contextSources={effectiveAIContextSources}
-                      primaryContextSourceId={primaryAIContextSource?.id}
-                      onRemoveContextSource={removeAIContextSource}
-                      onWorkspaceAction={(action: AIWorkspaceAction) => {
-                        if (action.type === 'append_query_sql') {
-                          appendSqlToQueryWorkspace(action.sql, action.title)
-                        }
-                      }}
-                      onAgentDataChanged={refreshAfterAgentChange}
+              <div className={`studio-shell${resizingResourcePanel ? ' studio-shell-suspended' : ''}`}>
+                <div className="editor-placeholder">
+                  {workspaceTabs.length === 0 ? (
+                    <div className="empty-workspace"><FileAddOutlined /><Typography.Text type="secondary">连接数据库后，可以浏览库表结构、预览数据、编写 SQL，并让 Djinn Agent 辅助分析与执行受控操作。</Typography.Text><Space><Dropdown menu={connectionCreateMenu} trigger={['click']}><Button icon={<PlusOutlined />}>创建连接</Button></Dropdown></Space></div>
+                  ) : (
+                    <WorkspaceTabsView
+                      workspaceTabs={workspaceTabs}
+                      activeTabKey={activeTabKey}
+                      onActiveTabChange={setActiveTabKey}
+                      onCloseTab={closeWorkspaceTab}
+                      renderWorkspaceTab={renderWorkspaceTab}
                     />
-                  </Splitter.Panel>
+                  )}
+                </div>
+                {aiPanelOpen && (
+                  <>
+                    <div
+                      className={`ai-panel-resizer${resizingAiPanel ? ' active' : ''}`}
+                      onMouseDown={(event) => {
+                        aiPanelResizeRef.current = { startX: event.clientX, startSize: aiPanelSize }
+                        setResizingAiPanel(true)
+                      }}
+                    />
+                    <div className="ai-dock-panel" style={{ width: aiPanelSize }}>
+                      <MemoAIPanel
+                        requestJson={requestJson}
+                        connectionContext={{
+                          connectionId: aiContextConnection?.is_open ? aiContextConnection.connection_id : undefined,
+                          dbType: aiContextConnection?.database_type,
+                          dbName: aiDbName,
+                          database: aiDatabase,
+                          pgDatabase: aiPgDatabase,
+                          connectionName: aiContextConnection?.name,
+                          serverVersion: aiContextConnection?.server_version
+                        }}
+                        workspace={aiWorkspacePayload}
+                        contextSources={effectiveAIContextSources}
+                        primaryContextSourceId={primaryAIContextSource?.id}
+                        onRemoveContextSource={removeAIContextSource}
+                        onWorkspaceAction={(action: AIWorkspaceAction) => {
+                          if (action.type === 'append_query_sql') {
+                            appendSqlToQueryWorkspace(action.sql, action.title)
+                          }
+                        }}
+                        onAgentDataChanged={refreshAfterAgentChange}
+                      />
+                    </div>
+                  </>
                 )}
-              </Splitter>
+              </div>
             </div>
           </Splitter.Panel>
         </Splitter>

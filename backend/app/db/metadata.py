@@ -115,15 +115,24 @@ def _db_text(value: Any) -> str:
 
 
 def _pg_engine(engine: Engine, database_name: str) -> Engine:
-    if engine.dialect.name != "postgresql":
-        return engine
+    if engine.dialect.name == "postgresql":
+        if engine.url.database == database_name:
+            return engine
 
-    if engine.url.database == database_name:
-        return engine
+        from sqlalchemy import create_engine
 
-    from sqlalchemy import create_engine
+        return create_engine(engine.url.set(database=database_name), pool_pre_ping=True)
 
-    return create_engine(engine.url.set(database=database_name), pool_pre_ping=True)
+    if engine.dialect.name == "gaussdb":
+        current_database = engine.url.database
+        if current_database == database_name:
+            return engine
+
+        factory = getattr(engine, "_datadjinn_engine_factory", None)
+        if callable(factory):
+            return factory(database_name)
+
+    return engine
 
 
 def list_databases(engine: Engine) -> list[DatabaseInfo]:
@@ -449,7 +458,7 @@ def list_tables(engine: Engine, database_name: str | None = None, pg_database: s
             if target is not engine:
                 target.close()
 
-    if pg_database and engine.dialect.name == "postgresql":
+    if pg_database and engine.dialect.name in {"postgresql", "gaussdb"}:
         engine = _pg_engine(engine, pg_database)
 
     if engine.dialect.name == "mysql":
@@ -599,7 +608,7 @@ def list_db_objects(engine: Engine, database_name: str | None = None, pg_databas
     if object_type not in {None, "view", "trigger", "procedure", "function", "sequence", "index"}:
         return objects
 
-    if pg_database and engine.dialect.name == "postgresql":
+    if pg_database and engine.dialect.name in {"postgresql", "gaussdb"}:
         engine = _pg_engine(engine, pg_database)
 
     schema_name = database_name
@@ -855,6 +864,25 @@ def _pg_single_column_unique_constraints(engine: Engine, table_name: str, schema
     return result
 
 
+def _pg_check_constraints(engine: Engine, table_name: str, schema_name: str) -> dict[str, str]:
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT ccu.column_name, cc.check_clause "
+                "FROM information_schema.table_constraints tc "
+                "JOIN information_schema.check_constraints cc "
+                "  ON cc.constraint_schema = tc.constraint_schema AND cc.constraint_name = tc.constraint_name "
+                "JOIN information_schema.constraint_column_usage ccu "
+                "  ON ccu.constraint_schema = tc.constraint_schema AND ccu.constraint_name = tc.constraint_name "
+                "WHERE tc.table_schema = :schema_name AND tc.table_name = :table_name "
+                "AND tc.constraint_type = 'CHECK'"
+            ),
+            {"schema_name": schema_name, "table_name": table_name},
+        ).fetchall()
+
+    return {str(row[0]): _db_text(row[1]) for row in rows if row[0] is not None and row[1] is not None}
+
+
 def _sqlite_unique_columns(engine: Engine, table_name: str) -> set[str]:
     escaped_table = table_name.replace('"', '""')
     result: set[str] = set()
@@ -895,7 +923,7 @@ def get_table_comment(engine: Engine, table_name: str, database_name: str | None
     if is_mongo_client(engine) or is_redis_client(engine) or _is_clickhouse_engine(engine):
         return None
 
-    if pg_database and engine.dialect.name == "postgresql":
+    if pg_database and engine.dialect.name in {"postgresql", "gaussdb"}:
         db_engine = _pg_engine(engine, pg_database)
         try:
             return get_table_comment(db_engine, table_name, database_name, None)
@@ -955,7 +983,7 @@ def list_columns(engine: Engine, table_name: str, database_name: str | None = No
             if target is not engine:
                 target.close()
 
-    if pg_database and engine.dialect.name == "postgresql":
+    if pg_database and engine.dialect.name in {"postgresql", "gaussdb"}:
         db_engine = _pg_engine(engine, pg_database)
         try:
             return list_columns(db_engine, table_name, database_name, None)
@@ -1014,12 +1042,14 @@ def list_columns(engine: Engine, table_name: str, database_name: str | None = No
 
     if _is_schema_scoped_engine(engine):
         schema_name = database_name or "public"
+        unique_columns = _pg_single_column_unique_constraints(engine, table_name, schema_name)
+        check_constraints = _pg_check_constraints(engine, table_name, schema_name)
         with engine.connect() as connection:
             rows = connection.execute(
                 text(
                     "SELECT c.column_name, c.data_type, c.is_nullable, "
                     "CASE WHEN kcu.column_name IS NULL THEN 0 ELSE 1 END AS primary_key, "
-                    "c.column_default, col_description(format('%I.%I', c.table_schema, c.table_name)::regclass, c.ordinal_position) AS comment "
+                    "c.column_default, col_description(to_regclass(quote_ident(c.table_schema) || '.' || quote_ident(c.table_name)), c.ordinal_position) AS comment "
                     "FROM information_schema.columns c "
                     "LEFT JOIN information_schema.table_constraints tc "
                     "  ON tc.table_schema = c.table_schema AND tc.table_name = c.table_name AND tc.constraint_type = 'PRIMARY KEY' "
@@ -1031,17 +1061,26 @@ def list_columns(engine: Engine, table_name: str, database_name: str | None = No
                 ),
                 {"schema_name": schema_name, "table_name": table_name},
             ).fetchall()
-        return [
-            ColumnInfo(
-                name=str(row[0]),
-                type=str(row[1]),
-                nullable=str(row[2]).upper() == "YES",
-                primary_key=bool(row[3]),
-                default=_clean_optional_text(_db_text(row[4])),
-                comment=_clean_optional_text(_db_text(row[5])),
+        columns: list[ColumnInfo] = []
+        for row in rows:
+            column_name = str(row[0])
+            default_value = _clean_optional_text(_db_text(row[4]))
+            minimum, maximum = _extract_bounds_from_clause(check_constraints.get(column_name, ""), column_name)
+            columns.append(
+                ColumnInfo(
+                    name=column_name,
+                    type=str(row[1]),
+                    nullable=str(row[2]).upper() == "YES",
+                    primary_key=bool(row[3]),
+                    comment=_clean_optional_text(_db_text(row[5])),
+                    unique=column_name in unique_columns,
+                    auto_increment=bool(default_value and ("nextval(" in default_value or "generated" in default_value.lower())),
+                    auto_increment_step=_pg_sequence_increment(engine, table_name, column_name, schema_name) if default_value and ("nextval(" in default_value or "generated" in default_value.lower()) else None,
+                    minimum=minimum,
+                    maximum=maximum,
+                )
             )
-            for row in rows
-        ]
+        return columns
 
     inspector = inspect(engine)
     primary_keys = set(inspector.get_pk_constraint(table_name, schema=database_name).get("constrained_columns") or [])
@@ -1090,7 +1129,7 @@ def get_object_ddl(engine: Engine, object_name: str, object_type: str, database_
             if target is not engine:
                 target.close()
 
-    if pg_database and engine.dialect.name == "postgresql":
+    if pg_database and engine.dialect.name in {"postgresql", "gaussdb"}:
         db_engine = _pg_engine(engine, pg_database)
         try:
             return get_object_ddl(db_engine, object_name, object_type, database_name, None)
@@ -1240,7 +1279,7 @@ def drop_db_object(engine: Engine, object_name: str, object_type: str, database_
                 target.close()
         return
 
-    if pg_database and engine.dialect.name == "postgresql":
+    if pg_database and engine.dialect.name in {"postgresql", "gaussdb"}:
         db_engine = _pg_engine(engine, pg_database)
         try:
             drop_db_object(db_engine, object_name, object_type, database_name, None)
@@ -1275,11 +1314,14 @@ def create_table(engine: Engine, request: Any) -> None:
     if is_redis_client(engine):
         raise ValueError("Redis 不支持创建表")
 
-    if request.pg_database and engine.dialect.name == "postgresql":
+    if request.pg_database and engine.dialect.name in {"postgresql", "gaussdb"}:
         db_engine = _pg_engine(engine, request.pg_database)
         try:
-            shadow_request = type("TableCreateShadow", (), request.model_dump())()
-            shadow_request.pg_database = None
+            if hasattr(request, "model_copy"):
+                shadow_request = request.model_copy(deep=True, update={"pg_database": None})
+            else:
+                shadow_request = type("TableCreateShadow", (), dict(vars(request)))()
+                shadow_request.pg_database = None
             create_table(db_engine, shadow_request)
         finally:
             if db_engine is not engine:
@@ -1309,7 +1351,7 @@ def update_table_columns(
     pg_database: str | None = None,
     table_comment: str | None = None,
 ) -> None:
-    if pg_database and engine.dialect.name == "postgresql":
+    if pg_database and engine.dialect.name in {"postgresql", "gaussdb"}:
         db_engine = _pg_engine(engine, pg_database)
         try:
             update_table_columns(db_engine, table_name, next_columns, database_name, None, table_comment)
@@ -1328,7 +1370,7 @@ def update_table_columns(
         _update_mysql_table_columns_v2(engine, table_name, next_columns, database_name, table_comment)
         return
 
-    if engine.dialect.name == "postgresql":
+    if engine.dialect.name in {"postgresql", "gaussdb"}:
         _update_postgresql_table_columns_v2(engine, table_name, next_columns, database_name, table_comment)
         return
 
@@ -1341,6 +1383,15 @@ def apply_table_data_changes(engine: Engine, table_name: str, changes: TableData
 
     if is_redis_client(engine):
         raise ValueError("Redis 请使用 Redis 浏览页编辑 Key")
+
+    if pg_database and engine.dialect.name in {"postgresql", "gaussdb"}:
+        db_engine = _pg_engine(engine, pg_database)
+        try:
+            apply_table_data_changes(db_engine, table_name, changes, database_name, None)
+        finally:
+            if db_engine is not engine:
+                db_engine.dispose()
+        return
 
     columns = list_columns(engine, table_name, database_name, pg_database)
     column_names = {column.name for column in columns}
@@ -1606,10 +1657,10 @@ def _build_create_table_statements(
         suffix = f" COMMENT = {_sql_string(table_comment)}" if table_comment else ""
         return [f"CREATE TABLE {quoted_table} (\n  {body}\n){suffix};"]
 
-    if engine.dialect.name == "postgresql":
+    if engine.dialect.name in {"postgresql", "gaussdb"}:
         schema_name = database_name or "public"
         quoted_table = _quote_table(preparer, table_name, schema_name)
-        column_defs = [_postgresql_column_definition(column, preparer) for column in columns]
+        column_defs = [_postgresql_column_definition(engine, column, preparer) for column in columns]
         column_defs.extend(_build_postgresql_constraints_sql(columns, table_name, preparer))
         body = ",\n  ".join(column_defs)
         statements = [f"CREATE TABLE {quoted_table} (\n  {body}\n);"]
@@ -1810,7 +1861,7 @@ def _build_postgresql_update_statements_v2(
         if current.auto_increment and not column.auto_increment:
             statements.append(f"ALTER TABLE {quoted_table} ALTER COLUMN {quoted_column} DROP IDENTITY IF EXISTS")
         elif not current.auto_increment and column.auto_increment:
-            identity_options = f" (INCREMENT BY {column.auto_increment_step})" if column.auto_increment_step else ""
+            identity_options = _postgresql_identity_options(engine, column.auto_increment_step)
             statements.append(f"ALTER TABLE {quoted_table} ALTER COLUMN {quoted_column} ADD GENERATED BY DEFAULT AS IDENTITY{identity_options}")
         elif current.auto_increment and column.auto_increment and column.auto_increment_step and current.auto_increment_step != column.auto_increment_step:
             sequence_name = _pg_sequence_name(engine, table_name, column_name, schema_name)
@@ -1882,10 +1933,18 @@ def _mysql_column_definition(column: TableUpdateColumn, preparer) -> str:
     return " ".join(parts)
 
 
-def _postgresql_column_definition(column: TableUpdateColumn, preparer) -> str:
+def _postgresql_identity_options(engine: Engine, step: int | None) -> str:
+    if not step:
+        return ""
+    if engine.dialect.name == "gaussdb":
+        return ""
+    return f" (INCREMENT BY {step})"
+
+
+def _postgresql_column_definition(engine: Engine, column: TableUpdateColumn, preparer) -> str:
     parts = [preparer.quote(column.name.strip()), column.type.strip()]
     if column.auto_increment:
-        options = f" (INCREMENT BY {column.auto_increment_step})" if column.auto_increment_step else ""
+        options = _postgresql_identity_options(engine, column.auto_increment_step)
         parts.append(f"GENERATED BY DEFAULT AS IDENTITY{options}")
     if not column.nullable or column.primary_key:
         parts.append("NOT NULL")

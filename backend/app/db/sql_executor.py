@@ -17,11 +17,17 @@ def execute_sql_file(engine: Engine, sql: str, database: str | None = None, pg_d
     errors: list[str] = []
     rolled_back = False
 
-    if pg_database and engine.dialect.name == "postgresql":
-        from sqlalchemy import create_engine
+    if pg_database and _is_schema_scoped_engine(engine):
+        if engine.dialect.name == "postgresql":
+            from sqlalchemy import create_engine
 
-        engine = create_engine(engine.url.set(database=pg_database), pool_pre_ping=True)
-        cleanup_engine = True
+            engine = create_engine(engine.url.set(database=pg_database), pool_pre_ping=True)
+            cleanup_engine = True
+        else:
+            factory = getattr(engine, "_datadjinn_engine_factory", None)
+            if callable(factory):
+                engine = factory(pg_database)
+                cleanup_engine = True
     else:
         cleanup_engine = False
 

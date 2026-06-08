@@ -388,6 +388,13 @@ class DmJdbcConnectionAdapter:
         self._connection.commit()
 
     def rollback(self) -> None:
+        raw_connection = getattr(self._connection, "jconn", None)
+        if raw_connection is not None:
+            try:
+                if raw_connection.getAutoCommit():
+                    return
+            except Exception:
+                pass
         self._connection.rollback()
 
     def close(self) -> None:
@@ -395,6 +402,17 @@ class DmJdbcConnectionAdapter:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._connection, name)
+
+
+def _set_jdbc_autocommit(connection: Any, enabled: bool) -> None:
+    raw_connection = getattr(connection, "jconn", None)
+    if raw_connection is None:
+        return
+
+    try:
+        raw_connection.setAutoCommit(enabled)
+    except Exception:
+        pass
 
 
 GAUSSDB_JDBC_DRIVER_CANDIDATES = [
@@ -906,6 +924,7 @@ class ConnectionManager:
 
             def connect_jdbc():
                 connection = jaydebeapi.connect("dm.jdbc.driver.DmDriver", jdbc_url, [request.username, request.password or ""], str(jdbc_path))
+                _set_jdbc_autocommit(connection, False)
                 return DmJdbcConnectionAdapter(connection)
 
             dialect = default.DefaultDialect(paramstyle="qmark")
@@ -976,6 +995,7 @@ class ConnectionManager:
 
         def connect_jdbc():
             connection = jaydebeapi.connect(driver_class, jdbc_url, [request.username, request.password or ""], str(jdbc_path))
+            _set_jdbc_autocommit(connection, False)
             return DmJdbcConnectionAdapter(connection)
 
         dialect = default.DefaultDialect(paramstyle="qmark")
@@ -984,11 +1004,19 @@ class ConnectionManager:
         dialect.loaded_dbapi = DmJdbcDbApi
         dialect.bind_typing = BindTyping.NONE
         dialect.supports_statement_cache = False
-        return Engine(
+        request_snapshot = request.model_copy(deep=True)
+
+        engine = Engine(
             QueuePool(connect_jdbc, pre_ping=False),
             dialect,
             URL.create("gaussdb-jdbc", username=request.username, host=request.host, port=request.port, database=request.database),
         )
+        setattr(
+            engine,
+            "_datadjinn_engine_factory",
+            lambda database_name: self._create_gaussdb_engine(request_snapshot.model_copy(update={"database": database_name})),
+        )
+        return engine
 
     def _detect_server_version(self, engine: Engine | MongoClient | Redis) -> str | None:
         if is_redis_client(engine):
