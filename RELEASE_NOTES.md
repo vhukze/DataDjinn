@@ -1,4 +1,4 @@
-# DataDjinn v0.1.16
+# DataDjinn v0.1.17
 
 ## Highlights
 
@@ -24,6 +24,6 @@
 
 ## Notes
 
-- 当前版本号为 `v0.1.16`
+- 当前版本号为 `v0.1.17`
 - 本次发布重点是 macOS 发布链路和表格页内搜索性能优化
 - 发布前已完成前端 TypeScript 校验
