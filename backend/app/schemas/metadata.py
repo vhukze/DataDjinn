@@ -36,6 +36,7 @@ class ColumnInfo(BaseModel):
     type: str
     nullable: bool
     primary_key: bool
+    default_value: str | None = None
     comment: str | None = None
     unique: bool = False
     auto_increment: bool = False

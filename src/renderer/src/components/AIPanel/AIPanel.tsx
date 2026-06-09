@@ -194,6 +194,25 @@ const AUTO_COMPACT_TOKEN_THRESHOLD = 12000
 const CONTEXT_WARNING_TOKEN_THRESHOLD = 8000
 const MIN_MESSAGES_TO_COMPACT = 6
 
+const isDraftSession = (session: AISession): boolean => session.messages.length === 0
+
+const normalizeSessions = (sessions: AISession[]): AISession[] => {
+  let hasDraft = false
+  return sessions.filter((session) => {
+    if (!isDraftSession(session)) {
+      return true
+    }
+    if (hasDraft) {
+      return false
+    }
+    hasDraft = true
+    return true
+  })
+}
+
+const persistedSessions = (sessions: AISession[]): AISession[] =>
+  normalizeSessions(sessions).filter((session) => session.messages.length > 0)
+
 const createSession = (): AISession => {
   const now = Date.now()
   return {
@@ -319,7 +338,8 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
       }
     })
     void window.api.getAISessions().then((stored) => {
-      const restored = stored.length > 0 ? stored as AISession[] : [createSession()]
+      const restoredSessions = normalizeSessions(stored as AISession[])
+      const restored = restoredSessions.length > 0 ? restoredSessions : [createSession()]
       setSessions(restored)
       setActiveSessionId(restored[0].id)
     })
@@ -330,22 +350,52 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
   }, [messages, sending])
 
   const persistSessions = (nextSessions: AISession[]): void => {
-    setSessions(nextSessions)
-    void window.api.setAISessions(nextSessions)
+    const normalized = normalizeSessions(nextSessions)
+    setSessions(normalized)
+    void window.api.setAISessions(persistedSessions(normalized))
   }
 
   const updateActiveSession = (updater: (session: AISession) => AISession): void => {
     setSessions((current) => {
-      const next = current.map((session) => session.id === activeSessionId ? updater(session) : session)
-      void window.api.setAISessions(next)
+      const next = normalizeSessions(current.map((session) => session.id === activeSessionId ? updater(session) : session))
+      void window.api.setAISessions(persistedSessions(next))
       return next
     })
   }
 
   const newSession = (): void => {
+    const existingDraft = sessions.find(isDraftSession)
+    if (existingDraft) {
+      setActiveSessionId(existingDraft.id)
+      return
+    }
     const nextSession = createSession()
     persistSessions([nextSession, ...sessions])
     setActiveSessionId(nextSession.id)
+  }
+
+  const deleteSession = (sessionId: string): void => {
+    const sessionIndex = sessions.findIndex((session) => session.id === sessionId)
+    if (sessionIndex < 0) {
+      return
+    }
+
+    const remaining = normalizeSessions(sessions.filter((session) => session.id !== sessionId))
+    if (remaining.length === 0) {
+      const nextSession = createSession()
+      setSessions([nextSession])
+      setActiveSessionId(nextSession.id)
+      void window.api.setAISessions([])
+      return
+    }
+
+    const nextActiveSessionId = activeSessionId === sessionId
+      ? (remaining[sessionIndex] ?? remaining[sessionIndex - 1] ?? remaining[0]).id
+      : activeSessionId
+
+    setSessions(remaining)
+    setActiveSessionId(nextActiveSessionId)
+    void window.api.setAISessions(persistedSessions(remaining))
   }
 
   const compactActiveSession = async (): Promise<boolean> => {
@@ -804,6 +854,32 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
             onChange={setActiveSessionId}
             popupMatchSelectWidth={false}
             options={sessions.map((session) => ({ label: session.title, value: session.id, title: session.title }))}
+            optionRender={(option) => {
+              const session = sessions.find((item) => item.id === option.value)
+              if (!session) {
+                return option.label
+              }
+              return (
+                <Flex align="center" justify="space-between" gap={8} className="full-width">
+                  <Typography.Text ellipsis title={session.title}>{session.title}</Typography.Text>
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<CloseOutlined />}
+                    aria-label={`删除会话 ${session.title}`}
+                    onMouseDown={(event) => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                    }}
+                    onClick={(event) => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      deleteSession(session.id)
+                    }}
+                  />
+                </Flex>
+              )
+            }}
           />
           <Button size="small" icon={<PlusOutlined />} onClick={newSession}>新建</Button>
           <Button size="small" icon={<SettingOutlined />} onClick={() => setSettingsOpen(true)}>设置</Button>

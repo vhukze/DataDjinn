@@ -1344,6 +1344,19 @@ body[data-theme="dark"] .ant-popover-message {
   overflow: hidden;
 }
 
+.resource-tree-viewport.non-virtual {
+  overflow: auto;
+}
+
+.resource-tree-viewport.non-virtual .ant-tree {
+  height: auto;
+  min-height: 100%;
+}
+
+.resource-tree-viewport.virtual {
+  overflow: hidden;
+}
+
 .resource-tree-shell .ant-tree {
   height: 100%;
   color: var(--dj-text-primary);
@@ -1434,8 +1447,8 @@ body[data-theme="dark"] .ant-popover-message {
 }
 
 .tree-icon-schema {
-  color: #0b4f75;
-  background: linear-gradient(180deg, #bae6fd 0%, #7dd3fc 100%);
+  color: #eff6ff;
+  background: linear-gradient(180deg, #1d4ed8 0%, #1e3a8a 100%);
 }
 
 .tree-icon-table {
@@ -1449,8 +1462,8 @@ body[data-theme="dark"] .ant-popover-message {
 }
 
 .tree-icon-trigger {
-  color: #9a3412;
-  background: linear-gradient(180deg, #fdba74 0%, #fb923c 100%);
+  color: #713f12;
+  background: linear-gradient(180deg, #fde68a 0%, #facc15 100%);
 }
 
 .tree-icon-routine {
@@ -1459,8 +1472,8 @@ body[data-theme="dark"] .ant-popover-message {
 }
 
 .tree-icon-sequence {
-  color: #155e75;
-  background: linear-gradient(180deg, #a5f3fc 0%, #67e8f9 100%);
+  color: #fef2f2;
+  background: linear-gradient(180deg, #ef4444 0%, #b91c1c 100%);
 }
 
 .tree-icon-index {
@@ -2227,11 +2240,6 @@ body[data-theme="dark"] .ant-popover-message {
   pointer-events: none;
 }
 
-.result-table .row-selected .row-number-cell,
-.result-table .row-selected:hover .row-number-cell {
-  background: var(--dj-accent-soft) !important;
-}
-
 .row-number-cell {
   padding: 0 !important;
   text-align: center !important;
@@ -2266,7 +2274,7 @@ body[data-theme="dark"] .ant-popover-message {
 .row-number-button.selected,
 .row-number-select-all.selected {
   color: var(--dj-text-secondary);
-  background: var(--dj-accent-soft);
+  background: transparent;
 }
 
 .column-header-content {
@@ -2733,10 +2741,95 @@ body[data-theme="dark"] .ant-popover-message {
   margin: 8px 10px 0;
 }
 
+.result-status-left {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.result-status-right {
+  flex: 0 0 auto;
+}
+
 .table-data-toolbar .ant-btn {
   height: 24px;
   font-size: 11px;
   border-radius: 7px !important;
+}
+
+.table-toolbar-tools {
+  flex: 0 0 auto;
+}
+
+.table-toolbar-toggle.is-active,
+.table-search-option.is-active {
+  color: var(--dj-accent);
+  border-color: color-mix(in srgb, var(--dj-accent) 50%, var(--dj-border-subtle));
+  background: color-mix(in srgb, var(--dj-accent) 12%, var(--dj-bg-surface));
+}
+
+.table-search-bar {
+  margin: 0 10px 8px;
+  padding: 6px 10px;
+  background: var(--dj-bg-glass);
+  border: 1px solid var(--dj-border-subtle);
+  border-radius: var(--dj-radius-md);
+  box-shadow: var(--dj-shadow-card);
+}
+
+.table-search-input {
+  flex: 1 1 auto;
+}
+
+.table-search-nav {
+  flex: 0 0 auto;
+}
+
+.table-search-counter {
+  min-width: 44px;
+  text-align: center;
+}
+
+.table-search-options {
+  flex: 0 0 auto;
+}
+
+.table-search-option {
+  min-width: 32px;
+  padding-inline: 8px;
+}
+
+.table-ddl-button {
+  min-width: 42px;
+  padding-inline: 10px;
+}
+
+.table-search-flag {
+  display: inline-block;
+  min-width: 14px;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.table-search-highlight {
+  padding: 0 1px;
+  color: inherit;
+  background: #fde68a;
+  border-radius: 2px;
+}
+
+.result-table td.cell-search-active,
+.result-table td.cell-search-active.ant-table-cell,
+.result-table .ant-table-tbody > tr:hover > td.cell-search-active,
+.result-table .ant-table-tbody > tr > td.ant-table-cell-row-hover.cell-search-active {
+  background: color-mix(in srgb, #fde68a 44%, var(--dj-bg-surface)) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #f59e0b 72%, white 28%) !important;
+}
+
+.ddl-preview-shell {
+  overflow: hidden;
+  border: 1px solid var(--dj-border-subtle);
+  border-radius: var(--dj-radius-md);
 }
 
 /* ===== Editable Table ===== */
@@ -2755,6 +2848,10 @@ body[data-theme="dark"] .ant-popover-message {
 
 .editable-cell:hover {
   background: transparent !important;
+}
+
+.editable-cell.editable-cell-null {
+  color: var(--dj-text-tertiary);
 }
 
 .editable-cell.editable-cell-inline-editing {

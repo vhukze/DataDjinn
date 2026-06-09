@@ -1,6 +1,6 @@
 {
   "name": "datadjinn",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "description": "AI-powered desktop database client",
   "main": "./out/main/index.js",
   "author": "example.com",
@@ -14,17 +14,17 @@
     "start": "electron-vite preview",
     "dev": "electron-vite dev",
     "build": "npm run typecheck && electron-vite build",
-    "prepare:jpype": "backend\\.venv\\Scripts\\python.exe backend\\scripts\\prepare_jpype_vendor.py",
-    "build:backend": "npm run prepare:jpype && backend\\.venv\\Scripts\\python.exe backend\\scripts\\build_backend.py",
+    "prepare:jpype": "node scripts/backend-python.cjs backend/scripts/prepare_jpype_vendor.py",
+    "build:backend": "npm run prepare:jpype && node scripts/backend-python.cjs backend/scripts/build_backend.py",
     "build:frontend": "npm run typecheck && electron-vite build",
     "postinstall": "electron-builder install-app-deps",
-    "build:unpack": "npm run build && electron-builder --dir",
+    "build:unpack": "npm run build:backend && npm run build:frontend && electron-builder --dir",
     "build:win": "npm run build:win:all",
     "build:win:installer": "npm run build:backend && npm run build:frontend && electron-builder --win nsis",
     "build:win:zip": "npm run build:backend && npm run build:frontend && electron-builder --win zip",
     "build:win:all": "npm run build:backend && npm run build:frontend && electron-builder --win nsis zip --publish never",
-    "build:mac": "electron-vite build && electron-builder --mac",
-    "build:linux": "electron-vite build && electron-builder --linux"
+    "build:mac": "npm run build:backend && npm run build:frontend && electron-builder --mac",
+    "build:linux": "npm run build:backend && npm run build:frontend && electron-builder --linux"
   },
   "dependencies": {
     "@ant-design/icons": "^6.2.3",

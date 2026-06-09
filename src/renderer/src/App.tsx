@@ -1,8 +1,10 @@
 ﻿import {
   BranchesOutlined,
   CheckCircleOutlined,
+  CloseOutlined,
   CloseCircleOutlined,
   DatabaseOutlined,
+  DownOutlined,
   FileAddOutlined,
   FilterOutlined,
   FunctionOutlined,
@@ -30,6 +32,7 @@
   SearchOutlined,
   SortAscendingOutlined,
   SortDescendingOutlined,
+  UpOutlined,
   SunOutlined,
   TableOutlined,
   SettingOutlined,
@@ -64,16 +67,16 @@ import {
   message
 } from 'antd'
 import { ApartmentOutlined } from '@ant-design/icons'
-import type { MenuProps } from 'antd'
+import type { InputRef, MenuProps } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { DataNode } from 'antd/es/tree'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
-import { memo, startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { forwardRef, memo, startTransition, useCallback, useDeferredValue, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { useTheme } from './context/ThemeContext'
 import AIPanel from './components/AIPanel'
 import SqlEditor from './components/SqlEditor'
-import type { SqlCompletionColumn, SqlCompletionContext, SqlCompletionTable } from './components/SqlEditor'
+import type { SqlCompletionColumn, SqlCompletionContext, SqlCompletionTable, SqlDialect } from './components/SqlEditor'
 import mysqlIcon from './assets/icons/mysql.png'
 import postgresIcon from './assets/icons/postgres.png'
 import sqliteIcon from './assets/icons/sqllite.png'
@@ -98,6 +101,7 @@ const FOLDER_DROP_PLACEHOLDER_KEY_PREFIX = 'folder-drop-placeholder:'
 type WorkspaceTabsViewProps = {
   workspaceTabs: WorkspaceTab[]
   activeTabKey?: string
+  activeTabSearchState?: TableSearchUiState
   onActiveTabChange: (key: string) => void
   onCloseTab: (key: string) => void
   renderWorkspaceTab: (tab: WorkspaceTab) => React.ReactNode
@@ -106,6 +110,7 @@ type WorkspaceTabsViewProps = {
 const WorkspaceTabsView = memo(function WorkspaceTabsView({
   workspaceTabs,
   activeTabKey,
+  activeTabSearchState,
   onActiveTabChange,
   onCloseTab,
   renderWorkspaceTab
@@ -117,7 +122,7 @@ const WorkspaceTabsView = memo(function WorkspaceTabsView({
       closable: true,
       children: tab.key === activeTabKey ? renderWorkspaceTab(tab) : null
     }))
-  ), [activeTabKey, renderWorkspaceTab, workspaceTabs])
+  ), [activeTabKey, activeTabSearchState, renderWorkspaceTab, workspaceTabs])
 
   return (
     <Tabs
@@ -137,7 +142,8 @@ const WorkspaceTabsView = memo(function WorkspaceTabsView({
   )
 }, (prev, next) => (
   prev.workspaceTabs === next.workspaceTabs &&
-  prev.activeTabKey === next.activeTabKey
+  prev.activeTabKey === next.activeTabKey &&
+  prev.activeTabSearchState === next.activeTabSearchState
 ))
 
 type BackendStatus = {
@@ -479,6 +485,7 @@ type ColumnInfo = {
   type: string
   nullable: boolean
   primary_key: boolean
+  default_value?: string | null
   comment?: string | null
   unique?: boolean
   auto_increment?: boolean
@@ -551,6 +558,7 @@ type WorkspaceTab = {
   page?: number
   loading: boolean
   result?: QueryResponse
+  columnInfoMap?: Record<string, ColumnInfo>
   editRows?: EditableRow[]
   selectedRowKeys?: React.Key[]
   selectedRowKeyMap?: Record<string, true>
@@ -566,9 +574,605 @@ type WorkspaceTab = {
   redisExpandedValues?: RedisExpandedValues
   redisEdits?: Record<string, RedisKeyEdit>
   where?: string
+  pageSearchVisible?: boolean
+  pageSearchQuery?: string
+  pageSearchCaseSensitive?: boolean
+  pageSearchRegex?: boolean
+  pageSearchWholeWord?: boolean
+  pageSearchFilterRows?: boolean
+  pageSearchActiveMatchIndex?: number
+}
+
+type DefaultValueMarker = {
+  __datadjinn_action__: 'default'
 }
 
 type EditingCellState = Record<string, { rowKey: string; column: string } | undefined>
+
+type TableSearchUiState = {
+  visible: boolean
+  query: string
+  caseSensitive: boolean
+  regex: boolean
+  wholeWord: boolean
+  filterRows: boolean
+  activeMatchIndex: number
+}
+
+type DdlPreviewModalHandle = {
+  open: (payload: {
+    title: string
+    dialect: SqlDialect
+    load: () => Promise<string>
+  }) => void
+}
+
+const escapeHtml = (value: string): string => value
+  .replaceAll('&', '&amp;')
+  .replaceAll('<', '&lt;')
+  .replaceAll('>', '&gt;')
+  .replaceAll('"', '&quot;')
+  .replaceAll("'", '&#39;')
+
+const buildHighlightedHtml = (text: string, regex: RegExp): string | null => {
+  if (text.length === 0) {
+    return null
+  }
+  const matches = [...text.matchAll(regex)]
+  if (matches.length === 0) {
+    return null
+  }
+  let cursor = 0
+  let html = ''
+  for (const match of matches) {
+    const matchIndex = match.index ?? -1
+    const matchedText = match[0] ?? ''
+    if (matchIndex < 0 || matchedText.length === 0) {
+      continue
+    }
+    if (matchIndex > cursor) {
+      html += escapeHtml(text.slice(cursor, matchIndex))
+    }
+    html += `<mark class="table-search-highlight">${escapeHtml(matchedText)}</mark>`
+    cursor = matchIndex + matchedText.length
+  }
+  if (cursor < text.length) {
+    html += escapeHtml(text.slice(cursor))
+  }
+  return html.length > 0 ? html : null
+}
+
+type SearchMatcher = {
+  matches: (text: string) => boolean
+  highlight: (text: string) => string | null
+}
+
+const buildPlainHighlightedHtml = (text: string, query: string, caseSensitive: boolean): string | null => {
+  if (!query || !text) {
+    return null
+  }
+  const sourceText = caseSensitive ? text : text.toLocaleLowerCase()
+  const sourceQuery = caseSensitive ? query : query.toLocaleLowerCase()
+  const queryLength = sourceQuery.length
+  if (queryLength === 0) {
+    return null
+  }
+  let cursor = 0
+  let html = ''
+  let found = false
+  while (cursor < text.length) {
+    const matchIndex = sourceText.indexOf(sourceQuery, cursor)
+    if (matchIndex < 0) {
+      break
+    }
+    found = true
+    if (matchIndex > cursor) {
+      html += escapeHtml(text.slice(cursor, matchIndex))
+    }
+    html += `<mark class="table-search-highlight">${escapeHtml(text.slice(matchIndex, matchIndex + queryLength))}</mark>`
+    cursor = matchIndex + queryLength
+  }
+  if (!found) {
+    return null
+  }
+  if (cursor < text.length) {
+    html += escapeHtml(text.slice(cursor))
+  }
+  return html
+}
+
+const createSearchMatcher = (query: string, options: {
+  regex: boolean
+  wholeWord: boolean
+  caseSensitive: boolean
+}): SearchMatcher | null => {
+  const trimmedQuery = query.trim()
+  if (!trimmedQuery) {
+    return null
+  }
+
+  if (!options.regex && !options.wholeWord) {
+    const normalizedQuery = options.caseSensitive ? trimmedQuery : trimmedQuery.toLocaleLowerCase()
+    return {
+      matches: (text: string) => {
+        if (!text) {
+          return false
+        }
+        const normalizedText = options.caseSensitive ? text : text.toLocaleLowerCase()
+        return normalizedText.includes(normalizedQuery)
+      },
+      highlight: (text: string) => buildPlainHighlightedHtml(text, trimmedQuery, options.caseSensitive)
+    }
+  }
+
+  try {
+    const escaped = trimmedQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const basePattern = options.regex ? trimmedQuery : escaped
+    const source = options.wholeWord ? `\\b(?:${basePattern})\\b` : basePattern
+    const testRegex = new RegExp(source, options.caseSensitive ? '' : 'i')
+    if (testRegex.test('')) {
+      return null
+    }
+    const highlightFlags = options.caseSensitive ? 'g' : 'gi'
+    return {
+      matches: (text: string) => {
+        if (!text) {
+          return false
+        }
+        testRegex.lastIndex = 0
+        return testRegex.test(text)
+      },
+      highlight: (text: string) => {
+        if (!text) {
+          return null
+        }
+        return buildHighlightedHtml(text, new RegExp(source, highlightFlags))
+      }
+    }
+  } catch {
+    return null
+  }
+}
+
+const SearchHighlightedText = memo(function SearchHighlightedText({
+  text,
+  highlightedHtml,
+  className
+}: {
+  text: string
+  highlightedHtml?: string
+  className?: string
+}) {
+  if (!highlightedHtml) {
+    return className ? <span className={className}>{text}</span> : <>{text}</>
+  }
+  return <span className={className} dangerouslySetInnerHTML={{ __html: highlightedHtml }} />
+})
+
+const PageSearchControls = memo(function PageSearchControls({
+  state,
+  matchCount,
+  activeMatchIndex,
+  onStateChange,
+  onPrevious,
+  onNext,
+  onClearActiveHighlight,
+  onRequestClose
+}: {
+  state: TableSearchUiState
+  matchCount: number
+  activeMatchIndex: number
+  onStateChange: (patch: Partial<TableSearchUiState>) => void
+  onPrevious: () => void
+  onNext: () => void
+  onClearActiveHighlight: () => void
+  onRequestClose: () => void
+}) {
+  const [draftQuery, setDraftQuery] = useState(state.query)
+  const composingRef = useRef(false)
+  const skipNextDeferredSyncRef = useRef(false)
+  const inputRef = useRef<InputRef | null>(null)
+
+  useEffect(() => {
+    setDraftQuery(state.query)
+  }, [state.query])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      inputRef.current?.focus()
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [])
+
+  useEffect(() => {
+    if (skipNextDeferredSyncRef.current) {
+      skipNextDeferredSyncRef.current = false
+      return
+    }
+    if (composingRef.current || draftQuery === state.query) {
+      return
+    }
+    const timer = window.setTimeout(() => {
+      onClearActiveHighlight()
+      startTransition(() => {
+        onStateChange({
+          query: draftQuery,
+          activeMatchIndex: 0
+        })
+      })
+    }, 120)
+    return () => window.clearTimeout(timer)
+  }, [draftQuery, onClearActiveHighlight, onStateChange, state.query])
+
+  let hasRegexError = false
+  if (state.regex && draftQuery.trim()) {
+    try {
+      const source = state.wholeWord ? `\\b(?:${draftQuery})\\b` : draftQuery
+      const tester = new RegExp(source, state.caseSensitive ? 'g' : 'gi')
+      tester.lastIndex = 0
+      if (tester.test('')) {
+        hasRegexError = true
+      }
+    } catch {
+      hasRegexError = true
+    }
+  }
+
+  return (
+    <Flex align="center" gap={8} className="table-search-bar">
+      <Input
+        ref={inputRef}
+        size="small"
+        className="table-search-input"
+        value={draftQuery}
+        allowClear
+        status={hasRegexError ? 'error' : undefined}
+        onChange={(event) => {
+          setDraftQuery(event.target.value)
+        }}
+        onCompositionStart={() => {
+          composingRef.current = true
+        }}
+        onCompositionEnd={(event) => {
+          composingRef.current = false
+          const nextValue = event.currentTarget.value
+          skipNextDeferredSyncRef.current = true
+          setDraftQuery(nextValue)
+          onClearActiveHighlight()
+          startTransition(() => {
+            onStateChange({
+              query: nextValue,
+              activeMatchIndex: 0
+            })
+          })
+        }}
+      />
+      <Space size={4} className="table-search-nav">
+        <Button
+          size="small"
+          icon={<UpOutlined />}
+          title="上一个"
+          aria-label="上一个"
+          disabled={matchCount === 0 || hasRegexError}
+          onClick={onPrevious}
+        />
+        <Button
+          size="small"
+          icon={<DownOutlined />}
+          title="下一个"
+          aria-label="下一个"
+          disabled={matchCount === 0 || hasRegexError}
+          onClick={onNext}
+        />
+        <Typography.Text type="secondary" className="table-search-counter">
+          {matchCount > 0 ? `${activeMatchIndex + 1}/${matchCount}` : '0/0'}
+        </Typography.Text>
+      </Space>
+      <Space size={4} className="table-search-options">
+        <Button
+          size="small"
+          className={state.caseSensitive ? 'table-search-option is-active' : 'table-search-option'}
+          title="区分大小写"
+          aria-label="区分大小写"
+          onClick={() => {
+            onClearActiveHighlight()
+            onStateChange({
+              query: draftQuery,
+              caseSensitive: !state.caseSensitive,
+              activeMatchIndex: 0
+            })
+          }}
+        >
+          <span className="table-search-flag">Aa</span>
+        </Button>
+        <Button
+          size="small"
+          className={state.regex ? 'table-search-option is-active' : 'table-search-option'}
+          title="正则表达式"
+          aria-label="正则表达式"
+          onClick={() => {
+            onClearActiveHighlight()
+            onStateChange({
+              query: draftQuery,
+              regex: !state.regex,
+              activeMatchIndex: 0
+            })
+          }}
+        >
+          <span className="table-search-flag">.*</span>
+        </Button>
+        <Button
+          size="small"
+          className={state.wholeWord ? 'table-search-option is-active' : 'table-search-option'}
+          title="整词匹配"
+          aria-label="整词匹配"
+          onClick={() => {
+            onClearActiveHighlight()
+            onStateChange({
+              query: draftQuery,
+              wholeWord: !state.wholeWord,
+              activeMatchIndex: 0
+            })
+          }}
+        >
+          <span className="table-search-flag">W</span>
+        </Button>
+        <Button
+          size="small"
+          className={state.filterRows ? 'table-search-option is-active' : 'table-search-option'}
+          title="只显示命中行"
+          aria-label="只显示命中行"
+          onClick={() => onStateChange({ query: draftQuery, filterRows: !state.filterRows, activeMatchIndex: 0 })}
+        >
+          <FilterOutlined />
+        </Button>
+        <Button
+          size="small"
+          icon={<CloseOutlined />}
+          title="关闭搜索"
+          aria-label="关闭搜索"
+          onClick={() => {
+            onClearActiveHighlight()
+            onStateChange({ visible: false })
+            onRequestClose()
+          }}
+        />
+      </Space>
+    </Flex>
+  )
+})
+
+const DdlPreviewModal = memo(forwardRef<DdlPreviewModalHandle, {
+  theme: 'dark' | 'light'
+  onError: (message: string) => void
+}>(
+  function DdlPreviewModal({ theme, onError }, ref) {
+    const [open, setOpen] = useState(false)
+    const [title, setTitle] = useState('')
+    const [content, setContent] = useState('')
+    const [loading, setLoading] = useState(false)
+    const [dialect, setDialect] = useState<SqlDialect>('sqlite')
+
+    useImperativeHandle(ref, () => ({
+      open: ({ title, dialect, load }) => {
+        setTitle(title)
+        setContent('')
+        setDialect(dialect)
+        setLoading(true)
+        setOpen(true)
+        window.setTimeout(() => {
+          void load().then((nextContent) => {
+            setContent(nextContent)
+          }).catch((err) => {
+            setOpen(false)
+            onError(err instanceof Error ? err.message : '获取 DDL 失败')
+          }).finally(() => {
+            setLoading(false)
+          })
+        }, 0)
+      }
+    }), [onError])
+
+    return (
+      <Modal title={title || '查看 DDL'} open={open} footer={null} onCancel={() => setOpen(false)} width={980} centered maskClosable={false}>
+        <div className="ddl-preview-shell">
+          <SqlEditor
+            value={loading ? '-- 加载中...' : content}
+            onChange={() => undefined}
+            theme={theme}
+            readOnly
+            height="60vh"
+            completionContext={{ dialect }}
+          />
+        </div>
+      </Modal>
+    )
+  }
+))
+
+const ResultTableBodyView = memo(function ResultTableBodyView({
+  tab,
+  searchSignature,
+  editingCellKey,
+  selectedRowKeyMap,
+  tableColumns,
+  tableRows,
+  tableScrollX,
+  tableScrollY,
+  setBodyRef,
+  onScrollCapture,
+  onKeyDown,
+  onMouseDown,
+  onMouseUp,
+  onMouseLeave
+}: {
+  tab: WorkspaceTab
+  searchSignature: string
+  editingCellKey?: string
+  selectedRowKeyMap: Record<string, true>
+  tableColumns: ColumnsType<EditableRow>
+  tableRows: EditableRow[]
+  tableScrollX: number
+  tableScrollY: number
+  setBodyRef: (element: HTMLDivElement | null) => void
+  onScrollCapture: () => void
+  onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void
+  onMouseDown: (event: React.MouseEvent<HTMLDivElement>) => void
+  onMouseUp: (event: React.MouseEvent<HTMLDivElement>) => void
+  onMouseLeave: () => void
+}) {
+  void searchSignature
+  void editingCellKey
+
+  return (
+    <div
+      ref={setBodyRef}
+      className="result-table-body"
+      tabIndex={0}
+      style={{ '--result-table-scroll-y': `${tableScrollY}px` } as React.CSSProperties}
+      onScrollCapture={onScrollCapture}
+      onKeyDown={onKeyDown}
+      onMouseDown={onMouseDown}
+      onMouseUp={onMouseUp}
+      onMouseLeave={onMouseLeave}
+    >
+      <Table
+        className="result-table"
+        rowClassName={(row) => [
+          row.__deleted ? 'row-deleted' : row.__state ? `row-${row.__state}` : '',
+          selectedRowKeyMap[row.__rowKey] ? 'row-selected' : ''
+        ].filter(Boolean).join(' ')}
+        size="small"
+        loading={tab.loading}
+        columns={tableColumns}
+        dataSource={tableRows}
+        rowKey="__rowKey"
+        pagination={false}
+        scroll={{ x: tableScrollX, y: tableScrollY }}
+        tableLayout="fixed"
+        locale={{ emptyText: tab.kind === 'query' ? '暂无查询结果' : '暂无表数据' }}
+      />
+    </div>
+  )
+}, (prev, next) => (
+  prev.tab === next.tab
+  && prev.searchSignature === next.searchSignature
+  && prev.editingCellKey === next.editingCellKey
+  && prev.selectedRowKeyMap === next.selectedRowKeyMap
+  && prev.tableScrollX === next.tableScrollX
+  && prev.tableScrollY === next.tableScrollY
+))
+
+const ResultTableHeader = memo(function ResultTableHeader({
+  leftActions,
+  whereInput,
+  showPageSearch,
+  searchState,
+  searchMeta,
+  onSearchStateChange,
+  onClearActiveHighlight,
+  showDdlPreview,
+  onOpenDdl
+}: {
+  leftActions: React.ReactNode
+  whereInput: React.ReactNode
+  showPageSearch: boolean
+  searchState: TableSearchUiState
+  searchMeta: {
+    matchCount: number
+    resetKey: string
+    focusSearchMatch: (matchIndex: number) => void
+  }
+  onSearchStateChange: (patch: Partial<TableSearchUiState>) => void
+  onClearActiveHighlight: () => void
+  showDdlPreview: boolean
+  onOpenDdl: () => void
+}) {
+  const [searchVisible, setSearchVisible] = useState(Boolean(searchState.query))
+  const [activeMatchIndex, setActiveMatchIndex] = useState(0)
+
+  useEffect(() => {
+    if (!searchVisible && searchState.query.trim()) {
+      setSearchVisible(true)
+    }
+  }, [searchState.query, searchVisible])
+
+  useEffect(() => {
+    setActiveMatchIndex(0)
+  }, [searchMeta.resetKey])
+
+  useEffect(() => {
+    setActiveMatchIndex((current) => {
+      if (searchMeta.matchCount <= 0) {
+        return 0
+      }
+      return Math.min(Math.max(current, 0), searchMeta.matchCount - 1)
+    })
+  }, [searchMeta.matchCount])
+
+  return (
+    <>
+      <Flex align="center" justify="space-between" gap={8} className="table-data-toolbar">
+        {leftActions}
+        {whereInput}
+        <Space size={4} className="table-toolbar-tools">
+          {showPageSearch && (
+            <Button
+              size="small"
+              icon={<SearchOutlined />}
+              title="页内搜索"
+              aria-label="页内搜索"
+              className={searchVisible ? 'table-toolbar-toggle is-active' : 'table-toolbar-toggle'}
+              onClick={() => {
+                if (searchVisible) {
+                  onClearActiveHighlight()
+                }
+                setSearchVisible((current) => !current)
+              }}
+            />
+          )}
+          {showDdlPreview && (
+            <Button
+              size="small"
+              title="查看 DDL"
+              aria-label="查看 DDL"
+              className="table-ddl-button"
+              onClick={onOpenDdl}
+            >
+              DDL
+            </Button>
+          )}
+        </Space>
+      </Flex>
+      {showPageSearch && searchVisible && (
+        <PageSearchControls
+          state={searchState}
+          matchCount={searchMeta.matchCount}
+          activeMatchIndex={activeMatchIndex}
+          onStateChange={onSearchStateChange}
+          onPrevious={() => {
+            if (searchMeta.matchCount === 0) {
+              return
+            }
+            const nextIndex = activeMatchIndex <= 0 ? searchMeta.matchCount - 1 : activeMatchIndex - 1
+            setActiveMatchIndex(nextIndex)
+            searchMeta.focusSearchMatch(nextIndex)
+          }}
+          onNext={() => {
+            if (searchMeta.matchCount === 0) {
+              return
+            }
+            const nextIndex = activeMatchIndex >= searchMeta.matchCount - 1 ? 0 : activeMatchIndex + 1
+            setActiveMatchIndex(nextIndex)
+            searchMeta.focusSearchMatch(nextIndex)
+          }}
+          onClearActiveHighlight={onClearActiveHighlight}
+          onRequestClose={() => setSearchVisible(false)}
+        />
+      )}
+    </>
+  )
+})
 
 type ColumnDef = {
   key: string
@@ -700,14 +1304,26 @@ type DatabaseTreeNode = DataNode & {
 }
 
 const editableValue = (value: string): unknown => {
-  if (value.trim() === '' || value.trim().toLowerCase() === 'null') {
-    return null
-  }
-
   return value
 }
 
+const createDefaultValueMarker = (): DefaultValueMarker => ({ __datadjinn_action__: 'default' })
+
+const isDefaultValueMarker = (value: unknown): value is DefaultValueMarker => (
+  value !== null
+  && typeof value === 'object'
+  && '__datadjinn_action__' in value
+  && (value as DefaultValueMarker).__datadjinn_action__ === 'default'
+)
+
+const cellDisplayText = (value: unknown): string => (
+  isDefaultValueMarker(value) ? 'DEFAULT' : value === null || value === undefined ? 'NULL' : String(value)
+)
+
 const isCellValueEqual = (left: unknown, right: unknown): boolean => {
+  if (isDefaultValueMarker(left) || isDefaultValueMarker(right)) {
+    return isDefaultValueMarker(left) && isDefaultValueMarker(right)
+  }
   if (left === right) {
     return true
   }
@@ -754,9 +1370,17 @@ const toColumnDef = (column: ColumnInfo): ColumnDef => ({
 const countRedisPendingChanges = (tab: WorkspaceTab): number =>
   Object.values(tab.redisEdits ?? {}).filter((edit) => edit.state || edit.deleted).length
 
-const tableFilterValueKey = (value: unknown): string => value === null || value === undefined ? '__DATADJINN_NULL__' : String(value)
+const tableFilterValueKey = (value: unknown): string => {
+  if (isDefaultValueMarker(value)) {
+    return '__DATADJINN_DEFAULT__'
+  }
+  return value === null || value === undefined ? '__DATADJINN_NULL__' : String(value)
+}
 
 const displayValue = (value: unknown): string => {
+  if (isDefaultValueMarker(value)) {
+    return 'DEFAULT'
+  }
   if (value === null || value === undefined) {
     return 'NULL'
   }
@@ -795,7 +1419,15 @@ const redisTtlDisplay = (ttl: unknown): string => {
   return `${Math.floor(seconds / 86400)} 天 ${Math.floor((seconds % 86400) / 3600)} 小时后过期`
 }
 
-const tableFilterValueLabel = (value: string): string => value === '__DATADJINN_NULL__' ? 'NULL' : value
+const tableFilterValueLabel = (value: string): string => {
+  if (value === '__DATADJINN_NULL__') {
+    return 'NULL'
+  }
+  if (value === '__DATADJINN_DEFAULT__') {
+    return 'DEFAULT'
+  }
+  return value
+}
 
 const sortFilterOptions = (options: ColumnFilterOption[]): ColumnFilterOption[] =>
   options.sort((left, right) => left.label.localeCompare(right.label, 'zh-Hans-CN', { numeric: true, sensitivity: 'base' }))
@@ -1091,10 +1723,10 @@ function App(): React.JSX.Element {
   const [resourceTreeHeight, setResourceTreeHeight] = useState(360)
   const [dragOverFolderTarget, setDragOverFolderTarget] = useState<{ folderId: string; zone: 'before' | 'after' }>()
   const [dragOverConnectionTarget, setDragOverConnectionTarget] = useState<{ connectionId: string; folderId?: string; zone: 'before' | 'after' }>()
-  const [ddlModalOpen, setDdlModalOpen] = useState(false)
-  const [ddlModalTitle, setDdlModalTitle] = useState('')
-  const [ddlContent, setDdlContent] = useState('')
-  const [ddlLoading, setDdlLoading] = useState(false)
+  const [tableSearchUiState, setTableSearchUiState] = useState<Record<string, TableSearchUiState>>({})
+  const treeDataRef = useRef<DatabaseTreeNode[]>([])
+  const expandedKeysRef = useRef<React.Key[]>([])
+  const resourceTreeRef = useRef<unknown>(null)
   const tableBodyRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const resourceTreeContainerRef = useRef<HTMLDivElement | null>(null)
   const resourceTreeViewportRef = useRef<HTMLDivElement | null>(null)
@@ -1106,7 +1738,17 @@ function App(): React.JSX.Element {
   const pendingCellDragFrameRefs = useRef<Record<string, number | undefined>>({})
   const pendingRenderedCellSelectionFrameRefs = useRef<Record<string, number | undefined>>({})
   const committingEditingCellRefs = useRef<Record<string, boolean | undefined>>({})
-  const inlineCellEditorRefs = useRef<Record<string, { rowKey: string; column: string; input: HTMLInputElement; host: HTMLElement; originalContent: string } | undefined>>({})
+  const cellClipboardRef = useRef<{ text: string, values: unknown[][] } | null>(null)
+  const contextMenuCellSelectionRefs = useRef<Record<string, string[] | undefined>>({})
+  const inlineCellEditorRefs = useRef<Record<string, {
+    rowKey: string
+    column: string
+    input: HTMLInputElement
+    host: HTMLElement
+    originalContent: string
+    originalValue: unknown
+    initialInputValue: string
+  } | undefined>>({})
   const committedSelectedCellRangeRefs = useRef<Record<string, string[] | undefined>>({})
   const rowDragAnchorRefs = useRef<Record<string, string | undefined>>({})
   const rowSelectionDraftRefs = useRef<Record<string, React.Key[] | undefined>>({})
@@ -1116,8 +1758,12 @@ function App(): React.JSX.Element {
   const draggingConnectionIdsRef = useRef<string[]>([])
   const aiPanelResizeRef = useRef<{ startX: number; startSize: number } | null>(null)
   const draggingConnectionFolderIdRef = useRef<string | undefined>(undefined)
+  const ddlPreviewModalRef = useRef<DdlPreviewModalHandle | null>(null)
 
   const { theme, toggleTheme } = useTheme()
+  const activeTabSearchState = activeTabKey
+    ? tableSearchUiState[activeTabKey]
+    : undefined
 
   const refreshUpdateSettings = async (): Promise<void> => {
     const settings = await window.api.getUpdateSettings()
@@ -1582,6 +2228,10 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     )
   }
 
+  const waitForNextFrame = (): Promise<void> => new Promise((resolve) => {
+    requestAnimationFrame(() => resolve())
+  })
+
   const locateActiveTreeNode = async (): Promise<void> => {
     const currentTab = workspaceTabs.find((tab) => tab.key === activeTabKey)
     if (!currentTab?.connectionId) {
@@ -1619,19 +2269,21 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     }
 
     for (let index = 0; index < targetPath.length - 1; index += 1) {
-      const currentMap = collectTreeNodesByKey(treeData)
+      const currentMap = collectTreeNodesByKey(treeDataRef.current)
       const currentNode = currentMap.get(targetPath[index])
       if (!currentNode) {
         return
       }
       if (!isTreeNodeChildrenLoaded(currentNode) && isLoadableTreeNode(currentNode)) {
         await reloadNodeChildren({ ...currentNode, isLeaf: false })
-      } else {
+        await waitForNextFrame()
+      } else if (!expandedKeysRef.current.includes(currentNode.key as React.Key)) {
         setExpandedKeys((current) => current.includes(currentNode.key as React.Key) ? current : [...current, currentNode.key as React.Key])
+        await waitForNextFrame()
       }
     }
 
-    const nodeMap = collectTreeNodesByKey(treeData)
+    const nodeMap = collectTreeNodesByKey(treeDataRef.current)
     const targetNode = nodeMap.get(targetPath[targetPath.length - 1])
     if (!targetNode) {
       return
@@ -1639,10 +2291,19 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
 
     handleTreeSelection(targetNode)
     resourceTreeContainerRef.current?.focus()
-    requestAnimationFrame(() => {
-      const selectedNode = resourceTreeViewportRef.current?.querySelector('.ant-tree-node-content-wrapper.ant-tree-node-selected')
-      selectedNode?.scrollIntoView({ block: 'center' })
-    })
+    if (enableVirtualTree) {
+      const treeApi = resourceTreeRef.current as { scrollTo?: (options: { key: React.Key, align?: 'top' | 'bottom' | 'auto', offset?: number }) => void } | null
+      treeApi?.scrollTo?.({
+        key: targetNode.key as React.Key,
+        align: 'top',
+        offset: Math.max(Math.floor(resourceTreeHeight / 2) - RESOURCE_TREE_ITEM_HEIGHT, 0)
+      })
+      await waitForNextFrame()
+    } else {
+      await waitForNextFrame()
+    }
+    const selectedNode = resourceTreeViewportRef.current?.querySelector('.ant-tree-node-content-wrapper.ant-tree-node-selected')
+    selectedNode?.scrollIntoView({ block: 'center' })
   }
 
   const findTreeKeyPathByPredicate = (nodes: DatabaseTreeNode[], predicate: (node: DatabaseTreeNode) => boolean, parentPath: string[] = []): string[] | undefined => {
@@ -2447,6 +3108,44 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     setWorkspaceTabs((current) => current.map((tab) => (tab.key === key ? { ...tab, ...patch } : tab)))
   }
 
+  const getDefaultTableSearchUiState = (_tab: WorkspaceTab): TableSearchUiState => ({
+    visible: false,
+    query: '',
+    caseSensitive: false,
+    regex: false,
+    wholeWord: false,
+    filterRows: false,
+    activeMatchIndex: 0
+  })
+
+  const getImmediateTableSearchState = (tab: WorkspaceTab): TableSearchUiState =>
+    tableSearchUiState[tab.key] ?? getDefaultTableSearchUiState(tab)
+
+  const updateTableSearchState = (tab: WorkspaceTab, patch: Partial<TableSearchUiState>): void => {
+    setTableSearchUiState((current) => {
+      const previousState = current[tab.key] ?? getDefaultTableSearchUiState(tab)
+      const nextState = {
+        ...previousState,
+        ...patch
+      }
+      if (
+        previousState.visible === nextState.visible
+        && previousState.query === nextState.query
+        && previousState.caseSensitive === nextState.caseSensitive
+        && previousState.regex === nextState.regex
+        && previousState.wholeWord === nextState.wholeWord
+        && previousState.filterRows === nextState.filterRows
+        && previousState.activeMatchIndex === nextState.activeMatchIndex
+      ) {
+        return current
+      }
+      return {
+        ...current,
+        [tab.key]: nextState
+      }
+    })
+  }
+
   const updateSelectedCells = (tabKey: string, cellKeys: string[]): void => {
     const currentCellKeys = selectedCellRefs.current[tabKey] ?? []
     if (currentCellKeys.length === cellKeys.length && currentCellKeys.every((key, index) => key === cellKeys[index])) {
@@ -2481,7 +3180,11 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     if (!current) {
       return
     }
-    current.host.textContent = displayValue ?? current.originalContent
+    const nextContent = displayValue ?? current.originalContent
+    if (current.input.parentNode === current.host) {
+      current.host.removeChild(current.input)
+    }
+    current.host.textContent = nextContent
     current.host.classList.remove('editable-cell-inline-editing')
     inlineCellEditorRefs.current[tabKey] = undefined
   }
@@ -2494,6 +3197,18 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     })
   }
 
+  const clearInlineCellEditor = (tabKey: string): void => {
+    closeInlineCellEditor(tabKey)
+    committingEditingCellRefs.current[tabKey] = undefined
+    setEditingCells((current) => {
+      if (!current[tabKey]) {
+        return current
+      }
+      return { ...current, [tabKey]: undefined }
+    })
+    syncRenderedCellSelection(tabKey)
+  }
+
   const commitInlineCellEditor = (tabKey: string): void => {
     const current = inlineCellEditorRefs.current[tabKey]
     if (!current || committingEditingCellRefs.current[tabKey]) {
@@ -2502,7 +3217,12 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     committingEditingCellRefs.current[tabKey] = true
     const nextValue = current.input.value
     const { rowKey, column } = current
-    closeEditingCell(tabKey, nextValue)
+    if (nextValue === current.initialInputValue) {
+      closeEditingCell(tabKey, cellDisplayText(current.originalValue))
+      setEditingCells((state) => ({ ...state, [tabKey]: undefined }))
+      return
+    }
+    closeEditingCell(tabKey, cellDisplayText(editableValue(nextValue)))
     window.setTimeout(() => {
       updatePreviewCell(tabKey, rowKey, column, editableValue(nextValue))
     }, 0)
@@ -2518,7 +3238,8 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     const originalContent = host.textContent ?? ''
     const input = document.createElement('input')
     input.className = 'editable-cell-dom-input'
-    input.value = rawValue === null || rawValue === undefined ? '' : String(rawValue)
+    const initialInputValue = rawValue === null || rawValue === undefined || isDefaultValueMarker(rawValue) ? '' : String(rawValue)
+    input.value = initialInputValue
     input.dataset.columnKey = column
     input.dataset.rowKey = rowKey
     input.dataset.cellKey = `${rowKey}:${column}`
@@ -2538,7 +3259,8 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     host.textContent = ''
     host.classList.add('editable-cell-inline-editing')
     host.appendChild(input)
-    inlineCellEditorRefs.current[tabKey] = { rowKey, column, input, host, originalContent }
+    inlineCellEditorRefs.current[tabKey] = { rowKey, column, input, host, originalContent, originalValue: rawValue, initialInputValue }
+    setEditingCells((current) => ({ ...current, [tabKey]: { rowKey, column } }))
     requestAnimationFrame(() => {
       input.focus()
       input.select()
@@ -2662,6 +3384,14 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
 
       return nextTabs
     })
+    setTableSearchUiState((current) => {
+      if (!(key in current)) {
+        return current
+      }
+      const next = { ...current }
+      delete next[key]
+      return next
+    })
   }
 
   const connectionMap = useMemo(() => new Map(connections.map((connection) => [connection.connection_id, connection])), [connections])
@@ -2669,6 +3399,28 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     connectionId ? connectionMap.get(connectionId) : undefined
   ), [connectionMap])
   const deferredTreeData = useDeferredValue(treeData)
+  useEffect(() => {
+    treeDataRef.current = treeData
+  }, [treeData])
+  useEffect(() => {
+    expandedKeysRef.current = expandedKeys
+  }, [expandedKeys])
+
+  const resourceTreeNodeCount = useMemo(() => {
+    let count = 0
+    const walk = (nodes: DatabaseTreeNode[]): void => {
+      for (const node of nodes) {
+        count += 1
+        if (node.children?.length) {
+          walk(node.children as DatabaseTreeNode[])
+        }
+      }
+    }
+    walk(treeData)
+    return count
+  }, [treeData])
+
+  const enableVirtualTree = resourceTreeNodeCount > 240
   const loadedCompletionIndex = useMemo(() => {
     const index = new Map<string, { tables: SqlCompletionTable[]; columns: SqlCompletionColumn[] }>()
 
@@ -3570,6 +4322,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
   const renderResultStatus = (tab: WorkspaceTab): React.ReactNode => {
     const connection = getConnection(tab.connectionId)
     const totalRows = tab.result?.total_count ?? tab.result?.row_count
+    const showPager = tab.kind !== 'table-list'
     const rowText = tab.result
       ? tab.kind === 'preview'
         ? `总行数 ${totalRows ?? 0} 行`
@@ -3583,7 +4336,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
 
     return (
       <Flex align="center" justify="space-between" gap={8} className="result-status">
-        <Space wrap>
+        <Space wrap className="result-status-left">
           <Tag color={tab.kind === 'query' ? 'blue' : tab.kind === 'redis-browser' ? 'red' : tab.kind === 'table-list' ? 'gold' : 'green'}>
             {tab.kind === 'query' ? 'SQL 查询' : tab.kind === 'redis-browser' ? 'Redis 浏览' : tab.kind === 'table-list' ? '表列表' : '表预览'}
           </Tag>
@@ -3597,6 +4350,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           {tab.result?.limited && <Tag color="warning">已截断</Tag>}
           {pendingChanges > 0 && <Tag color="orange">{pendingChanges} 项未提交</Tag>}
         </Space>
+        {showPager && <div className="result-status-right">{renderResultPager(tab)}</div>}
       </Flex>
     )
   }
@@ -3606,56 +4360,79 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     rowKey: string,
     column: string,
     value: unknown,
-    onCellDragEnter: () => void
+    onCellDragEnter: () => void,
+    contextMenuItems: MenuProps['items'],
+    onContextMenuAction: (key: string, cellKey: string) => void,
+    onContextSelection: (cellKey: string) => void,
+    displayContent?: React.ReactNode
   ): React.ReactNode => {
+    const cellKey = `${rowKey}:${column}`
     return (
-      <span
-        className="editable-cell"
-        data-column-key={column}
-        data-row-key={rowKey}
-        data-cell-key={`${rowKey}:${column}`}
-        onMouseDown={(event) => {
-          if (event.button !== 0 || inlineCellEditorRefs.current[tabKey]) {
-            return
+      <Dropdown
+        trigger={['contextMenu']}
+        menu={{
+          items: contextMenuItems,
+          onClick: ({ key }) => {
+            onContextMenuAction(String(key), cellKey)
           }
-          event.stopPropagation()
-          if (event.detail >= 2) {
+        }}
+      >
+        <span
+          className={`editable-cell${value === null || value === undefined ? ' editable-cell-null' : ''}`}
+          data-column-key={column}
+          data-row-key={rowKey}
+          data-cell-key={cellKey}
+          onContextMenu={(event) => {
+            event.stopPropagation()
+            tableBodyRefs.current[tabKey]?.focus()
+            rowDragAnchorRefs.current[tabKey] = undefined
+            cellDragAnchorRefs.current[tabKey] = undefined
+            pendingCellDragTargetRefs.current[tabKey] = undefined
+            runtimeSelectedCellRefs.current[tabKey] = undefined
+            clearRuntimeColumnSelection(tabKey)
+            onContextSelection(cellKey)
+          }}
+          onMouseDown={(event) => {
+            if (event.button !== 0 || inlineCellEditorRefs.current[tabKey]) {
+              return
+            }
+            event.stopPropagation()
+            tableBodyRefs.current[tabKey]?.focus()
+            cellDragAnchorRefs.current[tabKey] = { rowKey, column }
+            applyRuntimeCellSelection(tabKey, rowKey, column)
+            clearRuntimeColumnSelection(tabKey)
+          }}
+          onDoubleClick={(event) => {
             event.preventDefault()
+            event.stopPropagation()
             rowDragAnchorRefs.current[tabKey] = undefined
             cellDragAnchorRefs.current[tabKey] = undefined
             pendingCellDragTargetRefs.current[tabKey] = undefined
             runtimeSelectedCellRefs.current[tabKey] = undefined
             openInlineCellEditor(tabKey, rowKey, column, event.currentTarget, value)
-            return
-          }
-          cellDragAnchorRefs.current[tabKey] = { rowKey, column }
-          applyRuntimeCellSelection(tabKey, rowKey, column)
-          clearRuntimeColumnSelection(tabKey)
-        }}
-        onDoubleClick={(event) => {
-          event.preventDefault()
-          event.stopPropagation()
-          rowDragAnchorRefs.current[tabKey] = undefined
-          cellDragAnchorRefs.current[tabKey] = undefined
-          pendingCellDragTargetRefs.current[tabKey] = undefined
-          runtimeSelectedCellRefs.current[tabKey] = undefined
-          openInlineCellEditor(tabKey, rowKey, column, event.currentTarget, value)
-        }}
-        onMouseEnter={onCellDragEnter}
-        onMouseUp={(event) => {
-          event.stopPropagation()
-          rowDragAnchorRefs.current[tabKey] = undefined
-          cellDragAnchorRefs.current[tabKey] = undefined
-          if (pendingCellDragFrameRefs.current[tabKey]) {
-            window.cancelAnimationFrame(pendingCellDragFrameRefs.current[tabKey]!)
-            pendingCellDragFrameRefs.current[tabKey] = undefined
-          }
-          pendingCellDragTargetRefs.current[tabKey] = undefined
-          commitRuntimeCellSelection(tabKey, runtimeSelectedCellRefs.current[tabKey] ?? [])
-        }}
-      >
-        {value === null || value === undefined ? <Typography.Text type="secondary">NULL</Typography.Text> : String(value)}
-      </span>
+          }}
+          onMouseEnter={onCellDragEnter}
+          onMouseUp={(event) => {
+            event.stopPropagation()
+            if (event.button !== 0) {
+              return
+            }
+            if (editingCells[tabKey]?.rowKey === rowKey && editingCells[tabKey]?.column === column) {
+              return
+            }
+            rowDragAnchorRefs.current[tabKey] = undefined
+            cellDragAnchorRefs.current[tabKey] = undefined
+            if (pendingCellDragFrameRefs.current[tabKey]) {
+              window.cancelAnimationFrame(pendingCellDragFrameRefs.current[tabKey]!)
+              pendingCellDragFrameRefs.current[tabKey] = undefined
+            }
+            pendingCellDragTargetRefs.current[tabKey] = undefined
+            commitRuntimeCellSelection(tabKey, runtimeSelectedCellRefs.current[tabKey] ?? [])
+          }}
+        >
+          {displayContent ?? cellDisplayText(value)}
+        </span>
+      </Dropdown>
     )
   }
 
@@ -3688,37 +4465,57 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     )
   }
 
-  const renderTableToolbar = (tab: WorkspaceTab): React.ReactNode => {
+  const renderTableToolbar = (
+    tab: WorkspaceTab,
+    searchMeta: {
+      matchCount: number
+      resetKey: string
+      focusSearchMatch: (matchIndex: number) => void
+    }
+  ): React.ReactNode => {
     if (tab.kind === 'table-list') {
       return null
     }
 
+    const searchState = getImmediateTableSearchState(tab)
     const connection = getConnection(tab.connectionId)
     const showPreviewActions = tab.kind === 'preview' && tab.connectionId && tab.tableName && connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis'
     const showRedisRefresh = tab.kind === 'redis-browser' && tab.connectionId && tab.databaseName
+    const showPageSearch = tab.kind === 'preview' || tab.kind === 'query'
+    const showDdlPreview = Boolean(tab.kind === 'preview' && tab.connectionId && tab.tableName)
+
+    const leftActions = (
+      <Space size={4} className="table-data-actions">
+        {showRedisRefresh && (
+          <>
+            <Button size="small" icon={<ReloadOutlined />} title="刷新" aria-label="刷新" loading={tab.loading} onClick={() => void previewRedisDatabase(tab.connectionId!, tab.databaseName!, tab.limit, tab.page)} />
+            <Button size="small" icon={<PlusOutlined />} title="新增一行" aria-label="新增一行" onClick={() => addRedisRow(tab)} />
+            <Button type="primary" size="small" icon={<SaveOutlined />} title="提交" aria-label="提交" disabled={countRedisPendingChanges(tab) === 0} loading={tab.loading} onClick={() => void submitRedisChanges(tab)} />
+          </>
+        )}
+        {showPreviewActions && (
+          <>
+            <Button size="small" icon={<ReloadOutlined />} title="刷新" aria-label="刷新" loading={tab.loading} onClick={() => void previewTable(tab.connectionId!, tab.tableName!, tab.databaseName, tab.pgDatabaseName, tab.limit, tab.page, tab.where)} />
+            <Button size="small" icon={<PlusOutlined />} title="新增行" aria-label="新增行" onClick={() => addPreviewRow(tab)} />
+            <Button size="small" icon={<MinusOutlined />} title="删除选中行" aria-label="删除选中行" disabled={!tab.selectedRowKeys?.length} onClick={() => markSelectedRowsDeleted(tab)} />
+            <Button type="primary" size="small" icon={<SaveOutlined />} title="提交" aria-label="提交" disabled={countPendingChanges(tab) === 0} loading={tab.loading} onClick={() => void submitPreviewChanges(tab)} />
+          </>
+        )}
+      </Space>
+    )
 
     return (
-      <Flex align="center" justify="space-between" gap={8} className="table-data-toolbar">
-        <Space size={4} className="table-data-actions">
-          {showRedisRefresh && (
-            <>
-              <Button size="small" icon={<ReloadOutlined />} title="刷新" aria-label="刷新" loading={tab.loading} onClick={() => void previewRedisDatabase(tab.connectionId!, tab.databaseName!, tab.limit, tab.page)} />
-              <Button size="small" icon={<PlusOutlined />} title="新增一行" aria-label="新增一行" onClick={() => addRedisRow(tab)} />
-              <Button type="primary" size="small" icon={<SaveOutlined />} title="提交" aria-label="提交" disabled={countRedisPendingChanges(tab) === 0} loading={tab.loading} onClick={() => void submitRedisChanges(tab)} />
-            </>
-          )}
-          {showPreviewActions && (
-            <>
-              <Button size="small" icon={<ReloadOutlined />} title="刷新" aria-label="刷新" loading={tab.loading} onClick={() => void previewTable(tab.connectionId!, tab.tableName!, tab.databaseName, tab.pgDatabaseName, tab.limit, tab.page, tab.where)} />
-              <Button size="small" icon={<PlusOutlined />} title="新增行" aria-label="新增行" onClick={() => addPreviewRow(tab)} />
-              <Button size="small" icon={<MinusOutlined />} title="删除选中行" aria-label="删除选中行" disabled={!tab.selectedRowKeys?.length} onClick={() => markSelectedRowsDeleted(tab)} />
-              <Button type="primary" size="small" icon={<SaveOutlined />} title="提交" aria-label="提交" disabled={countPendingChanges(tab) === 0} loading={tab.loading} onClick={() => void submitPreviewChanges(tab)} />
-            </>
-          )}
-        </Space>
-        {renderWhereInput(tab)}
-        {renderResultPager(tab)}
-      </Flex>
+      <ResultTableHeader
+        leftActions={leftActions}
+        whereInput={renderWhereInput(tab)}
+        showPageSearch={showPageSearch}
+        searchState={searchState}
+        searchMeta={searchMeta}
+        onSearchStateChange={(patch) => updateTableSearchState(tab, patch)}
+        onClearActiveHighlight={() => clearActiveSearchCellHighlight(tab.key)}
+        showDdlPreview={showDdlPreview}
+        onOpenDdl={() => void showObjectDdl(tab.connectionId!, tab.tableName!, 'table', tab.databaseName, tab.pgDatabaseName)}
+      />
     )
   }
 
@@ -3859,6 +4656,14 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     container.querySelectorAll('.cell-selected-runtime').forEach((element) => element.classList.remove('cell-selected-runtime'))
   }
 
+  const clearActiveSearchCellHighlight = (tabKey: string): void => {
+    const container = tableBodyRefs.current[tabKey]
+    if (!container) {
+      return
+    }
+    container.querySelectorAll('.cell-search-active').forEach((element) => element.classList.remove('cell-search-active'))
+  }
+
   const updateRenderedCellSelection = (tabKey: string, cellKeys: string[]): void => {
     const container = tableBodyRefs.current[tabKey]
     if (!container) {
@@ -3939,7 +4744,11 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     return (
       <div className="result-table-shell">
         {renderResultStatus(tab)}
-        {renderTableToolbar(tab)}
+        {renderTableToolbar(tab, {
+          matchCount: 0,
+          resetKey: '',
+          focusSearchMatch: () => undefined
+        })}
         {tab.error && <Alert message="加载失败" description={tab.error} type="error" showIcon />}
         <div className="redis-browser-list">
           {tab.loading && <Typography.Text type="secondary">加载中...</Typography.Text>}
@@ -3982,6 +4791,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
   }
 
   const renderResultTable = (tab: WorkspaceTab): React.ReactNode => {
+    const searchState = getImmediateTableSearchState(tab)
     const baseTableRows: EditableRow[] = tab.kind === 'preview' ? (tab.editRows ?? []) : (tab.result?.rows.map((row, index) => ({ ...row, __rowKey: `query:${index}` })) ?? [])
     const selectedRowKeyMap = tab.selectedRowKeyMap ?? Object.fromEntries((tab.selectedRowKeys ?? []).map((key) => [String(key), true]))
     const resultColumns = tab.result?.columns ?? []
@@ -3991,7 +4801,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     const filteredRows = filterColumns.length > 0
       ? baseTableRows.filter((row) => filterColumns.every((column) => columnFilters[column]?.includes(tableFilterValueKey(row[column]))))
       : baseTableRows
-    const tableRows = tab.sortState
+    const sortedRows = tab.sortState
       ? [...filteredRows].sort((left, right) => {
           const leftValue = left[tab.sortState!.column]
           const rightValue = right[tab.sortState!.column]
@@ -4008,9 +4818,436 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           return tab.sortState!.direction === 'ascend' ? result : -result
         })
       : filteredRows
+    const connection = getConnection(tab.connectionId)
+    const pageSearchText = searchState.query.trim()
+    const searchMatcher = createSearchMatcher(pageSearchText, {
+      regex: searchState.regex,
+      wholeWord: searchState.wholeWord,
+      caseSensitive: searchState.caseSensitive
+    })
+
+    const allSearchMatches: Array<{ cellKey: string; rowKey: string; column: string }> = []
+    const matchedCellKeySet = new Set<string>()
+    const highlightedCellHtmlCache = new Map<string, string | null>()
+    if (searchMatcher) {
+      for (const row of sortedRows) {
+        for (const column of orderedColumns) {
+          const text = cellDisplayText(row[column])
+          if (!text) {
+            continue
+          }
+          if (!searchMatcher.matches(text)) {
+            continue
+          }
+          const cellKey = `${row.__rowKey}:${column}`
+          matchedCellKeySet.add(cellKey)
+          allSearchMatches.push({
+            cellKey,
+            rowKey: row.__rowKey,
+            column
+          })
+        }
+      }
+    }
+
+    const matchedRowKeySet = new Set(allSearchMatches.map((match) => match.rowKey))
+    const tableRows = searchState.filterRows && searchMatcher
+      ? sortedRows.filter((row) => matchedRowKeySet.has(row.__rowKey))
+      : sortedRows
     const rowNumberOffset = ((tab.page ?? 1) - 1) * (tab.limit ?? (tab.kind === 'preview' ? PREVIEW_DEFAULT_LIMIT : QUERY_DEFAULT_LIMIT))
     const orderedRowKeys = tableRows.map((row) => row.__rowKey)
     const orderedColumnIndexMap = Object.fromEntries(orderedColumns.map((column, index) => [column, index]))
+    const orderedRowKeysByLength = [...orderedRowKeys].sort((left, right) => right.length - left.length)
+    const rowByKey = new Map(tableRows.map((row) => [row.__rowKey, row]))
+    const visibleRowKeySet = new Set(orderedRowKeys)
+    const searchMatches = allSearchMatches.filter((match) => visibleRowKeySet.has(match.rowKey))
+    const highlightResultText = (cellKey: string, text: string, className?: string): React.ReactNode => (
+      <SearchHighlightedText
+        text={text}
+        className={className}
+        highlightedHtml={(() => {
+          if (!matchedCellKeySet.has(cellKey) || !searchMatcher) {
+            return undefined
+          }
+          if (!highlightedCellHtmlCache.has(cellKey)) {
+            highlightedCellHtmlCache.set(cellKey, searchMatcher.highlight(text))
+          }
+          return highlightedCellHtmlCache.get(cellKey) ?? undefined
+        })()}
+      />
+    )
+
+    const focusSearchMatch = (matchIndex: number): void => {
+      const match = searchMatches[matchIndex]
+      if (!match) {
+        return
+      }
+      clearActiveSearchCellHighlight(tab.key)
+      if (tab.kind === 'preview') {
+        clearRuntimeColumnSelection(tab.key)
+        rowDragAnchorRefs.current[tab.key] = undefined
+        cellDragAnchorRefs.current[tab.key] = undefined
+        pendingCellDragTargetRefs.current[tab.key] = undefined
+        setCommittedCellSelection(tab.key, [match.cellKey])
+      }
+      requestAnimationFrame(() => {
+        const container = tableBodyRefs.current[tab.key]
+        if (!container) {
+          return
+        }
+        container.focus()
+        const cellElement = container.querySelector<HTMLElement>(`[data-cell-key="${CSS.escape(match.cellKey)}"]`)
+        const hostCell = cellElement?.closest('td') as HTMLElement | null
+        if (hostCell) {
+          hostCell.classList.add('cell-search-active')
+          hostCell.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+        } else {
+          cellElement?.classList.add('cell-search-active')
+          cellElement?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+        }
+      })
+    }
+
+    const parseCellKey = (cellKey: string): { rowKey: string; column: string } | null => {
+      for (const rowKey of orderedRowKeysByLength) {
+        const prefix = `${rowKey}:`
+        if (cellKey.startsWith(prefix)) {
+          return { rowKey, column: cellKey.slice(prefix.length) }
+        }
+      }
+      return null
+    }
+
+    const getSelectionEntries = (cellKeys: string[]) => cellKeys
+      .map((cellKey) => {
+        const parsed = parseCellKey(cellKey)
+        if (!parsed) {
+          return null
+        }
+        const rowIndex = orderedRowKeys.indexOf(parsed.rowKey)
+        const columnIndex = orderedColumnIndexMap[parsed.column]
+        if (rowIndex < 0 || columnIndex === undefined) {
+          return null
+        }
+        return {
+          cellKey,
+          rowKey: parsed.rowKey,
+          column: parsed.column,
+          rowIndex,
+          columnIndex,
+          value: rowByKey.get(parsed.rowKey)?.[parsed.column]
+        }
+      })
+      .filter((entry): entry is {
+        cellKey: string
+        rowKey: string
+        column: string
+        rowIndex: number
+        columnIndex: number
+        value: unknown
+      } => entry !== null)
+
+    const getCommittedCellSelection = (): string[] => {
+      const runtime = runtimeSelectedCellRefs.current[tab.key] ?? []
+      if (runtime.length > 0) {
+        return runtime
+      }
+      return selectedCellRefs.current[tab.key] ?? []
+    }
+
+    const getSelectionBounds = (cellKeys = getCommittedCellSelection()): {
+      rowStart: number
+      rowEnd: number
+      columnStart: number
+      columnEnd: number
+      rowKeys: string[]
+      columns: string[]
+      entries: Array<{
+        cellKey: string
+        rowKey: string
+        column: string
+        rowIndex: number
+        columnIndex: number
+        value: unknown
+      }>
+    } | null => {
+      const entries = getSelectionEntries(cellKeys)
+      if (entries.length === 0) {
+        return null
+      }
+      const rowIndexes = entries.map((entry) => entry.rowIndex)
+      const columnIndexes = entries.map((entry) => entry.columnIndex)
+      const rowStart = Math.min(...rowIndexes)
+      const rowEnd = Math.max(...rowIndexes)
+      const columnStart = Math.min(...columnIndexes)
+      const columnEnd = Math.max(...columnIndexes)
+      return {
+        rowStart,
+        rowEnd,
+        columnStart,
+        columnEnd,
+        rowKeys: orderedRowKeys.slice(rowStart, rowEnd + 1),
+        columns: orderedColumns.slice(columnStart, columnEnd + 1),
+        entries
+      }
+    }
+
+    const getCellSelectionMatrix = (cellKeys = getCommittedCellSelection()): unknown[][] => {
+      const bounds = getSelectionBounds(cellKeys)
+      if (!bounds) {
+        return []
+      }
+      return bounds.rowKeys.map((rowKey) => bounds.columns.map((column) => rowByKey.get(rowKey)?.[column] ?? null))
+    }
+
+    const getSelectedCellPatchesForValue = (value: unknown, cellKeys = getCommittedCellSelection()): Array<{ rowKey: string; column: string; value: unknown }> => {
+      const bounds = getSelectionBounds(cellKeys)
+      if (!bounds) {
+        return []
+      }
+      return bounds.rowKeys.flatMap((rowKey) => bounds.columns.map((column) => ({ rowKey, column, value })))
+    }
+
+    const ensureContextSelection = (cellKey: string): string[] => {
+      const currentSelection = getCommittedCellSelection()
+      if (currentSelection.includes(cellKey)) {
+        contextMenuCellSelectionRefs.current[tab.key] = currentSelection
+        updateRenderedCellSelection(tab.key, currentSelection)
+        requestAnimationFrame(() => updateRenderedCellSelection(tab.key, currentSelection))
+        return currentSelection
+      }
+      clearRuntimeColumnSelection(tab.key)
+      rowDragAnchorRefs.current[tab.key] = undefined
+      cellDragAnchorRefs.current[tab.key] = undefined
+      pendingCellDragTargetRefs.current[tab.key] = undefined
+      if (pendingCellDragFrameRefs.current[tab.key]) {
+        window.cancelAnimationFrame(pendingCellDragFrameRefs.current[tab.key]!)
+        pendingCellDragFrameRefs.current[tab.key] = undefined
+      }
+      const nextSelection = [cellKey]
+      setCommittedCellSelection(tab.key, nextSelection)
+      contextMenuCellSelectionRefs.current[tab.key] = nextSelection
+      updateRenderedCellSelection(tab.key, nextSelection)
+      requestAnimationFrame(() => updateRenderedCellSelection(tab.key, nextSelection))
+      return nextSelection
+    }
+
+    const serializeCellValue = (value: unknown): string => {
+      if (isDefaultValueMarker(value)) {
+        return 'DEFAULT'
+      }
+      if (value === null || value === undefined) {
+        return 'NULL'
+      }
+      if (typeof value === 'string') {
+        return value
+      }
+      if (typeof value === 'number' || typeof value === 'boolean') {
+        return String(value)
+      }
+      try {
+        return JSON.stringify(value)
+      } catch {
+        return String(value)
+      }
+    }
+
+    const buildSelectionClipboardText = (values: unknown[][]): string => values
+      .map((row) => row.map((value) => serializeCellValue(value)).join('\t'))
+      .join('\n')
+
+    const writeSelectionToClipboard = async (values: unknown[][]): Promise<void> => {
+      const text = buildSelectionClipboardText(values)
+      cellClipboardRef.current = { text, values }
+      try {
+        await navigator.clipboard.writeText(text)
+      } catch {
+        showError('复制单元格内容失败')
+      }
+    }
+
+    const copySelectedCells = async (cellKeys = getCommittedCellSelection()): Promise<void> => {
+      const values = getCellSelectionMatrix(cellKeys)
+      if (values.length === 0) {
+        return
+      }
+      await writeSelectionToClipboard(values)
+    }
+
+    const quoteIdentifier = (identifier: string): string => {
+      if (connection?.database_type === 'mysql' || connection?.database_type === 'clickhouse') {
+        return `\`${identifier.replaceAll('`', '``')}\``
+      }
+      return `"${identifier.replaceAll('"', '""')}"`
+    }
+
+    const getQualifiedTableNameForCopy = (): string => {
+      if (!tab.tableName) {
+        return ''
+      }
+      if (isSchemaScopedType(connection?.database_type)) {
+        return [tab.pgDatabaseName, tab.databaseName, tab.tableName].filter(Boolean).map((part) => quoteIdentifier(String(part))).join('.')
+      }
+      return [tab.databaseName, tab.tableName].filter(Boolean).map((part) => quoteIdentifier(String(part))).join('.')
+    }
+
+    const toSqlLiteral = (value: unknown): string => {
+      if (isDefaultValueMarker(value)) {
+        return 'DEFAULT'
+      }
+      if (value === null || value === undefined) {
+        return 'NULL'
+      }
+      if (typeof value === 'number') {
+        return Number.isFinite(value) ? String(value) : 'NULL'
+      }
+      if (typeof value === 'boolean') {
+        return value ? 'TRUE' : 'FALSE'
+      }
+      const serialized = typeof value === 'string' ? value : serializeCellValue(value)
+      return `'${serialized.replaceAll("'", "''")}'`
+    }
+
+    const copySelectionAsInsert = async (cellKeys = getCommittedCellSelection()): Promise<void> => {
+      const bounds = getSelectionBounds(cellKeys)
+      if (!bounds || bounds.columns.length === 0 || bounds.rowKeys.length === 0 || !tab.tableName) {
+        return
+      }
+      const qualifiedTableName = getQualifiedTableNameForCopy()
+      const quotedColumns = bounds.columns.map((column) => quoteIdentifier(column)).join(', ')
+      const sql = bounds.rowKeys.map((rowKey) => {
+        const row = rowByKey.get(rowKey)
+        const values = bounds.columns.map((column) => toSqlLiteral(row?.[column]))
+        return `INSERT INTO ${qualifiedTableName} (${quotedColumns}) VALUES (${values.join(', ')});`
+      }).join('\n')
+      cellClipboardRef.current = { text: sql, values: getCellSelectionMatrix(cellKeys) }
+      try {
+        await navigator.clipboard.writeText(sql)
+      } catch {
+        showError('复制 INSERT 失败')
+      }
+    }
+
+    const copySelectionAsMarkdown = async (cellKeys = getCommittedCellSelection()): Promise<void> => {
+      const bounds = getSelectionBounds(cellKeys)
+      if (!bounds || bounds.columns.length === 0 || bounds.rowKeys.length === 0) {
+        return
+      }
+      const escapeMarkdownCell = (value: unknown): string => serializeCellValue(value)
+        .replaceAll('|', '\\|')
+        .replaceAll('\r\n', '<br />')
+        .replaceAll('\n', '<br />')
+      const header = `| ${bounds.columns.join(' | ')} |`
+      const separator = `| ${bounds.columns.map(() => '---').join(' | ')} |`
+      const lines = bounds.rowKeys.map((rowKey) => `| ${bounds.columns.map((column) => escapeMarkdownCell(rowByKey.get(rowKey)?.[column])).join(' | ')} |`)
+      const markdown = [header, separator, ...lines].join('\n')
+      cellClipboardRef.current = { text: markdown, values: getCellSelectionMatrix(cellKeys) }
+      try {
+        await navigator.clipboard.writeText(markdown)
+      } catch {
+        showError('复制 Markdown 失败')
+      }
+    }
+
+    const parseClipboardText = (text: string): unknown[][] => {
+      const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n$/, '')
+      if (normalized.length === 0) {
+        return [['']]
+      }
+      return normalized.split('\n').map((line) => line.split('\t'))
+    }
+
+    const pasteIntoSelectedCells = async (): Promise<void> => {
+      const selection = getCommittedCellSelection()
+      const bounds = getSelectionBounds(selection)
+      if (!bounds) {
+        return
+      }
+
+      let clipboardText = ''
+      try {
+        clipboardText = await navigator.clipboard.readText()
+      } catch {
+        clipboardText = cellClipboardRef.current?.text ?? ''
+      }
+      if (!clipboardText && !cellClipboardRef.current) {
+        return
+      }
+
+      const normalizedText = clipboardText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n$/, '')
+      const cachedText = cellClipboardRef.current?.text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n$/, '')
+      const values = normalizedText && cachedText === normalizedText
+        ? (cellClipboardRef.current?.values ?? parseClipboardText(clipboardText))
+        : parseClipboardText(clipboardText || cellClipboardRef.current?.text || '')
+      if (values.length === 0 || values[0]?.length === 0) {
+        return
+      }
+
+      clearInlineCellEditor(tab.key)
+      clearRuntimeColumnSelection(tab.key)
+
+      let patches: Array<{ rowKey: string; column: string; value: unknown }> = []
+      if (values.length === 1 && values[0].length === 1 && selection.length > 1) {
+        patches = getSelectedCellPatchesForValue(values[0][0], selection)
+      } else {
+        for (let rowOffset = 0; rowOffset < values.length; rowOffset += 1) {
+          const rowKey = orderedRowKeys[bounds.rowStart + rowOffset]
+          if (!rowKey) {
+            break
+          }
+          for (let columnOffset = 0; columnOffset < values[rowOffset].length; columnOffset += 1) {
+            const column = orderedColumns[bounds.columnStart + columnOffset]
+            if (!column) {
+              break
+            }
+            patches.push({ rowKey, column, value: values[rowOffset][columnOffset] })
+          }
+        }
+      }
+      updatePreviewCells(tab.key, patches)
+    }
+
+    const previewCellContextMenuItems: MenuProps['items'] = [
+      { key: 'copy-selection', label: '复制' },
+      { key: 'copy-as-insert', label: '复制为 INSERT' },
+      { key: 'copy-as-md', label: '复制为 MD' },
+      { type: 'divider' },
+      { key: 'set-null', label: '设为 NULL' },
+      { key: 'set-default', label: '设为 DEFAULT' }
+    ]
+
+    const handlePreviewCellContextMenuAction = (actionKey: string, cellKey: string): void => {
+      const selection = contextMenuCellSelectionRefs.current[tab.key] ?? ensureContextSelection(cellKey)
+      if (actionKey === 'copy-selection') {
+        void copySelectedCells(selection)
+        return
+      }
+      if (actionKey === 'copy-as-insert') {
+        void copySelectionAsInsert(selection)
+        return
+      }
+      if (actionKey === 'copy-as-md') {
+        void copySelectionAsMarkdown(selection)
+        return
+      }
+      if (actionKey === 'set-null') {
+        clearInlineCellEditor(tab.key)
+        updatePreviewCells(tab.key, getSelectedCellPatchesForValue(null, selection))
+        return
+      }
+      if (actionKey === 'set-default') {
+        clearInlineCellEditor(tab.key)
+        updatePreviewCells(tab.key, getSelectedCellPatchesForValue(createDefaultValueMarker(), selection))
+      }
+      contextMenuCellSelectionRefs.current[tab.key] = undefined
+    }
+
+    const isEditableTarget = (target: EventTarget | null): boolean => {
+      const element = target as HTMLElement | null
+      return Boolean(
+        element?.closest('input, textarea, [contenteditable="true"], .monaco-editor, .editable-cell-dom-input')
+      )
+    }
 
     const applySelectedRows = (nextSelectedRowKeys: React.Key[]): void => {
       const nextSelectedRowKeyMap = Object.fromEntries(nextSelectedRowKeys.map((key) => [String(key), true as const]))
@@ -4327,13 +5564,25 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         } as React.TdHTMLAttributes<HTMLElement>),
         render: (value: unknown, row: EditableRow) => (
           tab.kind === 'preview'
-            ? renderEditableCell(tab.key, row.__rowKey, column, value, () => updateDragCellSelection(row.__rowKey, column))
-            : <span className="table-cell-text">{value === null || value === undefined ? 'NULL' : String(value)}</span>
+            ? renderEditableCell(
+              tab.key,
+              row.__rowKey,
+              column,
+              value,
+              () => updateDragCellSelection(row.__rowKey, column),
+              previewCellContextMenuItems,
+              handlePreviewCellContextMenuAction,
+              ensureContextSelection,
+              highlightResultText(`${row.__rowKey}:${column}`, cellDisplayText(value))
+            )
+            : highlightResultText(`${row.__rowKey}:${column}`, value === null || value === undefined ? 'NULL' : String(value), 'table-cell-text')
         )
       })) ?? []
     const tableColumns: ColumnsType<EditableRow> = tab.kind === 'preview' ? [rowNumberColumn, ...dataColumns] : dataColumns
     const tableScrollX = Math.max((tab.result?.columns.length ?? 0) * 180 + (tab.kind === 'preview' ? 34 : 0), 720)
     const tableScrollY = tableBodyHeights[tab.key] ?? 320
+    const searchSignature = `${searchState.query}\u0000${searchState.caseSensitive ? 1 : 0}\u0000${searchState.regex ? 1 : 0}\u0000${searchState.wholeWord ? 1 : 0}\u0000${searchState.filterRows ? 1 : 0}`
+    const editingCellKey = editingCells[tab.key] ? `${editingCells[tab.key]!.rowKey}:${editingCells[tab.key]!.column}` : undefined
 
     if (tab.kind === 'redis-browser') {
       return renderRedisBrowser(tab)
@@ -4342,13 +5591,44 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     return (
       <div className="result-table-shell">
         {renderResultStatus(tab)}
-        {renderTableToolbar(tab)}
+        {renderTableToolbar(tab, {
+          matchCount: searchMatches.length,
+          resetKey: `${searchState.query}\u0000${searchState.caseSensitive ? 1 : 0}\u0000${searchState.regex ? 1 : 0}\u0000${searchState.wholeWord ? 1 : 0}\u0000${searchState.filterRows ? 1 : 0}\u0000${searchMatches.length}`,
+          focusSearchMatch
+        })}
         {tab.error && <Alert message="执行失败" description={tab.error} type="error" showIcon />}
-        <div
-          ref={(element) => { tableBodyRefs.current[tab.key] = element }}
-          className="result-table-body"
-          style={{ '--result-table-scroll-y': `${tableScrollY}px` } as React.CSSProperties}
+        <ResultTableBodyView
+          tab={tab}
+          searchSignature={searchSignature}
+          editingCellKey={editingCellKey}
+          selectedRowKeyMap={selectedRowKeyMap}
+          tableColumns={tableColumns}
+          tableRows={tableRows}
+          tableScrollX={tableScrollX}
+          tableScrollY={tableScrollY}
+          setBodyRef={(element) => { tableBodyRefs.current[tab.key] = element }}
           onScrollCapture={() => scheduleRenderedCellSelectionSync(tab.key)}
+          onKeyDown={(event) => {
+            if (tab.kind !== 'preview' || isEditableTarget(event.target)) {
+              return
+            }
+            if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'c') {
+              const selection = getCommittedCellSelection()
+              if (selection.length === 0) {
+                return
+              }
+              event.preventDefault()
+              void copySelectedCells(selection)
+            }
+            if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'v') {
+              const selection = getCommittedCellSelection()
+              if (selection.length === 0) {
+                return
+              }
+              event.preventDefault()
+              void pasteIntoSelectedCells()
+            }
+          }}
           onMouseDown={(event) => {
             const target = event.target as HTMLElement
             const activeInlineEditor = inlineCellEditorRefs.current[tab.key]
@@ -4362,11 +5642,15 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
               clearRuntimeColumnSelection(tab.key)
             }
             if (!target.closest('[data-cell-key]')) {
+              clearActiveSearchCellHighlight(tab.key)
               clearRuntimeCellSelection(tab.key)
               clearCommittedCellSelection(tab.key)
             }
           }}
-          onMouseUp={() => {
+          onMouseUp={(event) => {
+            if (event.button !== 0) {
+              return
+            }
             if (editingCells[tab.key]) {
               rowDragAnchorRefs.current[tab.key] = undefined
               cellDragAnchorRefs.current[tab.key] = undefined
@@ -4397,24 +5681,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             commitRuntimeCellSelection(tab.key, runtimeSelectedCellRefs.current[tab.key] ?? [])
             commitPreviewSelectedRows()
           }}
-        >
-          <Table
-            className="result-table"
-            rowClassName={(row) => [
-              row.__deleted ? 'row-deleted' : row.__state ? `row-${row.__state}` : '',
-              selectedRowKeyMap[row.__rowKey] ? 'row-selected' : ''
-            ].filter(Boolean).join(' ')}
-            size="small"
-            loading={tab.loading}
-            columns={tableColumns}
-            dataSource={tableRows}
-            rowKey="__rowKey"
-            pagination={false}
-            scroll={{ x: tableScrollX, y: tableScrollY }}
-            tableLayout="fixed"
-            locale={{ emptyText: tab.kind === 'query' ? '暂无查询结果' : '暂无表数据' }}
-          />
-        </div>
+        />
       </div>
     )
   }
@@ -5445,28 +6712,22 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
   }
 
   const showObjectDdl = async (connectionId: string, name: string, type: DbObjectType, databaseName?: string, pgDatabaseName?: string): Promise<void> => {
-    setDdlModalTitle(`${name} DDL`)
-    setDdlContent('')
-    setDdlLoading(true)
-    setDdlModalOpen(true)
-
-    const params = new URLSearchParams({ type })
-    if (databaseName) {
-      params.set('database', databaseName)
-    }
-    if (pgDatabaseName) {
-      params.set('pg_database', pgDatabaseName)
-    }
-
-    try {
-      const result = await requestJson<ObjectDdlResponse>(`/connections/${connectionId}/objects/${encodeURIComponent(name)}/ddl?${params.toString()}`)
-      setDdlContent(result.ddl)
-    } catch (err) {
-      setDdlModalOpen(false)
-      showError(err instanceof Error ? err.message : '获取 DDL 失败')
-    } finally {
-      setDdlLoading(false)
-    }
+    const connection = getConnection(connectionId)
+    ddlPreviewModalRef.current?.open({
+      title: `${name} DDL`,
+      dialect: (connection?.database_type ?? 'sqlite') as SqlDialect,
+      load: async () => {
+        const params = new URLSearchParams({ type })
+        if (databaseName) {
+          params.set('database', databaseName)
+        }
+        if (pgDatabaseName) {
+          params.set('pg_database', pgDatabaseName)
+        }
+        const result = await requestJson<ObjectDdlResponse>(`/connections/${connectionId}/objects/${encodeURIComponent(name)}/ddl?${params.toString()}`)
+        return result.ddl
+      }
+    })
   }
 
   const deleteDatabase = (connectionId: string, databaseName: string): void => {
@@ -6228,7 +7489,16 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     }
   }
 
-  const updatePreviewCell = (tabKey: string, rowKey: string, column: string, value: unknown): void => {
+  const updatePreviewCells = (tabKey: string, patches: Array<{ rowKey: string, column: string, value: unknown }>): void => {
+    if (patches.length === 0) {
+      return
+    }
+    const rowPatches = new Map<string, Array<{ column: string, value: unknown }>>()
+    for (const patch of patches) {
+      const current = rowPatches.get(patch.rowKey) ?? []
+      current.push({ column: patch.column, value: patch.value })
+      rowPatches.set(patch.rowKey, current)
+    }
     setEditingCells((current) => ({ ...current, [tabKey]: undefined }))
     setWorkspaceTabs((current) =>
       current.map((tab) => {
@@ -6240,23 +7510,34 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           ...tab,
           columnFilterOptions: undefined,
           editRows: tab.editRows?.map((row) => {
-            if (row.__rowKey !== rowKey) {
+            const nextPatches = rowPatches.get(row.__rowKey)
+            if (!nextPatches?.length) {
               return row
             }
-
-            if (isCellValueEqual(row[column], value)) {
+            let changed = false
+            const nextRow = { ...row }
+            for (const patch of nextPatches) {
+              if (isCellValueEqual(nextRow[patch.column], patch.value)) {
+                continue
+              }
+              nextRow[patch.column] = patch.value
+              changed = true
+            }
+            if (!changed) {
               return row
             }
-
             return {
-              ...row,
-              [column]: value,
+              ...nextRow,
               __state: row.__state === 'inserted' ? 'inserted' : 'updated'
             }
           })
         }
       })
     )
+  }
+
+  const updatePreviewCell = (tabKey: string, rowKey: string, column: string, value: unknown): void => {
+    updatePreviewCells(tabKey, [{ rowKey, column, value }])
   }
 
   const addPreviewRow = (tab: WorkspaceTab): void => {
@@ -6313,6 +7594,8 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       return
     }
 
+    clearInlineCellEditor(tab.key)
+
     const limit = tab.limit ?? PREVIEW_DEFAULT_LIMIT
     const page = tab.page ?? 1
     const rows = tab.editRows ?? []
@@ -6330,13 +7613,17 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
 
     try {
       const dataPath = withWhereQuery(withPageQuery(withPgDatabase(`/connections/${tab.connectionId}/tables/${encodeURIComponent(tab.tableName)}/data`, tab.databaseName, tab.pgDatabaseName), limit, page), tab.where)
-      const result = await requestJson<QueryResponse>(dataPath, {
-        method: 'PUT',
-        body: JSON.stringify({ inserted, updated, deleted })
-      })
+      const [result, columnsData] = await Promise.all([
+        requestJson<QueryResponse>(dataPath, {
+          method: 'PUT',
+          body: JSON.stringify({ inserted, updated, deleted })
+        }),
+        requestJson<ColumnsResponse>(withPgDatabase(`/connections/${tab.connectionId}/tables/${encodeURIComponent(tab.tableName)}/columns`, tab.databaseName, tab.pgDatabaseName))
+      ])
+      const columnInfoMap = Object.fromEntries(columnsData.columns.map((item) => [item.name, item] as const))
       setEditingCells((current) => ({ ...current, [tab.key]: undefined }))
       requestAnimationFrame(() => syncRenderedCellSelection(tab.key))
-      updateWorkspaceTab(tab.key, { result, editRows: buildEditableRows(result.rows), selectedRowKeys: [], selectedRowKeyMap: {}, columnFilterOptions: undefined, where: tab.where?.trim() ?? '', loading: false, error: undefined })
+      updateWorkspaceTab(tab.key, { result, columnInfoMap, editRows: buildEditableRows(result.rows), selectedRowKeys: [], selectedRowKeyMap: {}, columnFilterOptions: undefined, where: tab.where?.trim() ?? '', loading: false, error: undefined })
     } catch (err) {
       updateWorkspaceTab(tab.key, { loading: false, error: err instanceof Error ? err.message : '提交表数据失败' })
       showError(err instanceof Error ? err.message : '提交表数据失败')
@@ -6350,6 +7637,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
 
     const whereCondition = where.trim()
     const tabKey = `preview:${connectionId}:${pgDatabaseName ?? databaseName ?? 'main'}:${tableName}`
+    clearInlineCellEditor(tabKey)
 
     setSelectedConnectionId(connectionId)
     setActiveTabKey(tabKey)
@@ -6381,10 +7669,14 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
 
     try {
       const previewPath = withWhereQuery(withPageQuery(withPgDatabase(`/connections/${connectionId}/tables/${encodeURIComponent(tableName)}/preview`, databaseName, pgDatabaseName), limit, page), whereCondition)
-      const result = await requestJson<QueryResponse>(previewPath)
+      const [result, columnsData] = await Promise.all([
+        requestJson<QueryResponse>(previewPath),
+        requestJson<ColumnsResponse>(withPgDatabase(`/connections/${connectionId}/tables/${encodeURIComponent(tableName)}/columns`, databaseName, pgDatabaseName))
+      ])
+      const columnInfoMap = Object.fromEntries(columnsData.columns.map((item) => [item.name, item] as const))
       setEditingCells((current) => ({ ...current, [tabKey]: undefined }))
       requestAnimationFrame(() => syncRenderedCellSelection(tabKey))
-      updateWorkspaceTab(tabKey, { result, editRows: buildEditableRows(result.rows), selectedRowKeys: [], selectedRowKeyMap: {}, columnFilterOptions: undefined, where: whereCondition, loading: false, error: undefined })
+      updateWorkspaceTab(tabKey, { result, columnInfoMap, editRows: buildEditableRows(result.rows), selectedRowKeys: [], selectedRowKeyMap: {}, columnFilterOptions: undefined, where: whereCondition, loading: false, error: undefined })
     } catch (err) {
       updateWorkspaceTab(tabKey, { loading: false, error: err instanceof Error ? err.message : '加载表数据失败' })
       showError(err instanceof Error ? err.message : '加载表数据失败')
@@ -6909,15 +8201,21 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                 void copyTreeNodeNames()
               }}
             >
-              <div ref={resourceTreeViewportRef} className="resource-tree-viewport">
+              <div
+                ref={resourceTreeViewportRef}
+                className={`resource-tree-viewport${enableVirtualTree ? ' virtual' : ' non-virtual'}`}
+              >
                 {treeData.length === 0 ? (
                   <Alert message="暂无数据库连接或分组" description="先创建一个连接，或者新建分组开始整理。" type="info" showIcon />
                 ) : (
                   <Tree
+                    ref={(node) => {
+                      resourceTreeRef.current = node
+                    }}
                     multiple
                     showIcon
                     blockNode
-                    virtual
+                    virtual={enableVirtualTree}
                     draggable={{
                       icon: false,
                       nodeDraggable: (node) => {
@@ -6984,7 +8282,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                       updateDragOverFolderTarget(undefined)
                       clearConnectionDragState()
                     }}
-                    height={resourceTreeHeight}
+                    height={enableVirtualTree ? resourceTreeHeight : undefined}
                     itemHeight={RESOURCE_TREE_ITEM_HEIGHT}
                     motion={false}
                     treeData={treeData}
@@ -7101,6 +8399,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                     <WorkspaceTabsView
                       workspaceTabs={workspaceTabs}
                       activeTabKey={activeTabKey}
+                      activeTabSearchState={activeTabSearchState}
                       onActiveTabChange={setActiveTabKey}
                       onCloseTab={closeWorkspaceTab}
                       renderWorkspaceTab={renderWorkspaceTab}
@@ -7383,9 +8682,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           </Space>
         )}
       </Modal>
-      <Modal title={ddlModalTitle || '查看 DDL'} open={ddlModalOpen} footer={null} onCancel={() => setDdlModalOpen(false)} width={820} centered maskClosable={false}>
-        <Input.TextArea value={ddlLoading ? '加载中...' : ddlContent} autoSize={{ minRows: 12, maxRows: 24 }} readOnly />
-      </Modal>
+      <DdlPreviewModal ref={ddlPreviewModalRef} theme={theme} onError={(errorMessage) => showError(errorMessage)} />
       <Modal
         title={folderEditorMode === 'rename' ? '重命名分组' : '新建分组'}
         open={folderEditorOpen}

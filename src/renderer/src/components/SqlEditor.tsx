@@ -43,6 +43,8 @@ interface SqlEditorProps {
   onSelectionChange?: (sql: string) => void
   theme: 'dark' | 'light'
   completionContext?: SqlCompletionContext
+  readOnly?: boolean
+  height?: string
 }
 
 const COMMON_KEYWORDS = [
@@ -200,7 +202,7 @@ const getDotQualifier = (text: string): string | undefined => {
   return match?.[1]?.replace(/^`|`$/g, '').replace(/^"|"$/g, '')
 }
 
-function SqlEditor({ value, onChange, onExecute, onSelectionChange, theme, completionContext }: SqlEditorProps): React.JSX.Element {
+function SqlEditor({ value, onChange, onExecute, onSelectionChange, theme, completionContext, readOnly = false, height = '100%' }: SqlEditorProps): React.JSX.Element {
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null)
   const monacoRef = useRef<typeof Monaco | null>(null)
   const completionDisposableRef = useRef<Monaco.IDisposable | null>(null)
@@ -303,23 +305,27 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, theme, compl
   const handleMount: OnMount = (editor, monaco) => {
     editorRef.current = editor
     monacoRef.current = monaco
-    registerCompletionProvider(monaco)
+    if (!readOnly) {
+      registerCompletionProvider(monaco)
+    }
 
     editor.onDidChangeCursorSelection(() => {
       selectionChangeRef.current?.(getSelectedSql(editor))
     })
 
-    editor.addAction({
-      id: 'execute-query',
-      label: 'Execute Query',
-      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter],
-      run: () => executeRef.current?.(getSelectedSql(editor) || undefined)
-    })
+    if (!readOnly) {
+      editor.addAction({
+        id: 'execute-query',
+        label: 'Execute Query',
+        keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter],
+        run: () => executeRef.current?.(getSelectedSql(editor) || undefined)
+      })
+    }
   }
 
   return (
     <Editor
-      height="100%"
+      height={height}
       language="sql"
       theme={theme === 'dark' ? 'vs-dark' : 'vs'}
       value={value}
@@ -337,12 +343,14 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, theme, compl
         bracketPairColorization: { enabled: true },
         automaticLayout: true,
         padding: { top: 6 },
-        suggest: { showKeywords: true, showSnippets: true, showFields: true, showStructs: true, preview: true },
-        tabCompletion: 'on',
-        quickSuggestions: { other: true, comments: false, strings: false },
+        suggest: { showKeywords: !readOnly, showSnippets: !readOnly, showFields: !readOnly, showStructs: !readOnly, preview: !readOnly },
+        tabCompletion: readOnly ? 'off' : 'on',
+        quickSuggestions: readOnly ? false : { other: true, comments: false, strings: false },
         tabSize: 2,
         renderWhitespace: 'boundary',
-        glyphMargin: false
+        glyphMargin: false,
+        readOnly,
+        domReadOnly: readOnly
       }}
     />
   )

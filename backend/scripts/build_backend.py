@@ -14,6 +14,7 @@ VENDOR_MANIFEST = BACKEND_DIR / "vendor" / "jpype15.json"
 DIST_BACKEND_DIR = BACKEND_DIR / "dist" / "datadjinn-backend"
 BACKEND_EXE_NAME = "datadjinn-backend.exe" if sys.platform == "win32" else "datadjinn-backend"
 DIST_BACKEND_EXE = DIST_BACKEND_DIR / BACKEND_EXE_NAME
+PYINSTALLER_DATA_SEPARATOR = ";" if sys.platform == "win32" else ":"
 
 
 def _is_complete_vendor_jpype_dir(vendor_dir: Path) -> bool:
@@ -118,7 +119,7 @@ def main() -> None:
         "--collect-submodules",
         "jpype",
         "--add-data",
-        f"{vendor_jpype_dir / 'org.jpype.jar'};.",
+        f"{vendor_jpype_dir / 'org.jpype.jar'}{PYINSTALLER_DATA_SEPARATOR}.",
         "--exclude-module",
         "dmPython",
         "--exclude-module",

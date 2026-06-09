@@ -1,24 +1,29 @@
-# DataDjinn v0.1.15
+# DataDjinn v0.1.16
 
 ## Highlights
 
-- 补强高斯数据库支持，完善 JDBC 连接、跨库查询、建表、改表和表数据编辑流程。
-- 优化表格预览区单元格交互，修复单击选中、拖动选择和双击编辑的卡顿与失效问题。
-- 调整 JPype vendor 处理方式，构建时自动准备本地依赖，仓库不再跟踪生成的二进制 vendor 目录。
+- 新增 GitHub Actions macOS 构建与发布链路，打 tag 后可同时产出 Windows 和 macOS 安装包
+- 优化表格页内搜索交互，搜索框打开/关闭、结果导航、中文输入法与高亮行为更稳定
+- 补齐 Electron 主进程与后端构建脚本的跨平台兼容，为 macOS 安装版运行做准备
 
 ## What's Changed
 
-- 高斯数据库连接改为显式关闭 JDBC autoCommit，并兼容 autoCommit 状态下 rollback 报错的问题。
-- 高斯 / PostgreSQL 场景下支持通过连接工厂切换目标数据库，补齐 SQL 执行、只读查询、表预览和表数据提交的跨库路径。
-- 高斯建表和改表复用 PostgreSQL 结构设计能力，并针对高斯 identity 语法差异避免生成不兼容的 `INCREMENT BY` 片段。
-- 表结构读取增强唯一约束、自增步长、字段注释和检查约束解析，修复部分 PostgreSQL 对象注释查询参数类型异常。
-- 表格预览单元格选中改为绑定真实单元格内容，避免滚动后选中背景漂移。
-- 双击单元格编辑改为原地 DOM 输入框，减少 React / AntD Table 重渲染带来的进入和退出编辑延迟。
-- 单击选中、拖动选择和点击其它位置提交编辑的交互链路重新梳理，降低快速操作时的卡顿和状态残留。
-- JPype vendor 目录改为构建时由 `prepare_jpype_vendor.py` 生成，不再把 `backend/vendor/jpype15` 二进制目录作为源码跟踪内容。
+- 发布流水线从单一 `windows-latest` 扩展为 Windows + macOS 双平台构建
+- GitHub Release 现在会自动汇总上传 Windows 安装包、Windows 压缩包、macOS `dmg` 和 macOS 压缩包
+- 后端构建脚本改为跨平台 Python 解析与调用，不再写死 Windows `.venv\\Scripts\\python.exe`
+- `build:backend`、`build:mac`、`build:linux`、`build:unpack` 统一串上后端构建，避免只打前端壳
+- `dmPython` / `dmSQLAlchemy` 依赖改为仅 Windows 安装，避免 macOS / Linux 流水线安装失败
+- PyInstaller 的 `--add-data` 参数改为按平台选择分隔符，修复非 Windows 平台后端打包兼容问题
+- Electron 主进程补齐 macOS 开发态与安装态后端可执行文件查找路径
+- 表格页内搜索继续优化：
+  - 搜索按钮保留在工具栏，与 `DDL` 按钮同一行
+  - 搜索框右侧关闭按钮恢复正常
+  - 上一个 / 下一个导航改为局部状态，连续点击更顺
+  - 修复输入后高亮时序错乱问题
+  - 普通文本搜索改为更轻量的匹配路径，减少大量命中时的高亮开销
 
 ## Notes
 
-- 当前版本号为 `v0.1.15`。
-- 本次发布包含前端表格交互、后端高斯兼容和构建依赖管理改动。
-- 发布前已完成前端 TypeScript 校验。
+- 当前版本号为 `v0.1.16`
+- 本次发布重点是 macOS 发布链路和表格页内搜索性能优化
+- 发布前已完成前端 TypeScript 校验

@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/platform-Windows-blue?logo=windows" alt="Platform" />
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-blue?logo=apple" alt="Platform" />
   <img src="https://img.shields.io/badge/electron-39.x-9feaf9?logo=electron" alt="Electron" />
   <img src="https://img.shields.io/badge/react-19.x-61dafb?logo=react" alt="React" />
   <img src="https://img.shields.io/badge/python-3.13+-3776AB?logo=python" alt="Python" />
@@ -115,10 +115,12 @@ Redis / MongoDB 导出为 JSON，适合迁移前留档、人工检查或和其�
 
 从 [Releases](https://github.com/vhukze/DataDjinn/releases) 下载最新版本：
 
-- `DataDjinn-x.x.x-setup.exe` —— NSIS 安装包（推荐）
-- `DataDjinn-x.x.x-win.zip` —— 解压即用版
+- `DataDjinn-x.x.x-setup.exe` —— Windows NSIS 安装包（推荐）
+- `DataDjinn-x.x.x-win.zip` —— Windows 解压即用版
+- `DataDjinn-x.x.x.dmg` —— macOS 安装包
+- `DataDjinn-x.x.x-mac.zip` —— macOS 压缩包
 
-当前最新版本：`v0.1.15`。
+当前最新版本：`v0.1.16`。
 
 解压版无需安装，解压后双击 `DataDjinn.exe` 即可运行。已内置 Python 运行时和所有后端依赖，无需额外安装任何环境。
 
@@ -153,11 +155,16 @@ npm run dev
 ```bash
 # 构建完整 Windows 包（安装包 + 解压版）
 npm run build:win:all
+
+# 构建 macOS 安装包
+npm run build:mac
 ```
 
 构建产物在 `dist/` 目录：
-- `DataDjinn-x.x.x-setup.exe` — NSIS 安装包
-- `DataDjinn-x.x.x-win.zip` — 解压版
+- `DataDjinn-x.x.x-setup.exe` — Windows NSIS 安装包
+- `DataDjinn-x.x.x-win.zip` — Windows 解压版
+- `DataDjinn-x.x.x.dmg` — macOS 安装包
+- `DataDjinn-x.x.x-mac.zip` — macOS 压缩包
 
 ---
 
@@ -252,6 +259,7 @@ DataDjinn/
 |------|------|
 | `npm run dev` | 启动开发模式（热重载） |
 | `npm run build:win:all` | 构建 Windows 安装包 + 解压版 |
+| `npm run build:mac` | 构建 macOS 安装包 |
 | `npm run typecheck` | TypeScript 类型检查 |
 | `npm run lint` | ESLint 代码检查 |
 | `npm run format` | Prettier 格式化 |

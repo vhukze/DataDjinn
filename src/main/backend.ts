@@ -1,7 +1,7 @@
 import { BrowserWindow, app } from 'electron'
 import { is } from '@electron-toolkit/utils'
 import { ChildProcessWithoutNullStreams, spawn } from 'child_process'
-import { createWriteStream, existsSync, mkdirSync, readFileSync } from 'fs'
+import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync } from 'fs'
 import { get } from 'http'
 import { dirname, join } from 'path'
 import { AddressInfo, createServer } from 'net'
@@ -285,17 +285,21 @@ export class BackendManager {
   private getBackendCommand(): BackendCommand {
     if (is.dev) {
       const backendDir = join(process.cwd(), 'backend')
-      const venvPython = join(backendDir, '.venv', 'Scripts', 'python.exe')
-      const sitePackages = join(backendDir, '.venv', 'Lib', 'site-packages')
+      const venvPython = process.platform === 'win32'
+        ? join(backendDir, '.venv', 'Scripts', 'python.exe')
+        : join(backendDir, '.venv', 'bin', 'python')
+      const sitePackages = this.resolveVenvSitePackages(backendDir)
       const pyvenvCfg = join(backendDir, '.venv', 'pyvenv.cfg')
       const fallbackPython = this.resolveSystemPythonFromVenv(pyvenvCfg)
+
+      const pythonEnv = sitePackages ? { PYTHONPATH: sitePackages } : undefined
 
       return {
         command: existsSync(venvPython) ? venvPython : (fallbackPython ?? venvPython),
         args: [join(backendDir, 'run.py')],
         cwd: backendDir,
         checkedPaths: [venvPython, ...(fallbackPython ? [fallbackPython] : [])],
-        env: existsSync(sitePackages) ? { PYTHONPATH: sitePackages } : undefined
+        env: pythonEnv
       }
     }
 
@@ -312,9 +316,13 @@ export class BackendManager {
   private getPackagedBackendCandidates(): string[] {
     const backendDir = join(process.resourcesPath, 'backend')
     return [
+      join(backendDir, 'datadjinn-backend'),
       join(backendDir, 'datadjinn-backend.exe'),
+      join(backendDir, 'datadjinn-backend', 'datadjinn-backend'),
       join(backendDir, 'datadjinn-backend', 'datadjinn-backend.exe'),
+      join(backendDir, 'DataDjinnBackend', 'datadjinn-backend'),
       join(backendDir, 'DataDjinnBackend', 'datadjinn-backend.exe'),
+      join(process.resourcesPath, 'DataDjinnBackend', 'datadjinn-backend'),
       join(process.resourcesPath, 'DataDjinnBackend', 'datadjinn-backend.exe')
     ]
   }
@@ -340,6 +348,30 @@ export class BackendManager {
 
       const executable = executableLine.slice('executable = '.length).trim()
       return executable || undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  private resolveVenvSitePackages(backendDir: string): string | undefined {
+    const windowsSitePackages = join(backendDir, '.venv', 'Lib', 'site-packages')
+    if (existsSync(windowsSitePackages)) {
+      return windowsSitePackages
+    }
+
+    const libDir = join(backendDir, '.venv', 'lib')
+    if (!existsSync(libDir)) {
+      return undefined
+    }
+
+    try {
+      const versionDir = readdirSync(libDir)
+        .find((entry) => entry.startsWith('python'))
+      if (!versionDir) {
+        return undefined
+      }
+      const sitePackages = join(libDir, versionDir, 'site-packages')
+      return existsSync(sitePackages) ? sitePackages : undefined
     } catch {
       return undefined
     }

@@ -6,8 +6,8 @@ python-dotenv==1.2.2
 sqlparse==0.5.5
 psycopg[binary]==3.3.4
 pyinstaller==6.17.0
-dmPython==2.5.32
-dmSQLAlchemy==2.0.12
+dmPython==2.5.32; platform_system == "Windows"
+dmSQLAlchemy==2.0.12; platform_system == "Windows"
 openai==2.13.0
 pymongo==4.15.4
 redis==7.1.0

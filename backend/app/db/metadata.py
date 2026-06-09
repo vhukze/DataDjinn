@@ -15,6 +15,7 @@ NUMERIC_LITERAL_PATTERN = re.compile(r"^-?\d+(?:\.\d+)?$")
 
 PG_SYSTEM_SCHEMAS = {"pg_catalog", "information_schema"}
 DM_SYSTEM_SCHEMAS = {"SYS", "SYSDBA", "SYSAUDITOR", "SYSSSO", "CTISYS"}
+DEFAULT_VALUE_ACTION = "default"
 
 
 def _is_clickhouse_engine(engine: Engine) -> bool:
@@ -23,6 +24,10 @@ def _is_clickhouse_engine(engine: Engine) -> bool:
 
 def _is_schema_scoped_engine(engine: Engine) -> bool:
     return engine.dialect.name in {"postgresql", "gaussdb"}
+
+
+def _is_default_value_marker(value: Any) -> bool:
+    return isinstance(value, dict) and value.get("__datadjinn_action__") == DEFAULT_VALUE_ACTION
 
 
 def _dm_current_user(connection: Any) -> str:
@@ -752,6 +757,17 @@ def _column_maximum(column: TableUpdateColumn) -> str | None:
     return _normalize_bound(column.maximum, f"字段 {column.name} 的最大值")
 
 
+def _gaussdb_serial_type(type_name: str) -> str | None:
+    normalized = type_name.strip().lower()
+    if normalized in {"smallint", "int2", "smallserial"}:
+        return "SMALLSERIAL"
+    if normalized in {"integer", "int", "int4", "serial"}:
+        return "SERIAL"
+    if normalized in {"bigint", "int8", "bigserial", "largeserial"}:
+        return "BIGSERIAL"
+    return None
+
+
 def _validate_table_columns(next_columns: list[TableUpdateColumn], dialect_name: str) -> None:
     if not next_columns:
         raise ValueError("至少需要一个字段")
@@ -783,6 +799,8 @@ def _validate_table_columns(next_columns: list[TableUpdateColumn], dialect_name:
                 raise ValueError(f"字段 {column_name} 只有整数类型才能设置自增")
             if dialect_name in {"mysql", "sqlite"} and column.auto_increment_step is not None:
                 raise ValueError(f"{dialect_name} 不支持列级自增步长")
+            if dialect_name == "gaussdb" and column.auto_increment_step not in {None, 1}:
+                raise ValueError("高斯数据库当前仅支持自增步长为 1")
         if column.auto_increment_step is not None and column.auto_increment_step < 1:
             raise ValueError(f"字段 {column_name} 的自增步长必须大于 0")
 
@@ -1072,6 +1090,7 @@ def list_columns(engine: Engine, table_name: str, database_name: str | None = No
                     type=str(row[1]),
                     nullable=str(row[2]).upper() == "YES",
                     primary_key=bool(row[3]),
+                    default_value=default_value,
                     comment=_clean_optional_text(_db_text(row[5])),
                     unique=column_name in unique_columns,
                     auto_increment=bool(default_value and ("nextval(" in default_value or "generated" in default_value.lower())),
@@ -1091,7 +1110,9 @@ def list_columns(engine: Engine, table_name: str, database_name: str | None = No
             type=str(column["type"]),
             nullable=bool(column.get("nullable", True)),
             primary_key=column["name"] in primary_keys,
+            default_value=_clean_optional_text(_db_text(column.get("default"))),
             comment=_clean_optional_text(_db_text(column.get("comment"))),
+            auto_increment=bool(column.get("autoincrement")) and str(column.get("autoincrement")).lower() != "false",
         )
         for column in inspector.get_columns(table_name, schema=database_name)
     ]
@@ -1172,26 +1193,7 @@ def get_object_ddl(engine: Engine, object_name: str, object_type: str, database_
                     body = row[0] if row else ""
                     return f"CREATE OR REPLACE VIEW {preparer.quote(schema_name)}.{preparer.quote(object_name)} AS\n{body};" if body else ""
 
-                columns = connection.execute(
-                    text(
-                        "SELECT column_name, data_type, is_nullable, column_default "
-                        "FROM information_schema.columns "
-                        "WHERE table_schema = :schema AND table_name = :name "
-                        "ORDER BY ordinal_position"
-                    ),
-                    {"schema": schema_name, "name": object_name},
-                ).fetchall()
-                column_defs = []
-                for column in columns:
-                    column_def = f"  {preparer.quote(column[0])} {column[1]}"
-                    if column[3] is not None:
-                        column_def += f" DEFAULT {column[3]}"
-                    if column[2] == "NO":
-                        column_def += " NOT NULL"
-                    column_defs.append(column_def)
-                if not column_defs:
-                    return ""
-                return f"CREATE TABLE {preparer.quote(schema_name)}.{preparer.quote(object_name)} (\n{',\n'.join(column_defs)}\n);"
+                return _build_pg_table_ddl(engine, object_name, schema_name)
 
             if object_type in {"function", "procedure"}:
                 row = connection.execute(
@@ -1414,9 +1416,15 @@ def apply_table_data_changes(engine: Engine, table_name: str, changes: TableData
             if not set_columns:
                 continue
 
-            set_sql = ", ".join(f"{preparer.quote(column)} = :set_{column}" for column in set_columns)
             where_sql, params = _primary_key_where(primary_keys, row.original, "update", preparer)
-            params.update({f"set_{column}": values[column] for column in set_columns})
+            set_clauses: list[str] = []
+            for column in set_columns:
+                if _is_default_value_marker(values[column]):
+                    set_clauses.append(f"{preparer.quote(column)} = DEFAULT")
+                    continue
+                set_clauses.append(f"{preparer.quote(column)} = :set_{column}")
+                params[f"set_{column}"] = values[column]
+            set_sql = ", ".join(set_clauses)
             connection.execute(text(f"UPDATE {quoted_table} SET {set_sql} WHERE {where_sql}"), params)
 
         for row in changes.inserted:
@@ -1426,8 +1434,15 @@ def apply_table_data_changes(engine: Engine, table_name: str, changes: TableData
 
             insert_columns = list(values.keys())
             columns_sql = ", ".join(preparer.quote(column) for column in insert_columns)
-            values_sql = ", ".join(f":insert_{column}" for column in insert_columns)
-            params = {f"insert_{column}": values[column] for column in insert_columns}
+            insert_values_sql: list[str] = []
+            params: dict[str, Any] = {}
+            for column in insert_columns:
+                if _is_default_value_marker(values[column]):
+                    insert_values_sql.append("DEFAULT")
+                    continue
+                insert_values_sql.append(f":insert_{column}")
+                params[f"insert_{column}"] = values[column]
+            values_sql = ", ".join(insert_values_sql)
             connection.execute(text(f"INSERT INTO {quoted_table} ({columns_sql}) VALUES ({values_sql})"), params)
 
 
@@ -1817,6 +1832,92 @@ def _pg_sequence_name(engine: Engine, table_name: str, column_name: str, schema_
     return str(row[0]) if row and row[0] is not None else None
 
 
+def _pg_table_constraints(engine: Engine, table_name: str, schema_name: str) -> list[tuple[str, str, str]]:
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT c.conname, c.contype, pg_get_constraintdef(c.oid, true) "
+                "FROM pg_constraint c "
+                "JOIN pg_class t ON t.oid = c.conrelid "
+                "JOIN pg_namespace n ON n.oid = t.relnamespace "
+                "WHERE n.nspname = :schema_name AND t.relname = :table_name "
+                "AND c.contype IN ('p', 'u', 'f', 'c') "
+                "ORDER BY CASE c.contype WHEN 'p' THEN 0 WHEN 'u' THEN 1 WHEN 'f' THEN 2 ELSE 3 END, c.conname"
+            ),
+            {"schema_name": schema_name, "table_name": table_name},
+        ).fetchall()
+    return [
+        (str(row[0]), str(row[1]), _db_text(row[2]).strip())
+        for row in rows
+        if row[0] is not None and row[1] is not None and row[2] is not None
+    ]
+
+
+def _pg_non_constraint_indexes(engine: Engine, table_name: str, schema_name: str) -> list[str]:
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT pg_get_indexdef(i.indexrelid) "
+                "FROM pg_index i "
+                "JOIN pg_class t ON t.oid = i.indrelid "
+                "JOIN pg_namespace n ON n.oid = t.relnamespace "
+                "JOIN pg_class idx ON idx.oid = i.indexrelid "
+                "WHERE n.nspname = :schema_name AND t.relname = :table_name "
+                "AND NOT i.indisprimary "
+                "AND NOT EXISTS ("
+                "  SELECT 1 FROM pg_constraint c "
+                "  WHERE c.conrelid = i.indrelid AND c.conindid = i.indexrelid AND c.contype IN ('p', 'u')"
+                ") "
+                "ORDER BY idx.relname"
+            ),
+            {"schema_name": schema_name, "table_name": table_name},
+        ).fetchall()
+    return [_db_text(row[0]).strip() for row in rows if row and row[0] is not None]
+
+
+def _build_pg_table_ddl(engine: Engine, table_name: str, schema_name: str) -> str:
+    preparer = engine.dialect.identifier_preparer
+    quoted_table = f"{preparer.quote(schema_name)}.{preparer.quote(table_name)}"
+    columns = list_columns(engine, table_name, schema_name)
+    if not columns:
+        return ""
+
+    constraint_lines = [
+        f"  CONSTRAINT {preparer.quote(constraint_name)} {definition}"
+        for constraint_name, _constraint_type, definition in _pg_table_constraints(engine, table_name, schema_name)
+        if definition
+    ]
+
+    column_lines: list[str] = []
+    for column in columns:
+        line = f"  {preparer.quote(column.name)} {column.type}"
+        if column.default_value:
+            line += f" DEFAULT {column.default_value}"
+        if not column.nullable:
+            line += " NOT NULL"
+        column_lines.append(line)
+
+    body = ",\n".join([*column_lines, *constraint_lines])
+    statements = [f"CREATE TABLE {quoted_table} (\n{body}\n);"]
+
+    for index_ddl in _pg_non_constraint_indexes(engine, table_name, schema_name):
+        if index_ddl:
+            statements.append(f"{index_ddl};")
+
+    table_comment = get_table_comment(engine, table_name, schema_name)
+    if table_comment:
+        statements.append(f"COMMENT ON TABLE {quoted_table} IS {_sql_string(table_comment)};")
+
+    for column in columns:
+        comment = _clean_optional_text(column.comment)
+        if comment:
+            statements.append(
+                f"COMMENT ON COLUMN {quoted_table}.{preparer.quote(column.name)} IS {_sql_string(comment)};"
+            )
+
+    return "\n\n".join(statements)
+
+
 def _build_postgresql_update_statements_v2(
     engine: Engine,
     table_name: str,
@@ -1858,6 +1959,8 @@ def _build_postgresql_update_statements_v2(
             f"ALTER TABLE {quoted_table} ALTER COLUMN {quoted_column} {'DROP' if column.nullable and not column.primary_key else 'SET'} NOT NULL"
         )
 
+        if engine.dialect.name == "gaussdb" and current.auto_increment != column.auto_increment:
+            raise ValueError("高斯数据库当前暂不支持修改已有字段的自增属性，请通过新建表时配置自增")
         if current.auto_increment and not column.auto_increment:
             statements.append(f"ALTER TABLE {quoted_table} ALTER COLUMN {quoted_column} DROP IDENTITY IF EXISTS")
         elif not current.auto_increment and column.auto_increment:
@@ -1942,8 +2045,15 @@ def _postgresql_identity_options(engine: Engine, step: int | None) -> str:
 
 
 def _postgresql_column_definition(engine: Engine, column: TableUpdateColumn, preparer) -> str:
-    parts = [preparer.quote(column.name.strip()), column.type.strip()]
-    if column.auto_increment:
+    column_name = column.name.strip()
+    type_name = column.type.strip()
+    parts = [preparer.quote(column_name), type_name]
+    if engine.dialect.name == "gaussdb" and column.auto_increment:
+        serial_type = _gaussdb_serial_type(type_name)
+        if serial_type is None:
+            raise ValueError(f"高斯数据库字段 {column_name} 只有 smallint/integer/bigint 类型才能设置自增")
+        parts = [preparer.quote(column_name), serial_type]
+    elif column.auto_increment:
         options = _postgresql_identity_options(engine, column.auto_increment_step)
         parts.append(f"GENERATED BY DEFAULT AS IDENTITY{options}")
     if not column.nullable or column.primary_key:
