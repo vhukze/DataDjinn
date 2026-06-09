@@ -42,15 +42,16 @@ DataDjinn 是一款**跨时代**的本地数据库桌面客户端，将传统数
 
 ### SQL 编辑与 AI 问答
 
-![SQL 编辑与 AI 问答](.github/screenshots/1.png)
+<img width="1792" height="974" alt="image" src="https://github.com/user-attachments/assets/07de839b-546a-4b00-a4fc-45896dfe007a" />
 
 ### 数据预览与 AI 分析
 
-![数据预览与 AI 分析](.github/screenshots/2.png)
+<img width="1792" height="974" alt="image" src="https://github.com/user-attachments/assets/724c1328-ad83-426e-9ccb-e7b9f5cfbca9" />
+
 
 ### AI 设置
 
-![AI 设置](.github/screenshots/3.png)
+<img width="1792" height="974" alt="image" src="https://github.com/user-attachments/assets/4f0d4ed9-55cf-40ae-a711-67e1e6f0288d" />
 
 ---
 
