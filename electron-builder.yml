@@ -32,6 +32,7 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: always
 mac:
+  identity: null
   target:
     - dmg
     - zip
