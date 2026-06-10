@@ -446,6 +446,37 @@ def create_database(engine: Engine, database_name: str) -> DatabaseInfo:
     return DatabaseInfo(name=str(database_name))
 
 
+def create_oracle_user(engine: Engine, user_name: str, password: str) -> DatabaseInfo:
+    if not _is_oracle_engine(engine):
+        raise ValueError("当前连接不是 Oracle")
+
+    normalized_user = user_name.strip().upper()
+    normalized_password = password.strip()
+    if not normalized_user:
+        raise ValueError("Oracle 用户名不能为空")
+    if not normalized_password:
+        raise ValueError("Oracle 用户密码不能为空")
+
+    preparer = engine.dialect.identifier_preparer
+    quoted_user = preparer.quote(normalized_user)
+    escaped_password = normalized_password.replace('"', '""')
+    grants = [
+        "CREATE SESSION",
+        "CREATE TABLE",
+        "CREATE VIEW",
+        "CREATE SEQUENCE",
+        "CREATE TRIGGER",
+        "CREATE PROCEDURE",
+    ]
+
+    with engine.begin() as connection:
+        connection.execute(text(f'CREATE USER {quoted_user} IDENTIFIED BY "{escaped_password}"'))
+        for grant in grants:
+            connection.execute(text(f"GRANT {grant} TO {quoted_user}"))
+
+    return DatabaseInfo(name=normalized_user)
+
+
 def drop_database(engine: Engine, database_name: str) -> None:
     if is_mongo_client(engine):
         engine.drop_database(database_name)
@@ -1527,6 +1558,21 @@ def get_object_ddl(engine: Engine, object_name: str, object_type: str, database_
                     {"schema": schema_name, "name": object_name, "type": object_type},
                 ).fetchone()
                 return row[0] if row else ""
+
+            if object_type == "trigger":
+                row = connection.execute(
+                    text(
+                        "SELECT pg_get_triggerdef(t.oid, true) "
+                        "FROM pg_trigger t "
+                        "JOIN pg_class c ON c.oid = t.tgrelid "
+                        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                        "WHERE n.nspname = :schema AND t.tgname = :name "
+                        "AND NOT t.tgisinternal "
+                        "LIMIT 1"
+                    ),
+                    {"schema": schema_name, "name": object_name},
+                ).fetchone()
+                return f"{row[0]};" if row and row[0] else ""
 
             if object_type == "sequence":
                 return f"CREATE SEQUENCE {preparer.quote(schema_name)}.{preparer.quote(object_name)};"

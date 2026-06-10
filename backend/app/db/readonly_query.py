@@ -13,7 +13,7 @@ from app.db.redis_utils import is_redis_client, redis_client_for_database, redis
 from app.schemas.query import QueryResponse
 
 READONLY_TYPES = {"SELECT", "WITH"}
-INTERNAL_PAGING_COLUMNS = {"__DATADJINN_RN", "_DATADJINN_RN"}
+INTERNAL_PAGING_COLUMNS = {"DATADJINN_RN"}
 
 
 def _is_schema_scoped_engine(engine: Engine) -> bool:
@@ -106,6 +106,42 @@ def execute_readonly_query(engine: Engine, sql: str, limit: int | None, offset: 
             return _execute_on_connection_with_context(engine, statement, limit, offset, database)
 
         return _execute_limited_query(engine, statement, limit, offset)
+    finally:
+        if cleanup_engine:
+            engine.dispose()
+
+
+def execute_query(engine: Engine, sql: str, limit: int | None, offset: int = 0, database: str | None = None, pg_database: str | None = None) -> QueryResponse:
+    if is_mongo_client(engine):
+        return _execute_mongo_readonly_query(engine, sql, limit, offset, database)
+
+    if is_redis_client(engine):
+        return _execute_redis_query(engine, sql, limit, offset, database)
+
+    cleanup_engine = False
+
+    if pg_database and _is_schema_scoped_engine(engine):
+        if engine.dialect.name == "postgresql":
+            from sqlalchemy import create_engine
+
+            engine = create_engine(engine.url.set(database=pg_database), pool_pre_ping=True)
+            cleanup_engine = True
+        else:
+            factory = getattr(engine, "_datadjinn_engine_factory", None)
+            if callable(factory):
+                engine = factory(pg_database)
+                cleanup_engine = True
+
+    try:
+        statement = _validate_single_sql(sql)
+        statement_type = sqlparse.parse(statement)[0].get_type().upper()
+
+        if statement_type in READONLY_TYPES:
+            if database and engine.dialect.name in {"mysql", "postgresql", "gaussdb", "dm", "dmPython", "oracle", "clickhouse", "clickhousedb"}:
+                return _execute_on_connection_with_context(engine, statement, limit, offset, database)
+            return _execute_limited_query(engine, statement, limit, offset)
+
+        return _execute_mutation_query(engine, statement, database)
     finally:
         if cleanup_engine:
             engine.dispose()
@@ -472,6 +508,8 @@ def _preview_table_impl(engine: Engine, table_name: str, limit: int, offset: int
         quoted_table = f"{preparer.quote(quoted_name(database_name, quote=True))}.{quoted_table}"
 
     where_sql = _validate_preview_where(where)
+    if where_sql and engine.dialect.name == "oracle":
+        where_sql = _normalize_oracle_where_clause(engine, table_name, database_name, where_sql)
     query = f"SELECT * FROM {quoted_table}{f' WHERE {where_sql}' if where_sql else ''}"
     result = _execute_limited_query(engine, query, limit, offset)
     result.total_count = _count_preview_rows(engine, quoted_table, where_sql)
@@ -501,6 +539,74 @@ def _validate_preview_where(where: str | None) -> str:
     return condition
 
 
+def _normalize_oracle_where_clause(engine: Engine, table_name: str, database_name: str | None, where_sql: str) -> str:
+    from app.db.metadata import list_columns
+
+    columns = list_columns(engine, table_name, database_name)
+    if not columns:
+        return where_sql
+
+    column_name_map = {column.name.lower(): column.name for column in columns}
+    if not column_name_map:
+        return where_sql
+
+    quoted_identifiers = {
+        "select", "from", "where", "and", "or", "not", "null", "is", "in", "like", "between", "exists",
+        "case", "when", "then", "else", "end", "asc", "desc", "order", "by", "group", "having", "rownum"
+    }
+    preparer = engine.dialect.identifier_preparer
+    result: list[str] = []
+    index = 0
+    length = len(where_sql)
+
+    while index < length:
+        char = where_sql[index]
+
+        if char == "'":
+            start = index
+            index += 1
+            while index < length:
+                if where_sql[index] == "'" and (index + 1 >= length or where_sql[index + 1] != "'"):
+                    index += 1
+                    break
+                if where_sql[index] == "'" and index + 1 < length and where_sql[index + 1] == "'":
+                    index += 2
+                    continue
+                index += 1
+            result.append(where_sql[start:index])
+            continue
+
+        if char == '"':
+            start = index
+            index += 1
+            while index < length:
+                if where_sql[index] == '"':
+                    index += 1
+                    break
+                index += 1
+            result.append(where_sql[start:index])
+            continue
+
+        if char.isalpha() or char in {"_", "$", "#"}:
+            start = index
+            index += 1
+            while index < length and (where_sql[index].isalnum() or where_sql[index] in {"_", "$", "#"}):
+                index += 1
+            token = where_sql[start:index]
+            previous_char = where_sql[start - 1] if start > 0 else ""
+            if previous_char == ":" or token.lower() in quoted_identifiers:
+                result.append(token)
+                continue
+            actual_name = column_name_map.get(token.lower())
+            result.append(preparer.quote(actual_name) if actual_name else token)
+            continue
+
+        result.append(char)
+        index += 1
+
+    return "".join(result)
+
+
 def _count_preview_rows(engine: Engine, quoted_table: str, where_sql: str) -> int | None:
     query = f"SELECT COUNT(*) FROM {quoted_table}{f' WHERE {where_sql}' if where_sql else ''}"
     try:
@@ -525,13 +631,48 @@ def _execute_limited_query(engine: Engine, sql: str, limit: int | None, offset: 
     return QueryResponse(columns=[column_name for _, column_name in columns], rows=rows, row_count=len(rows), limited=limited)
 
 
-def _validate_readonly_sql(sql: str) -> str:
+def _execute_mutation_query(engine: Engine, sql: str, database: str | None = None) -> QueryResponse:
+    with engine.begin() as connection:
+        if database:
+            preparer = engine.dialect.identifier_preparer
+            quoted = preparer.quote(database)
+            if _is_schema_scoped_engine(engine):
+                connection.execute(text(f"SET search_path TO {quoted}"))
+            elif engine.dialect.name in {"dm", "dmPython"}:
+                connection.execute(text(f"SET SCHEMA {quoted}"))
+            elif engine.dialect.name == "oracle":
+                connection.execute(text(f"ALTER SESSION SET CURRENT_SCHEMA = {quoted}"))
+            elif engine.dialect.name in {"mysql", "clickhouse", "clickhousedb"}:
+                connection.execute(text(f"USE {quoted}"))
+
+        result = connection.execute(text(sql))
+        if getattr(result, "returns_rows", False):
+            columns = _visible_result_columns(result.keys())
+            raw_rows = result.mappings().fetchall()
+            rows = _query_rows(raw_rows, columns)
+            return QueryResponse(columns=[column_name for _, column_name in columns], rows=rows, row_count=len(rows), limited=False)
+
+        affected_rows = result.rowcount if result.rowcount is not None and result.rowcount >= 0 else 0
+        return QueryResponse(
+            columns=["message", "affected_rows"],
+            rows=[{"message": "SQL 执行成功", "affected_rows": affected_rows}],
+            row_count=1,
+            limited=False,
+            total_count=None
+        )
+
+
+def _validate_single_sql(sql: str) -> str:
     statements = [statement for statement in sqlparse.parse(sql) if str(statement).strip()]
 
     if len(statements) != 1:
         raise ValueError("只允许执行单条 SQL")
 
-    statement = statements[0]
+    return str(statements[0]).strip().rstrip(";")
+
+
+def _validate_readonly_sql(sql: str) -> str:
+    statement = sqlparse.parse(_validate_single_sql(sql))[0]
     statement_type = statement.get_type().upper()
 
     if statement_type not in READONLY_TYPES:
@@ -548,6 +689,6 @@ def _with_limit(engine: Engine, sql: str, limit: int, offset: int = 0) -> str:
 
     if engine.dialect.name in {"dm", "dmPython", "oracle"}:
         end_row = offset + limit
-        return f"SELECT * FROM (SELECT inner_query.*, ROWNUM AS __DATADJINN_RN FROM ({sql}) inner_query WHERE ROWNUM <= {end_row}) WHERE __DATADJINN_RN > {offset}"
+        return f"SELECT * FROM (SELECT inner_query.*, ROWNUM AS DATADJINN_RN FROM ({sql}) inner_query WHERE ROWNUM <= {end_row}) WHERE DATADJINN_RN > {offset}"
 
     return f"{sql} LIMIT {limit} OFFSET {offset}"

@@ -103,6 +103,7 @@ class RedisDataChangeRequest(BaseModel):
 
 class DatabaseCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=64, pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+    password: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class DatabaseCreateResponse(BaseModel):

@@ -62,7 +62,7 @@ DataDjinn 是一款**跨时代**的本地数据库桌面客户端，将传统数
 | **SQLite** | sqlite3 | 本地文件数据库，即开即用 |
 | **MySQL** | PyMySQL | 支持 5.x / 8.x |
 | **PostgreSQL** | psycopg 3 | 支持 12+ |
-| **Oracle** | python-oracledb | 支持连接、Schema 浏览、表预览、对象浏览、DDL 查看以及新建表 / 修改表主要能力 |
+| **Oracle** | python-oracledb | 支持连接、Schema 浏览、表/视图/触发器/序列等对象浏览、表预览、WHERE 过滤、DDL 查看、新建用户以及新建表 / 修改表主要能力 |
 | **达梦 DM** | 外部 JDBC jar / dmPython pyd / dmPython whl 驱动 | 国产数据库，支持 DM8；可在驱动管理中添加驱动，并在连接信息中选择指定驱动，默认打包不内置达梦 DLL |
 | **高斯数据库** | 外部 JDBC jar 驱动 | 国产数据库；可在驱动管理中添加高斯 JDBC 驱动，并在连接信息中选择指定驱动 |
 | **MongoDB** | PyMongo | 支持连接、数据库/集合浏览、字段推断、集合预览、只读查询、创建集合、插入测试数据和 JSON 导出 |
@@ -122,7 +122,7 @@ Redis / MongoDB 导出为 JSON，适合迁移前留档、人工检查或和其�
 - `DataDjinn-x.x.x.dmg` —— macOS 安装包
 - `DataDjinn-x.x.x-mac.zip` —— macOS 压缩包
 
-当前最新版本：`v0.1.24`。
+当前最新版本：`v0.1.25`。
 
 解压版无需安装，解压后双击 `DataDjinn.exe` 即可运行。已内置 Python 运行时和所有后端依赖，无需额外安装任何环境。
 

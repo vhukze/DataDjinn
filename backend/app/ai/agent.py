@@ -1112,7 +1112,7 @@ def build_system_prompt(db_type: str, db_name: str, workspace: AgentWorkspaceCon
         "16. PostgreSQL 查询必须在当前 pg_database 内执行；当前 schema 已作为 search_path 设置，生成 SQL 时优先使用 schema.table，或只使用当前 schema 下的表名，不要生成 database.table 形式。\n"
         "17. 生成 SQL 必须优先匹配当前执行上下文里的 dbType 和 serverVersion；不确定版本是否支持某个语法时，使用该数据库更保守、更通用的写法。\n"
         "18. 用户说“当前连接/当前库/当前模式/当前表”时，优先使用工作区里的当前焦点资源；如果没有焦点资源，再使用 AI 上下文数据源列表的第一个。\n"
-        "19. 只有用户明确要求生成 SQL 到查询窗口、写入编辑器、放到当前 SQL 窗口时，才调用 append_query_sql；用户说创建、插入、初始化、执行时必须调用 execute_query，不能只写入窗口。\n"
+        "19. 用户只要说生成 SQL、给出 SQL、帮我写 SQL、生成插入语句、生成建表语句，默认都应调用 append_query_sql 把 SQL 写入查询窗口，不执行；只有用户明确说执行、创建、插入、初始化、运行、落库时，才调用 execute_query。用户后续补充“不要执行，只生成”时，也必须改为 append_query_sql。\n"
         "20. MongoDB 上下文中，创建集合使用 db.createCollection(\"collection\")；插入测试数据优先把多条文档合并为一条 db.<collection>.insertMany([...]) 调用，不要逐条 insertOne 导致轮次耗尽；文档键和值都使用带引号的 Python/JSON 风格字面量。可以把 createCollection 和 insertMany 用分号组成一次 execute_query 调用完成。\n"
         "21. Redis 上下文中，查看 Key 列表优先使用 SCAN；查看字符串用 GET key，查看 hash/list/set/zset/stream 分别用 HGETALL/LRANGE/SMEMBERS/ZRANGE/XRANGE；创建或写入测试数据可使用 SET/HSET/LPUSH/RPUSH/SADD/ZADD，并说明会修改 Redis 数据。\n\n"
         f"工作区上下文：\n{workspace_context}"

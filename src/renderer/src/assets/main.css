@@ -1584,8 +1584,9 @@ body[data-theme="dark"] .ant-popover-message {
 
 .connection-tree-name {
   display: block !important;
-  flex: 0 1 auto;
+  flex: 1 0 auto;
   min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1610,14 +1611,19 @@ body[data-theme="dark"] .ant-popover-message {
 
 .connection-tree-address {
   display: block !important;
-  flex: 1 1 auto;
+  flex: 0 1 36%;
   min-width: 0;
+  max-width: 40%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 10px;
   line-height: 16px;
   opacity: 0.72;
+}
+
+.connection-tree-main > .connection-tree-name:first-child {
+  min-width: 52%;
 }
 
 .connection-tree-title.is-closed .connection-tree-name,
@@ -2735,6 +2741,16 @@ body[data-theme="dark"] .ant-popover-message {
   flex: 1 1 280px;
   min-width: 220px;
   max-width: 560px;
+}
+
+.preview-where-option {
+  display: block;
+  width: 100%;
+}
+
+.preview-where-option.is-active {
+  color: #1677ff;
+  font-weight: 600;
 }
 
 .result-status {

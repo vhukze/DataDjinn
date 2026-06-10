@@ -84,6 +84,7 @@ import dmIcon from './assets/icons/dm.svg'
 import mongoIcon from './assets/icons/mongo.png'
 import redisIcon from './assets/icons/redis.png'
 import clickhouseIcon from './assets/icons/clickhouse.png'
+import oracleIcon from './assets/icons/oracle.png'
 import appIcon from '../../../resources/icon.svg'
 import appLogoHorizontal from '../../../resources/logo-horizontal.svg'
 
@@ -144,6 +145,133 @@ const WorkspaceTabsView = memo(function WorkspaceTabsView({
   prev.workspaceTabs === next.workspaceTabs &&
   prev.activeTabKey === next.activeTabKey &&
   prev.activeTabSearchState === next.activeTabSearchState
+))
+
+type WhereClauseInputProps = {
+  tabKey: string
+  columns: string[]
+  value?: string
+  onSubmit: (value: string) => void
+}
+
+const WhereClauseInput = memo(function WhereClauseInput({
+  tabKey,
+  columns,
+  value,
+  onSubmit
+}: WhereClauseInputProps) {
+  const [inputValue, setInputValue] = useState(value ?? '')
+  const [highlightedIndex, setHighlightedIndex] = useState(0)
+
+  useEffect(() => {
+    setInputValue(value ?? '')
+    setHighlightedIndex(0)
+  }, [tabKey, value])
+
+  const suggestionState = useMemo(() => {
+    const match = /(^|[^A-Za-z0-9_"])([A-Za-z_][A-Za-z0-9_]*)$/.exec(inputValue)
+    if (!match) {
+      return { token: '', start: -1, options: [] as string[] }
+    }
+
+    const token = match[2] ?? ''
+    if (!token.trim()) {
+      return { token: '', start: -1, options: [] as string[] }
+    }
+
+    const lowerToken = token.toLowerCase()
+    const options = columns
+      .filter((column) => column !== '__rowKey' && column.toLowerCase().includes(lowerToken))
+      .slice(0, 8)
+
+    return {
+      token,
+      start: inputValue.length - token.length,
+      options
+    }
+  }, [columns, inputValue])
+
+  useEffect(() => {
+    setHighlightedIndex((current) => {
+      if (suggestionState.options.length <= 0) {
+        return 0
+      }
+      return Math.min(current, suggestionState.options.length - 1)
+    })
+  }, [suggestionState.options])
+
+  const applySuggestion = (nextColumn: string): void => {
+    if (!nextColumn || suggestionState.start < 0) {
+      return
+    }
+    const nextValue = `${inputValue.slice(0, suggestionState.start)}${nextColumn}`
+    setInputValue(nextValue)
+    setHighlightedIndex(0)
+  }
+
+  const autoCompleteOptions = suggestionState.options.map((column, index) => ({
+    value: column,
+    label: (
+      <span className={index === highlightedIndex ? 'preview-where-option is-active' : 'preview-where-option'}>
+        {column}
+      </span>
+    )
+  }))
+
+  const suggestionsOpen = suggestionState.options.length > 0
+
+  return (
+    <AutoComplete
+      className="preview-where-input"
+      open={suggestionsOpen}
+      options={autoCompleteOptions}
+      value={inputValue}
+      onChange={(nextValue) => {
+        setInputValue(nextValue)
+        setHighlightedIndex(0)
+      }}
+      onSelect={(nextValue) => applySuggestion(String(nextValue))}
+      filterOption={false}
+    >
+      <Input
+        size="small"
+        allowClear
+        addonBefore="WHERE"
+        placeholder="输入过滤条件，例如：id = 2，回车查询"
+        onChange={(event) => {
+          setInputValue(event.currentTarget.value)
+          setHighlightedIndex(0)
+        }}
+        onKeyDown={(event) => {
+          if (suggestionsOpen && event.key === 'ArrowDown') {
+            event.preventDefault()
+            setHighlightedIndex((current) => (current + 1) % suggestionState.options.length)
+            return
+          }
+          if (suggestionsOpen && event.key === 'ArrowUp') {
+            event.preventDefault()
+            setHighlightedIndex((current) => (current - 1 + suggestionState.options.length) % suggestionState.options.length)
+            return
+          }
+          if (suggestionsOpen && event.key === 'Enter') {
+            event.preventDefault()
+            event.stopPropagation()
+            applySuggestion(suggestionState.options[highlightedIndex] ?? suggestionState.options[0] ?? '')
+            return
+          }
+          if (event.key === 'Enter') {
+            event.preventDefault()
+            onSubmit(inputValue)
+          }
+        }}
+        onPressEnter={() => undefined}
+      />
+    </AutoComplete>
+  )
+}, (prev, next) => (
+  prev.tabKey === next.tabKey &&
+  prev.value === next.value &&
+  prev.columns === next.columns
 ))
 
 type BackendStatus = {
@@ -558,6 +686,7 @@ type WorkspaceTab = {
   databaseName?: string
   pgDatabaseName?: string
   tableName?: string
+  objectType?: DbObjectType
   sql: string
   limit?: number
   page?: number
@@ -1516,6 +1645,7 @@ function App(): React.JSX.Element {
   const [creatingSchemaDatabaseName, setCreatingSchemaDatabaseName] = useState<string>('')
   const [databaseCreateLoading, setDatabaseCreateLoading] = useState(false)
   const [databaseCreateName, setDatabaseCreateName] = useState('')
+  const [databaseCreatePassword, setDatabaseCreatePassword] = useState('')
   const [sqlFileModalOpen, setSqlFileModalOpen] = useState(false)
   const [sqlFileConnectionId, setSqlFileConnectionId] = useState<string>('')
   const [sqlFileContent, setSqlFileContent] = useState('')
@@ -2120,8 +2250,10 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       key: `connection:${connection.connection_id}`,
       title: connection.name,
       icon:
-        connection.database_type === 'postgresql' || connection.database_type === 'gaussdb' ? (
+        connection.database_type === 'postgresql' ? (
           <img src={postgresIcon} alt="PG" style={{ width: 16, height: 16 }} />
+        ) : connection.database_type === 'gaussdb' ? (
+          <DatabaseOutlined />
         ) : connection.database_type === 'mongodb' ? (
           <img src={mongoIcon} alt="MongoDB" style={{ width: 16, height: 16 }} />
         ) : connection.database_type === 'redis' ? (
@@ -2129,7 +2261,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         ) : connection.database_type === 'clickhouse' ? (
           <img src={clickhouseIcon} alt="ClickHouse" style={{ width: 16, height: 16 }} />
         ) : connection.database_type === 'oracle' ? (
-          <DatabaseOutlined />
+          <img src={oracleIcon} alt="Oracle" style={{ width: 16, height: 16 }} />
         ) : connection.database_type === 'mysql' ? (
           <img src={mysqlIcon} alt="MySQL" style={{ width: 16, height: 16 }} />
         ) : connection.database_type === 'dm' ? (
@@ -3878,6 +4010,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         setCreatingDatabaseConnectionId(connection.connection_id)
         setCreatingSchemaDatabaseName('')
         setDatabaseCreateName('')
+        setDatabaseCreatePassword('')
         setDatabaseCreateModalOpen(true)
       }
     }
@@ -4074,9 +4207,9 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       ...(connection.is_open
         ? [{ key: 'close', label: '关闭连接', icon: <CloseCircleOutlined />, disabled: loading }]
         : [{ key: 'open', label: '打开连接', icon: <PlayCircleOutlined />, disabled: loading }]),
-      ...(connection.database_type === 'redis' || connection.database_type === 'oracle' ? [] : [{
+      ...(connection.database_type === 'redis' ? [] : [{
         key: 'new-database',
-        label: connection.database_type === 'sqlite' ? '新增 SQLite 数据库文件' : '新建库',
+        label: connection.database_type === 'sqlite' ? '新增 SQLite 数据库文件' : connection.database_type === 'oracle' ? '新建用户' : '新建库',
         icon: <PlusOutlined />
       }]),
       ...(connection.database_type !== 'mongodb' && connection.database_type !== 'redis'
@@ -4372,6 +4505,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     rowKey: string,
     column: string,
     value: unknown,
+    editable: boolean,
     onCellDragEnter: () => void,
     contextMenuItems: MenuProps['items'],
     onContextMenuAction: (key: string, cellKey: string) => void,
@@ -4415,6 +4549,9 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             clearRuntimeColumnSelection(tabKey)
           }}
           onDoubleClick={(event) => {
+            if (!editable) {
+              return
+            }
             event.preventDefault()
             event.stopPropagation()
             rowDragAnchorRefs.current[tabKey] = undefined
@@ -4453,27 +4590,17 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       return null
     }
 
-    const fieldOptions = (tab.result?.columns ?? [])
-      .filter((column) => column !== '__rowKey')
-      .map((column) => ({ value: column, label: column }))
-
     return (
-      <AutoComplete
-        className="preview-where-input"
-        options={fieldOptions}
+      <WhereClauseInput
+        tabKey={tab.key}
+        columns={(tab.result?.columns ?? []).filter((column) => column !== '__rowKey')}
         value={tab.where ?? ''}
-        filterOption={(input, option) => String(option?.value ?? '').toLowerCase().includes(input.toLowerCase())}
-        onChange={(value) => updateWorkspaceTab(tab.key, { where: value })}
-        onSelect={(value) => updateWorkspaceTab(tab.key, { where: value })}
-      >
-        <Input
-          size="small"
-          allowClear
-          addonBefore="WHERE"
-          placeholder="输入过滤条件，例如：id = 2，回车查询"
-          onPressEnter={(event) => void previewTable(tab.connectionId!, tab.tableName!, tab.databaseName, tab.pgDatabaseName, tab.limit, 1, event.currentTarget.value)}
-        />
-      </AutoComplete>
+        onSubmit={(nextWhere) => {
+          updateWorkspaceTab(tab.key, { where: nextWhere })
+          const previewObjectType = tab.objectType === 'view' ? 'view' : 'table'
+          void previewTable(tab.connectionId!, tab.tableName!, tab.databaseName, tab.pgDatabaseName, tab.limit, 1, nextWhere, previewObjectType)
+        }}
+      />
     )
   }
 
@@ -4526,7 +4653,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         onSearchStateChange={(patch) => updateTableSearchState(tab, patch)}
         onClearActiveHighlight={() => clearActiveSearchCellHighlight(tab.key)}
         showDdlPreview={showDdlPreview}
-        onOpenDdl={() => void showObjectDdl(tab.connectionId!, tab.tableName!, 'table', tab.databaseName, tab.pgDatabaseName)}
+        onOpenDdl={() => void showObjectDdl(tab.connectionId!, tab.tableName!, tab.objectType ?? 'table', tab.databaseName, tab.pgDatabaseName)}
       />
     )
   }
@@ -4804,6 +4931,8 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
 
   const renderResultTable = (tab: WorkspaceTab): React.ReactNode => {
     const searchState = getImmediateTableSearchState(tab)
+    const supportsCellSelection = tab.kind === 'preview' || tab.kind === 'query' || tab.kind === 'table-list'
+    const supportsWritableCells = tab.kind === 'preview'
     const baseTableRows: EditableRow[] = tab.kind === 'preview' ? (tab.editRows ?? []) : (tab.result?.rows.map((row, index) => ({ ...row, __rowKey: `query:${index}` })) ?? [])
     const selectedRowKeyMap = tab.selectedRowKeyMap ?? Object.fromEntries((tab.selectedRowKeys ?? []).map((key) => [String(key), true]))
     const resultColumns = tab.result?.columns ?? []
@@ -4895,7 +5024,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         return
       }
       clearActiveSearchCellHighlight(tab.key)
-      if (tab.kind === 'preview') {
+      if (supportsCellSelection) {
         clearRuntimeColumnSelection(tab.key)
         rowDragAnchorRefs.current[tab.key] = undefined
         cellDragAnchorRefs.current[tab.key] = undefined
@@ -5170,6 +5299,9 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     }
 
     const pasteIntoSelectedCells = async (): Promise<void> => {
+      if (!supportsWritableCells) {
+        return
+      }
       const selection = getCommittedCellSelection()
       const bounds = getSelectionBounds(selection)
       if (!bounds) {
@@ -5219,16 +5351,20 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       updatePreviewCells(tab.key, patches)
     }
 
-    const previewCellContextMenuItems: MenuProps['items'] = [
+    const readOnlyCellContextMenuItems: MenuProps['items'] = [
       { key: 'copy-selection', label: '复制' },
       { key: 'copy-as-insert', label: '复制为 INSERT' },
-      { key: 'copy-as-md', label: '复制为 MD' },
+      { key: 'copy-as-md', label: '复制为 MD' }
+    ]
+
+    const previewCellContextMenuItems: MenuProps['items'] = [
+      ...readOnlyCellContextMenuItems,
       { type: 'divider' },
       { key: 'set-null', label: '设为 NULL' },
       { key: 'set-default', label: '设为 DEFAULT' }
     ]
 
-    const handlePreviewCellContextMenuAction = (actionKey: string, cellKey: string): void => {
+    const handleCellContextMenuAction = (actionKey: string, cellKey: string): void => {
       const selection = contextMenuCellSelectionRefs.current[tab.key] ?? ensureContextSelection(cellKey)
       if (actionKey === 'copy-selection') {
         void copySelectedCells(selection)
@@ -5240,6 +5376,10 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       }
       if (actionKey === 'copy-as-md') {
         void copySelectionAsMarkdown(selection)
+        return
+      }
+      if (!supportsWritableCells) {
+        contextMenuCellSelectionRefs.current[tab.key] = undefined
         return
       }
       if (actionKey === 'set-null') {
@@ -5575,23 +5715,24 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           'data-cell-key': `${row.__rowKey}:${column}`,
         } as React.TdHTMLAttributes<HTMLElement>),
         render: (value: unknown, row: EditableRow) => (
-          tab.kind === 'preview'
+          supportsCellSelection
             ? renderEditableCell(
               tab.key,
               row.__rowKey,
               column,
               value,
+              supportsWritableCells,
               () => updateDragCellSelection(row.__rowKey, column),
-              previewCellContextMenuItems,
-              handlePreviewCellContextMenuAction,
+              supportsWritableCells ? previewCellContextMenuItems : readOnlyCellContextMenuItems,
+              handleCellContextMenuAction,
               ensureContextSelection,
-              highlightResultText(`${row.__rowKey}:${column}`, cellDisplayText(value))
+              highlightResultText(`${row.__rowKey}:${column}`, cellDisplayText(value), 'table-cell-text')
             )
-            : highlightResultText(`${row.__rowKey}:${column}`, value === null || value === undefined ? 'NULL' : String(value), 'table-cell-text')
+            : highlightResultText(`${row.__rowKey}:${column}`, cellDisplayText(value), 'table-cell-text')
         )
       })) ?? []
-    const tableColumns: ColumnsType<EditableRow> = tab.kind === 'preview' ? [rowNumberColumn, ...dataColumns] : dataColumns
-    const tableScrollX = Math.max((tab.result?.columns.length ?? 0) * 180 + (tab.kind === 'preview' ? 34 : 0), 720)
+    const tableColumns: ColumnsType<EditableRow> = supportsCellSelection ? [rowNumberColumn, ...dataColumns] : dataColumns
+    const tableScrollX = Math.max((tab.result?.columns.length ?? 0) * 180 + (supportsCellSelection ? 34 : 0), 720)
     const tableScrollY = tableBodyHeights[tab.key] ?? 320
     const searchSignature = `${searchState.query}\u0000${searchState.caseSensitive ? 1 : 0}\u0000${searchState.regex ? 1 : 0}\u0000${searchState.wholeWord ? 1 : 0}\u0000${searchState.filterRows ? 1 : 0}`
     const editingCellKey = editingCells[tab.key] ? `${editingCells[tab.key]!.rowKey}:${editingCells[tab.key]!.column}` : undefined
@@ -5621,7 +5762,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           setBodyRef={(element) => { tableBodyRefs.current[tab.key] = element }}
           onScrollCapture={() => scheduleRenderedCellSelectionSync(tab.key)}
           onKeyDown={(event) => {
-            if (tab.kind !== 'preview' || isEditableTarget(event.target)) {
+            if (!supportsCellSelection || isEditableTarget(event.target)) {
               return
             }
             if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'c') {
@@ -5633,6 +5774,9 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
               void copySelectedCells(selection)
             }
             if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'v') {
+              if (!supportsWritableCells) {
+                return
+              }
               const selection = getCommittedCellSelection()
               if (selection.length === 0) {
                 return
@@ -6302,7 +6446,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       { key: 'sqlite', label: 'SQLite', icon: <img src={sqliteIcon} alt="" style={{ width: 16, height: 16 }} /> },
       { key: 'mysql', label: 'MySQL', icon: <img src={mysqlIcon} alt="" style={{ width: 16, height: 16 }} /> },
       { key: 'postgresql', label: 'PostgreSQL', icon: <img src={postgresIcon} alt="" style={{ width: 16, height: 16 }} /> },
-      { key: 'oracle', label: 'Oracle', icon: <DatabaseOutlined /> },
+      { key: 'oracle', label: 'Oracle', icon: <img src={oracleIcon} alt="Oracle" style={{ width: 16, height: 16 }} /> },
       { key: 'mongodb', label: 'MongoDB', icon: <img src={mongoIcon} alt="" style={{ width: 16, height: 16 }} /> },
       { key: 'redis', label: 'Redis', icon: <img src={redisIcon} alt="Redis" style={{ width: 16, height: 16 }} /> },
       { key: 'clickhouse', label: 'ClickHouse', icon: <img src={clickhouseIcon} alt="ClickHouse" style={{ width: 16, height: 16 }} /> },
@@ -6525,6 +6669,17 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     }
   }
 
+  const isConnectionNameDuplicate = (name: string, editingConnectionId?: string): boolean => {
+    const normalized = name.trim().toLocaleLowerCase()
+    if (!normalized) {
+      return false
+    }
+    return connections.some((connection) =>
+      connection.connection_id !== editingConnectionId &&
+      connection.name.trim().toLocaleLowerCase() === normalized
+    )
+  }
+
   const driverTypeOptionsForDatabase = (databaseType: DriverDatabaseType): { label: string; value: DriverType }[] =>
     DRIVER_DATABASE_META[databaseType].supportedDriverTypes.map((type) => ({
       value: type,
@@ -6647,7 +6802,18 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     setTestingConnection(true)
 
     try {
-      const values = await form.validateFields()
+      const values = await form.validateFields([
+        'name',
+        'database_type',
+        'sqlite_path',
+        'host',
+        'port',
+        'username',
+        'password',
+        'database',
+        'driver_id',
+        'dm_driver_id'
+      ])
       const result = await requestJson<ConnectionTestResponse>('/connections/test', {
         method: 'POST',
         body: JSON.stringify(cleanFormValues(values))
@@ -6667,6 +6833,11 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
 
   const saveConnection = async (): Promise<void> => {
     const values = await form.validateFields()
+    const nextName = String(values.name ?? '').trim()
+    if (isConnectionNameDuplicate(nextName, editingConnectionInfoId)) {
+      form.setFields([{ name: 'name', errors: ['名称已存在'] }])
+      return
+    }
     const payload = cleanFormValues(values)
     setConnectionLoading(true)
 
@@ -6738,16 +6909,28 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
   }
 
   const deleteConnection = async (connectionId: string): Promise<void> => {
-    await requestJson<{ success: boolean }>(`/connections/${connectionId}`, {
-      method: 'DELETE'
+    const connection = connections.find((item) => item.connection_id === connectionId)
+    Modal.confirm({
+      title: `确认删除连接：${connection?.name ?? '未命名连接'}？`,
+      content: '删除后将移除该连接配置，操作不可撤销。',
+      okText: '删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      centered: true,
+      maskClosable: false,
+      onOk: async () => {
+        await requestJson<{ success: boolean }>(`/connections/${connectionId}`, {
+          method: 'DELETE'
+        })
+        const nextConnections = connections.filter((item) => item.connection_id !== connectionId)
+        setConnections(nextConnections)
+        setSelectedConnectionId((current) => (current === connectionId ? nextConnections[0]?.connection_id : current))
+        setSelectedConnectionIds((current) => current.filter((id) => id !== connectionId))
+        setSelectedTreeKeys((current) => current.filter((key) => key !== `connection:${connectionId}`))
+        setWorkspaceTabs((current) => current.filter((tab) => tab.connectionId !== connectionId))
+        refreshTree(nextConnections)
+      }
     })
-    const nextConnections = connections.filter((connection) => connection.connection_id !== connectionId)
-    setConnections(nextConnections)
-    setSelectedConnectionId((current) => (current === connectionId ? nextConnections[0]?.connection_id : current))
-    setSelectedConnectionIds((current) => current.filter((id) => id !== connectionId))
-    setSelectedTreeKeys((current) => current.filter((key) => key !== `connection:${connectionId}`))
-    setWorkspaceTabs((current) => current.filter((tab) => tab.connectionId !== connectionId))
-    refreshTree(nextConnections)
   }
 
   const showObjectDdl = async (connectionId: string, name: string, type: DbObjectType, databaseName?: string, pgDatabaseName?: string): Promise<void> => {
@@ -6842,6 +7025,8 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
 
     setDatabaseCreateLoading(true)
     const isSchema = !!creatingSchemaDatabaseName
+    const creatingConnection = getConnection(creatingDatabaseConnectionId)
+    const isOracleUser = creatingConnection?.database_type === 'oracle' && !isSchema
     let createdName = databaseCreateName.trim()
 
     try {
@@ -6854,12 +7039,13 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       } else {
         const created = await requestJson<{ name: string }>(`/connections/${creatingDatabaseConnectionId}/databases`, {
           method: 'POST',
-          body: JSON.stringify({ name: createdName })
+          body: JSON.stringify({ name: createdName, password: isOracleUser ? databaseCreatePassword : undefined })
         })
         createdName = created.name
       }
       setDatabaseCreateModalOpen(false)
       setCreatingSchemaDatabaseName('')
+      setDatabaseCreatePassword('')
 
       if (isSchema) {
         const selKey = `${creatingDatabaseConnectionId}:${creatingSchemaDatabaseName}`
@@ -6908,7 +7094,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         refreshConnectionNode(connId)
       }
     } catch (err) {
-      showError(err instanceof Error ? err.message : isSchema ? '创建 Schema 失败' : '创建数据库失败')
+      showError(err instanceof Error ? err.message : isSchema ? '创建 Schema 失败' : isOracleUser ? '创建用户失败' : '创建数据库失败')
     } finally {
       setDatabaseCreateLoading(false)
     }
@@ -7669,7 +7855,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     }
   }
 
-  const previewTable = async (connectionId: string, tableName: string, databaseName?: string, pgDatabaseName?: string, limit = PREVIEW_DEFAULT_LIMIT, page = 1, where = ''): Promise<void> => {
+  const previewTable = async (connectionId: string, tableName: string, databaseName?: string, pgDatabaseName?: string, limit = PREVIEW_DEFAULT_LIMIT, page = 1, where = '', objectType: 'table' | 'view' = 'table'): Promise<void> => {
     if (!ensureConnectionOpen(connectionId)) {
       return
     }
@@ -7684,7 +7870,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       const exists = current.some((tab) => tab.key === tabKey)
 
       if (exists) {
-        return current.map((tab) => (tab.key === tabKey ? { ...tab, limit, page, where: whereCondition, loading: true, error: undefined } : tab))
+        return current.map((tab) => (tab.key === tabKey ? { ...tab, limit, page, where: whereCondition, objectType, loading: true, error: undefined } : tab))
       }
 
       return [
@@ -7697,6 +7883,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           databaseName,
           pgDatabaseName,
           tableName,
+          objectType,
           sql: '',
           limit,
           page,
@@ -7785,14 +7972,39 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     }
   }
 
+  const resolvePreferredQueryContext = (connectionId?: string): { databaseName?: string; pgDatabaseName?: string } => {
+    const connId = connectionId ?? selectedConnectionId
+    const currentActiveTab = workspaceTabs.find((tab) => tab.key === activeTabKey)
+    const contextCandidates: Array<{
+      connectionId?: string
+      databaseName?: string
+      pgDatabaseName?: string
+    } | undefined> = [focusedTreeNode, currentActiveTab, aiActiveContext]
+
+    for (const candidate of contextCandidates) {
+      if (!candidate || candidate.connectionId !== connId) {
+        continue
+      }
+      if (candidate.databaseName || candidate.pgDatabaseName) {
+        return {
+          databaseName: candidate.databaseName,
+          pgDatabaseName: candidate.pgDatabaseName
+        }
+      }
+    }
+
+    return {}
+  }
+
   const openQueryWorkspace = (initialSql = 'select * from users;', title?: string, connectionId?: string, databaseName?: string, pgDatabaseName?: string): string => {
     const nextIndex = queryCounter
     const tabKey = `query:${Date.now()}:${nextIndex}`
     const connId = connectionId ?? selectedConnectionId
     const connection = getConnection(connId)
+    const preferredContext = resolvePreferredQueryContext(connId)
 
-    let finalDb = databaseName
-    let finalPgDb = pgDatabaseName
+    let finalDb = databaseName ?? preferredContext.databaseName
+    let finalPgDb = pgDatabaseName ?? preferredContext.pgDatabaseName
 
     if ((isDatabaseScopedType(connection?.database_type) || connection?.database_type === 'dm' || connection?.database_type === 'oracle') && !finalDb) {
       finalDb = getDefaultDatabaseName(connection)
@@ -8394,7 +8606,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                         if (connection?.database_type === 'redis') {
                           void openRedisDatabaseBrowser(treeNode.connectionId, treeNode.databaseName ?? getDefaultDatabaseName(connection) ?? 'db0')
                         } else {
-                          void previewTable(treeNode.connectionId, treeNode.tableName, treeNode.databaseName, treeNode.pgDatabaseName)
+                          void previewTable(treeNode.connectionId, treeNode.tableName, treeNode.databaseName, treeNode.pgDatabaseName, PREVIEW_DEFAULT_LIMIT, 1, '', treeNode.objectType)
                         }
                         return
                       }
@@ -8687,12 +8899,17 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       <Modal title={editingTableName ? `修改表：${editingTableName}` : '修改表'} open={tableEditorOpen} okText="保存" cancelText="取消" confirmLoading={tableEditorLoading} onOk={() => void saveTableEditor()} onCancel={() => setTableEditorOpen(false)} width={980} okButtonProps={{ disabled: !tableDesignerSupportsEdit(getConnection(editingConnectionId)?.database_type) }} maskClosable={false}>
         {renderTableDesigner('edit', editingConnectionId, editingDatabaseName, editingPgDatabaseName, editingTableName ?? '', undefined, editingTableComment, setEditingTableComment, editingColumns, tableEditorLoading)}
       </Modal>
-      <Modal title={creatingSchemaDatabaseName ? '新建 Schema' : '新增数据库'} open={databaseCreateModalOpen} okText="创建" cancelText="取消" confirmLoading={databaseCreateLoading} onOk={() => void createDatabase()} onCancel={() => { setDatabaseCreateModalOpen(false); setCreatingSchemaDatabaseName('') }} okButtonProps={{ disabled: !databaseCreateName.trim() }} maskClosable={false}>
+      <Modal title={creatingSchemaDatabaseName ? '新建 Schema' : getConnection(creatingDatabaseConnectionId)?.database_type === 'oracle' ? '新建用户' : '新增数据库'} open={databaseCreateModalOpen} okText="创建" cancelText="取消" confirmLoading={databaseCreateLoading} onOk={() => void createDatabase()} onCancel={() => { setDatabaseCreateModalOpen(false); setCreatingSchemaDatabaseName(''); setDatabaseCreatePassword('') }} okButtonProps={{ disabled: !databaseCreateName.trim() || (getConnection(creatingDatabaseConnectionId)?.database_type === 'oracle' && !creatingSchemaDatabaseName && !databaseCreatePassword.trim()) }} maskClosable={false}>
         <Form layout="vertical">
-          <Form.Item label={creatingSchemaDatabaseName ? 'Schema 名称' : '数据库名称'} required>
-            <Input placeholder={creatingSchemaDatabaseName ? '请输入 Schema 名称' : '请输入数据库名称'} value={databaseCreateName} onChange={(event) => setDatabaseCreateName(event.target.value)} onPressEnter={() => void createDatabase()} />
+          <Form.Item label={creatingSchemaDatabaseName ? 'Schema 名称' : getConnection(creatingDatabaseConnectionId)?.database_type === 'oracle' ? '用户名' : '数据库名称'} required>
+            <Input placeholder={creatingSchemaDatabaseName ? '请输入 Schema 名称' : getConnection(creatingDatabaseConnectionId)?.database_type === 'oracle' ? '请输入用户名' : '请输入数据库名称'} value={databaseCreateName} onChange={(event) => setDatabaseCreateName(event.target.value)} onPressEnter={() => void createDatabase()} />
           </Form.Item>
-          <Typography.Text type="secondary">仅允许字母、数字、下划线，首字符不能是数字，长度 1-64。</Typography.Text>
+          {getConnection(creatingDatabaseConnectionId)?.database_type === 'oracle' && !creatingSchemaDatabaseName && (
+            <Form.Item label="用户密码" required>
+              <Input.Password placeholder="请输入用户密码" value={databaseCreatePassword} onChange={(event) => setDatabaseCreatePassword(event.target.value)} onPressEnter={() => void createDatabase()} />
+            </Form.Item>
+          )}
+          <Typography.Text type="secondary">{getConnection(creatingDatabaseConnectionId)?.database_type === 'oracle' && !creatingSchemaDatabaseName ? '用户名仅允许字母、数字、下划线，首字符不能是数字；创建后会自动授予基础开发权限。' : '仅允许字母、数字、下划线，首字符不能是数字，长度 1-64。'}</Typography.Text>
         </Form>
       </Modal>
       <Modal title="运行 SQL 文件" open={sqlFileModalOpen} okText="执行" cancelText="取消" confirmLoading={sqlFileLoading} onOk={() => void runSqlFile()} onCancel={() => setSqlFileModalOpen(false)} okButtonProps={{ danger: true, disabled: sqlFileDatabases.length > 0 && !sqlFileDatabase }} footer={sqlFileResult ? undefined : (_, { OkBtn, CancelBtn }) => (<Space><CancelBtn /><OkBtn /></Space>)} maskClosable={false}>
@@ -8756,7 +8973,13 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       </Modal>
       <Modal title={connectionMode === 'edit' ? '编辑数据库连接' : '保存数据库连接'} open={connectionModalOpen} okText={connectionMode === 'edit' ? '保存修改' : '保存连接'} cancelText="取消" confirmLoading={connectionLoading} onOk={() => void saveConnection()} onCancel={() => setConnectionModalOpen(false)} footer={(_, { OkBtn, CancelBtn }) => (<Space><Button loading={testingConnection} onClick={() => void testConnection()}>测试连接</Button><CancelBtn /><OkBtn /></Space>)} maskClosable={false}>
         <Form form={form} layout="vertical" initialValues={{ database_type: 'sqlite' }}>
-          <Form.Item name="name" label="连接名称" rules={[{ required: true, message: '请输入连接名称' }]}><Input placeholder="例如：本地 SQLite" /></Form.Item>
+          <Form.Item
+            name="name"
+            label="连接名称"
+            rules={[{ required: true, message: '请输入连接名称' }]}
+          >
+            <Input placeholder="例如：本地 SQLite" />
+          </Form.Item>
           <Form.Item name="database_type" style={{ display: 'none' }}><Input /></Form.Item>
           {databaseType === 'sqlite' ? (
             <Form.Item name="sqlite_path" label="SQLite 文件路径" rules={[{ required: true, message: '请输入 SQLite 文件路径' }]}><Input placeholder="data/datadjinn.sqlite" /></Form.Item>

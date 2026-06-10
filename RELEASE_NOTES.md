@@ -1,18 +1,29 @@
-# DataDjinn v0.1.24
+# DataDjinn v0.1.25
 
 ## Highlights
 
-- 恢复 Windows 安装包的原有内容结构，解决安装包体积异常缩小后在部分安全软件环境中无法打开的问题
-- 保留 macOS `dmg` 构建修复，继续支持通过 GitHub Actions 正常产出 mac 安装包
+- 新增 Oracle 数据库支持
+- 补齐 Oracle 的表结构、DDL、数据预览与编辑相关能力
+- 持续优化连接树、查询窗口和表格交互体验
 
 ## What's Changed
 
-- `electron-builder.yml` 恢复 Windows 原有打包文件收集结构，重新生成两百多兆级别的安装包
-- `.github/workflows/release.yml` 保留 macOS 构建链路修复：先构建后端与前端，再清理 `backend/.venv`，最后通过 `npx electron-builder --mac` 打包
-- Windows 与 macOS 的发布策略分离处理，避免修复 mac 构建时误影响 Windows 安装包内容
+- 新增 Oracle 连接支持，使用 Python 原生 `oracledb` 驱动
+- Oracle 现已支持连接测试、Schema 浏览、表/视图/触发器/序列等对象浏览
+- 新增 Oracle 表预览、分页查询、WHERE 过滤、DDL 查看、建表与改表支持
+- 新增 Oracle 连接右键“新建用户”能力，可直接创建用户并授基础开发权限
+- 修复 Oracle 系统表预览分页 SQL 兼容问题
+- 修复 Oracle 表预览 WHERE 过滤在部分字段名场景下的兼容问题
+- PG 查询窗口取消只读限制，查询窗口可直接执行非只读 SQL
+- 修复 PG 视图和触发器 DDL 查看问题
+- 新建查询时会优先带上当前库/模式上下文
+- 查询结果表格补齐单元格单选、多选、右键复制、复制为 INSERT / Markdown 等交互
+- 优化表预览顶部 WHERE 输入框联想逻辑，只按输入内容提示字段，并降低输入卡顿
+- WHERE 回车查询后保留输入焦点，便于继续补充过滤条件
+- 优化左侧连接节点文本布局，优先保证连接名称显示，地址信息先省略
+- 编辑连接时，名称重复校验仅在保存时触发；测试连接不再误报“名称已存在”
 
 ## Notes
 
-- 当前版本号为 `v0.1.24`
-- 本次发布重点是恢复 Windows 安装包兼容性，并保留 macOS 打包修复
-- 发布前已完成前端 TypeScript 校验和后端 Python 语法校验
+- 当前版本号：`v0.1.25`
+- 本次版本重点是补齐 Oracle 支持，并继续打磨查询与预览体验
