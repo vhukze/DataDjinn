@@ -63,6 +63,11 @@ jobs:
           "$VENV_PY" -m pip install --upgrade pip
           "$VENV_PY" -m pip install -r backend/requirements.txt
 
+      - name: Remove backend virtualenv before Electron packaging
+        if: runner.os == 'macOS'
+        shell: bash
+        run: rm -rf backend/.venv
+
       - name: Build packages
         run: ${{ matrix.build_command }}
 
