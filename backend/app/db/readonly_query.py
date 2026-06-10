@@ -102,7 +102,7 @@ def execute_readonly_query(engine: Engine, sql: str, limit: int | None, offset: 
     try:
         statement = _validate_readonly_sql(sql)
 
-        if database and engine.dialect.name in {"mysql", "postgresql", "gaussdb", "dm", "dmPython", "clickhouse", "clickhousedb"}:
+        if database and engine.dialect.name in {"mysql", "postgresql", "gaussdb", "dm", "dmPython", "oracle", "clickhouse", "clickhousedb"}:
             return _execute_on_connection_with_context(engine, statement, limit, offset, database)
 
         return _execute_limited_query(engine, statement, limit, offset)
@@ -419,6 +419,8 @@ def _execute_on_connection_with_context(engine: Engine, sql: str, limit: int | N
             connection.execute(text(f"SET search_path TO {quoted}"))
         elif engine.dialect.name in {"dm", "dmPython"}:
             connection.execute(text(f"SET SCHEMA {quoted}"))
+        elif engine.dialect.name == "oracle":
+            connection.execute(text(f"ALTER SESSION SET CURRENT_SCHEMA = {quoted}"))
         elif engine.dialect.name in {"clickhouse", "clickhousedb"}:
             connection.execute(text(f"USE {quoted}"))
         result = connection.execute(text(limited_sql))
@@ -544,7 +546,7 @@ def _with_limit(engine: Engine, sql: str, limit: int, offset: int = 0) -> str:
     if parsed and any(token.normalized == "LIMIT" for token in parsed[0].flatten()):
         return sql
 
-    if engine.dialect.name in {"dm", "dmPython"}:
+    if engine.dialect.name in {"dm", "dmPython", "oracle"}:
         end_row = offset + limit
         return f"SELECT * FROM (SELECT inner_query.*, ROWNUM AS __DATADJINN_RN FROM ({sql}) inner_query WHERE ROWNUM <= {end_row}) WHERE __DATADJINN_RN > {offset}"
 

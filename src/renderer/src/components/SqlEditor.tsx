@@ -5,7 +5,7 @@ import { useEffect, useRef } from 'react'
 
 loader.config({ monaco })
 
-export type SqlDialect = 'sqlite' | 'mysql' | 'postgresql' | 'dm' | 'gaussdb' | 'mongodb' | 'redis' | 'clickhouse'
+export type SqlDialect = 'sqlite' | 'mysql' | 'postgresql' | 'dm' | 'gaussdb' | 'oracle' | 'mongodb' | 'redis' | 'clickhouse'
 
 export interface SqlCompletionColumn {
   name: string
@@ -130,6 +130,7 @@ const DIALECT_KEYWORDS: Record<SqlDialect, string[]> = {
   postgresql: ['SERIAL', 'BIGSERIAL', 'RETURNING', 'ILIKE', 'ON CONFLICT', 'JSONB', 'UUID'],
   dm: ['ROWNUM', 'CONNECT BY', 'START WITH', 'SYSDATE', 'SYSTIMESTAMP', 'NVL', 'DECODE', 'DUAL'],
   gaussdb: ['SERIAL', 'BIGSERIAL', 'RETURNING', 'ILIKE', 'ON CONFLICT', 'JSONB', 'UUID', 'DISTRIBUTE BY', 'PARTITION BY'],
+  oracle: ['ROWNUM', 'CONNECT BY', 'START WITH', 'SYSDATE', 'SYSTIMESTAMP', 'NVL', 'DECODE', 'DUAL', 'MERGE', 'SEQUENCE'],
   mongodb: ['db', 'find', 'aggregate', 'countDocuments', 'distinct', 'sort', 'limit', 'skip', 'ObjectId'],
   redis: ['SCAN', 'KEYS', 'GET', 'SET', 'HGETALL', 'HSET', 'LRANGE', 'LPUSH', 'RPUSH', 'SMEMBERS', 'SADD', 'ZRANGE', 'ZADD', 'DEL', 'EXPIRE', 'TTL', 'TYPE'],
   clickhouse: ['MergeTree', 'ReplacingMergeTree', 'ORDER BY', 'PARTITION BY', 'UInt8', 'UInt32', 'UInt64', 'Int64', 'String', 'DateTime', 'Nullable', 'SHOW CREATE TABLE', 'DESCRIBE TABLE']
@@ -163,7 +164,7 @@ const quoteIdentifier = (name: string, dialect?: SqlDialect): string => {
     return name
   }
 
-  if (dialect === 'postgresql' || dialect === 'dm' || dialect === 'gaussdb') {
+  if (dialect === 'postgresql' || dialect === 'dm' || dialect === 'gaussdb' || dialect === 'oracle') {
     return `"${name.replaceAll('"', '""')}"`
   }
 

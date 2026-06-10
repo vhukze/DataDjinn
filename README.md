@@ -23,7 +23,7 @@ DataDjinn 是一款**跨时代**的本地数据库桌面客户端，将传统数
 ### 核心能力
 
 - 🧠 **AI 对话式数据库操作** —— 接入任意 OpenAI 兼容 API，AI 深度理解 Schema 上下文，支持自然语言查数据、建表、修改表结构
-- 🔗 **多数据库支持** —— SQLite / MySQL / PostgreSQL / 达梦 DM / 高斯数据库 / MongoDB / Redis / ClickHouse
+- 🔗 **多数据库支持** —— SQLite / MySQL / PostgreSQL / Oracle / 达梦 DM / 高斯数据库 / MongoDB / Redis / ClickHouse
 - ✍️ **专业 SQL / 命令编辑器** —— 基于 Monaco Editor，支持 SQL、MongoDB Shell 风格语句和 Redis 常用命令补全，多标签页并行工作
 - 🧭 **连接树与数据预览** —— 支持连接分组、排序、连接/库/模式/表/视图/MongoDB 集合/Redis DB 浏览；对象分类节点可直接查看列表，表格预览支持 WHERE 过滤、分页、行列选择、列顺序拖拽和单元格编辑
 - 🧩 **手动驱动数据库管理** —— 支持在驱动管理中统一维护达梦、高斯等需要手动配置驱动的数据库类型
@@ -62,6 +62,7 @@ DataDjinn 是一款**跨时代**的本地数据库桌面客户端，将传统数
 | **SQLite** | sqlite3 | 本地文件数据库，即开即用 |
 | **MySQL** | PyMySQL | 支持 5.x / 8.x |
 | **PostgreSQL** | psycopg 3 | 支持 12+ |
+| **Oracle** | python-oracledb | 支持连接、Schema 浏览、表预览、对象浏览、DDL 查看以及新建表 / 修改表主要能力 |
 | **达梦 DM** | 外部 JDBC jar / dmPython pyd / dmPython whl 驱动 | 国产数据库，支持 DM8；可在驱动管理中添加驱动，并在连接信息中选择指定驱动，默认打包不内置达梦 DLL |
 | **高斯数据库** | 外部 JDBC jar 驱动 | 国产数据库；可在驱动管理中添加高斯 JDBC 驱动，并在连接信息中选择指定驱动 |
 | **MongoDB** | PyMongo | 支持连接、数据库/集合浏览、字段推断、集合预览、只读查询、创建集合、插入测试数据和 JSON 导出 |
@@ -121,7 +122,7 @@ Redis / MongoDB 导出为 JSON，适合迁移前留档、人工检查或和其�
 - `DataDjinn-x.x.x.dmg` —— macOS 安装包
 - `DataDjinn-x.x.x-mac.zip` —— macOS 压缩包
 
-当前最新版本：`v0.1.18`。
+当前最新版本：`v0.1.19`。
 
 解压版无需安装，解压后双击 `DataDjinn.exe` 即可运行。已内置 Python 运行时和所有后端依赖，无需额外安装任何环境。
 

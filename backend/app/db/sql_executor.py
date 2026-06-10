@@ -43,6 +43,8 @@ def execute_sql_file(engine: Engine, sql: str, database: str | None = None, pg_d
                         connection.execute(text(f"SET search_path TO {quoted}"))
                     elif engine.dialect.name in {"dm", "dmPython"}:
                         connection.execute(text(f"SET SCHEMA {quoted}"))
+                    elif engine.dialect.name == "oracle":
+                        connection.execute(text(f"ALTER SESSION SET CURRENT_SCHEMA = {quoted}"))
                     elif engine.dialect.name == "mysql":
                         connection.execute(text(f"USE {quoted}"))
                         connection.execute(text("SET FOREIGN_KEY_CHECKS=0"))

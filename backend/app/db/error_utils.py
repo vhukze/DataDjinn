@@ -31,6 +31,9 @@ def friendly_error(exc: Exception) -> str:
         dm_message = _dm_error_message(item)
         if dm_message:
             return dm_message
+        oracle_message = _oracle_error_message(item)
+        if oracle_message:
+            return oracle_message
 
     cause_message = str(cause)
     network_message = _database_network_error_message(causes)
@@ -218,6 +221,45 @@ def _dm_error_code(exc: Exception) -> int | None:
             return code_from_message
 
     return _code_from_message(str(exc))
+
+
+def _oracle_error_message(exc: Exception) -> str | None:
+    message = str(exc)
+    ora_code = _ora_code_from_message(message)
+    if ora_code is None:
+        return None
+
+    if ora_code == 1017:
+        return 'Oracle 用户名或密码错误，连接被拒绝'
+    if ora_code == 12154:
+        return 'Oracle 连接标识解析失败，请检查主机、端口和服务名是否正确'
+    if ora_code == 12514:
+        return 'Oracle 监听器无法识别当前服务名，请检查填写的服务名'
+    if ora_code == 12505:
+        return 'Oracle 监听器无法识别当前 SID / 服务配置，请检查连接参数'
+    if ora_code == 12541:
+        return '无法连接到 Oracle 监听器，请检查主机、端口和数据库服务是否已启动'
+    if ora_code == 1031:
+        return 'Oracle 当前用户权限不足，无法执行该操作'
+    if ora_code == 942:
+        return 'Oracle 表或视图不存在'
+    if ora_code == 904:
+        return 'Oracle SQL 中引用了不存在的字段'
+    if ora_code == 955:
+        return 'Oracle 对象已存在，名称重复'
+
+    return f'Oracle 数据库操作失败：{message}'
+
+
+def _ora_code_from_message(message: str) -> int | None:
+    match = re.search(r'ORA-(\d{5})', message, re.IGNORECASE)
+    if not match:
+        return None
+
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
 
 
 def _code_from_message(message: str) -> int | None:

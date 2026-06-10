@@ -1,29 +1,23 @@
-# DataDjinn v0.1.18
+# DataDjinn v0.1.19
 
 ## Highlights
 
-- 新增 GitHub Actions macOS 构建与发布链路，打 tag 后可同时产出 Windows 和 macOS 安装包
-- 优化表格页内搜索交互，搜索框打开/关闭、结果导航、中文输入法与高亮行为更稳定
-- 补齐 Electron 主进程与后端构建脚本的跨平台兼容，为 macOS 安装版运行做准备
+- 新增 Oracle 数据库支持，采用 `python-oracledb` 原生驱动接入
+- 补齐 Oracle 的连接、Schema 浏览、表预览、DDL 查看与表结构设计主链路
+- 继续保持 Windows / macOS 发布产物输出，本次将额外产出一版 `dmg` 供安装验证
 
 ## What's Changed
 
-- 发布流水线从单一 `windows-latest` 扩展为 Windows + macOS 双平台构建
-- GitHub Release 现在会自动汇总上传 Windows 安装包、Windows 压缩包、macOS `dmg` 和 macOS 压缩包
-- 后端构建脚本改为跨平台 Python 解析与调用，不再写死 Windows `.venv\\Scripts\\python.exe`
-- `build:backend`、`build:mac`、`build:linux`、`build:unpack` 统一串上后端构建，避免只打前端壳
-- `dmPython` / `dmSQLAlchemy` 依赖改为仅 Windows 安装，避免 macOS / Linux 流水线安装失败
-- PyInstaller 的 `--add-data` 参数改为按平台选择分隔符，修复非 Windows 平台后端打包兼容问题
-- Electron 主进程补齐 macOS 开发态与安装态后端可执行文件查找路径
-- 表格页内搜索继续优化：
-  - 搜索按钮保留在工具栏，与 `DDL` 按钮同一行
-  - 搜索框右侧关闭按钮恢复正常
-  - 上一个 / 下一个导航改为局部状态，连续点击更顺
-  - 修复输入后高亮时序错乱问题
-  - 普通文本搜索改为更轻量的匹配路径，减少大量命中时的高亮开销
+- 后端新增 Oracle 连接创建与连通性检测
+- Oracle 查询执行支持 `ALTER SESSION SET CURRENT_SCHEMA` 上下文切换
+- Oracle 只读查询与表预览补齐 `ROWNUM` 分页
+- Oracle 元数据浏览支持 Schema、表、视图、触发器、存储过程、函数、序列、索引
+- Oracle 补齐表注释、字段注释、列唯一、自增步长、最小值/最大值等表设计主要能力
+- SQL 编辑器新增 Oracle 方言关键字与标识符引用支持
+- 前端连接表单与左侧资源树补齐 Oracle 类型入口和基础交互
 
 ## Notes
 
-- 当前版本号为 `v0.1.18`
-- 本次发布重点是 macOS 发布链路和表格页内搜索性能优化
-- 发布前已完成前端 TypeScript 校验
+- 当前版本号为 `v0.1.19`
+- 本次发布重点是 Oracle 支持补齐，并验证 macOS `dmg` 发布产物
+- 发布前已完成前端 TypeScript 校验和后端 Python 语法校验

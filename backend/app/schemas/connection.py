@@ -2,7 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-DatabaseType = Literal["sqlite", "mysql", "postgresql", "dm", "gaussdb", "mongodb", "redis", "clickhouse"]
+DatabaseType = Literal["sqlite", "mysql", "postgresql", "dm", "gaussdb", "oracle", "mongodb", "redis", "clickhouse"]
 
 
 class ConnectionRequest(BaseModel):

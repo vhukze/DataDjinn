@@ -15,11 +15,20 @@ NUMERIC_LITERAL_PATTERN = re.compile(r"^-?\d+(?:\.\d+)?$")
 
 PG_SYSTEM_SCHEMAS = {"pg_catalog", "information_schema"}
 DM_SYSTEM_SCHEMAS = {"SYS", "SYSDBA", "SYSAUDITOR", "SYSSSO", "CTISYS"}
+ORACLE_SYSTEM_SCHEMAS = {
+    "ANONYMOUS", "APPQOSSYS", "AUDSYS", "CTXSYS", "DBSNMP", "DIP", "DVF", "DVSYS", "GGSYS", "GSMADMIN_INTERNAL",
+    "LBACSYS", "MDSYS", "OJVMSYS", "OLAPSYS", "ORACLE_OCM", "OUTLN", "REMOTE_SCHEDULER_AGENT", "SYS", "SYSTEM",
+    "SYSBACKUP", "SYSDG", "SYSKM", "SYSRAC", "WMSYS", "XDB", "XS$NULL",
+}
 DEFAULT_VALUE_ACTION = "default"
 
 
 def _is_clickhouse_engine(engine: Engine) -> bool:
     return engine.dialect.name in {"clickhouse", "clickhousedb"}
+
+
+def _is_oracle_engine(engine: Engine) -> bool:
+    return engine.dialect.name == "oracle"
 
 
 def _is_schema_scoped_engine(engine: Engine) -> bool:
@@ -68,6 +77,37 @@ def _dm_table_segment_sizes(connection: Any, schema_name: str, current_user: str
     ]
     if schema_name == current_user:
         queries.append(("SELECT SEGMENT_NAME, COALESCE(SUM(BYTES), 0) FROM USER_SEGMENTS GROUP BY SEGMENT_NAME", {}))
+
+    for sql, params in queries:
+        try:
+            rows = connection.execute(text(sql), params).fetchall()
+            return {str(row[0]).upper(): int(row[1] or 0) for row in rows}
+        except Exception:
+            try:
+                connection.rollback()
+            except Exception:
+                pass
+            continue
+    return {}
+
+
+def _oracle_current_user(connection: Any) -> str:
+    row = connection.execute(text("SELECT USER FROM DUAL")).fetchone()
+    return str(row[0]).upper() if row and row[0] is not None else ""
+
+
+def _oracle_table_segment_sizes(connection: Any, schema_name: str, current_user: str) -> dict[str, int]:
+    queries = [
+        (
+            "SELECT SEGMENT_NAME, COALESCE(SUM(BYTES), 0) FROM ALL_SEGMENTS "
+            "WHERE OWNER = :schema_name AND SEGMENT_TYPE = 'TABLE' GROUP BY SEGMENT_NAME",
+            {"schema_name": schema_name},
+        ),
+    ]
+    if schema_name == current_user:
+        queries.append(
+            ("SELECT SEGMENT_NAME, COALESCE(SUM(BYTES), 0) FROM USER_SEGMENTS WHERE SEGMENT_TYPE = 'TABLE' GROUP BY SEGMENT_NAME", {})
+        )
 
     for sql, params in queries:
         try:
@@ -225,6 +265,34 @@ def list_databases(engine: Engine) -> list[DatabaseInfo]:
             for row in rows
         ]
 
+    if _is_oracle_engine(engine):
+        with engine.connect() as connection:
+            current_user = _oracle_current_user(connection)
+            user_rows = []
+            for sql in [
+                "SELECT USERNAME FROM ALL_USERS ORDER BY USERNAME",
+                "SELECT USERNAME FROM USER_USERS ORDER BY USERNAME",
+            ]:
+                try:
+                    user_rows = connection.execute(text(sql)).fetchall()
+                    break
+                except Exception:
+                    try:
+                        connection.rollback()
+                    except Exception:
+                        pass
+                    continue
+
+        names: list[str] = []
+        for row in user_rows:
+            schema_name = str(row[0]).upper()
+            if schema_name == current_user or schema_name not in ORACLE_SYSTEM_SCHEMAS:
+                names.append(schema_name)
+        if current_user and current_user not in names:
+            names.insert(0, current_user)
+        ordered_names = sorted(dict.fromkeys(names), key=lambda item: (item != current_user, item))
+        return [DatabaseInfo(name=name) for name in ordered_names]
+
     if _is_clickhouse_engine(engine):
         with engine.connect() as connection:
             rows = connection.execute(
@@ -352,6 +420,9 @@ def create_database(engine: Engine, database_name: str) -> DatabaseInfo:
         with engine.begin() as connection:
             connection.execute(text(f"CREATE SCHEMA {quoted}"))
         return DatabaseInfo(name=schema_name)
+
+    if _is_oracle_engine(engine):
+        raise ValueError("Oracle 当前不支持在客户端内直接创建 Schema / 用户")
 
     if _is_clickhouse_engine(engine):
         quoted = engine.dialect.identifier_preparer.quote(database_name)
@@ -564,6 +635,36 @@ def list_tables(engine: Engine, database_name: str | None = None, pg_database: s
             for row in rows
         ]
 
+    if _is_oracle_engine(engine):
+        schema_name = (database_name or engine.url.username or "").upper()
+        with engine.connect() as connection:
+            current_user = _oracle_current_user(connection)
+            segment_sizes = _oracle_table_segment_sizes(connection, schema_name, current_user)
+            rows = connection.execute(
+                text(
+                    "SELECT t.TABLE_NAME, COALESCE(t.NUM_ROWS, 0) AS ROW_COUNT, c.COMMENTS "
+                    "FROM ALL_TABLES t "
+                    "LEFT JOIN ALL_TAB_COMMENTS c "
+                    "  ON c.OWNER = t.OWNER AND c.TABLE_NAME = t.TABLE_NAME AND c.TABLE_TYPE = 'TABLE' "
+                    "WHERE t.OWNER = :schema_name "
+                    "ORDER BY t.TABLE_NAME"
+                ),
+                {"schema_name": schema_name},
+            ).fetchall()
+
+        return [
+            TableInfo(
+                name=str(row[0]),
+                comment=_clean_optional_text(_db_text(row[2])) if len(row) > 2 else None,
+                row_count=int(row[1] or 0),
+                size_bytes=segment_sizes.get(str(row[0]).upper(), 0),
+                size_display=format_size(segment_sizes.get(str(row[0]).upper(), 0)),
+                storage_size_bytes=segment_sizes.get(str(row[0]).upper(), 0),
+                storage_size_display=format_size(segment_sizes.get(str(row[0]).upper(), 0)),
+            )
+            for row in rows
+        ]
+
     if engine.dialect.name in {"dm", "dmPython"}:
         schema_name = (database_name or engine.url.username or "SYSDBA").upper()
 
@@ -669,6 +770,33 @@ def list_db_objects(engine: Engine, database_name: str | None = None, pg_databas
                 objects.extend(DbObjectInfo(name=str(row[0]), type="view") for row in rows)
         return objects
 
+    if _is_oracle_engine(engine):
+        target_schema = (schema_name or engine.url.username or "").upper()
+        with engine.connect() as connection:
+            if object_type in {None, "view"}:
+                rows = connection.execute(text("SELECT VIEW_NAME FROM ALL_VIEWS WHERE OWNER = :schema ORDER BY VIEW_NAME"), {"schema": target_schema}).fetchall()
+                objects.extend(DbObjectInfo(name=str(row[0]), type="view") for row in rows)
+            if object_type in {None, "trigger"}:
+                rows = connection.execute(text("SELECT TRIGGER_NAME FROM ALL_TRIGGERS WHERE OWNER = :schema ORDER BY TRIGGER_NAME"), {"schema": target_schema}).fetchall()
+                objects.extend(DbObjectInfo(name=str(row[0]), type="trigger") for row in rows)
+            if object_type in {None, "procedure", "function"}:
+                rows = connection.execute(
+                    text(
+                        "SELECT OBJECT_NAME, OBJECT_TYPE FROM ALL_OBJECTS "
+                        "WHERE OWNER = :schema AND OBJECT_TYPE IN ('PROCEDURE', 'FUNCTION') "
+                        "ORDER BY OBJECT_NAME"
+                    ),
+                    {"schema": target_schema},
+                ).fetchall()
+                objects.extend(DbObjectInfo(name=str(row[0]), type=str(row[1]).lower()) for row in rows if object_type is None or str(row[1]).lower() == object_type)
+            if object_type in {None, "sequence"}:
+                rows = connection.execute(text("SELECT SEQUENCE_NAME FROM ALL_SEQUENCES WHERE SEQUENCE_OWNER = :schema ORDER BY SEQUENCE_NAME"), {"schema": target_schema}).fetchall()
+                objects.extend(DbObjectInfo(name=str(row[0]), type="sequence") for row in rows)
+            if object_type in {None, "index"}:
+                rows = connection.execute(text("SELECT INDEX_NAME FROM ALL_INDEXES WHERE OWNER = :schema ORDER BY INDEX_NAME"), {"schema": target_schema}).fetchall()
+                objects.extend(DbObjectInfo(name=str(row[0]), type="index") for row in rows)
+        return objects
+
     if engine.dialect.name in {"dm", "dmPython"}:
         target_schema = (schema_name or engine.url.username or "SYSDBA").upper()
         with engine.connect() as connection:
@@ -734,14 +862,22 @@ def _normalize_bound(value: str | None, label: str) -> str | None:
 
 def _is_integer_type(type_name: str) -> bool:
     normalized = type_name.strip().lower()
-    return normalized.startswith(("int", "integer", "bigint", "smallint", "tinyint", "mediumint", "serial", "bigserial", "smallserial"))
+    if normalized.startswith(("int", "integer", "bigint", "smallint", "tinyint", "mediumint", "serial", "bigserial", "smallserial")):
+        return True
+
+    match = re.fullmatch(r"(number|numeric|decimal)(?:\((\d+)(?:\s*,\s*(\d+))?\))?", normalized)
+    if not match:
+        return False
+
+    scale = match.group(3)
+    return scale is None or scale == "0"
 
 
 def _is_numeric_type(type_name: str) -> bool:
     normalized = type_name.strip().lower()
     return normalized.startswith((
         "int", "integer", "bigint", "smallint", "tinyint", "mediumint",
-        "decimal", "numeric", "float", "double", "real", "serial", "bigserial", "smallserial",
+        "decimal", "numeric", "number", "float", "double", "real", "serial", "bigserial", "smallserial",
     ))
 
 
@@ -901,6 +1037,125 @@ def _pg_check_constraints(engine: Engine, table_name: str, schema_name: str) -> 
     return {str(row[0]): _db_text(row[1]) for row in rows if row[0] is not None and row[1] is not None}
 
 
+def _pg_table_comment(engine: Engine, table_name: str, schema_name: str) -> str | None:
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT d.description "
+                "FROM pg_class c "
+                "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "LEFT JOIN pg_description d ON d.objoid = c.oid AND d.objsubid = 0 "
+                "WHERE n.nspname = :schema_name AND c.relname = :table_name "
+                "AND c.relkind IN ('r', 'p', 'v', 'm', 'f')"
+            ),
+            {"schema_name": schema_name, "table_name": table_name},
+        ).fetchone()
+    return _clean_optional_text(_db_text(row[0])) if row and row[0] is not None else None
+
+
+def _pg_column_comments(engine: Engine, table_name: str, schema_name: str) -> dict[str, str]:
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT a.attname, d.description "
+                "FROM pg_class c "
+                "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "JOIN pg_attribute a ON a.attrelid = c.oid "
+                "LEFT JOIN pg_description d ON d.objoid = c.oid AND d.objsubid = a.attnum "
+                "WHERE n.nspname = :schema_name AND c.relname = :table_name "
+                "AND a.attnum > 0 AND NOT a.attisdropped"
+            ),
+            {"schema_name": schema_name, "table_name": table_name},
+        ).fetchall()
+
+    return {
+        str(row[0]): _clean_optional_text(_db_text(row[1])) or ""
+        for row in rows
+        if row[0] is not None and row[1] is not None
+    }
+
+
+def _oracle_single_column_unique_constraints(engine: Engine, table_name: str, schema_name: str) -> dict[str, str]:
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT acc.COLUMN_NAME, ac.CONSTRAINT_NAME, COUNT(*) OVER (PARTITION BY ac.CONSTRAINT_NAME) AS COLUMN_COUNT "
+                "FROM ALL_CONSTRAINTS ac "
+                "JOIN ALL_CONS_COLUMNS acc "
+                "  ON ac.OWNER = acc.OWNER AND ac.CONSTRAINT_NAME = acc.CONSTRAINT_NAME "
+                "WHERE ac.OWNER = :schema_name AND ac.TABLE_NAME = :table_name "
+                "AND ac.CONSTRAINT_TYPE = 'U'"
+            ),
+            {"schema_name": schema_name, "table_name": table_name},
+        ).fetchall()
+
+    result: dict[str, str] = {}
+    for row in rows:
+        if int(row[2] or 0) == 1:
+            result[str(row[0])] = str(row[1])
+    return result
+
+
+def _oracle_check_constraints(engine: Engine, table_name: str, schema_name: str) -> dict[str, str]:
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT acc.COLUMN_NAME, ac.SEARCH_CONDITION "
+                "FROM ALL_CONSTRAINTS ac "
+                "JOIN ALL_CONS_COLUMNS acc "
+                "  ON ac.OWNER = acc.OWNER AND ac.CONSTRAINT_NAME = acc.CONSTRAINT_NAME "
+                "WHERE ac.OWNER = :schema_name AND ac.TABLE_NAME = :table_name "
+                "AND ac.CONSTRAINT_TYPE = 'C'"
+            ),
+            {"schema_name": schema_name, "table_name": table_name},
+        ).fetchall()
+
+    return {str(row[0]): _db_text(row[1]) for row in rows if row[0] is not None and row[1] is not None}
+
+
+def _oracle_table_comment(engine: Engine, table_name: str, schema_name: str) -> str | None:
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT COMMENTS FROM ALL_TAB_COMMENTS "
+                "WHERE OWNER = :schema_name AND TABLE_NAME = :table_name AND TABLE_TYPE = 'TABLE'"
+            ),
+            {"schema_name": schema_name, "table_name": table_name},
+        ).fetchone()
+    return _clean_optional_text(_db_text(row[0])) if row and row[0] is not None else None
+
+
+def _oracle_column_comments(engine: Engine, table_name: str, schema_name: str) -> dict[str, str]:
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT COLUMN_NAME, COMMENTS FROM ALL_COL_COMMENTS "
+                "WHERE OWNER = :schema_name AND TABLE_NAME = :table_name"
+            ),
+            {"schema_name": schema_name, "table_name": table_name},
+        ).fetchall()
+
+    return {
+        str(row[0]): _clean_optional_text(_db_text(row[1])) or ""
+        for row in rows
+        if row[0] is not None and row[1] is not None
+    }
+
+
+def _oracle_identity_step(identity_options: str | None) -> int | None:
+    if not identity_options:
+        return 1
+
+    match = re.search(r"INCREMENT BY[:\s]+(-?\d+)", identity_options, flags=re.IGNORECASE)
+    if not match:
+        return 1
+
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return 1
+
+
 def _sqlite_unique_columns(engine: Engine, table_name: str) -> set[str]:
     escaped_table = table_name.replace('"', '""')
     result: set[str] = set()
@@ -930,10 +1185,13 @@ def _pg_sequence_increment(engine: Engine, table_name: str, column_name: str, sc
         seq_schema, seq_name = schema_name, cleaned
 
     with engine.connect() as connection:
-        row = connection.execute(
-            text("SELECT increment_by FROM pg_sequences WHERE schemaname = :schema_name AND sequencename = :sequence_name"),
-            {"schema_name": seq_schema, "sequence_name": seq_name},
-        ).fetchone()
+        try:
+            row = connection.execute(
+                text("SELECT increment_by FROM pg_sequences WHERE schemaname = :schema_name AND sequencename = :sequence_name"),
+                {"schema_name": seq_schema, "sequence_name": seq_name},
+            ).fetchone()
+        except Exception:
+            return None
     return int(row[0]) if row and row[0] is not None else None
 
 
@@ -962,14 +1220,11 @@ def get_table_comment(engine: Engine, table_name: str, database_name: str | None
 
     if _is_schema_scoped_engine(engine):
         schema_name = database_name or "public"
-        with engine.connect() as connection:
-            row = connection.execute(
-                text(
-                    "SELECT obj_description(to_regclass(quote_ident(:schema_name) || '.' || quote_ident(:table_name)), 'pg_class')"
-                ),
-                {"schema_name": schema_name, "table_name": table_name},
-            ).fetchone()
-        return _clean_optional_text(_db_text(row[0])) if row and row[0] is not None else None
+        return _pg_table_comment(engine, table_name, schema_name)
+
+    if _is_oracle_engine(engine):
+        schema_name = (database_name or engine.url.username or "").upper()
+        return _oracle_table_comment(engine, table_name, schema_name)
 
     return None
 
@@ -1058,16 +1313,75 @@ def list_columns(engine: Engine, table_name: str, database_name: str | None = No
             for row in rows
         ]
 
+    if _is_oracle_engine(engine):
+        schema_name = (database_name or engine.url.username or "").upper()
+        unique_columns = _oracle_single_column_unique_constraints(engine, table_name, schema_name)
+        check_constraints = _oracle_check_constraints(engine, table_name, schema_name)
+        column_comments = _oracle_column_comments(engine, table_name, schema_name)
+        with engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT c.COLUMN_NAME, "
+                    "CASE "
+                    "  WHEN c.DATA_TYPE IN ('CHAR', 'NCHAR', 'VARCHAR2', 'NVARCHAR2') AND c.CHAR_LENGTH IS NOT NULL THEN c.DATA_TYPE || '(' || c.CHAR_LENGTH || ')' "
+                    "  WHEN c.DATA_TYPE = 'NUMBER' AND c.DATA_PRECISION IS NOT NULL AND NVL(c.DATA_SCALE, 0) > 0 THEN c.DATA_TYPE || '(' || c.DATA_PRECISION || ',' || c.DATA_SCALE || ')' "
+                    "  WHEN c.DATA_TYPE = 'NUMBER' AND c.DATA_PRECISION IS NOT NULL THEN c.DATA_TYPE || '(' || c.DATA_PRECISION || ')' "
+                    "  WHEN c.DATA_TYPE LIKE 'TIMESTAMP%' AND c.DATA_SCALE IS NOT NULL THEN c.DATA_TYPE || '(' || c.DATA_SCALE || ')' "
+                    "  ELSE c.DATA_TYPE "
+                    "END AS DATA_TYPE_DISPLAY, "
+                    "c.NULLABLE, "
+                    "CASE WHEN pk.COLUMN_NAME IS NULL THEN 0 ELSE 1 END AS PRIMARY_KEY, "
+                    "c.DATA_DEFAULT, "
+                    "i.GENERATION_TYPE, "
+                    "i.IDENTITY_OPTIONS "
+                    "FROM ALL_TAB_COLUMNS c "
+                    "LEFT JOIN ("
+                    "  SELECT acc.COLUMN_NAME FROM ALL_CONSTRAINTS ac "
+                    "  JOIN ALL_CONS_COLUMNS acc ON ac.OWNER = acc.OWNER AND ac.CONSTRAINT_NAME = acc.CONSTRAINT_NAME "
+                    "  WHERE ac.CONSTRAINT_TYPE = 'P' AND ac.OWNER = :schema_name AND ac.TABLE_NAME = :table_name"
+                    ") pk ON pk.COLUMN_NAME = c.COLUMN_NAME "
+                    "LEFT JOIN ALL_TAB_IDENTITY_COLS i "
+                    "  ON i.OWNER = c.OWNER AND i.TABLE_NAME = c.TABLE_NAME AND i.COLUMN_NAME = c.COLUMN_NAME "
+                    "WHERE c.OWNER = :schema_name AND c.TABLE_NAME = :table_name "
+                    "ORDER BY c.COLUMN_ID"
+                ),
+                {"schema_name": schema_name, "table_name": table_name},
+            ).fetchall()
+        columns: list[ColumnInfo] = []
+        for row in rows:
+            column_name = str(row[0])
+            default_value = _clean_optional_text(_db_text(row[4]))
+            identity_options = _db_text(row[6]) if len(row) > 6 and row[6] is not None else ""
+            minimum, maximum = _extract_bounds_from_clause(check_constraints.get(column_name, ""), column_name)
+            auto_increment = row[5] is not None
+            columns.append(
+                ColumnInfo(
+                    name=column_name,
+                    type=str(row[1]),
+                    nullable=str(row[2]).upper() == "Y",
+                    primary_key=bool(row[3]),
+                    default_value=default_value,
+                    comment=column_comments.get(column_name) or None,
+                    unique=column_name in unique_columns,
+                    auto_increment=auto_increment,
+                    auto_increment_step=_oracle_identity_step(identity_options) if auto_increment else None,
+                    minimum=minimum,
+                    maximum=maximum,
+                )
+            )
+        return columns
+
     if _is_schema_scoped_engine(engine):
         schema_name = database_name or "public"
         unique_columns = _pg_single_column_unique_constraints(engine, table_name, schema_name)
         check_constraints = _pg_check_constraints(engine, table_name, schema_name)
+        column_comments = _pg_column_comments(engine, table_name, schema_name)
         with engine.connect() as connection:
             rows = connection.execute(
                 text(
                     "SELECT c.column_name, c.data_type, c.is_nullable, "
                     "CASE WHEN kcu.column_name IS NULL THEN 0 ELSE 1 END AS primary_key, "
-                    "c.column_default, col_description(to_regclass(quote_ident(c.table_schema) || '.' || quote_ident(c.table_name)), c.ordinal_position) AS comment "
+                    "c.column_default "
                     "FROM information_schema.columns c "
                     "LEFT JOIN information_schema.table_constraints tc "
                     "  ON tc.table_schema = c.table_schema AND tc.table_name = c.table_name AND tc.constraint_type = 'PRIMARY KEY' "
@@ -1091,7 +1405,7 @@ def list_columns(engine: Engine, table_name: str, database_name: str | None = No
                     nullable=str(row[2]).upper() == "YES",
                     primary_key=bool(row[3]),
                     default_value=default_value,
-                    comment=_clean_optional_text(_db_text(row[5])),
+                    comment=column_comments.get(column_name) or None,
                     unique=column_name in unique_columns,
                     auto_increment=bool(default_value and ("nextval(" in default_value or "generated" in default_value.lower())),
                     auto_increment_step=_pg_sequence_increment(engine, table_name, column_name, schema_name) if default_value and ("nextval(" in default_value or "generated" in default_value.lower()) else None,
@@ -1187,7 +1501,14 @@ def get_object_ddl(engine: Engine, object_name: str, object_type: str, database_
             if object_type in {"table", "view"}:
                 if object_type == "view":
                     row = connection.execute(
-                        text("SELECT pg_get_viewdef(format('%I.%I', :schema, :name)::regclass, true)"),
+                        text(
+                            "SELECT pg_get_viewdef(c.oid, true) "
+                            "FROM pg_class c "
+                            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                            "WHERE n.nspname = :schema AND c.relname = :name "
+                            "AND c.relkind IN ('v', 'm') "
+                            "LIMIT 1"
+                        ),
                         {"schema": schema_name, "name": object_name},
                     ).fetchone()
                     body = row[0] if row else ""
@@ -1240,6 +1561,32 @@ def get_object_ddl(engine: Engine, object_name: str, object_type: str, database_
         object_kind = dm_object_types.get(object_type)
         if not object_kind:
             raise ValueError("当前对象类型不支持查看 DDL")
+
+        with engine.connect() as connection:
+            row = connection.execute(
+                text("SELECT DBMS_METADATA.GET_DDL(:type, :name, :schema) FROM DUAL"),
+                {"type": object_kind, "name": object_upper, "schema": schema_name},
+            ).fetchone()
+            return _db_text(row[0]).strip() if row and row[0] is not None else ""
+
+    if _is_oracle_engine(engine):
+        schema_name = (database_name or engine.url.username or "").upper()
+        object_upper = object_name.upper()
+        oracle_object_types = {
+            "table": "TABLE",
+            "view": "VIEW",
+            "trigger": "TRIGGER",
+            "procedure": "PROCEDURE",
+            "function": "FUNCTION",
+            "sequence": "SEQUENCE",
+            "index": "INDEX",
+        }
+        object_kind = oracle_object_types.get(object_type)
+        if not object_kind:
+            raise ValueError("当前对象类型不支持查看 DDL")
+
+        if object_type == "table":
+            return _build_oracle_table_ddl(engine, object_upper, schema_name)
 
         with engine.connect() as connection:
             row = connection.execute(
@@ -1374,6 +1721,10 @@ def update_table_columns(
 
     if engine.dialect.name in {"postgresql", "gaussdb"}:
         _update_postgresql_table_columns_v2(engine, table_name, next_columns, database_name, table_comment)
+        return
+
+    if _is_oracle_engine(engine):
+        _update_oracle_table_columns_v2(engine, table_name, next_columns, database_name, table_comment)
         return
 
     raise ValueError(f"当前不支持修改 {engine.dialect.name} 表结构")
@@ -1615,6 +1966,25 @@ def _build_postgresql_constraints_sql(columns: list[TableUpdateColumn], table_na
     return constraints
 
 
+def _build_oracle_constraints_sql(columns: list[TableUpdateColumn], table_name: str, preparer) -> list[str]:
+    constraints: list[str] = []
+    primary_keys = [column.name.strip() for column in columns if column.primary_key]
+    if primary_keys:
+        constraints.append(f"PRIMARY KEY ({', '.join(preparer.quote(column) for column in primary_keys)})")
+    for column in columns:
+        column_name = column.name.strip()
+        quoted_column = preparer.quote(column_name)
+        minimum = _column_minimum(column)
+        maximum = _column_maximum(column)
+        if column.unique and not column.primary_key:
+            constraints.append(f"CONSTRAINT {preparer.quote(_unique_constraint_name(table_name, column_name))} UNIQUE ({quoted_column})")
+        if minimum is not None:
+            constraints.append(f"CONSTRAINT {preparer.quote(_min_constraint_name(table_name, column_name))} CHECK ({quoted_column} >= {minimum})")
+        if maximum is not None:
+            constraints.append(f"CONSTRAINT {preparer.quote(_max_constraint_name(table_name, column_name))} CHECK ({quoted_column} <= {maximum})")
+    return constraints
+
+
 def _build_sqlite_constraints_sql(columns: list[TableUpdateColumn], table_name: str, preparer) -> list[str]:
     constraints: list[str] = []
     primary_keys = [column.name.strip() for column in columns if column.primary_key and not column.auto_increment]
@@ -1685,6 +2055,21 @@ def _build_create_table_statements(
             comment = _column_comment_sql(column)
             if comment:
                 statements.append(f"COMMENT ON COLUMN {quoted_table}.{preparer.quote(column.name.strip())} IS {_sql_string(comment)};")
+        return statements
+
+    if _is_oracle_engine(engine):
+        schema_name = database_name or (engine.url.username or "").upper()
+        quoted_table = _quote_table(preparer, table_name, schema_name)
+        column_defs = [_oracle_column_definition(column, preparer) for column in columns]
+        column_defs.extend(_build_oracle_constraints_sql(columns, table_name, preparer))
+        body = ",\n  ".join(column_defs)
+        statements = [f"CREATE TABLE {quoted_table} (\n  {body}\n)"]
+        if table_comment:
+            statements.append(f"COMMENT ON TABLE {quoted_table} IS {_sql_string(table_comment)}")
+        for column in columns:
+            comment = _column_comment_sql(column)
+            if comment:
+                statements.append(f"COMMENT ON COLUMN {quoted_table}.{preparer.quote(column.name.strip())} IS {_sql_string(comment)}")
         return statements
 
     if engine.dialect.name == "sqlite":
@@ -1823,12 +2208,29 @@ def _pg_primary_key_constraint_name(engine: Engine, table_name: str, schema_name
     return constraint.get("name")
 
 
-def _pg_sequence_name(engine: Engine, table_name: str, column_name: str, schema_name: str) -> str | None:
+def _oracle_primary_key_constraint_name(engine: Engine, table_name: str, schema_name: str) -> str | None:
     with engine.connect() as connection:
         row = connection.execute(
-            text("SELECT pg_get_serial_sequence(format('%I.%I', :schema_name, :table_name), :column_name)"),
-            {"schema_name": schema_name, "table_name": table_name, "column_name": column_name},
+            text(
+                "SELECT CONSTRAINT_NAME FROM ALL_CONSTRAINTS "
+                "WHERE OWNER = :schema_name AND TABLE_NAME = :table_name AND CONSTRAINT_TYPE = 'P'"
+            ),
+            {"schema_name": schema_name, "table_name": table_name},
         ).fetchone()
+    return str(row[0]) if row and row[0] is not None else None
+
+
+def _pg_sequence_name(engine: Engine, table_name: str, column_name: str, schema_name: str) -> str | None:
+    with engine.connect() as connection:
+        try:
+            row = connection.execute(
+                text(
+                    "SELECT pg_get_serial_sequence(quote_ident(:schema_name) || '.' || quote_ident(:table_name), :column_name)"
+                ),
+                {"schema_name": schema_name, "table_name": table_name, "column_name": column_name},
+            ).fetchone()
+        except Exception:
+            return None
     return str(row[0]) if row and row[0] is not None else None
 
 
@@ -1909,6 +2311,35 @@ def _build_pg_table_ddl(engine: Engine, table_name: str, schema_name: str) -> st
         statements.append(f"COMMENT ON TABLE {quoted_table} IS {_sql_string(table_comment)};")
 
     for column in columns:
+        comment = _clean_optional_text(column.comment)
+        if comment:
+            statements.append(
+                f"COMMENT ON COLUMN {quoted_table}.{preparer.quote(column.name)} IS {_sql_string(comment)};"
+            )
+
+    return "\n\n".join(statements)
+
+
+def _build_oracle_table_ddl(engine: Engine, table_name: str, schema_name: str) -> str:
+    preparer = engine.dialect.identifier_preparer
+    quoted_table = f"{preparer.quote(schema_name)}.{preparer.quote(table_name)}"
+
+    with engine.connect() as connection:
+        row = connection.execute(
+            text("SELECT DBMS_METADATA.GET_DDL('TABLE', :name, :schema) FROM DUAL"),
+            {"name": table_name, "schema": schema_name},
+        ).fetchone()
+
+    table_ddl = _db_text(row[0]).strip() if row and row[0] is not None else ""
+    if not table_ddl:
+        return ""
+
+    statements = [table_ddl]
+    table_comment = get_table_comment(engine, table_name, schema_name)
+    if table_comment:
+        statements.append(f"COMMENT ON TABLE {quoted_table} IS {_sql_string(table_comment)};")
+
+    for column in list_columns(engine, table_name, schema_name):
         comment = _clean_optional_text(column.comment)
         if comment:
             statements.append(
@@ -2008,6 +2439,89 @@ def _update_postgresql_table_columns_v2(
             connection.execute(text(statement))
 
 
+def _build_oracle_update_statements_v2(
+    engine: Engine,
+    table_name: str,
+    next_columns: list[TableUpdateColumn],
+    database_name: str | None = None,
+    table_comment: str | None = None,
+) -> list[str]:
+    schema_name = (database_name or engine.url.username or "").upper()
+    preparer = engine.dialect.identifier_preparer
+    quoted_table = _quote_table(preparer, table_name, schema_name)
+    current_columns = list_columns(engine, table_name, schema_name)
+    current_column_map = {column.name: column for column in current_columns}
+    current_unique = _oracle_single_column_unique_constraints(engine, table_name, schema_name)
+    next_unique = {column.name.strip() for column in next_columns if column.unique and not column.primary_key}
+    current_primary_keys = {column.name for column in current_columns if column.primary_key}
+    next_primary_keys = {column.name.strip() for column in next_columns if column.primary_key}
+    pk_name = _oracle_primary_key_constraint_name(engine, table_name, schema_name)
+    statements: list[str] = []
+
+    if pk_name and current_primary_keys != next_primary_keys and current_primary_keys:
+        statements.append(f"ALTER TABLE {quoted_table} DROP CONSTRAINT {preparer.quote(pk_name)}")
+
+    for column_name, constraint_name in current_unique.items():
+        if column_name not in next_unique:
+            statements.append(f"ALTER TABLE {quoted_table} DROP CONSTRAINT {preparer.quote(constraint_name)}")
+
+    for column in next_columns:
+        column_name = column.name.strip()
+        quoted_column = preparer.quote(column_name)
+        current = current_column_map[column_name]
+
+        if current.minimum is not None:
+            statements.append(f"ALTER TABLE {quoted_table} DROP CONSTRAINT {preparer.quote(_min_constraint_name(table_name, column_name))}")
+        if current.maximum is not None:
+            statements.append(f"ALTER TABLE {quoted_table} DROP CONSTRAINT {preparer.quote(_max_constraint_name(table_name, column_name))}")
+
+        nullability = "NOT NULL" if (not column.nullable or column.primary_key) else "NULL"
+        statements.append(f"ALTER TABLE {quoted_table} MODIFY ({quoted_column} {column.type.strip()} {nullability})")
+
+        if current.auto_increment != column.auto_increment or (
+            current.auto_increment and column.auto_increment and current.auto_increment_step != column.auto_increment_step
+        ):
+            raise ValueError("Oracle 当前暂不支持修改已有字段的自增属性，请通过新建表时配置")
+
+    if current_primary_keys != next_primary_keys and next_primary_keys:
+        statements.append(f"ALTER TABLE {quoted_table} ADD PRIMARY KEY ({', '.join(preparer.quote(column) for column in next_primary_keys)})")
+
+    for column in next_columns:
+        column_name = column.name.strip()
+        quoted_column = preparer.quote(column_name)
+        minimum = _column_minimum(column)
+        maximum = _column_maximum(column)
+        if column_name in next_unique and column_name not in current_unique:
+            statements.append(f"ALTER TABLE {quoted_table} ADD CONSTRAINT {preparer.quote(_unique_constraint_name(table_name, column_name))} UNIQUE ({quoted_column})")
+        if minimum is not None:
+            statements.append(f"ALTER TABLE {quoted_table} ADD CONSTRAINT {preparer.quote(_min_constraint_name(table_name, column_name))} CHECK ({quoted_column} >= {minimum})")
+        if maximum is not None:
+            statements.append(f"ALTER TABLE {quoted_table} ADD CONSTRAINT {preparer.quote(_max_constraint_name(table_name, column_name))} CHECK ({quoted_column} <= {maximum})")
+        comment = _column_comment_sql(column)
+        comment_sql = _sql_string(comment) if comment else "''"
+        statements.append(f"COMMENT ON COLUMN {quoted_table}.{quoted_column} IS {comment_sql}")
+
+    if table_comment is not None:
+        clean_comment = _clean_optional_text(table_comment)
+        table_comment_sql = _sql_string(clean_comment) if clean_comment else "''"
+        statements.append(f"COMMENT ON TABLE {quoted_table} IS {table_comment_sql}")
+
+    return statements
+
+
+def _update_oracle_table_columns_v2(
+    engine: Engine,
+    table_name: str,
+    next_columns: list[TableUpdateColumn],
+    database_name: str | None = None,
+    table_comment: str | None = None,
+) -> None:
+    statements = _build_oracle_update_statements_v2(engine, table_name, next_columns, database_name, table_comment)
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
+
+
 def _sqlite_column_definition(column: TableUpdateColumn, preparer) -> str:
     column_name = column.name.strip()
     if column.auto_increment:
@@ -2056,6 +2570,19 @@ def _postgresql_column_definition(engine: Engine, column: TableUpdateColumn, pre
     elif column.auto_increment:
         options = _postgresql_identity_options(engine, column.auto_increment_step)
         parts.append(f"GENERATED BY DEFAULT AS IDENTITY{options}")
+    if not column.nullable or column.primary_key:
+        parts.append("NOT NULL")
+    return " ".join(parts)
+
+
+def _oracle_column_definition(column: TableUpdateColumn, preparer) -> str:
+    column_name = column.name.strip()
+    parts = [preparer.quote(column_name), column.type.strip()]
+    if column.auto_increment:
+        if column.auto_increment_step and column.auto_increment_step != 1:
+            parts.append(f"GENERATED BY DEFAULT AS IDENTITY (INCREMENT BY {column.auto_increment_step})")
+        else:
+            parts.append("GENERATED BY DEFAULT AS IDENTITY")
     if not column.nullable or column.primary_key:
         parts.append("NOT NULL")
     return " ".join(parts)

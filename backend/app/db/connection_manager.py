@@ -707,7 +707,7 @@ class ConnectionManager:
             return
 
         with engine.connect() as connection:
-            connection.execute(text("SELECT 1 FROM DUAL" if engine.dialect.name in {"dm", "dmPython"} else "SELECT 1"))
+            connection.execute(text("SELECT 1 FROM DUAL" if engine.dialect.name in {"dm", "dmPython", "oracle"} else "SELECT 1"))
 
     def _dispose_engine(self, engine: Engine | MongoClient | Redis) -> None:
         if is_mongo_client(engine) or is_redis_client(engine):
@@ -731,6 +731,9 @@ class ConnectionManager:
 
         if request.database_type == "gaussdb":
             return self._create_gaussdb_engine(request)
+
+        if request.database_type == "oracle":
+            return self._create_oracle_engine(request)
 
         if request.database_type == "mongodb":
             return self._create_mongodb_client(request)
@@ -1018,6 +1021,39 @@ class ConnectionManager:
         )
         return engine
 
+    def _create_oracle_engine(self, request: ConnectionRequest) -> Engine:
+        if not request.host:
+            raise ValueError("Oracle 主机不能为空")
+        if not request.port:
+            raise ValueError("Oracle 端口不能为空")
+        if not request.username:
+            raise ValueError("Oracle 用户名不能为空")
+        if not request.database:
+            raise ValueError("Oracle 服务名不能为空")
+
+        try:
+            import oracledb
+        except ImportError as exc:
+            raise RuntimeError("缺少 Oracle Python 驱动 oracledb，请先安装后重试") from exc
+
+        def connect():
+            return oracledb.connect(
+                user=request.username,
+                password=request.password or "",
+                host=request.host,
+                port=request.port,
+                service_name=request.database,
+            )
+
+        url = URL.create(
+            "oracle+oracledb",
+            username=request.username,
+            password=request.password or "",
+            host=request.host,
+            port=request.port,
+        )
+        return create_engine(url, creator=connect, pool_pre_ping=True)
+
     def _detect_server_version(self, engine: Engine | MongoClient | Redis) -> str | None:
         if is_redis_client(engine):
             try:
@@ -1036,6 +1072,22 @@ class ConnectionManager:
                     return str(version) if version is not None else None
             except Exception:
                 return None
+
+        if engine.dialect.name == "oracle":
+            sql_candidates = [
+                "SELECT BANNER FROM V$VERSION",
+                "SELECT VERSION_FULL FROM PRODUCT_COMPONENT_VERSION WHERE PRODUCT LIKE 'Oracle%'",
+                "SELECT VERSION FROM PRODUCT_COMPONENT_VERSION WHERE PRODUCT LIKE 'Oracle%'",
+            ]
+            for sql in sql_candidates:
+                try:
+                    with engine.connect() as connection:
+                        row = connection.execute(text(sql)).first()
+                        if row and row[0] is not None:
+                            return str(row[0])
+                except Exception:
+                    continue
+            return None
 
         if engine.dialect.name not in {"dm", "dmPython"}:
             return None
@@ -1097,6 +1149,9 @@ class ConnectionManager:
             return request.database or f"{request.host}:{request.port}"
 
         if request.database_type == "gaussdb":
+            return f"{request.database}@{request.host}:{request.port}"
+
+        if request.database_type == "oracle":
             return f"{request.database}@{request.host}:{request.port}"
 
         if request.database_type == "mongodb":

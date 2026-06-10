@@ -14,3 +14,4 @@ redis==7.1.0
 clickhouse-connect==0.10.0
 jaydebeapi==1.2.3
 JPype1==1.5.2
+oracledb==3.1.1

@@ -242,6 +242,10 @@ const defaultSelectedDatabases = (connection: ConnectionInfo, available: string[
     return nonEmpty.length > 0 ? nonEmpty : available.slice(0, 1)
   }
 
+  if (connection.database_type === 'oracle') {
+    return available.slice(0, 1)
+  }
+
   const configured = connection.database?.split('@')[0]
   return configured && available.includes(configured) ? [configured] : available
 }
@@ -259,15 +263,15 @@ const COMMON_TYPES = [
   'BLOB', 'BYTEA'
 ]
 
-const INTEGER_TYPE_PREFIXES = ['int', 'integer', 'bigint', 'smallint', 'tinyint', 'mediumint', 'serial', 'bigserial', 'smallserial']
+const INTEGER_TYPE_PREFIXES = ['int', 'integer', 'bigint', 'smallint', 'tinyint', 'mediumint', 'serial', 'bigserial', 'smallserial', 'number']
 const NUMERIC_TYPE_PREFIXES = [...INTEGER_TYPE_PREFIXES, 'decimal', 'numeric', 'float', 'double', 'real']
 
-const tableDesignerSupportsComments = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'gaussdb'
-const tableDesignerSupportsUnique = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'gaussdb' || databaseType === 'sqlite'
-const tableDesignerSupportsAutoIncrement = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'gaussdb' || databaseType === 'sqlite'
-const tableDesignerSupportsAutoIncrementStep = (databaseType?: DatabaseType): boolean => databaseType === 'postgresql' || databaseType === 'gaussdb'
-const tableDesignerSupportsMinMax = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'gaussdb' || databaseType === 'sqlite'
-const tableDesignerSupportsEdit = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'gaussdb' || databaseType === 'sqlite'
+const tableDesignerSupportsComments = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'gaussdb' || databaseType === 'oracle'
+const tableDesignerSupportsUnique = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'gaussdb' || databaseType === 'oracle' || databaseType === 'sqlite'
+const tableDesignerSupportsAutoIncrement = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'gaussdb' || databaseType === 'oracle' || databaseType === 'sqlite'
+const tableDesignerSupportsAutoIncrementStep = (databaseType?: DatabaseType): boolean => databaseType === 'postgresql' || databaseType === 'gaussdb' || databaseType === 'oracle'
+const tableDesignerSupportsMinMax = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'gaussdb' || databaseType === 'oracle' || databaseType === 'sqlite'
+const tableDesignerSupportsEdit = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'gaussdb' || databaseType === 'oracle' || databaseType === 'sqlite'
 const isIntegerLikeType = (type: string): boolean => INTEGER_TYPE_PREFIXES.some((prefix) => type.trim().toLowerCase().startsWith(prefix))
 const isNumericLikeType = (type: string): boolean => NUMERIC_TYPE_PREFIXES.some((prefix) => type.trim().toLowerCase().startsWith(prefix))
 
@@ -276,7 +280,7 @@ const QUERY_DEFAULT_LIMIT = 1000
 const REDIS_DEFAULT_LIMIT = 500
 const JDBC_COMPATIBLE_DATABASE_TYPES: DatabaseType[] = ['dm', 'gaussdb']
 
-type DatabaseType = 'sqlite' | 'mysql' | 'postgresql' | 'dm' | 'gaussdb' | 'mongodb' | 'redis' | 'clickhouse'
+type DatabaseType = 'sqlite' | 'mysql' | 'postgresql' | 'dm' | 'gaussdb' | 'oracle' | 'mongodb' | 'redis' | 'clickhouse'
 type WorkspaceTabKind = 'preview' | 'query' | 'redis-browser' | 'table-list'
 
 const DATABASE_TYPE_LABELS: Record<DatabaseType, string> = {
@@ -285,6 +289,7 @@ const DATABASE_TYPE_LABELS: Record<DatabaseType, string> = {
   postgresql: 'PG',
   dm: 'DM',
   gaussdb: 'Gauss',
+  oracle: 'Oracle',
   mongodb: 'Mongo',
   redis: 'Redis',
   clickhouse: 'CK'
@@ -1248,6 +1253,7 @@ const DB_OBJECT_TYPES_BY_DATABASE: Record<DatabaseType, DbObjectType[]> = {
   postgresql: ['table', 'view', 'trigger', 'procedure', 'function', 'sequence', 'index'],
   dm: ['table', 'view', 'trigger', 'procedure', 'function', 'sequence', 'index'],
   gaussdb: ['table', 'view', 'trigger', 'procedure', 'function', 'sequence', 'index'],
+  oracle: ['table', 'view', 'trigger', 'procedure', 'function', 'sequence', 'index'],
   clickhouse: ['table', 'view'],
   mongodb: ['table'],
   redis: ['table']
@@ -1932,7 +1938,7 @@ function App(): React.JSX.Element {
               : [
                   { key: 'open', label: '打开连接', icon: <PlayCircleOutlined />, disabled: loading },
                 ]),
-          ...(connection.database_type === 'redis' ? [] : [{
+          ...(connection.database_type === 'redis' || connection.database_type === 'oracle' ? [] : [{
             key: 'new-database',
             label: connection.database_type === 'sqlite' ? '新增 SQLite 数据库文件' : '新建库',
             icon: <PlusOutlined />
@@ -2106,7 +2112,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
   })
 
   const buildConnectionNode = (connection: ConnectionInfo): DatabaseTreeNode => {
-    const children = connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm' || connection.database_type === 'gaussdb' || connection.database_type === 'mongodb' || connection.database_type === 'redis' || connection.database_type === 'clickhouse'
+      const children = connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm' || connection.database_type === 'gaussdb' || connection.database_type === 'oracle' || connection.database_type === 'mongodb' || connection.database_type === 'redis' || connection.database_type === 'clickhouse'
       ? undefined
       : buildObjectGroupNodes(connection.connection_id, undefined, undefined, connection.database_type)
 
@@ -2122,6 +2128,8 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           <img src={redisIcon} alt="Redis" style={{ width: 16, height: 16 }} />
         ) : connection.database_type === 'clickhouse' ? (
           <img src={clickhouseIcon} alt="ClickHouse" style={{ width: 16, height: 16 }} />
+        ) : connection.database_type === 'oracle' ? (
+          <DatabaseOutlined />
         ) : connection.database_type === 'mysql' ? (
           <img src={mysqlIcon} alt="MySQL" style={{ width: 16, height: 16 }} />
         ) : connection.database_type === 'dm' ? (
@@ -2462,7 +2470,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         const connKey = `connection:${connectionId}`
         const snapshot = expandedKeys.map(String)
 
-        if (connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm' || connection.database_type === 'gaussdb' || connection.database_type === 'mongodb' || connection.database_type === 'redis' || connection.database_type === 'clickhouse') {
+      if (connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'dm' || connection.database_type === 'gaussdb' || connection.database_type === 'oracle' || connection.database_type === 'mongodb' || connection.database_type === 'redis' || connection.database_type === 'clickhouse') {
           const databaseNodes = await preloadConnectionTree(connection, selectedDatabaseOverride)
           const selectedNames = new Set(databaseNodes.map((node) => node.databaseName).filter(Boolean))
           const stillExpanded = snapshot.filter((k) => {
@@ -3122,6 +3130,9 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     tableSearchUiState[tab.key] ?? getDefaultTableSearchUiState(tab)
 
   const updateTableSearchState = (tab: WorkspaceTab, patch: Partial<TableSearchUiState>): void => {
+    if (inlineCellEditorRefs.current[tab.key]) {
+      commitInlineCellEditor(tab.key)
+    }
     setTableSearchUiState((current) => {
       const previousState = current[tab.key] ?? getDefaultTableSearchUiState(tab)
       const nextState = {
@@ -3181,11 +3192,11 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       return
     }
     const nextContent = displayValue ?? current.originalContent
-    if (current.input.parentNode === current.host) {
-      current.host.removeChild(current.input)
+    current.input.remove()
+    if (current.host.isConnected) {
+      current.host.textContent = nextContent
+      current.host.classList.remove('editable-cell-inline-editing')
     }
-    current.host.textContent = nextContent
-    current.host.classList.remove('editable-cell-inline-editing')
     inlineCellEditorRefs.current[tabKey] = undefined
   }
 
@@ -3542,7 +3553,8 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       return databaseName ? `"${databaseName.replaceAll('"', '""')}".${quotedTable}` : quotedTable
     }
 
-    return `"${tableName.replaceAll('"', '""')}"`
+    const quotedTable = `"${tableName.replaceAll('"', '""')}"`
+    return databaseName ? `"${databaseName.replaceAll('"', '""')}".${quotedTable}` : quotedTable
   }
 
   const copyTableName = async (tableName: string): Promise<void> => {
@@ -3641,7 +3653,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     if (node.kind === 'connection') {
       setAiActiveContext({
         connectionId: node.connectionId,
-        databaseName: isDatabaseScopedType(connection.database_type) ? getDefaultDatabaseName(connection) : undefined,
+        databaseName: isDatabaseScopedType(connection.database_type) || connection.database_type === 'dm' || connection.database_type === 'oracle' ? getDefaultDatabaseName(connection) : undefined,
         pgDatabaseName: isSchemaScopedType(connection.database_type) ? getDefaultPgDatabase(connection) : undefined
       })
       return
@@ -3947,13 +3959,13 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             {
               key: 'col-0',
               name: 'id',
-              type: isSchemaScopedType(connection?.database_type) ? 'INTEGER' : connection?.database_type === 'clickhouse' ? 'UInt64' : 'INT',
+              type: isSchemaScopedType(connection?.database_type) || connection?.database_type === 'oracle' ? 'INTEGER' : connection?.database_type === 'clickhouse' ? 'UInt64' : 'INT',
               nullable: false,
               primaryKey: connection?.database_type !== 'clickhouse',
               comment: '',
               unique: false,
-              autoIncrement: connection?.database_type === 'mysql' || connection?.database_type === 'postgresql' || connection?.database_type === 'gaussdb' || connection?.database_type === 'sqlite',
-              autoIncrementStep: connection?.database_type === 'postgresql' || connection?.database_type === 'gaussdb' ? 1 : undefined,
+              autoIncrement: connection?.database_type === 'mysql' || connection?.database_type === 'postgresql' || connection?.database_type === 'gaussdb' || connection?.database_type === 'oracle' || connection?.database_type === 'sqlite',
+              autoIncrementStep: connection?.database_type === 'postgresql' || connection?.database_type === 'gaussdb' || connection?.database_type === 'oracle' ? 1 : undefined,
               minimum: '',
               maximum: ''
             },
@@ -4062,7 +4074,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       ...(connection.is_open
         ? [{ key: 'close', label: '关闭连接', icon: <CloseCircleOutlined />, disabled: loading }]
         : [{ key: 'open', label: '打开连接', icon: <PlayCircleOutlined />, disabled: loading }]),
-      ...(connection.database_type === 'redis' ? [] : [{
+      ...(connection.database_type === 'redis' || connection.database_type === 'oracle' ? [] : [{
         key: 'new-database',
         label: connection.database_type === 'sqlite' ? '新增 SQLite 数据库文件' : '新建库',
         icon: <PlusOutlined />
@@ -5687,8 +5699,13 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
   }
 
   const getDefaultDatabaseName = (connection: ConnectionInfo): string | undefined => {
-    if (connection.database_type !== 'mysql' && connection.database_type !== 'mongodb' && connection.database_type !== 'redis' && connection.database_type !== 'clickhouse') {
+    if (connection.database_type !== 'mysql' && connection.database_type !== 'dm' && connection.database_type !== 'oracle' && connection.database_type !== 'mongodb' && connection.database_type !== 'redis' && connection.database_type !== 'clickhouse') {
       return undefined
+    }
+
+    if (connection.database_type === 'oracle') {
+      const dbNames = allDatabases[connection.connection_id] ?? []
+      return dbNames[0]
     }
 
     if (connection.database && !connection.database.includes(':')) {
@@ -5796,7 +5813,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
               onChange={(connectionId) => {
                 const nextConn = getConnection(connectionId)
                 void ensureDatabasesLoaded(connectionId)
-                const nextDb = isDatabaseScopedType(nextConn?.database_type) ? getDefaultDatabaseName(nextConn) : undefined
+                const nextDb = isDatabaseScopedType(nextConn?.database_type) || nextConn?.database_type === 'dm' || nextConn?.database_type === 'oracle' ? getDefaultDatabaseName(nextConn) : undefined
                 const nextPgDb = isSchemaScopedType(nextConn?.database_type) ? getDefaultPgDatabase(nextConn!) : undefined
                 updateWorkspaceTab(tab.key, {
                   connectionId,
@@ -5804,16 +5821,16 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                   pgDatabaseName: nextPgDb
                 })
 
-                if ((isDatabaseScopedType(nextConn?.database_type)) && nextDb) {
+                if ((isDatabaseScopedType(nextConn?.database_type) || nextConn?.database_type === 'dm' || nextConn?.database_type === 'oracle') && nextDb) {
                   void preloadCompletionForDatabase(connectionId, nextDb)
                 }
               }}
               options={connections.map((c) => ({ label: c.name, value: c.connection_id }))}
             />
-            {(isMysql || isPg || isDm || isMongo || isRedis || isClickHouse) && (
+            {(isMysql || isPg || isDm || connection?.database_type === 'oracle' || isMongo || isRedis || isClickHouse) && (
               <Select
                 className="database-select"
-                placeholder={isPg ? '选择 Database' : isDm ? '选择 Schema' : isMongo ? '选择数据库' : isRedis ? '选择 Redis DB' : isClickHouse ? '选择数据库' : '选择库'}
+                placeholder={isPg ? '选择 Database' : (isDm || connection?.database_type === 'oracle') ? '选择 Schema' : isMongo ? '选择数据库' : isRedis ? '选择 Redis DB' : isClickHouse ? '选择数据库' : '选择库'}
                 value={isPg ? (tab.pgDatabaseName || undefined) : (tab.databaseName || undefined)}
                 onChange={async (value) => {
                   if (isPg) {
@@ -5822,7 +5839,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                     updateWorkspaceTab(tab.key, { pgDatabaseName: value, databaseName: defaultSchema })
                   } else {
                     updateWorkspaceTab(tab.key, { databaseName: value })
-                    if (!isDm) {
+                    if (!isDm && connection?.database_type !== 'oracle') {
                       void preloadCompletionForDatabase(tab.connectionId!, value)
                     }
                   }
@@ -5938,7 +5955,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     setSelectedTreeKeys((current) => current.length > 0 ? current : (data.connections[0]?.connection_id ? [`connection:${data.connections[0].connection_id}`] : []))
 
     for (const connection of data.connections) {
-      if (connection.is_open && (connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'gaussdb' || connection.database_type === 'dm' || connection.database_type === 'mongodb' || connection.database_type === 'redis' || connection.database_type === 'clickhouse')) {
+      if (connection.is_open && (connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'gaussdb' || connection.database_type === 'dm' || connection.database_type === 'oracle' || connection.database_type === 'mongodb' || connection.database_type === 'redis' || connection.database_type === 'clickhouse')) {
         try {
           const dbData = await requestJson<{ databases: DatabaseInfo[] }>(`/connections/${connection.connection_id}/databases`)
           const dbNames = dbData.databases.map((d) => d.name)
@@ -6057,7 +6074,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     if (node.kind === 'connection' && node.connectionId) {
       const connection = getConnection(node.connectionId)
 
-      if (connection?.database_type !== 'mysql' && connection?.database_type !== 'postgresql' && connection?.database_type !== 'gaussdb' && connection?.database_type !== 'dm' && connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis' && connection?.database_type !== 'clickhouse') {
+      if (connection?.database_type !== 'mysql' && connection?.database_type !== 'postgresql' && connection?.database_type !== 'gaussdb' && connection?.database_type !== 'dm' && connection?.database_type !== 'oracle' && connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis' && connection?.database_type !== 'clickhouse') {
         return []
       }
 
@@ -6198,6 +6215,15 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         database: 'postgres',
         driver_id: undefined
       })
+    } else if (nextDatabaseType === 'oracle') {
+      form.setFieldsValue({
+        database_type: 'oracle',
+        name: 'Oracle',
+        host: '127.0.0.1',
+        port: 1521,
+        username: 'system',
+        database: 'orclpdb1'
+      })
     } else if (nextDatabaseType === 'mongodb') {
       form.setFieldsValue({
         database_type: 'mongodb',
@@ -6276,6 +6302,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       { key: 'sqlite', label: 'SQLite', icon: <img src={sqliteIcon} alt="" style={{ width: 16, height: 16 }} /> },
       { key: 'mysql', label: 'MySQL', icon: <img src={mysqlIcon} alt="" style={{ width: 16, height: 16 }} /> },
       { key: 'postgresql', label: 'PostgreSQL', icon: <img src={postgresIcon} alt="" style={{ width: 16, height: 16 }} /> },
+      { key: 'oracle', label: 'Oracle', icon: <DatabaseOutlined /> },
       { key: 'mongodb', label: 'MongoDB', icon: <img src={mongoIcon} alt="" style={{ width: 16, height: 16 }} /> },
       { key: 'redis', label: 'Redis', icon: <img src={redisIcon} alt="Redis" style={{ width: 16, height: 16 }} /> },
       { key: 'clickhouse', label: 'ClickHouse', icon: <img src={clickhouseIcon} alt="ClickHouse" style={{ width: 16, height: 16 }} /> },
@@ -6345,6 +6372,18 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         password: values.password,
         database: values.database,
         driver_id: values.driver_id
+      }
+    }
+
+    if (values.database_type === 'oracle') {
+      return {
+        name: values.name,
+        database_type: 'oracle',
+        host: values.host,
+        port: values.port,
+        username: values.username,
+        password: values.password,
+        database: values.database
       }
     }
 
@@ -7319,7 +7358,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     let defaultDb = databaseName ?? ''
     let defaultPgDb = pgDatabaseName ?? ''
 
-    if (connection?.database_type === 'mysql' || connection?.database_type === 'postgresql' || connection?.database_type === 'gaussdb' || connection?.database_type === 'mongodb' || connection?.database_type === 'redis' || connection?.database_type === 'clickhouse') {
+    if (connection?.database_type === 'mysql' || connection?.database_type === 'postgresql' || connection?.database_type === 'gaussdb' || connection?.database_type === 'oracle' || connection?.database_type === 'mongodb' || connection?.database_type === 'redis' || connection?.database_type === 'clickhouse') {
       try {
         const data = await requestJson<{ databases: DatabaseInfo[] }>(`/connections/${connectionId}/databases`)
         databases = data.databases
@@ -7755,7 +7794,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     let finalDb = databaseName
     let finalPgDb = pgDatabaseName
 
-    if ((isDatabaseScopedType(connection?.database_type)) && !finalDb) {
+    if ((isDatabaseScopedType(connection?.database_type) || connection?.database_type === 'dm' || connection?.database_type === 'oracle') && !finalDb) {
       finalDb = getDefaultDatabaseName(connection)
     }
 
@@ -7914,7 +7953,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           sql: sqlToExecute,
           limit: tab.limit ?? QUERY_DEFAULT_LIMIT,
           offset: Math.max(0, (tab.page ?? 1) - 1) * (tab.limit ?? QUERY_DEFAULT_LIMIT),
-          database: connection?.database_type === 'mysql' || isSchemaScopedType(connection?.database_type) || connection?.database_type === 'mongodb' || connection?.database_type === 'redis' || connection?.database_type === 'clickhouse' ? (tab.databaseName || undefined) : undefined,
+          database: connection?.database_type === 'mysql' || connection?.database_type === 'dm' || connection?.database_type === 'oracle' || isSchemaScopedType(connection?.database_type) || connection?.database_type === 'mongodb' || connection?.database_type === 'redis' || connection?.database_type === 'clickhouse' ? (tab.databaseName || undefined) : undefined,
           pg_database: isSchemaScopedType(connection?.database_type) ? (tab.pgDatabaseName || undefined) : undefined
         })
       })
@@ -8724,10 +8763,10 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           ) : (
             <>
               <Form.Item name="host" label="主机" rules={[{ required: true, message: '请输入主机' }]}><Input placeholder="127.0.0.1" /></Form.Item>
-              <Form.Item name="port" label="端口" rules={[{ required: true, message: '请输入端口' }]}><InputNumber min={1} max={65535} className="full-width" placeholder={databaseType === 'postgresql' ? '5432' : databaseType === 'gaussdb' ? '8000' : databaseType === 'dm' ? '5236' : databaseType === 'mongodb' ? '27017' : databaseType === 'redis' ? '6379' : databaseType === 'clickhouse' ? '8123' : '3306'} /></Form.Item>
-              <Form.Item name="username" label="用户名" rules={databaseType === 'mongodb' || databaseType === 'redis' ? undefined : [{ required: true, message: '请输入用户名' }]}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'gaussdb' ? 'gaussdb' : databaseType === 'dm' ? 'SYSDBA' : databaseType === 'redis' ? 'Redis ACL 用户名，可选' : databaseType === 'clickhouse' ? 'default' : undefined} /></Form.Item>
+              <Form.Item name="port" label="端口" rules={[{ required: true, message: '请输入端口' }]}><InputNumber min={1} max={65535} className="full-width" placeholder={databaseType === 'postgresql' ? '5432' : databaseType === 'gaussdb' ? '8000' : databaseType === 'oracle' ? '1521' : databaseType === 'dm' ? '5236' : databaseType === 'mongodb' ? '27017' : databaseType === 'redis' ? '6379' : databaseType === 'clickhouse' ? '8123' : '3306'} /></Form.Item>
+              <Form.Item name="username" label="用户名" rules={databaseType === 'mongodb' || databaseType === 'redis' ? undefined : [{ required: true, message: '请输入用户名' }]}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'gaussdb' ? 'gaussdb' : databaseType === 'oracle' ? 'system' : databaseType === 'dm' ? 'SYSDBA' : databaseType === 'redis' ? 'Redis ACL 用户名，可选' : databaseType === 'clickhouse' ? 'default' : undefined} /></Form.Item>
               <Form.Item name="password" label="密码"><Input.Password /></Form.Item>
-              <Form.Item name="database" label={databaseType === 'postgresql' || databaseType === 'gaussdb' ? '数据库名' : databaseType === 'dm' ? '默认 Schema（可选）' : databaseType === 'mongodb' ? '认证库/默认库（可选）' : databaseType === 'redis' ? '默认 DB 序号（可选）' : databaseType === 'clickhouse' ? '默认数据库' : '默认数据库（可选）'} rules={databaseType === 'postgresql' || databaseType === 'gaussdb' ? [{ required: true, message: '请输入数据库名' }] : undefined}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'gaussdb' ? 'postgres' : databaseType === 'dm' ? '不填则使用默认 Schema' : databaseType === 'mongodb' ? '默认 admin，也可填业务库名' : databaseType === 'redis' ? '默认 0，例如 0、1、2' : databaseType === 'clickhouse' ? '默认 default' : '不填则连接服务器并加载全部数据库'} /></Form.Item>
+              <Form.Item name="database" label={databaseType === 'postgresql' || databaseType === 'gaussdb' ? '数据库名' : databaseType === 'oracle' ? '服务名' : databaseType === 'dm' ? '默认 Schema（可选）' : databaseType === 'mongodb' ? '认证库/默认库（可选）' : databaseType === 'redis' ? '默认 DB 序号（可选）' : databaseType === 'clickhouse' ? '默认数据库' : '默认数据库（可选）'} rules={databaseType === 'postgresql' || databaseType === 'gaussdb' || databaseType === 'oracle' ? [{ required: true, message: databaseType === 'oracle' ? '请输入服务名' : '请输入数据库名' }] : undefined}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'gaussdb' ? 'postgres' : databaseType === 'oracle' ? '例如：orclpdb1' : databaseType === 'dm' ? '不填则使用默认 Schema' : databaseType === 'mongodb' ? '默认 admin，也可填业务库名' : databaseType === 'redis' ? '默认 0，例如 0、1、2' : databaseType === 'clickhouse' ? '默认 default' : '不填则连接服务器并加载全部数据库'} /></Form.Item>
               {databaseType && JDBC_COMPATIBLE_DATABASE_TYPES.includes(databaseType) && (
                 <>
                   <Form.Item name="driver_id" label={`${DRIVER_DATABASE_META[driverDatabaseTypeForConnection(databaseType) ?? 'dm'].shortLabel}驱动`} rules={[{ required: true, message: '请选择驱动' }]}>
