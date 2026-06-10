@@ -27,7 +27,7 @@ jobs:
               dist/*.blockmap
           - os: macos-latest
             label: macOS
-            build_command: npm run build:backend && npm run build:frontend && rm -rf backend/.venv && electron-builder --mac --publish never
+            build_command: npm run build:backend && npm run build:frontend && rm -rf backend/.venv && npx electron-builder --mac --publish never
             artifact_name: release-macos
             artifact_paths: |
               dist/*.dmg
