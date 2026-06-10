@@ -27,7 +27,7 @@ jobs:
               dist/*.blockmap
           - os: macos-latest
             label: macOS
-            build_command: npm run build:mac
+            build_command: npm run build:backend && npm run build:frontend && rm -rf backend/.venv && electron-builder --mac --publish never
             artifact_name: release-macos
             artifact_paths: |
               dist/*.dmg
@@ -62,11 +62,6 @@ jobs:
           fi
           "$VENV_PY" -m pip install --upgrade pip
           "$VENV_PY" -m pip install -r backend/requirements.txt
-
-      - name: Remove backend virtualenv before Electron packaging
-        if: runner.os == 'macOS'
-        shell: bash
-        run: rm -rf backend/.venv
 
       - name: Build packages
         run: ${{ matrix.build_command }}
