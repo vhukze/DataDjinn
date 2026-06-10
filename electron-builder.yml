@@ -4,15 +4,8 @@ compression: normal
 directories:
   buildResources: build
 files:
-  - 'out/**/*'
-  - 'package.json'
-  - '!**/*.map'
   - '!**/.vscode/*'
-  - '!src/**/*'
-  - '!backend/**/*'
-  - '!dist/**/*'
-  - '!docs/**/*'
-  - '!electron-builder.yml'
+  - '!src/*'
   - '!electron.vite.config.{js,ts,mjs,cjs}'
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'

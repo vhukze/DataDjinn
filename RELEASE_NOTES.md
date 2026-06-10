@@ -1,20 +1,18 @@
-# DataDjinn v0.1.23
+# DataDjinn v0.1.24
 
 ## Highlights
 
-- 修复 macOS `dmg` 构建失败问题
-- 收紧 Electron 安装包文件收集范围，避免源码目录中的 `backend/.venv` 被扫描进安装包
-- 修正 macOS 流水线中 `backend/.venv` 的清理时机，保证后端先完成构建，再进入 Electron 打包
-- 修复 macOS 流水线直接调用 `electron-builder` 导致命令不可用的问题
+- 恢复 Windows 安装包的原有内容结构，解决安装包体积异常缩小后在部分安全软件环境中无法打开的问题
+- 保留 macOS `dmg` 构建修复，继续支持通过 GitHub Actions 正常产出 mac 安装包
 
 ## What's Changed
 
-- `electron-builder.yml` 改为以 `out/**/*` 为主的白名单打包，并显式排除源码 `backend/`、`dist/`、`docs/` 等目录
-- `.github/workflows/release.yml` 改为先执行 `build:backend`、`build:frontend`，再删除 `backend/.venv`，最后通过 `npx electron-builder --mac` 打包
-- 保持后端仍通过 `extraResources` 注入安装包，不改变现有运行时目录结构
+- `electron-builder.yml` 恢复 Windows 原有打包文件收集结构，重新生成两百多兆级别的安装包
+- `.github/workflows/release.yml` 保留 macOS 构建链路修复：先构建后端与前端，再清理 `backend/.venv`，最后通过 `npx electron-builder --mac` 打包
+- Windows 与 macOS 的发布策略分离处理，避免修复 mac 构建时误影响 Windows 安装包内容
 
 ## Notes
 
-- 当前版本号为 `v0.1.23`
-- 本次发布重点是修复 macOS 安装包构建失败
+- 当前版本号为 `v0.1.24`
+- 本次发布重点是恢复 Windows 安装包兼容性，并保留 macOS 打包修复
 - 发布前已完成前端 TypeScript 校验和后端 Python 语法校验
