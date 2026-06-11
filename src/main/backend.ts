@@ -289,13 +289,25 @@ export class BackendManager {
         ? join(backendDir, '.venv', 'Scripts', 'python.exe')
         : join(backendDir, '.venv', 'bin', 'python')
       const sitePackages = this.resolveVenvSitePackages(backendDir)
+      const venvBinDir = process.platform === 'win32'
+        ? join(backendDir, '.venv', 'Scripts')
+        : join(backendDir, '.venv', 'bin')
       const pyvenvCfg = join(backendDir, '.venv', 'pyvenv.cfg')
       const fallbackPython = this.resolveSystemPythonFromVenv(pyvenvCfg)
-
-      const pythonEnv = sitePackages ? { PYTHONPATH: sitePackages } : undefined
+      const preferFallbackPython = process.platform === 'win32' && Boolean(fallbackPython)
+      const command = preferFallbackPython ? (fallbackPython ?? venvPython) : (existsSync(venvPython) ? venvPython : (fallbackPython ?? venvPython))
+      const pathParts = [
+        venvBinDir,
+        process.env.PATH ?? ''
+      ].filter(Boolean)
+      const pythonEnv = {
+        ...(sitePackages ? { PYTHONPATH: sitePackages } : {}),
+        ...(existsSync(join(backendDir, '.venv')) ? { VIRTUAL_ENV: join(backendDir, '.venv') } : {}),
+        PATH: pathParts.join(process.platform === 'win32' ? ';' : ':')
+      }
 
       return {
-        command: existsSync(venvPython) ? venvPython : (fallbackPython ?? venvPython),
+        command,
         args: [join(backendDir, 'run.py')],
         cwd: backendDir,
         checkedPaths: [venvPython, ...(fallbackPython ? [fallbackPython] : [])],

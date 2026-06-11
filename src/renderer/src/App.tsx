@@ -32,6 +32,8 @@
   SearchOutlined,
   SortAscendingOutlined,
   SortDescendingOutlined,
+  HistoryOutlined,
+  UnorderedListOutlined,
   UpOutlined,
   SunOutlined,
   TableOutlined,
@@ -105,6 +107,7 @@ type WorkspaceTabsViewProps = {
   activeTabSearchState?: TableSearchUiState
   onActiveTabChange: (key: string) => void
   onCloseTab: (key: string) => void
+  onRenameTab: (key: string, title: string) => void
   renderWorkspaceTab: (tab: WorkspaceTab) => React.ReactNode
 }
 
@@ -114,16 +117,59 @@ const WorkspaceTabsView = memo(function WorkspaceTabsView({
   activeTabSearchState,
   onActiveTabChange,
   onCloseTab,
+  onRenameTab,
   renderWorkspaceTab
 }: WorkspaceTabsViewProps) {
+  const [editingTabKey, setEditingTabKey] = useState<string>()
+  const [editingTabTitle, setEditingTabTitle] = useState('')
   const items = useMemo(() => (
     workspaceTabs.map((tab) => ({
       key: tab.key,
-      label: tab.title,
+      label: editingTabKey === tab.key
+        ? (
+          <Input
+            size="small"
+            value={editingTabTitle}
+            autoFocus
+            onChange={(event) => setEditingTabTitle(event.currentTarget.value)}
+            onBlur={() => {
+              const nextTitle = editingTabTitle.trim()
+              if (nextTitle) {
+                onRenameTab(tab.key, nextTitle)
+              }
+              setEditingTabKey(undefined)
+            }}
+            onPressEnter={() => {
+              const nextTitle = editingTabTitle.trim()
+              if (nextTitle) {
+                onRenameTab(tab.key, nextTitle)
+              }
+              setEditingTabKey(undefined)
+            }}
+            onKeyDown={(event) => {
+              event.stopPropagation()
+              if (event.key === 'Escape') {
+                event.preventDefault()
+                setEditingTabKey(undefined)
+              }
+            }}
+          />
+        )
+        : (
+          <span
+            onDoubleClick={(event) => {
+              event.stopPropagation()
+              setEditingTabKey(tab.key)
+              setEditingTabTitle(tab.title)
+            }}
+          >
+            {tab.title}
+          </span>
+        ),
       closable: true,
       children: tab.key === activeTabKey ? renderWorkspaceTab(tab) : null
     }))
-  ), [activeTabKey, activeTabSearchState, renderWorkspaceTab, workspaceTabs])
+  ), [activeTabKey, activeTabSearchState, editingTabKey, editingTabTitle, onRenameTab, renderWorkspaceTab, workspaceTabs])
 
   return (
     <Tabs
@@ -147,7 +193,8 @@ const WorkspaceTabsView = memo(function WorkspaceTabsView({
   prev.activeTabSearchState === next.activeTabSearchState &&
   prev.renderWorkspaceTab === next.renderWorkspaceTab &&
   prev.onCloseTab === next.onCloseTab &&
-  prev.onActiveTabChange === next.onActiveTabChange
+  prev.onActiveTabChange === next.onActiveTabChange &&
+  prev.onRenameTab === next.onRenameTab
 ))
 
 type WhereClauseInputProps = {
@@ -310,6 +357,7 @@ const STORAGE_CONNECTION_FOLDER_ORDER = 'datadjinn-connection-folder-order'
 const STORAGE_ROOT_CONNECTION_ORDER = 'datadjinn-root-connection-order'
 const STORAGE_ROOT_ITEM_ORDER = 'datadjinn-root-item-order'
 const STORAGE_FOLDER_CONNECTION_ORDER = 'datadjinn-folder-connection-order'
+const STORAGE_QUERY_WORKSPACES = 'datadjinn-query-workspaces'
 const readPersisted = (key: string): Record<string, string[]> => {
   try {
     const stored = localStorage.getItem(key)
@@ -722,6 +770,17 @@ type WorkspaceTab = {
   pageSearchWholeWord?: boolean
   pageSearchFilterRows?: boolean
   pageSearchActiveMatchIndex?: number
+  persistedAt?: number
+}
+
+type PersistedQueryWorkspace = {
+  key: string
+  title: string
+  connectionId?: string
+  databaseName?: string
+  pgDatabaseName?: string
+  sql: string
+  persistedAt: number
 }
 
 type DefaultValueMarker = {
@@ -1626,6 +1685,7 @@ function App(): React.JSX.Element {
   const [testingConnection, setTestingConnection] = useState(false)
   const [workspaceTabs, setWorkspaceTabs] = useState<WorkspaceTab[]>([])
   const [activeTabKey, setActiveTabKey] = useState<string>()
+  const [queryHistoryOpen, setQueryHistoryOpen] = useState(false)
   const [selectedSqlByTab, setSelectedSqlByTab] = useState<Record<string, string>>({})
   const [resourcePanelSize, setResourcePanelSize] = useState(340)
   const [aiPanelSize, setAiPanelSize] = useState(360)
@@ -1743,6 +1803,9 @@ function App(): React.JSX.Element {
     .join('、')
   const [selectedDatabases, setSelectedDatabases] = useState<Record<string, string[]>>(() => readPersisted(STORAGE_DB))
   const [selectedSchemas, setSelectedSchemas] = useState<Record<string, string[]>>(() => readPersisted(STORAGE_SCHEMA))
+  const [persistedQueryWorkspaces, setPersistedQueryWorkspaces] = useState<PersistedQueryWorkspace[]>(
+    () => readPersistedJson<PersistedQueryWorkspace[]>(STORAGE_QUERY_WORKSPACES, [])
+  )
   const selectedDatabasesRef = useRef(selectedDatabases)
   const selectedSchemasRef = useRef(selectedSchemas)
 
@@ -1777,6 +1840,10 @@ function App(): React.JSX.Element {
   useEffect(() => {
     localStorage.setItem(STORAGE_FOLDER_CONNECTION_ORDER, JSON.stringify(folderConnectionOrder))
   }, [folderConnectionOrder])
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_QUERY_WORKSPACES, JSON.stringify(persistedQueryWorkspaces))
+  }, [persistedQueryWorkspaces])
 
   useEffect(() => {
     if (!connectionsInitialized) {
@@ -1855,6 +1922,15 @@ function App(): React.JSX.Element {
     })
   }, [connectionsInitialized, connections, connectionFolders, connectionFolderAssignments, connectionFolderOrder, rootConnectionOrder])
 
+  useEffect(() => {
+    for (const tab of workspaceTabs) {
+      if (tab.kind !== 'query') {
+        continue
+      }
+      persistQueryWorkspace(tab)
+    }
+  }, [workspaceTabs])
+
   const [allDatabases, setAllDatabases] = useState<Record<string, string[]>>({})
   const [allSchemas, setAllSchemas] = useState<Record<string, string[]>>({})
   const [activeSelector, setActiveSelector] = useState<string | null>(null)
@@ -1875,6 +1951,7 @@ function App(): React.JSX.Element {
   const tableBodyRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const resourceTreeContainerRef = useRef<HTMLDivElement | null>(null)
   const resourceTreeViewportRef = useRef<HTMLDivElement | null>(null)
+  const workspaceShellRef = useRef<HTMLDivElement | null>(null)
   const selectedColumnRefs = useRef<Record<string, string | undefined>>({})
   const selectedCellRefs = useRef<Record<string, string[] | undefined>>({})
   const runtimeSelectedCellRefs = useRef<Record<string, string[] | undefined>>({})
@@ -1902,6 +1979,7 @@ function App(): React.JSX.Element {
   const dragOverConnectionTargetRef = useRef<{ connectionId: string; folderId?: string; zone: 'before' | 'after' } | undefined>(undefined)
   const draggingConnectionIdsRef = useRef<string[]>([])
   const aiPanelResizeRef = useRef<{ startX: number; startSize: number } | null>(null)
+  const resourcePanelResizeRef = useRef<{ startX: number; startSize: number } | null>(null)
   const draggingConnectionFolderIdRef = useRef<string | undefined>(undefined)
   const ddlPreviewModalRef = useRef<DdlPreviewModalHandle | null>(null)
 
@@ -3257,6 +3335,35 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     setWorkspaceTabs((current) => current.map((tab) => (tab.key === key ? { ...tab, ...patch } : tab)))
   }
 
+  const renameWorkspaceTab = (key: string, title: string): void => {
+    updateWorkspaceTab(key, { title })
+  }
+
+  const persistQueryWorkspace = (tab: WorkspaceTab): void => {
+    if (tab.kind !== 'query') {
+      return
+    }
+    const sql = tab.sql ?? ''
+    const persistedAt = Date.now()
+    const nextItem: PersistedQueryWorkspace = {
+      key: tab.key,
+      title: tab.title,
+      connectionId: tab.connectionId,
+      databaseName: tab.databaseName,
+      pgDatabaseName: tab.pgDatabaseName,
+      sql,
+      persistedAt
+    }
+    setPersistedQueryWorkspaces((current) => {
+      const next = [nextItem, ...current.filter((item) => item.key !== tab.key)]
+      return next.slice(0, 200)
+    })
+  }
+
+  const removePersistedQueryWorkspace = (key: string): void => {
+    setPersistedQueryWorkspaces((current) => current.filter((item) => item.key !== key))
+  }
+
   const getDefaultTableSearchUiState = (_tab: WorkspaceTab): TableSearchUiState => ({
     visible: false,
     query: '',
@@ -3497,9 +3604,27 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     if (!resizingResourcePanel) {
       return
     }
-    const handleMouseUp = (): void => setResizingResourcePanel(false)
+    const handleMouseMove = (event: MouseEvent): void => {
+      const resizeState = resourcePanelResizeRef.current
+      const shell = workspaceShellRef.current
+      if (!resizeState || !shell) {
+        return
+      }
+      const shellWidth = shell.getBoundingClientRect().width
+      const nextSize = Math.min(500, Math.max(220, resizeState.startSize + (event.clientX - resizeState.startX)))
+      const boundedSize = Math.min(nextSize, Math.max(220, shellWidth - (aiPanelOpen ? aiPanelSize : 0) - 260))
+      setResourcePanelSize(boundedSize)
+    }
+    const handleMouseUp = (): void => {
+      resourcePanelResizeRef.current = null
+      setResizingResourcePanel(false)
+    }
+    window.addEventListener('mousemove', handleMouseMove)
     window.addEventListener('mouseup', handleMouseUp)
-    return () => window.removeEventListener('mouseup', handleMouseUp)
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
   }, [resizingResourcePanel])
 
   useEffect(() => {
@@ -3508,11 +3633,14 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     }
     const handleMouseMove = (event: MouseEvent): void => {
       const resizeState = aiPanelResizeRef.current
-      if (!resizeState) {
+      const shell = workspaceShellRef.current
+      if (!resizeState || !shell) {
         return
       }
+      const shellWidth = shell.getBoundingClientRect().width
       const nextSize = Math.min(720, Math.max(260, resizeState.startSize - (event.clientX - resizeState.startX)))
-      setAiPanelSize(nextSize)
+      const boundedSize = Math.min(nextSize, Math.max(260, shellWidth - resourcePanelSize - 260))
+      setAiPanelSize(boundedSize)
     }
     const handleMouseUp = (): void => {
       aiPanelResizeRef.current = null
@@ -5690,7 +5818,23 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     }
 
     const rowNumberColumn: ColumnsType<EditableRow>[number] = {
-      title: <span className="row-number-header">#</span>,
+      title: (
+        <button
+          type="button"
+          className="row-number-select-all"
+          title="选中当前表格全部内容"
+          onClick={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            clearRuntimeColumnSelection(tab.key)
+            clearSelectedRows()
+            const allCellKeys = orderedRowKeys.flatMap((rowKey) => orderedColumns.map((column) => `${rowKey}:${column}`))
+            setCommittedCellSelection(tab.key, allCellKeys)
+          }}
+        >
+          <UnorderedListOutlined />
+        </button>
+      ),
       key: '__rowNumber',
       width: 34,
       fixed: 'left',
@@ -8209,7 +8353,8 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         sql: initialSql,
         limit: 1000,
         page: 1,
-        loading: false
+        loading: false,
+        persistedAt: Date.now()
         }
     ])
     setActiveTabKey(tabKey)
@@ -8232,6 +8377,31 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     }
 
     return tabKey
+  }
+
+  const openPersistedQueryWorkspace = (item: PersistedQueryWorkspace): void => {
+    const existing = workspaceTabs.find((tab) => tab.key === item.key)
+    if (existing) {
+      setActiveTabKey(existing.key)
+      return
+    }
+    setWorkspaceTabs((current) => [
+      ...current,
+      {
+        key: item.key,
+        title: item.title,
+        kind: 'query',
+        connectionId: item.connectionId,
+        databaseName: item.databaseName,
+        pgDatabaseName: item.pgDatabaseName,
+        sql: item.sql,
+        limit: 1000,
+        page: 1,
+        loading: false,
+        persistedAt: item.persistedAt
+      }
+    ])
+    setActiveTabKey(item.key)
   }
 
   const appendSqlToQueryWorkspace = (sql: string, title?: string): void => {
@@ -8538,7 +8708,10 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           </Space>
           <div className="titlebar-spacer" />
           <Space className="toolbar-actions titlebar-no-drag" size={4}>
-            <Button type="text" size="small" icon={<FileAddOutlined />} onClick={() => openQueryWorkspace()} title="新建查询" aria-label="新建查询" />
+            <Button className="toolbar-query-btn" type="primary" size="small" icon={<FileAddOutlined />} onClick={() => openQueryWorkspace('', '新建查询')} title="新建查询" aria-label="新建查询">
+              新建查询
+            </Button>
+            <Button type="text" size="small" icon={<HistoryOutlined />} onClick={() => setQueryHistoryOpen(true)} title="历史查询窗口" aria-label="历史查询窗口" />
             <Button type="text" size="small" icon={<SettingOutlined />} onClick={() => openSettings('app')} title="设置" aria-label="设置" />
             <Button type={updateInfo?.available || downloadingUpdate ? 'primary' : 'text'} size="small" icon={<CloudDownloadOutlined />} loading={checkingUpdate} onClick={() => { setUpdateModalOpen(true); if (!downloadingUpdate) { void checkForUpdates(true) } }} title="检查更新" aria-label="检查更新" />
             <Button type="text" size="small" icon={<ReloadOutlined />} loading={healthLoading} onClick={() => void checkHealth()} title="同步状态" aria-label="同步状态" />
@@ -8554,15 +8727,8 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         </Flex>
       </Layout.Header>
       <Layout.Content className="app-content">
-        <Splitter
-          className="workspace"
-          onResizeStart={() => setResizingResourcePanel(true)}
-          onResizeEnd={(sizes) => {
-            setResourcePanelSize(sizes[0] as number)
-            setResizingResourcePanel(false)
-          }}
-        >
-          <Splitter.Panel defaultSize={resourcePanelSize} min={220} max={500} className="resource-panel">
+        <div ref={workspaceShellRef} className="workspace">
+          <div className="resource-panel" style={{ width: resourcePanelSize, flex: `0 0 ${resourcePanelSize}px` }}>
             <div className="resource-header">
               <Space direction="vertical" size={2}>
                 <Typography.Text className="panel-kicker">DATABASE EXPLORER</Typography.Text>
@@ -8814,63 +8980,69 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                 </div>
               )}
             </div>
-          </Splitter.Panel>
-          <Splitter.Panel>
-            <div className="main-panel">
-              <div className={`studio-shell${resizingResourcePanel ? ' studio-shell-suspended' : ''}`}>
-                <div className="editor-placeholder">
-                  {workspaceTabs.length === 0 ? (
-                    <div className="empty-workspace"><FileAddOutlined /><Typography.Text type="secondary">连接数据库后，可以浏览库表结构、预览数据、编写 SQL，并让 Djinn Agent 辅助分析与执行受控操作。</Typography.Text><Space><Dropdown menu={connectionCreateMenu} trigger={['click']}><Button icon={<PlusOutlined />}>创建连接</Button></Dropdown></Space></div>
-                  ) : (
-                    <WorkspaceTabsView
-                      workspaceTabs={workspaceTabs}
-                      activeTabKey={activeTabKey}
-                      activeTabSearchState={activeTabSearchState}
-                      onActiveTabChange={setActiveTabKey}
-                      onCloseTab={closeWorkspaceTab}
-                      renderWorkspaceTab={renderWorkspaceTab}
-                    />
-                  )}
-                </div>
-                {aiPanelOpen && (
-                  <>
-                    <div
-                      className={`ai-panel-resizer${resizingAiPanel ? ' active' : ''}`}
-                      onMouseDown={(event) => {
-                        aiPanelResizeRef.current = { startX: event.clientX, startSize: aiPanelSize }
-                        setResizingAiPanel(true)
-                      }}
-                    />
-                    <div className="ai-dock-panel" style={{ width: aiPanelSize }}>
-                      <MemoAIPanel
-                        requestJson={requestJson}
-                        connectionContext={{
-                          connectionId: aiContextConnection?.is_open ? aiContextConnection.connection_id : undefined,
-                          dbType: aiContextConnection?.database_type,
-                          dbName: aiDbName,
-                          database: aiDatabase,
-                          pgDatabase: aiPgDatabase,
-                          connectionName: aiContextConnection?.name,
-                          serverVersion: aiContextConnection?.server_version
-                        }}
-                        workspace={aiWorkspacePayload}
-                        contextSources={effectiveAIContextSources}
-                        primaryContextSourceId={primaryAIContextSource?.id}
-                        onRemoveContextSource={removeAIContextSource}
-                        onWorkspaceAction={(action: AIWorkspaceAction) => {
-                          if (action.type === 'append_query_sql') {
-                            appendSqlToQueryWorkspace(action.sql, action.title)
-                          }
-                        }}
-                        onAgentDataChanged={refreshAfterAgentChange}
-                      />
-                    </div>
-                  </>
+          </div>
+          <div
+            className={`workspace-side-resizer${resizingResourcePanel ? ' active' : ''}`}
+            onMouseDown={(event) => {
+              resourcePanelResizeRef.current = { startX: event.clientX, startSize: resourcePanelSize }
+              setResizingResourcePanel(true)
+            }}
+          />
+          <div className="main-panel">
+            <div className={`studio-shell${resizingResourcePanel ? ' studio-shell-suspended' : ''}`}>
+              <div className="editor-placeholder">
+                {workspaceTabs.length === 0 ? (
+                  <div className="empty-workspace"><FileAddOutlined /><Typography.Text type="secondary">连接数据库后，可以浏览库表结构、预览数据、编写 SQL，并让 Djinn Agent 辅助分析与执行受控操作。</Typography.Text><Space><Dropdown menu={connectionCreateMenu} trigger={['click']}><Button icon={<PlusOutlined />}>创建连接</Button></Dropdown></Space></div>
+                ) : (
+                  <WorkspaceTabsView
+                    workspaceTabs={workspaceTabs}
+                    activeTabKey={activeTabKey}
+                    activeTabSearchState={activeTabSearchState}
+                    onActiveTabChange={setActiveTabKey}
+                    onCloseTab={closeWorkspaceTab}
+                    onRenameTab={renameWorkspaceTab}
+                    renderWorkspaceTab={renderWorkspaceTab}
+                  />
                 )}
               </div>
+              {aiPanelOpen && (
+                <>
+                  <div
+                    className={`ai-panel-resizer${resizingAiPanel ? ' active' : ''}`}
+                    onMouseDown={(event) => {
+                      aiPanelResizeRef.current = { startX: event.clientX, startSize: aiPanelSize }
+                      setResizingAiPanel(true)
+                    }}
+                  />
+                  <div className="ai-dock-panel" style={{ width: aiPanelSize, flex: `0 0 ${aiPanelSize}px` }}>
+                    <MemoAIPanel
+                      requestJson={requestJson}
+                      connectionContext={{
+                        connectionId: aiContextConnection?.is_open ? aiContextConnection.connection_id : undefined,
+                        dbType: aiContextConnection?.database_type,
+                        dbName: aiDbName,
+                        database: aiDatabase,
+                        pgDatabase: aiPgDatabase,
+                        connectionName: aiContextConnection?.name,
+                        serverVersion: aiContextConnection?.server_version
+                      }}
+                      workspace={aiWorkspacePayload}
+                      contextSources={effectiveAIContextSources}
+                      primaryContextSourceId={primaryAIContextSource?.id}
+                      onRemoveContextSource={removeAIContextSource}
+                      onWorkspaceAction={(action: AIWorkspaceAction) => {
+                        if (action.type === 'append_query_sql') {
+                          appendSqlToQueryWorkspace(action.sql, action.title)
+                        }
+                      }}
+                      onAgentDataChanged={refreshAfterAgentChange}
+                    />
+                  </div>
+                </>
+              )}
             </div>
-          </Splitter.Panel>
-        </Splitter>
+          </div>
+        </div>
       </Layout.Content>
       <Modal title="应用更新" open={updateModalOpen} onCancel={() => setUpdateModalOpen(false)} footer={null} width={680} maskClosable={false}>
         <Space direction="vertical" className="full-width" size="middle">
@@ -8906,6 +9078,56 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             {updateDownloaded && <Button type="primary" onClick={() => void installUpdate()}>{updateMode === 'installer' ? '重启并安装' : '打开下载位置'}</Button>}
           </Flex>
         </Space>
+      </Modal>
+      <Modal title="历史查询窗口" open={queryHistoryOpen} onCancel={() => setQueryHistoryOpen(false)} footer={null} width={760}>
+        <div className="query-history-modal">
+          {Object.entries(
+            persistedQueryWorkspaces.reduce<Record<string, PersistedQueryWorkspace[]>>((groups, item) => {
+              const connectionName = getConnection(item.connectionId)?.name ?? '未绑定连接'
+              if (!groups[connectionName]) {
+                groups[connectionName] = []
+              }
+              groups[connectionName].push(item)
+              return groups
+            }, {})
+          ).map(([groupName, items]) => (
+            <div key={groupName} className="query-history-group">
+              <div className="query-history-group-title">{groupName}</div>
+              <div className="query-history-group-list">
+                {items
+                  .sort((left, right) => right.persistedAt - left.persistedAt)
+                  .map((item) => (
+                    <div
+                      key={item.key}
+                      className="query-history-item"
+                      onDoubleClick={() => {
+                        openPersistedQueryWorkspace(item)
+                        setQueryHistoryOpen(false)
+                      }}
+                    >
+                      <div className="query-history-item-main">
+                        <div className="query-history-item-title">{item.title}</div>
+                        <div className="query-history-item-meta">
+                          {[item.pgDatabaseName, item.databaseName].filter(Boolean).join('.')}
+                        </div>
+                        <div className="query-history-item-sql">{item.sql || '空查询'}</div>
+                      </div>
+                      <Button
+                        type="text"
+                        size="small"
+                        danger
+                        icon={<DeleteOutlined />}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          removePersistedQueryWorkspace(item.key)
+                        }}
+                      />
+                    </div>
+                  ))}
+              </div>
+            </div>
+          ))}
+        </div>
       </Modal>
       <Modal title="设置" open={driverManagerOpen} footer={null} onCancel={() => setDriverManagerOpen(false)} width={1040} maskClosable={false}>
         <Flex gap={18} align="stretch" className="settings-layout">

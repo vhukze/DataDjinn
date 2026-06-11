@@ -23,8 +23,10 @@ DataDjinn 是一款**跨时代**的本地数据库桌面客户端，将传统数
 ### 核心能力
 
 - 🧠 **AI 对话式数据库操作** —— 接入任意 OpenAI 兼容 API，AI 深度理解 Schema 上下文，支持自然语言查数据、建表、修改表结构
+- ?? **AI ??????** ?? AI ???????????????????????????
 - 🔗 **多数据库支持** —— SQLite / MySQL / PostgreSQL / Oracle / 达梦 DM / 高斯数据库 / MongoDB / Redis / ClickHouse
 - ✍️ **专业 SQL / 命令编辑器** —— 基于 Monaco Editor，支持 SQL、MongoDB Shell 风格语句和 Redis 常用命令补全，多标签页并行工作
+- ?? **???????** ?? ??????????????????????????????????
 - 🧭 **连接树与数据预览** —— 支持连接分组、排序、连接/库/模式/表/视图/MongoDB 集合/Redis DB 浏览；对象分类节点可直接查看列表，表格预览支持 WHERE 过滤、分页、行列选择、列顺序拖拽和单元格编辑
 - 🧩 **手动驱动数据库管理** —— 支持在驱动管理中统一维护达梦、高斯等需要手动配置驱动的数据库类型
 - 🧰 **Redis Key 管理** —— 支持 Redis DB 勾选浏览、Key 列表查看、String / Hash / List / Set / ZSet 新增编辑删除和统一提交
@@ -120,7 +122,7 @@ Redis / MongoDB 导出为 JSON，适合迁移前留档、人工检查或和其�
 - `DataDjinn-x.x.x-setup.exe` —— Windows NSIS 安装包（推荐）
 - `DataDjinn-x.x.x-win.zip` —— Windows 解压即用版
 - `DataDjinn-x.x.x.dmg` —— macOS 安装包
-- `DataDjinn-x.x.x-mac.zip` —— macOS 压缩包
+???????`v0.1.27`?
 
 当前最新版本：`v0.1.26`。
 

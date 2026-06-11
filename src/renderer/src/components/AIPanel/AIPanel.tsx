@@ -1,4 +1,4 @@
-import { CheckCircleOutlined, ClockCircleOutlined, CloseCircleOutlined, CloseOutlined, DatabaseOutlined, DeleteOutlined, ExclamationCircleOutlined, LoadingOutlined, PlusOutlined, RobotOutlined, SettingOutlined, StopOutlined, ToolOutlined } from '@ant-design/icons'
+import { CheckCircleOutlined, ClockCircleOutlined, CloseCircleOutlined, CloseOutlined, DatabaseOutlined, DeleteOutlined, DownOutlined, ExclamationCircleOutlined, LoadingOutlined, PlusOutlined, RightOutlined, RobotOutlined, SettingOutlined, StopOutlined, ToolOutlined } from '@ant-design/icons'
 import { Alert, Button, Card, Collapse, Flex, Form, Input, List, Modal, Select, Space, Steps, Switch, Tag, Typography, message } from 'antd'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
@@ -35,6 +35,13 @@ type ChatMessage = {
   plan?: AgentPlanView
   steps?: AgentStepView[]
   confirmation?: AgentConfirmationView
+  thinking?: {
+    summary: string
+    content: string
+    preview?: string
+    expanded?: boolean
+    done?: boolean
+  }
 }
 
 type AISession = {
@@ -144,6 +151,7 @@ type AgentWorkspace = {
 
 type StreamEvent =
   | { type: 'token'; content: string }
+  | { type: 'reasoning'; content: string }
   | { type: 'plan'; plan: AgentPlanView }
   | { type: 'step_start'; step_id: string }
   | { type: 'step_result'; step_id: string; result: unknown }
@@ -154,6 +162,11 @@ type StreamEvent =
   | { type: 'tool_done' }
   | { type: 'done'; finish_reason: string }
   | { type: 'error'; message: string }
+
+type QueuedStreamUpdate = {
+  assistantId: string
+  event: StreamEvent
+}
 
 interface AIPanelProps {
   requestJson: <T>(path: string, options?: RequestInit) => Promise<T>
@@ -309,6 +322,10 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
   const [activeSessionId, setActiveSessionId] = useState<string>('')
   const streamIdRef = useRef<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const persistTimerRef = useRef<number | null>(null)
+  const queuedStreamEventsRef = useRef<QueuedStreamUpdate[]>([])
+  const streamFlushFrameRef = useRef<number | null>(null)
+  const suppressAutoScrollRef = useRef(false)
 
   const config = activeAIConfig(configs)
   const activeConfigItem = configs.find((item) => item.enabled)
@@ -346,20 +363,185 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
   }, [])
 
   useEffect(() => {
+    if (suppressAutoScrollRef.current) {
+      suppressAutoScrollRef.current = false
+      return
+    }
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
   }, [messages, sending])
+
+  useEffect(() => {
+    return () => {
+      if (persistTimerRef.current !== null) {
+        window.clearTimeout(persistTimerRef.current)
+      }
+      if (streamFlushFrameRef.current !== null) {
+        window.cancelAnimationFrame(streamFlushFrameRef.current)
+      }
+    }
+  }, [])
+
+  const writeSessions = (nextSessions: AISession[]): void => {
+    void window.api.setAISessions(persistedSessions(nextSessions))
+  }
+
+  const schedulePersistSessions = (nextSessions: AISession[], delay = 240): void => {
+    if (persistTimerRef.current !== null) {
+      window.clearTimeout(persistTimerRef.current)
+    }
+    persistTimerRef.current = window.setTimeout(() => {
+      persistTimerRef.current = null
+      writeSessions(nextSessions)
+    }, delay)
+  }
 
   const persistSessions = (nextSessions: AISession[]): void => {
     const normalized = normalizeSessions(nextSessions)
     setSessions(normalized)
-    void window.api.setAISessions(persistedSessions(normalized))
+    writeSessions(normalized)
   }
 
-  const updateActiveSession = (updater: (session: AISession) => AISession): void => {
+  const updateActiveSession = (updater: (session: AISession) => AISession, options?: { persist?: boolean; persistDelay?: number }): void => {
     setSessions((current) => {
       const next = normalizeSessions(current.map((session) => session.id === activeSessionId ? updater(session) : session))
-      void window.api.setAISessions(persistedSessions(next))
+      if (options?.persist === false) {
+        if (options.persistDelay !== undefined) {
+          schedulePersistSessions(next, options.persistDelay)
+        }
+      } else {
+        writeSessions(next)
+      }
       return next
+    })
+  }
+
+  const applyStreamEventToMessage = (item: ChatMessage, event: StreamEvent): ChatMessage => {
+    const appendThinking = (message: ChatMessage, summary: string, detail?: string, done = false): ChatMessage => {
+      const currentContent = message.thinking?.content ?? ''
+      const currentPreview = message.thinking?.preview ?? ''
+      const nextContent = detail
+        ? `${currentContent}${detail}`
+        : currentContent
+      const previewSource = nextContent || currentContent || detail || currentPreview || summary
+      const normalizedPreview = previewSource.replace(/\s+/g, ' ').trim()
+      return {
+        ...message,
+        thinking: {
+          summary,
+          content: nextContent,
+          preview: normalizedPreview || currentPreview || summary,
+          expanded: done ? false : true,
+          done
+        }
+      }
+    }
+
+    if (event.type === 'token') {
+      if (item.thinking && !item.thinking.done) {
+        const finishedThinking = appendThinking(item, '思考完成', undefined, true)
+        return { ...finishedThinking, content: finishedThinking.content + event.content }
+      }
+      return { ...item, content: item.content + event.content }
+    }
+    if (event.type === 'reasoning') {
+      return appendThinking(item, '正在思考', event.content)
+    }
+    if (event.type === 'plan') {
+      return appendThinking({ ...item, plan: event.plan, steps: event.plan.steps }, '正在思考执行步骤', `计划：${event.plan.summary || event.plan.goal}`)
+    }
+    if (event.type === 'step_start') {
+      const nextItem = { ...item, steps: (item.steps ?? []).map((step) => step.id === event.step_id ? { ...step, status: 'running' as const } : step) }
+      const step = nextItem.steps?.find((candidate) => candidate.id === event.step_id)
+      return appendThinking(nextItem, '正在执行步骤', step ? `步骤：${step.title}` : '开始执行步骤')
+    }
+    if (event.type === 'step_result') {
+      const nextItem = { ...item, steps: (item.steps ?? []).map((step) => step.id === event.step_id ? { ...step, status: 'completed' as const, result: event.result } : step) }
+      const step = nextItem.steps?.find((candidate) => candidate.id === event.step_id)
+      return appendThinking(nextItem, '正在整理结果', step ? `完成：${step.title}` : '步骤执行完成')
+    }
+    if (event.type === 'confirmation_required') {
+      return { ...item, confirmation: event.confirmation }
+    }
+    if (event.type === 'tool_start') {
+      return appendThinking(
+        { ...item, toolCalls: [...(item.toolCalls ?? []), { id: event.tool_call_id, name: event.name, status: 'running' as const, arguments: event.arguments }] },
+        '正在调用工具',
+        `工具：${event.name}`
+      )
+    }
+    if (event.type === 'tool_result') {
+      const status = toolResultStatus(event.result)
+      return appendThinking(
+        { ...item, toolCalls: (item.toolCalls ?? []).map((tool) => tool.id === event.tool_call_id ? { ...tool, status, result: event.result } : tool) },
+        status === 'waiting_confirm' ? '等待确认' : '正在继续处理',
+        `${event.name}：${status === 'waiting_confirm' ? '等待确认' : status === 'completed' ? '已完成' : '已失败'}`
+      )
+    }
+    if (event.type === 'tool_done' || event.type === 'done') {
+      return appendThinking(item, '思考完成', undefined, true)
+    }
+    return item
+  }
+
+  const flushQueuedStreamEvents = (): void => {
+    if (streamFlushFrameRef.current !== null) {
+      window.cancelAnimationFrame(streamFlushFrameRef.current)
+      streamFlushFrameRef.current = null
+    }
+    const pendingEvents = queuedStreamEventsRef.current
+    if (pendingEvents.length === 0) {
+      return
+    }
+    queuedStreamEventsRef.current = []
+
+    const groupedEvents = new Map<string, StreamEvent[]>()
+    for (const { assistantId, event } of pendingEvents) {
+      const current = groupedEvents.get(assistantId)
+      if (current) {
+        current.push(event)
+      } else {
+        groupedEvents.set(assistantId, [event])
+      }
+      if (event.type === 'tool_result') {
+        const status = toolResultStatus(event.result)
+        if (status === 'completed' && isMutatingToolResult(event.name, event.result)) {
+          onAgentDataChanged?.()
+        }
+      }
+      if (event.type === 'workspace_action') {
+        onWorkspaceAction?.(event.action)
+      }
+    }
+
+    setSessions((current) => current.map((session) => {
+      if (session.id !== activeSessionId) {
+        return session
+      }
+      return {
+        ...session,
+        updatedAt: Date.now(),
+        messages: session.messages.map((item) => {
+          const itemEvents = groupedEvents.get(item.id)
+          if (!itemEvents || itemEvents.length === 0) {
+            return item
+          }
+          return itemEvents.reduce((message, event) => applyStreamEventToMessage(message, event), item)
+        })
+      }
+    }))
+  }
+
+  const queueStreamEvent = (assistantId: string, event: StreamEvent): void => {
+    if (event.type === 'error') {
+      throw new Error(event.message)
+    }
+    queuedStreamEventsRef.current.push({ assistantId, event })
+    if (streamFlushFrameRef.current !== null) {
+      return
+    }
+    streamFlushFrameRef.current = window.requestAnimationFrame(() => {
+      streamFlushFrameRef.current = null
+      flushQueuedStreamEvents()
     })
   }
 
@@ -562,35 +744,40 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
     const streamId = streamIdRef.current ?? crypto.randomUUID()
     streamIdRef.current = streamId
 
-    await window.api.streamRequest(
-      streamId,
-      '/ai/chat/stream',
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          messages: nextMessages,
-          config: config!,
-          connection_id: connectionContext.connectionId,
-          database: connectionContext.database,
-          pg_database: connectionContext.pgDatabase,
-          workspace
-        })
-      },
-      (chunk) => {
-        buffer += chunk
-        const parsed = parseSseLines(buffer)
-        buffer = parsed.rest
-        for (const event of parsed.events) {
-          if (event.type === 'error') {
-            throw new Error(event.message)
+    try {
+      await window.api.streamRequest(
+        streamId,
+        '/ai/chat/stream',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            messages: nextMessages,
+            config: config!,
+            connection_id: connectionContext.connectionId,
+            database: connectionContext.database,
+            pg_database: connectionContext.pgDatabase,
+            workspace
+          })
+        },
+        (chunk) => {
+          buffer += chunk
+          const parsed = parseSseLines(buffer)
+          buffer = parsed.rest
+          for (const event of parsed.events) {
+            applyStreamEvent(assistantId, event)
           }
-          applyStreamEvent(assistantId, event)
         }
-      }
-    )
+      )
+    } finally {
+      flushQueuedStreamEvents()
+      updateActiveSession((session) => ({ ...session, updatedAt: Date.now() }), { persist: true })
+    }
   }
 
   const applyStreamEvent = (assistantId: string, event: StreamEvent): void => {
+    queueStreamEvent(assistantId, event)
+    return
+    /*
     if (event.type === 'workspace_action') {
       onWorkspaceAction?.(event.action)
       return
@@ -602,37 +789,75 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
           return item
         }
 
+        const appendThinking = (message: ChatMessage, summary: string, detail?: string, done = false): ChatMessage => {
+          const currentContent = message.thinking?.content ?? ''
+          const nextContent = detail
+            ? (summary === '正在思考'
+              ? `${currentContent}${detail}`
+              : currentContent.includes(detail)
+                ? currentContent
+                : `${currentContent}${currentContent ? '\n' : ''}${detail}`)
+            : currentContent
+          return {
+            ...message,
+            thinking: {
+              summary,
+              content: nextContent,
+              expanded: message.thinking?.expanded ?? !done,
+              done
+            }
+          }
+        }
+
         if (event.type === 'token') {
           return { ...item, content: item.content + event.content }
         }
+        if (event.type === 'reasoning') {
+          return appendThinking(item, '正在思考', event.content)
+        }
         if (event.type === 'plan') {
-          return { ...item, plan: event.plan, steps: event.plan.steps }
+          return appendThinking({ ...item, plan: event.plan, steps: event.plan.steps }, '正在思考执行步骤', `计划：${event.plan.summary || event.plan.goal}`)
         }
         if (event.type === 'step_start') {
-          return { ...item, steps: (item.steps ?? []).map((step) => step.id === event.step_id ? { ...step, status: 'running' as const } : step) }
+          const nextItem = { ...item, steps: (item.steps ?? []).map((step) => step.id === event.step_id ? { ...step, status: 'running' as const } : step) }
+          const step = nextItem.steps?.find((candidate) => candidate.id === event.step_id)
+          return appendThinking(nextItem, '正在执行步骤', step ? `步骤：${step.title}` : '开始执行步骤')
         }
         if (event.type === 'step_result') {
-          return { ...item, steps: (item.steps ?? []).map((step) => step.id === event.step_id ? { ...step, status: 'completed' as const, result: event.result } : step) }
+          const nextItem = { ...item, steps: (item.steps ?? []).map((step) => step.id === event.step_id ? { ...step, status: 'completed' as const, result: event.result } : step) }
+          const step = nextItem.steps?.find((candidate) => candidate.id === event.step_id)
+          return appendThinking(nextItem, '正在整理结果', step ? `完成：${step.title}` : '步骤执行完成')
         }
         if (event.type === 'confirmation_required') {
           return { ...item, confirmation: event.confirmation }
         }
         if (event.type === 'tool_start') {
-          return { ...item, toolCalls: [...(item.toolCalls ?? []), { id: event.tool_call_id, name: event.name, status: 'running' as const, arguments: event.arguments }] }
+          return appendThinking(
+            { ...item, toolCalls: [...(item.toolCalls ?? []), { id: event.tool_call_id, name: event.name, status: 'running' as const, arguments: event.arguments }] },
+            '正在调用工具',
+            `工具：${event.name}`
+          )
         }
         if (event.type === 'tool_result') {
           const status = toolResultStatus(event.result)
           if (status === 'completed' && isMutatingToolResult(event.name, event.result)) {
             onAgentDataChanged?.()
           }
-          return { ...item, toolCalls: (item.toolCalls ?? []).map((tool) => tool.id === event.tool_call_id ? { ...tool, status, result: event.result } : tool) }
+          return appendThinking(
+            { ...item, toolCalls: (item.toolCalls ?? []).map((tool) => tool.id === event.tool_call_id ? { ...tool, status, result: event.result } : tool) },
+            status === 'waiting_confirm' ? '等待确认' : '正在继续处理',
+            `${event.name}：${status === 'waiting_confirm' ? '等待确认' : status === 'completed' ? '已完成' : '已失败'}`
+          )
+        }
+        if (event.type === 'tool_done' || event.type === 'done') {
+          return appendThinking(item, '思考完成', undefined, true)
         }
         return item
       })
       return { ...session, updatedAt: Date.now(), messages }
     })
+    */
   }
-
   const confirmAction = async (confirmation: AgentConfirmationView, approved: boolean): Promise<void> => {
     if (!connectionContext.connectionId) {
       showError('请先选择已打开的数据库连接')
@@ -791,6 +1016,52 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
     )
   }
 
+  const renderThinking = (item: ChatMessage): React.JSX.Element | null => {
+    if (!item.thinking) {
+      return null
+    }
+
+    const expanded = item.thinking.expanded ?? !item.thinking.done
+    const preview = (item.thinking.preview || item.thinking.summary || item.thinking.content)
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 120)
+
+    return (
+      <div className="ai-thinking-block">
+        <div
+          className={`ai-thinking-summary${item.thinking.done ? ' done' : ''}`}
+          onClick={() => {
+            suppressAutoScrollRef.current = true
+            updateActiveSession((session) => ({
+              ...session,
+              messages: session.messages.map((message) => (
+                message.id === item.id && message.thinking
+                  ? { ...message, thinking: { ...message.thinking, expanded: !(message.thinking.expanded ?? !message.thinking.done) } }
+                  : message
+              ))
+            }))
+          }}
+        >
+          <span className="ai-thinking-toggle" aria-hidden="true">
+            {expanded ? <DownOutlined /> : <RightOutlined />}
+          </span>
+          {!item.thinking.done && <LoadingOutlined spin />}
+          <span className="ai-thinking-title">思考：</span>
+          <span className="ai-thinking-summary-text">
+            {preview || item.thinking.summary}
+            {item.thinking.done && item.thinking.content && item.thinking.content.trim().length > preview.length ? '…' : ''}
+          </span>
+        </div>
+        {expanded && item.thinking.content && (
+          <div className="ai-thinking-body">
+            {item.thinking.content}
+          </div>
+        )}
+      </div>
+    )
+  }
+
   const renderContextSources = (): React.ReactNode => {
     if (contextSources.length === 0) {
       return null
@@ -896,6 +1167,7 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
             renderItem={(item) => (
               <List.Item className={`ai-message ai-message-${item.role}`}>
                 <Card size="small" className="full-width" title={item.role === 'user' ? '你' : 'AI'}>
+                  {renderThinking(item)}
                   {renderAgentPlan(item)}
                   {renderConfirmation(item.confirmation)}
                   {item.toolCalls && item.toolCalls.length > 0 && (

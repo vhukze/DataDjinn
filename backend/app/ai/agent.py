@@ -367,6 +367,14 @@ def _extra_value(value: Any, key: str) -> Any:
     return getattr(value, key, None)
 
 
+def _reasoning_value(value: Any) -> Any:
+    for key in ("reasoning_content", "reasoning", "thinking"):
+        extra = _extra_value(value, key)
+        if extra:
+            return extra
+    return None
+
+
 def _truncate_value(value: Any) -> Any:
     if isinstance(value, str) and len(value) > MAX_CELL_CHARS_IN_TOOL_RESULT:
         return f"{value[:MAX_CELL_CHARS_IN_TOOL_RESULT]}... [已截断，原长度 {len(value)}]"
@@ -462,7 +470,15 @@ class AnthropicMessagesClient:
         self.api_key = config.api_key
         self.model = config.model
 
-    def create(self, messages: list[dict[str, Any]], *, tools: bool | list[dict[str, Any]] = True, max_tokens: int = 4096, temperature: float | None = None) -> dict[str, Any]:
+    def _build_payload(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: bool | list[dict[str, Any]] = True,
+        max_tokens: int = 4096,
+        temperature: float | None = None,
+        stream: bool = False,
+    ) -> dict[str, Any]:
         system, converted_messages = _anthropic_messages(messages)
         payload: dict[str, Any] = {
             "model": self.model,
@@ -475,6 +491,13 @@ class AnthropicMessagesClient:
             payload["tools"] = _anthropic_tools(tools if isinstance(tools, list) else None)
         if temperature is not None:
             payload["temperature"] = temperature
+        payload["thinking"] = _anthropic_default_thinking(self.model)
+        if stream:
+            payload["stream"] = True
+        return payload
+
+    def create(self, messages: list[dict[str, Any]], *, tools: bool | list[dict[str, Any]] = True, max_tokens: int = 4096, temperature: float | None = None) -> dict[str, Any]:
+        payload = self._build_payload(messages, tools=tools, max_tokens=max_tokens, temperature=temperature)
 
         request = Request(
             self.url,
@@ -497,9 +520,68 @@ class AnthropicMessagesClient:
         except URLError as exc:
             raise RuntimeError(f"Anthropic 请求失败：{exc.reason}") from exc
 
+    def stream(self, messages: list[dict[str, Any]], *, tools: bool | list[dict[str, Any]] = True, max_tokens: int = 4096, temperature: float | None = None) -> Iterator[dict[str, Any]]:
+        payload = self._build_payload(messages, tools=tools, max_tokens=max_tokens, temperature=temperature, stream=True)
+        request = Request(
+            self.url,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "content-type": "application/json",
+                "accept": "text/event-stream",
+                "x-api-key": self.api_key,
+                "anthropic-version": ANTHROPIC_VERSION,
+            },
+            method="POST",
+        )
+
+        try:
+            with urlopen(request, timeout=120) as response:
+                event_name = "message"
+                data_lines: list[str] = []
+                for raw_line in response:
+                    line = raw_line.decode("utf-8", errors="ignore").rstrip("\r\n")
+                    if not line:
+                        if data_lines:
+                            yield {
+                                "event": event_name,
+                                "data": json.loads("\n".join(data_lines)),
+                            }
+                            event_name = "message"
+                            data_lines = []
+                        continue
+                    if line.startswith(":"):
+                        continue
+                    if line.startswith("event:"):
+                        event_name = line[len("event:"):].strip() or "message"
+                        continue
+                    if line.startswith("data:"):
+                        data_lines.append(line[len("data:"):].lstrip())
+
+                if data_lines:
+                    yield {
+                        "event": event_name,
+                        "data": json.loads("\n".join(data_lines)),
+                    }
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="ignore")
+            raise RuntimeError(f"Anthropic request failed: HTTP {exc.code} {detail}") from exc
+        except URLError as exc:
+            raise RuntimeError(f"Anthropic request failed: {exc.reason}") from exc
+
 
 def _anthropic_text(response: dict[str, Any]) -> str:
     return "".join(block.get("text", "") for block in response.get("content", []) if block.get("type") == "text")
+
+
+def _anthropic_thinking(response: dict[str, Any]) -> str:
+    return "".join(block.get("thinking", "") for block in response.get("content", []) if block.get("type") == "thinking")
+
+
+def _anthropic_default_thinking(model: str) -> dict[str, Any]:
+    normalized = model.lower()
+    if any(token in normalized for token in ("fable-5", "mythos-5", "mythos-preview", "opus-4-7", "opus-4-8", "opus-4.7", "opus-4.8")):
+        return {"type": "adaptive", "display": "summarized"}
+    return {"type": "enabled", "budget_tokens": 4096, "display": "summarized"}
 
 
 def _anthropic_tool_uses(response: dict[str, Any]) -> list[dict[str, Any]]:
@@ -567,7 +649,7 @@ class DatabaseAgent:
             choice = response.choices[0]
             message = choice.message
             assistant_message = message.model_dump(exclude_none=True)
-            reasoning_content = _extra_value(message, "reasoning_content")
+            reasoning_content = _reasoning_value(message)
             if reasoning_content:
                 assistant_message["reasoning_content"] = reasoning_content
             conversation.append(assistant_message)
@@ -613,9 +695,10 @@ class DatabaseAgent:
                     continue
 
                 delta = choice.delta
-                reasoning_content = _extra_value(delta, "reasoning_content")
+                reasoning_content = _reasoning_value(delta)
                 if reasoning_content:
                     reasoning_parts.append(str(reasoning_content))
+                    yield {"type": "reasoning", "content": str(reasoning_content)}
                 if delta.content:
                     content_parts.append(delta.content)
                     yield {"type": "token", "content": delta.content}
@@ -732,12 +815,47 @@ class DatabaseAgent:
         conversation = [*messages]
 
         for _ in range(MAX_AGENT_TURNS):
-            response = self.client.create(conversation, tools=self._tools())
-            conversation.append(_anthropic_assistant_message(response))
-            content = _anthropic_text(response)
-            if content:
-                yield {"type": "token", "content": content}
+            response: dict[str, Any] | None = None
+            content_parts: list[str] = []
+            thinking_parts: list[str] = []
+            for event in self.client.stream(conversation, tools=self._tools()):
+                event_type = str(event.get("event") or "")
+                payload = event.get("data")
+                if not isinstance(payload, dict):
+                    continue
+                if event_type == "content_block_delta":
+                    delta = payload.get("delta")
+                    if not isinstance(delta, dict):
+                        continue
+                    text = delta.get("text")
+                    if text:
+                        content_parts.append(str(text))
+                        yield {"type": "token", "content": str(text)}
+                    thinking = delta.get("thinking")
+                    if thinking:
+                        thinking_parts.append(str(thinking))
+                        yield {"type": "reasoning", "content": str(thinking)}
+                    partial_json = delta.get("partial_json")
+                    if partial_json:
+                        continue
+                elif event_type == "message_stop":
+                    response = payload
 
+            if response is None:
+                raise RuntimeError("Anthropic 流式响应异常：未收到 message_stop 事件")
+
+            if not _anthropic_text(response) and content_parts:
+                response["content"] = [
+                    *response.get("content", []),
+                    {"type": "text", "text": "".join(content_parts)},
+                ]
+            if not _anthropic_thinking(response) and thinking_parts:
+                response["content"] = [
+                    *response.get("content", []),
+                    {"type": "thinking", "thinking": "".join(thinking_parts)},
+                ]
+
+            conversation.append(_anthropic_assistant_message(response))
             tool_uses = _anthropic_tool_uses(response)
             if not tool_uses:
                 yield {"type": "done", "finish_reason": response.get("stop_reason") or "stop"}
