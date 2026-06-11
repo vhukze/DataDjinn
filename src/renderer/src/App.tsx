@@ -144,7 +144,10 @@ const WorkspaceTabsView = memo(function WorkspaceTabsView({
 }, (prev, next) => (
   prev.workspaceTabs === next.workspaceTabs &&
   prev.activeTabKey === next.activeTabKey &&
-  prev.activeTabSearchState === next.activeTabSearchState
+  prev.activeTabSearchState === next.activeTabSearchState &&
+  prev.renderWorkspaceTab === next.renderWorkspaceTab &&
+  prev.onCloseTab === next.onCloseTab &&
+  prev.onActiveTabChange === next.onActiveTabChange
 ))
 
 type WhereClauseInputProps = {
@@ -677,6 +680,10 @@ type ColumnFilterOption = {
 type RedisBrowserMode = 'database' | 'key'
 
 type RedisExpandedValues = Record<string, true>
+
+type CellInspectorView = 'record' | 'value' | 'aggregate'
+
+type CellInspectorState = { tabKey: string; view: CellInspectorView }
 
 type WorkspaceTab = {
   key: string
@@ -1855,6 +1862,8 @@ function App(): React.JSX.Element {
   const [draftSelectedSchemas, setDraftSelectedSchemas] = useState<Record<string, string[]>>({})
   const [completionTables, setCompletionTables] = useState<Record<string, string[]>>({})
   const [tableBodyHeights, setTableBodyHeights] = useState<Record<string, number>>({})
+  const [cellInspector, setCellInspector] = useState<CellInspectorState | null>(null)
+  const [cellSelectionVersion, setCellSelectionVersion] = useState(0)
   const [editingCells, setEditingCells] = useState<EditingCellState>({})
   const [resourceTreeHeight, setResourceTreeHeight] = useState(360)
   const [dragOverFolderTarget, setDragOverFolderTarget] = useState<{ folderId: string; zone: 'before' | 'after' }>()
@@ -3295,6 +3304,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       return
     }
     selectedCellRefs.current[tabKey] = cellKeys.length > 0 ? cellKeys : undefined
+    setCellSelectionVersion((value) => value + 1)
   }
 
   const syncRenderedCellSelection = (tabKey: string): void => {
@@ -5354,7 +5364,11 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     const readOnlyCellContextMenuItems: MenuProps['items'] = [
       { key: 'copy-selection', label: '复制' },
       { key: 'copy-as-insert', label: '复制为 INSERT' },
-      { key: 'copy-as-md', label: '复制为 MD' }
+      { key: 'copy-as-md', label: '复制为 MD' },
+      { type: 'divider' },
+      { key: 'inspect-record', label: '记录视图' },
+      { key: 'inspect-value', label: '值视图' },
+      { key: 'inspect-aggregate', label: '聚合视图' }
     ]
 
     const previewCellContextMenuItems: MenuProps['items'] = [
@@ -5376,6 +5390,19 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       }
       if (actionKey === 'copy-as-md') {
         void copySelectionAsMarkdown(selection)
+        return
+      }
+      if (actionKey === 'inspect-record' || actionKey === 'inspect-value' || actionKey === 'inspect-aggregate') {
+        const view: CellInspectorView = actionKey === 'inspect-record' ? 'record' : actionKey === 'inspect-value' ? 'value' : 'aggregate'
+        const committedSelection = selectedCellRefs.current[tab.key] ?? []
+        const needsCommit = committedSelection.length !== selection.length || committedSelection.some((item, index) => item !== selection[index])
+        if (needsCommit) {
+          commitRuntimeCellSelection(tab.key, selection)
+        } else {
+          clearRuntimeCellSelection(tab.key)
+        }
+        setCellInspector({ tabKey: tab.key, view })
+        contextMenuCellSelectionRefs.current[tab.key] = undefined
         return
       }
       if (!supportsWritableCells) {
@@ -5737,6 +5764,151 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     const searchSignature = `${searchState.query}\u0000${searchState.caseSensitive ? 1 : 0}\u0000${searchState.regex ? 1 : 0}\u0000${searchState.wholeWord ? 1 : 0}\u0000${searchState.filterRows ? 1 : 0}`
     const editingCellKey = editingCells[tab.key] ? `${editingCells[tab.key]!.rowKey}:${editingCells[tab.key]!.column}` : undefined
 
+    void cellSelectionVersion
+    const inspectorVisible = cellInspector?.tabKey === tab.key && supportsCellSelection
+    const closeCellInspector = (): void => setCellInspector(null)
+    const switchInspectorView = (view: CellInspectorView): void => setCellInspector({ tabKey: tab.key, view })
+
+    const renderCellInspector = (): React.ReactNode => {
+      const selection = getCommittedCellSelection()
+      const bounds = getSelectionBounds(selection)
+      const view = cellInspector?.view ?? 'record'
+      const columnTypeOf = (column: string): string | undefined => tab.columnInfoMap?.[column]?.type ?? undefined
+      const inspectorEditable = supportsWritableCells && tab.kind === 'preview'
+      const updateInspectorValue = (rowKey: string, column: string, rawValue: string): void => {
+        updatePreviewCell(tab.key, rowKey, column, editableValue(rawValue))
+      }
+
+      const renderRecordView = (): React.ReactNode => {
+        if (!bounds) {
+          return <div className="cell-inspector-empty"><Typography.Text type="secondary">请选择单元格后查看记录</Typography.Text></div>
+        }
+        return (
+          <div className="cell-inspector-records">
+            {bounds.rowKeys.map((rowKey) => {
+              const row = rowByKey.get(rowKey)
+              return (
+                <div className="cell-inspector-record" key={rowKey}>
+                  {orderedColumns.map((column) => (
+                    <div className="cell-inspector-field" key={column}>
+                      <div className="cell-inspector-field-label">
+                        <Typography.Text type="secondary" ellipsis title={column}>{column}</Typography.Text>
+                        {columnTypeOf(column) && <span className="cell-inspector-field-type">{columnTypeOf(column)}</span>}
+                      </div>
+                      <Input.TextArea
+                        className="cell-inspector-field-value"
+                        readOnly={!inspectorEditable}
+                        autoSize={{ minRows: 1, maxRows: 6 }}
+                        value={row?.[column] === null || row?.[column] === undefined || isDefaultValueMarker(row?.[column]) ? '' : String(row?.[column])}
+                        placeholder={row?.[column] === null || row?.[column] === undefined ? 'NULL' : isDefaultValueMarker(row?.[column]) ? 'DEFAULT' : undefined}
+                        onChange={(event) => {
+                          if (!inspectorEditable) {
+                            return
+                          }
+                          updateInspectorValue(rowKey, column, event.currentTarget.value)
+                        }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )
+            })}
+          </div>
+        )
+      }
+
+      const renderValueView = (): React.ReactNode => {
+        if (!bounds) {
+          return <div className="cell-inspector-empty"><Typography.Text type="secondary">请选择单元格后查看值</Typography.Text></div>
+        }
+        const anchorRowKey = bounds.rowKeys[0]
+        const anchorColumn = bounds.columns[0]
+        const anchorValue = rowByKey.get(anchorRowKey)?.[anchorColumn]
+        return (
+          <div className="cell-inspector-value-wrap">
+            <Typography.Text type="secondary" className="cell-inspector-value-meta">{anchorColumn}{columnTypeOf(anchorColumn) ? ` · ${columnTypeOf(anchorColumn)}` : ''}</Typography.Text>
+            <Input.TextArea
+              className="cell-inspector-value-area"
+              readOnly={!inspectorEditable}
+              value={anchorValue === null || anchorValue === undefined || isDefaultValueMarker(anchorValue) ? '' : String(anchorValue)}
+              placeholder={anchorValue === null || anchorValue === undefined ? 'NULL' : isDefaultValueMarker(anchorValue) ? 'DEFAULT' : undefined}
+              onChange={(event) => {
+                if (!inspectorEditable) {
+                  return
+                }
+                updateInspectorValue(anchorRowKey, anchorColumn, event.currentTarget.value)
+              }}
+            />
+          </div>
+        )
+      }
+
+      const renderAggregateView = (): React.ReactNode => {
+        if (!bounds) {
+          return <div className="cell-inspector-empty"><Typography.Text type="secondary">请选择单元格后查看聚合</Typography.Text></div>
+        }
+        const flatValues = bounds.rowKeys.flatMap((rowKey) => bounds.columns.map((column) => rowByKey.get(rowKey)?.[column]))
+        const nonEmpty = flatValues.filter((value) => value !== null && value !== undefined && !isDefaultValueMarker(value))
+        const numbers = nonEmpty
+          .map((value) => (typeof value === 'number' ? value : Number(String(value))))
+          .filter((value) => Number.isFinite(value)) as number[]
+        const rowsCount = bounds.rowKeys.length
+        const colsCount = bounds.columns.length
+        const formatNumber = (value: number): string => {
+          if (!Number.isFinite(value)) {
+            return '-'
+          }
+          return Number.isInteger(value) ? String(value) : value.toFixed(2)
+        }
+        const stats: Array<{ order: number; label: string; value: string }> = [
+          { order: 1, label: '非空值数量', value: String(nonEmpty.length) },
+          { order: 2, label: '数值数量', value: String(numbers.length) },
+          { order: 3, label: '选中行数', value: String(rowsCount) },
+          { order: 4, label: '选中列数', value: String(colsCount) }
+        ]
+        if (numbers.length > 0) {
+          const sum = numbers.reduce((total, value) => total + value, 0)
+          const avg = sum / numbers.length
+          const sorted = [...numbers].sort((left, right) => left - right)
+          const middle = Math.floor(sorted.length / 2)
+          const median = sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle]
+          stats.push(
+            { order: 5, label: '求和', value: formatNumber(sum) },
+            { order: 6, label: '平均值', value: formatNumber(avg) },
+            { order: 7, label: '最小值', value: formatNumber(sorted[0]) },
+            { order: 8, label: '最大值', value: formatNumber(sorted[sorted.length - 1]) },
+            { order: 9, label: '中位数', value: formatNumber(median) }
+          )
+        }
+        return (
+          <div className="cell-inspector-aggregate">
+            {stats.sort((left, right) => left.order - right.order).map((stat) => (
+              <div className="cell-inspector-aggregate-row" key={stat.label}>
+                <span className="cell-inspector-aggregate-label" title={stat.label}>{stat.label}</span>
+                <span className="cell-inspector-aggregate-value">{stat.value}</span>
+              </div>
+            ))}
+          </div>
+        )
+      }
+
+      return (
+        <div className="cell-inspector">
+          <div className="cell-inspector-header">
+            <div className="cell-inspector-tabs">
+              <button type="button" className={`cell-inspector-tab${view === 'record' ? ' active' : ''}`} onClick={() => switchInspectorView('record')}>记录</button>
+              <button type="button" className={`cell-inspector-tab${view === 'value' ? ' active' : ''}`} onClick={() => switchInspectorView('value')}>值</button>
+              <button type="button" className={`cell-inspector-tab${view === 'aggregate' ? ' active' : ''}`} onClick={() => switchInspectorView('aggregate')}>聚合</button>
+            </div>
+            <Button type="text" size="small" icon={<CloseOutlined />} onClick={closeCellInspector} aria-label="关闭" />
+          </div>
+          <div className="cell-inspector-body">
+            {view === 'record' ? renderRecordView() : view === 'value' ? renderValueView() : renderAggregateView()}
+          </div>
+        </div>
+      )
+    }
+
     if (tab.kind === 'redis-browser') {
       return renderRedisBrowser(tab)
     }
@@ -5750,6 +5922,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           focusSearchMatch
         })}
         {tab.error && <Alert message="执行失败" description={tab.error} type="error" showIcon />}
+        <div className={`result-table-content${inspectorVisible ? ' with-inspector' : ''}`}>
         <ResultTableBodyView
           tab={tab}
           searchSignature={searchSignature}
@@ -5838,6 +6011,8 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             commitPreviewSelectedRows()
           }}
         />
+        {inspectorVisible && renderCellInspector()}
+        </div>
       </div>
     )
   }
@@ -8732,7 +8907,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           </Flex>
         </Space>
       </Modal>
-      <Modal title="设置" open={driverManagerOpen} footer={null} onCancel={() => setDriverManagerOpen(false)} width={980} maskClosable={false}>
+      <Modal title="设置" open={driverManagerOpen} footer={null} onCancel={() => setDriverManagerOpen(false)} width={1040} maskClosable={false}>
         <Flex gap={18} align="stretch" className="settings-layout">
           <div className="settings-sidebar">
             <Menu
@@ -8852,15 +9027,13 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                         loading={driversLoading}
                         pagination={false}
                         tableLayout="fixed"
-                        scroll={{ x: 860 }}
                         locale={{ emptyText: `${selectedDriverDatabaseMeta.shortLabel} 暂无已配置驱动` }}
                         dataSource={selectedDatabaseDrivers}
                         columns={[
                           { title: '名称', dataIndex: 'name', width: 180, ellipsis: true, render: (value: string) => <Typography.Text ellipsis title={value}>{value}</Typography.Text> },
-                          { title: '驱动类型', dataIndex: 'driver_type', width: 120, render: (value: DriverInfo['driver_type']) => driverTypeLabel(value) },
-                          { title: '来源', dataIndex: 'source', width: 90, render: () => '手动添加' },
-                          { title: '驱动文件', width: 330, ellipsis: true, render: (_: unknown, driver) => <Typography.Text ellipsis title={driver.path ?? undefined}>{driver.path}</Typography.Text> },
-                          { title: '操作', width: 150, fixed: 'right', render: (_: unknown, driver) => <Space size={4} wrap={false}><Button size="small" onClick={() => void testDriver(driver)}>测试</Button><Button danger size="small" onClick={() => void deleteDriver(driver)}>删除</Button></Space> }
+                          { title: '驱动类型', dataIndex: 'driver_type', width: 110, render: (value: DriverInfo['driver_type']) => driverTypeLabel(value) },
+                          { title: '驱动文件', ellipsis: true, render: (_: unknown, driver) => <Typography.Text ellipsis title={driver.path ?? undefined}>{driver.path}</Typography.Text> },
+                          { title: '操作', width: 132, render: (_: unknown, driver) => <Space size={4} wrap={false}><Button size="small" onClick={() => void testDriver(driver)}>测试</Button><Button danger size="small" onClick={() => void deleteDriver(driver)}>删除</Button></Space> }
                         ]}
                       />
                     </div>
