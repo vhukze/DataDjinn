@@ -19,6 +19,7 @@
   EyeOutlined,
   FolderAddOutlined,
   FolderOpenOutlined,
+  LoginOutlined,
   MinusOutlined,
   MoonOutlined,
   LeftOutlined,
@@ -212,10 +213,12 @@ const WhereClauseInput = memo(function WhereClauseInput({
 }: WhereClauseInputProps) {
   const [inputValue, setInputValue] = useState(value ?? '')
   const [highlightedIndex, setHighlightedIndex] = useState(0)
+  const [suggestionsDismissed, setSuggestionsDismissed] = useState(false)
 
   useEffect(() => {
     setInputValue(value ?? '')
     setHighlightedIndex(0)
+    setSuggestionsDismissed(false)
   }, [tabKey, value])
 
   const suggestionState = useMemo(() => {
@@ -257,66 +260,85 @@ const WhereClauseInput = memo(function WhereClauseInput({
     const nextValue = `${inputValue.slice(0, suggestionState.start)}${nextColumn}`
     setInputValue(nextValue)
     setHighlightedIndex(0)
+    setSuggestionsDismissed(true)
   }
 
-  const autoCompleteOptions = suggestionState.options.map((column, index) => ({
-    value: column,
-    label: (
-      <span className={index === highlightedIndex ? 'preview-where-option is-active' : 'preview-where-option'}>
-        {column}
-      </span>
-    )
-  }))
-
-  const suggestionsOpen = suggestionState.options.length > 0
+  const suggestionsOpen = !suggestionsDismissed && suggestionState.options.length > 0
+  const highlightedWhereHtml = useMemo(() => {
+    if (!inputValue) {
+      return ''
+    }
+    return buildWhereHighlightedHtml(inputValue) ?? escapeHtml(inputValue)
+  }, [inputValue])
+  const handleWhereInputKeyDown = (event: React.KeyboardEvent<HTMLInputElement>): void => {
+    if (suggestionsOpen && event.key === 'ArrowDown') {
+      event.preventDefault()
+      setHighlightedIndex((current) => (current + 1) % suggestionState.options.length)
+      return
+    }
+    if (suggestionsOpen && event.key === 'ArrowUp') {
+      event.preventDefault()
+      setHighlightedIndex((current) => (current - 1 + suggestionState.options.length) % suggestionState.options.length)
+      return
+    }
+    if (suggestionsOpen && event.key === 'Enter') {
+      event.preventDefault()
+      event.stopPropagation()
+      applySuggestion(suggestionState.options[highlightedIndex] ?? suggestionState.options[0] ?? '')
+      return
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      onSubmit(inputValue)
+    }
+  }
 
   return (
-    <AutoComplete
-      className="preview-where-input"
-      open={suggestionsOpen}
-      options={autoCompleteOptions}
-      value={inputValue}
-      onChange={(nextValue) => {
-        setInputValue(nextValue)
-        setHighlightedIndex(0)
-      }}
-      onSelect={(nextValue) => applySuggestion(String(nextValue))}
-      filterOption={false}
-    >
-      <Input
-        size="small"
-        allowClear
-        addonBefore="WHERE"
-        placeholder="输入过滤条件，例如：id = 2，回车查询"
-        onChange={(event) => {
-          setInputValue(event.currentTarget.value)
-          setHighlightedIndex(0)
-        }}
-        onKeyDown={(event) => {
-          if (suggestionsOpen && event.key === 'ArrowDown') {
-            event.preventDefault()
-            setHighlightedIndex((current) => (current + 1) % suggestionState.options.length)
-            return
-          }
-          if (suggestionsOpen && event.key === 'ArrowUp') {
-            event.preventDefault()
-            setHighlightedIndex((current) => (current - 1 + suggestionState.options.length) % suggestionState.options.length)
-            return
-          }
-          if (suggestionsOpen && event.key === 'Enter') {
-            event.preventDefault()
-            event.stopPropagation()
-            applySuggestion(suggestionState.options[highlightedIndex] ?? suggestionState.options[0] ?? '')
-            return
-          }
-          if (event.key === 'Enter') {
-            event.preventDefault()
-            onSubmit(inputValue)
-          }
-        }}
-        onPressEnter={() => undefined}
-      />
-    </AutoComplete>
+    <div className="preview-where-shell">
+      <div className="preview-where-inline">
+        <span className="preview-where-label">WHERE</span>
+        <div className="preview-where-editor">
+          {inputValue && (
+            <span
+              className="preview-where-highlight"
+              aria-hidden="true"
+              dangerouslySetInnerHTML={{ __html: highlightedWhereHtml }}
+            />
+          )}
+        <Input
+          className="preview-where-field"
+          size="small"
+          variant="borderless"
+          value={inputValue}
+          placeholder="输入过滤条件，例如：id = 2，回车查询"
+            onChange={(event) => {
+              setInputValue(event.currentTarget.value)
+              setHighlightedIndex(0)
+              setSuggestionsDismissed(false)
+            }}
+            onKeyDown={handleWhereInputKeyDown}
+            onPressEnter={() => undefined}
+          />
+        </div>
+      </div>
+      {suggestionsOpen && (
+        <div className="preview-where-suggestions">
+          {suggestionState.options.map((option, index) => (
+            <button
+              key={`${tabKey}-${option}`}
+              type="button"
+              className={index === highlightedIndex ? 'preview-where-option is-active' : 'preview-where-option'}
+              onMouseDown={(event) => {
+                event.preventDefault()
+                applySuggestion(option)
+              }}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }, (prev, next) => (
   prev.tabKey === next.tabKey &&
@@ -349,6 +371,67 @@ const BACKEND_COLORS: Record<BackendStatus['state'], 'success' | 'processing' | 
   stopped: 'default',
   crashed: 'error'
 }
+
+const WHERE_HIGHLIGHT_KEYWORDS = [
+  'AND',
+  'OR',
+  'NOT',
+  'IN',
+  'EXISTS',
+  'BETWEEN',
+  'LIKE',
+  'IS',
+  'NULL',
+  'TRUE',
+  'FALSE',
+  'CASE',
+  'WHEN',
+  'THEN',
+  'ELSE',
+  'END'
+]
+
+const buildWhereHighlightedHtml = (text: string): string | null => {
+  if (!text) {
+    return null
+  }
+  const pattern = /'(?:''|[^'])*'|"(?:[^"\\]|\\.)*"|\b\d+(?:\.\d+)?\b|\b(?:AND|OR|NOT|IN|EXISTS|BETWEEN|LIKE|IS|NULL|TRUE|FALSE|CASE|WHEN|THEN|ELSE|END)\b/gi
+  const matches = [...text.matchAll(pattern)]
+  if (matches.length === 0) {
+    return null
+  }
+
+  let cursor = 0
+  let html = ''
+  for (const match of matches) {
+    const matchIndex = match.index ?? -1
+    const matchedText = match[0] ?? ''
+    if (matchIndex < 0 || matchedText.length === 0) {
+      continue
+    }
+    if (matchIndex > cursor) {
+      html += escapeHtml(text.slice(cursor, matchIndex))
+    }
+    const upper = matchedText.toUpperCase()
+    let className = 'where-token where-token-identifier'
+    if (/^'.*'$|^".*"$/.test(matchedText)) {
+      className = 'where-token where-token-string'
+    } else if (/^\d+(?:\.\d+)?$/.test(matchedText)) {
+      className = 'where-token where-token-number'
+    } else if (WHERE_HIGHLIGHT_KEYWORDS.includes(upper)) {
+      className = upper === 'NULL' || upper === 'TRUE' || upper === 'FALSE'
+        ? 'where-token where-token-constant'
+        : 'where-token where-token-keyword'
+    }
+    html += `<span class="${className}">${escapeHtml(matchedText)}</span>`
+    cursor = matchIndex + matchedText.length
+  }
+  if (cursor < text.length) {
+    html += escapeHtml(text.slice(cursor))
+  }
+  return html || null
+}
+
 const STORAGE_DB = 'datadjinn-selected-databases'
 const STORAGE_SCHEMA = 'datadjinn-selected-schemas'
 const STORAGE_CONNECTION_FOLDERS = 'datadjinn-connection-folders'
@@ -358,6 +441,7 @@ const STORAGE_ROOT_CONNECTION_ORDER = 'datadjinn-root-connection-order'
 const STORAGE_ROOT_ITEM_ORDER = 'datadjinn-root-item-order'
 const STORAGE_FOLDER_CONNECTION_ORDER = 'datadjinn-folder-connection-order'
 const STORAGE_QUERY_WORKSPACES = 'datadjinn-query-workspaces'
+const STORAGE_SHORTCUT_SETTINGS = 'datadjinn-shortcut-settings'
 const readPersisted = (key: string): Record<string, string[]> => {
   try {
     const stored = localStorage.getItem(key)
@@ -474,6 +558,293 @@ const DATABASE_TYPE_LABELS: Record<DatabaseType, string> = {
   clickhouse: 'CK'
 }
 
+type ImportConnectionSource = 'datagrip'
+type ImportConnectionCandidateStatus = 'ready' | 'warning' | 'error'
+
+type ImportConnectionCandidate = {
+  key: string
+  name: string
+  database_type?: DatabaseType
+  host?: string
+  port?: number | string
+  username?: string
+  database?: string
+  rawJdbcUrl?: string
+  status: ImportConnectionCandidateStatus
+  message?: string
+  payload?: ConnectionFormValues
+}
+
+type ImportConnectionResultItem = {
+  name: string
+  database_type?: DatabaseType
+  message?: string
+}
+
+type ImportConnectionResult = {
+  success: ImportConnectionResultItem[]
+  failed: ImportConnectionResultItem[]
+}
+
+const IMPORT_CONNECTION_SOURCE_OPTIONS = [
+  { label: 'DataGrip', value: 'datagrip' }
+]
+
+const defaultPortForDatabaseType = (databaseType: DatabaseType): number | undefined => {
+  if (databaseType === 'postgresql') {
+    return 5432
+  }
+  if (databaseType === 'mysql') {
+    return 3306
+  }
+  if (databaseType === 'dm') {
+    return 5236
+  }
+  if (databaseType === 'gaussdb') {
+    return 8000
+  }
+  if (databaseType === 'oracle') {
+    return 1521
+  }
+  if (databaseType === 'mongodb') {
+    return 27017
+  }
+  if (databaseType === 'redis') {
+    return 6379
+  }
+  if (databaseType === 'clickhouse') {
+    return 8123
+  }
+  return undefined
+}
+
+const trimToUndefined = (value?: string | null): string | undefined => {
+  const trimmed = value?.trim()
+  return trimmed ? trimmed : undefined
+}
+
+const sanitizeImportedXml = (xml: string): string =>
+  xml.replace(/&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[a-fA-F0-9]+);)/g, '&amp;')
+
+const inferDataGripDatabaseType = (params: {
+  dbms?: string
+  product?: string
+  driverRef?: string
+  jdbcDriver?: string
+  jdbcUrl?: string
+}): DatabaseType | undefined => {
+  const fingerprint = [
+    params.dbms,
+    params.product,
+    params.driverRef,
+    params.jdbcDriver,
+    params.jdbcUrl
+  ]
+    .filter((item): item is string => Boolean(item))
+    .join(' ')
+    .toLowerCase()
+
+  if (fingerprint.includes('clickhouse')) {
+    return 'clickhouse'
+  }
+  if (fingerprint.includes('postgres')) {
+    return 'postgresql'
+  }
+  if (fingerprint.includes('gauss')) {
+    return 'gaussdb'
+  }
+  if (fingerprint.includes('dm dbms') || fingerprint.includes('dm.jdbc.driver') || fingerprint.includes('jdbc:dm:')) {
+    return 'dm'
+  }
+  if (fingerprint.includes('redis')) {
+    return 'redis'
+  }
+  if (fingerprint.includes('oracle')) {
+    return 'oracle'
+  }
+  if (fingerprint.includes('mysql')) {
+    return 'mysql'
+  }
+  if (fingerprint.includes('mongo')) {
+    return 'mongodb'
+  }
+  return undefined
+}
+
+const parseJdbcUrlToConnectionFields = (jdbcUrl: string, databaseType: DatabaseType): Pick<ConnectionFormValues, 'host' | 'port' | 'database'> => {
+  const normalized = jdbcUrl.trim()
+
+  if (!normalized.toLowerCase().startsWith('jdbc:')) {
+    throw new Error('不是有效的 JDBC URL')
+  }
+
+  const runtimeUrlValue = normalized.replace(/^jdbc:/i, '')
+  let runtimeUrl: URL | null = null
+  let host: string | undefined
+  let port: number | string | undefined
+  let pathname = ''
+  let schema: string | undefined
+
+  try {
+    runtimeUrl = new URL(runtimeUrlValue)
+    host = trimToUndefined(runtimeUrl.hostname)
+    const parsedPort = runtimeUrl.port ? Number(runtimeUrl.port) : undefined
+    port = Number.isFinite(parsedPort) ? parsedPort : undefined
+    pathname = decodeURIComponent(runtimeUrl.pathname || '').replace(/^\/+/, '')
+    schema = trimToUndefined(runtimeUrl.searchParams.get('schema'))
+  } catch {
+    const multiHostMatch = runtimeUrlValue.match(/^[a-z0-9+.-]+:\/\/([^/?#]+)(\/[^?#]*)?(?:\?([^#]*))?$/i)
+    if (!multiHostMatch) {
+      throw new Error('不是有效的 JDBC URL')
+    }
+
+    const hostList = multiHostMatch[1]
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean)
+    const firstHost = hostList[0]
+    if (!firstHost) {
+      throw new Error('未解析到主机')
+    }
+
+    const firstHostMatch = firstHost.match(/^(?:\[([^\]]+)\]|([^:]+))(?:\:(\d+))?$/)
+    if (!firstHostMatch) {
+      throw new Error('未解析到主机')
+    }
+
+    host = trimToUndefined(firstHostMatch[1] || firstHostMatch[2])
+    const portList = hostList
+      .map((item) => {
+        const match = item.match(/^(?:\[[^\]]+\]|[^:]+)(?:\:(\d+))?$/)
+        return match?.[1]
+      })
+      .filter((item): item is string => Boolean(item))
+    if (portList.length > 1 && databaseType === 'clickhouse') {
+      port = portList.join(',')
+    } else {
+      const parsedPort = firstHostMatch[3] ? Number(firstHostMatch[3]) : undefined
+      port = Number.isFinite(parsedPort) ? parsedPort : undefined
+    }
+    pathname = decodeURIComponent((multiHostMatch[2] || '').replace(/^\/+/, ''))
+    const searchParams = new URLSearchParams(multiHostMatch[3] || '')
+    schema = trimToUndefined(searchParams.get('schema'))
+  }
+
+  port = port ?? defaultPortForDatabaseType(databaseType)
+
+  if (databaseType !== 'sqlite' && !host) {
+    throw new Error('未解析到主机')
+  }
+
+  if (databaseType === 'dm') {
+    return {
+      host,
+      port,
+      database: schema ?? trimToUndefined(pathname)
+    }
+  }
+
+  if (databaseType === 'redis') {
+    return {
+      host,
+      port,
+      database: trimToUndefined(pathname) ?? '0'
+    }
+  }
+
+  return {
+    host,
+    port,
+    database: trimToUndefined(pathname)
+  }
+}
+
+const parseDataGripImportText = (rawText: string): ImportConnectionCandidate[] => {
+  const blockMatches = [...rawText.matchAll(/#LocalDataSource:\s*([^\r\n]+)[\r\n]+#BEGIN#([\s\S]*?)#END#/g)]
+  const fallbackMatches = blockMatches.length === 0 ? [...rawText.matchAll(/#BEGIN#([\s\S]*?)#END#/g)] : []
+  const blocks = blockMatches.length > 0
+    ? blockMatches.map((match, index) => ({ key: `dg-${index}`, label: trimToUndefined(match[1]), xml: match[2] }))
+    : fallbackMatches.map((match, index) => ({ key: `dg-${index}`, label: undefined, xml: match[1] }))
+
+  return blocks.map<ImportConnectionCandidate>((block, index) => {
+    try {
+      const parsed = new DOMParser().parseFromString(sanitizeImportedXml(block.xml.trim()), 'application/xml')
+      const parserError = parsed.querySelector('parsererror')
+      if (parserError) {
+        throw new Error('连接配置 XML 解析失败')
+      }
+
+      const dataSource = parsed.querySelector('data-source')
+      if (!dataSource) {
+        throw new Error('未找到 data-source 节点')
+      }
+
+      const databaseInfo = dataSource.querySelector('database-info')
+      const jdbcUrl = trimToUndefined(dataSource.querySelector('jdbc-url')?.textContent)
+      const username = trimToUndefined(dataSource.querySelector('user-name')?.textContent)
+      const driverRef = trimToUndefined(dataSource.querySelector('driver-ref')?.textContent)
+      const jdbcDriver = trimToUndefined(dataSource.querySelector('jdbc-driver')?.textContent)
+      const product = trimToUndefined(databaseInfo?.getAttribute('product'))
+      const dbms = trimToUndefined(databaseInfo?.getAttribute('dbms'))
+      const databaseType = inferDataGripDatabaseType({
+        dbms,
+        product,
+        driverRef,
+        jdbcDriver,
+        jdbcUrl
+      })
+      const name = trimToUndefined(dataSource.getAttribute('name')) ?? block.label ?? `导入连接 ${index + 1}`
+
+      if (!jdbcUrl) {
+        throw new Error('未解析到 JDBC URL')
+      }
+      if (!databaseType) {
+        throw new Error('当前仅支持导入已识别的 DataGrip 数据源类型')
+      }
+
+      const jdbcFields = parseJdbcUrlToConnectionFields(jdbcUrl, databaseType)
+      const payload: ConnectionFormValues = {
+        name,
+        database_type: databaseType,
+        host: jdbcFields.host,
+        port: jdbcFields.port,
+        username,
+        password: '',
+        database: jdbcFields.database,
+        driver_id: undefined,
+        dm_driver_id: undefined
+      }
+
+      const warnings: string[] = []
+      if (databaseType === 'dm' || databaseType === 'gaussdb') {
+        warnings.push(`导入后仍需在编辑连接中选择${DATABASE_TYPE_LABELS[databaseType]}驱动`)
+      }
+
+      return {
+        key: block.key,
+        name,
+        database_type: databaseType,
+        host: payload.host,
+        port: payload.port,
+        username: payload.username,
+        database: payload.database,
+        rawJdbcUrl: jdbcUrl,
+        status: warnings.length > 0 ? 'warning' : 'ready',
+        message: warnings.join('；') || undefined,
+        payload
+      }
+    } catch (error) {
+      return {
+        key: block.key,
+        name: block.label ?? `导入连接 ${index + 1}`,
+        rawJdbcUrl: undefined,
+        status: 'error',
+        message: error instanceof Error ? error.message : '解析失败'
+      }
+    }
+  })
+}
+
 const isDatabaseScopedType = (databaseType?: DatabaseType): databaseType is 'mysql' | 'mongodb' | 'redis' | 'clickhouse' =>
   databaseType === 'mysql' || databaseType === 'mongodb' || databaseType === 'redis' || databaseType === 'clickhouse'
 
@@ -490,7 +861,7 @@ type ConnectionFormValues = {
   name: string
   database_type: DatabaseType
   host?: string
-  port?: number
+  port?: number | string
   username?: string
   password?: string
   database?: string
@@ -505,6 +876,8 @@ type ConnectionInfo = {
   connection_id: string
   name: string
   database_type: DatabaseType
+  host?: string
+  port?: number | string
   database: string
   has_password: boolean
   is_open: boolean
@@ -613,7 +986,22 @@ type AppInfo = {
   projectUrl: string
 }
 
-type SettingsSection = 'app' | 'drivers'
+type SettingsSection = 'app' | 'shortcuts' | 'drivers'
+
+type ShortcutAction =
+  | 'sql_execute'
+  | 'sql_delete_line'
+  | 'sql_duplicate_line_down'
+  | 'ai_send'
+  | 'ai_newline'
+  | 'ai_stop'
+
+type ShortcutSettings = Record<ShortcutAction, string>
+
+type SqlEditorExecutionContext = {
+  selectedSql: string
+  currentStatementSql: string
+}
 
 type UpdateMode = 'installer' | 'portable'
 
@@ -691,6 +1079,8 @@ type QueryResponse = {
   total_count?: number | null
 }
 
+type QueryResultKind = 'query' | 'command' | 'error'
+
 type ObjectDdlResponse = {
   ddl: string
 }
@@ -759,6 +1149,12 @@ type WorkspaceTab = {
   columnFilterOptions?: Record<string, ColumnFilterOption[]>
   draggingColumn?: string
   error?: string
+  resultVisible?: boolean
+  resultCollapsed?: boolean
+  resultKind?: QueryResultKind
+  commandMessage?: string
+  commandAffectedRows?: number | null
+  queryEditorHeight?: number
   redisMode?: RedisBrowserMode
   redisExpandedValues?: RedisExpandedValues
   redisEdits?: Record<string, RedisKeyEdit>
@@ -783,6 +1179,24 @@ type PersistedQueryWorkspace = {
   persistedAt: number
 }
 
+const DEFAULT_SHORTCUT_SETTINGS: ShortcutSettings = {
+  sql_execute: 'Ctrl+Enter',
+  sql_delete_line: 'Ctrl+D',
+  sql_duplicate_line_down: 'Ctrl+Alt+ArrowDown',
+  ai_send: 'Enter',
+  ai_newline: 'Shift+Enter',
+  ai_stop: 'Ctrl+C'
+}
+
+const SHORTCUT_SETTING_LABELS: Record<ShortcutAction, string> = {
+  sql_execute: '执行 SQL',
+  sql_delete_line: '删除行',
+  sql_duplicate_line_down: '复制行到下一行',
+  ai_send: '发送',
+  ai_newline: '换行',
+  ai_stop: '停止'
+}
+
 type DefaultValueMarker = {
   __datadjinn_action__: 'default'
 }
@@ -798,6 +1212,102 @@ type TableSearchUiState = {
   filterRows: boolean
   activeMatchIndex: number
 }
+
+const normalizeShortcutText = (shortcut?: string): string => shortcut?.replace(/\s+/g, '').toLowerCase() ?? ''
+
+const formatShortcutFromEvent = (event: React.KeyboardEvent<HTMLElement>): string => {
+  const parts: string[] = []
+  if (event.ctrlKey || event.metaKey) {
+    parts.push('Ctrl')
+  }
+  if (event.altKey) {
+    parts.push('Alt')
+  }
+  if (event.shiftKey) {
+    parts.push('Shift')
+  }
+
+  let key = event.key
+  if (key === ' ') {
+    key = 'Space'
+  } else if (key === 'ArrowUp' || key === 'ArrowDown' || key === 'ArrowLeft' || key === 'ArrowRight') {
+    key = key
+  } else if (key.length === 1) {
+    key = key.toUpperCase()
+  }
+
+  if (!['Control', 'Shift', 'Alt', 'Meta'].includes(key)) {
+    parts.push(key)
+  }
+
+  return parts.join('+')
+}
+
+const isModifierOnlyKey = (key: string): boolean => ['Control', 'Shift', 'Alt', 'Meta'].includes(key)
+
+const ShortcutRecorder = memo(function ShortcutRecorder({
+  label,
+  value,
+  defaultValue,
+  recording,
+  onStartRecord,
+  onChange,
+  onCancel,
+  onReset
+}: {
+  label: string
+  value: string
+  defaultValue: string
+  recording: boolean
+  onStartRecord: () => void
+  onChange: (value: string) => void
+  onCancel: () => void
+  onReset: () => void
+}) {
+  return (
+    <Flex align="center" justify="space-between" gap={12} className="shortcut-setting-item">
+      <Space direction="vertical" size={2} className="shortcut-setting-meta">
+        <Typography.Text strong>{label}</Typography.Text>
+        <Typography.Text type="secondary">默认：{defaultValue}</Typography.Text>
+      </Space>
+      <Space size={8}>
+        <button
+          type="button"
+          className={`shortcut-capture-button${recording ? ' is-recording' : ''}`}
+          onClick={() => {
+            if (!recording) {
+              onStartRecord()
+            }
+          }}
+          onKeyDown={(event) => {
+            if (!recording) {
+              return
+            }
+            event.preventDefault()
+            event.stopPropagation()
+            if (event.key === 'Escape') {
+              onCancel()
+              return
+            }
+            if (isModifierOnlyKey(event.key)) {
+              return
+            }
+            const nextShortcut = formatShortcutFromEvent(event)
+            if (normalizeShortcutText(nextShortcut)) {
+              onChange(nextShortcut)
+            }
+          }}
+        >
+          {recording ? '请按快捷键' : value || '未设置'}
+        </button>
+        <Button size="small" onClick={recording ? onCancel : onStartRecord}>
+          {recording ? '取消' : '修改'}
+        </Button>
+        <Button size="small" onClick={onReset}>恢复默认</Button>
+      </Space>
+    </Flex>
+  )
+})
 
 type DdlPreviewModalHandle = {
   open: (payload: {
@@ -1026,6 +1536,7 @@ const PageSearchControls = memo(function PageSearchControls({
         className="table-search-input"
         value={draftQuery}
         allowClear
+        variant="borderless"
         status={hasRegexError ? 'error' : undefined}
         onChange={(event) => {
           setDraftQuery(event.target.value)
@@ -1050,6 +1561,8 @@ const PageSearchControls = memo(function PageSearchControls({
       <Space size={4} className="table-search-nav">
         <Button
           size="small"
+          type="text"
+          className="table-search-icon-btn"
           icon={<UpOutlined />}
           title="上一个"
           aria-label="上一个"
@@ -1058,6 +1571,8 @@ const PageSearchControls = memo(function PageSearchControls({
         />
         <Button
           size="small"
+          type="text"
+          className="table-search-icon-btn"
           icon={<DownOutlined />}
           title="下一个"
           aria-label="下一个"
@@ -1071,7 +1586,8 @@ const PageSearchControls = memo(function PageSearchControls({
       <Space size={4} className="table-search-options">
         <Button
           size="small"
-          className={state.caseSensitive ? 'table-search-option is-active' : 'table-search-option'}
+          type="text"
+          className={state.caseSensitive ? 'table-search-icon-btn table-search-option is-active' : 'table-search-icon-btn table-search-option'}
           title="区分大小写"
           aria-label="区分大小写"
           onClick={() => {
@@ -1087,7 +1603,8 @@ const PageSearchControls = memo(function PageSearchControls({
         </Button>
         <Button
           size="small"
-          className={state.regex ? 'table-search-option is-active' : 'table-search-option'}
+          type="text"
+          className={state.regex ? 'table-search-icon-btn table-search-option is-active' : 'table-search-icon-btn table-search-option'}
           title="正则表达式"
           aria-label="正则表达式"
           onClick={() => {
@@ -1103,7 +1620,8 @@ const PageSearchControls = memo(function PageSearchControls({
         </Button>
         <Button
           size="small"
-          className={state.wholeWord ? 'table-search-option is-active' : 'table-search-option'}
+          type="text"
+          className={state.wholeWord ? 'table-search-icon-btn table-search-option is-active' : 'table-search-icon-btn table-search-option'}
           title="整词匹配"
           aria-label="整词匹配"
           onClick={() => {
@@ -1119,7 +1637,8 @@ const PageSearchControls = memo(function PageSearchControls({
         </Button>
         <Button
           size="small"
-          className={state.filterRows ? 'table-search-option is-active' : 'table-search-option'}
+          type="text"
+          className={state.filterRows ? 'table-search-icon-btn table-search-option is-active' : 'table-search-icon-btn table-search-option'}
           title="只显示命中行"
           aria-label="只显示命中行"
           onClick={() => onStateChange({ query: draftQuery, filterRows: !state.filterRows, activeMatchIndex: 0 })}
@@ -1128,6 +1647,8 @@ const PageSearchControls = memo(function PageSearchControls({
         </Button>
         <Button
           size="small"
+          type="text"
+          className="table-search-icon-btn"
           icon={<CloseOutlined />}
           title="关闭搜索"
           aria-label="关闭搜索"
@@ -1266,17 +1787,17 @@ const ResultTableBodyView = memo(function ResultTableBodyView({
 const ResultTableHeader = memo(function ResultTableHeader({
   leftActions,
   whereInput,
-  showPageSearch,
+  rightActions,
   searchState,
   searchMeta,
   onSearchStateChange,
   onClearActiveHighlight,
-  showDdlPreview,
-  onOpenDdl
+  searchVisible,
+  onToggleSearch
 }: {
   leftActions: React.ReactNode
   whereInput: React.ReactNode
-  showPageSearch: boolean
+  rightActions?: React.ReactNode
   searchState: TableSearchUiState
   searchMeta: {
     matchCount: number
@@ -1285,17 +1806,10 @@ const ResultTableHeader = memo(function ResultTableHeader({
   }
   onSearchStateChange: (patch: Partial<TableSearchUiState>) => void
   onClearActiveHighlight: () => void
-  showDdlPreview: boolean
-  onOpenDdl: () => void
+  searchVisible: boolean
+  onToggleSearch: () => void
 }) {
-  const [searchVisible, setSearchVisible] = useState(Boolean(searchState.query))
   const [activeMatchIndex, setActiveMatchIndex] = useState(0)
-
-  useEffect(() => {
-    if (!searchVisible && searchState.query.trim()) {
-      setSearchVisible(true)
-    }
-  }, [searchState.query, searchVisible])
 
   useEffect(() => {
     setActiveMatchIndex(0)
@@ -1314,37 +1828,12 @@ const ResultTableHeader = memo(function ResultTableHeader({
     <>
       <Flex align="center" justify="space-between" gap={8} className="table-data-toolbar">
         {leftActions}
-        {whereInput}
-        <Space size={4} className="table-toolbar-tools">
-          {showPageSearch && (
-            <Button
-              size="small"
-              icon={<SearchOutlined />}
-              title="页内搜索"
-              aria-label="页内搜索"
-              className={searchVisible ? 'table-toolbar-toggle is-active' : 'table-toolbar-toggle'}
-              onClick={() => {
-                if (searchVisible) {
-                  onClearActiveHighlight()
-                }
-                setSearchVisible((current) => !current)
-              }}
-            />
-          )}
-          {showDdlPreview && (
-            <Button
-              size="small"
-              title="查看 DDL"
-              aria-label="查看 DDL"
-              className="table-ddl-button"
-              onClick={onOpenDdl}
-            >
-              DDL
-            </Button>
-          )}
-        </Space>
+        <Flex align="center" justify="end" gap={8} className="table-data-toolbar-right">
+          {whereInput}
+          {rightActions}
+        </Flex>
       </Flex>
-      {showPageSearch && searchVisible && (
+      {searchVisible && (
         <PageSearchControls
           state={searchState}
           matchCount={searchMeta.matchCount}
@@ -1367,7 +1856,7 @@ const ResultTableHeader = memo(function ResultTableHeader({
             searchMeta.focusSearchMatch(nextIndex)
           }}
           onClearActiveHighlight={onClearActiveHighlight}
-          onRequestClose={() => setSearchVisible(false)}
+          onRequestClose={onToggleSearch}
         />
       )}
     </>
@@ -1495,6 +1984,7 @@ type DatabaseTreeNode = DataNode & {
   storageSizeDisplay?: string | null
   storageSizeBytes?: number | null
   rowCount?: number | null
+  comment?: string | null
   columnName?: string
   columnType?: string
   nullable?: boolean
@@ -1683,10 +2173,15 @@ function App(): React.JSX.Element {
   const [editingConnectionInfoId, setEditingConnectionInfoId] = useState<string>()
   const [connectionLoading, setConnectionLoading] = useState(false)
   const [testingConnection, setTestingConnection] = useState(false)
+  const [connectionPasswordPromptOpen, setConnectionPasswordPromptOpen] = useState(false)
+  const [connectionPasswordPromptConnectionId, setConnectionPasswordPromptConnectionId] = useState<string>('')
+  const [connectionPasswordPromptConnectionName, setConnectionPasswordPromptConnectionName] = useState('')
+  const [connectionPasswordPromptReason, setConnectionPasswordPromptReason] = useState('')
+  const [connectionPasswordDraft, setConnectionPasswordDraft] = useState('')
   const [workspaceTabs, setWorkspaceTabs] = useState<WorkspaceTab[]>([])
   const [activeTabKey, setActiveTabKey] = useState<string>()
   const [queryHistoryOpen, setQueryHistoryOpen] = useState(false)
-  const [selectedSqlByTab, setSelectedSqlByTab] = useState<Record<string, string>>({})
+  const [sqlExecutionContextByTab, setSqlExecutionContextByTab] = useState<Record<string, SqlEditorExecutionContext>>({})
   const [resourcePanelSize, setResourcePanelSize] = useState(340)
   const [aiPanelSize, setAiPanelSize] = useState(360)
   const [aiPanelOpen, setAiPanelOpen] = useState(true)
@@ -1738,6 +2233,14 @@ function App(): React.JSX.Element {
   const [importTable, setImportTable] = useState<string>('')
   const [importPath, setImportPath] = useState<string>('')
   const [importLoading, setImportLoading] = useState(false)
+  const [importConnectionModalOpen, setImportConnectionModalOpen] = useState(false)
+  const [importConnectionSource, setImportConnectionSource] = useState<ImportConnectionSource>('datagrip')
+  const [importConnectionRawText, setImportConnectionRawText] = useState('')
+  const [importConnectionCandidates, setImportConnectionCandidates] = useState<ImportConnectionCandidate[]>([])
+  const [importConnectionParsing, setImportConnectionParsing] = useState(false)
+  const [importingConnections, setImportingConnections] = useState(false)
+  const [importConnectionResult, setImportConnectionResult] = useState<ImportConnectionResult | null>(null)
+  const [importConnectionResultOpen, setImportConnectionResultOpen] = useState(false)
   const [backupRestoreModalOpen, setBackupRestoreModalOpen] = useState(false)
   const [backupRestoreConnectionId, setBackupRestoreConnectionId] = useState<string>('')
   const [backupRestoreDatabase, setBackupRestoreDatabase] = useState<string>('')
@@ -1753,6 +2256,11 @@ function App(): React.JSX.Element {
   const [newTableColumns, setNewTableColumns] = useState<ColumnDef[]>([])
   const [driverManagerOpen, setDriverManagerOpen] = useState(false)
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('app')
+  const [shortcutSettings, setShortcutSettings] = useState<ShortcutSettings>(() => ({
+    ...DEFAULT_SHORTCUT_SETTINGS,
+    ...readPersistedJson<Partial<ShortcutSettings>>(STORAGE_SHORTCUT_SETTINGS, {})
+  }))
+  const [recordingShortcutAction, setRecordingShortcutAction] = useState<ShortcutAction | null>(null)
   const [selectedDriverDatabaseType, setSelectedDriverDatabaseType] = useState<DriverDatabaseType>('dm')
   const [connectionFolders, setConnectionFolders] = useState<ConnectionFolder[]>(() => readPersistedJson<ConnectionFolder[]>(STORAGE_CONNECTION_FOLDERS, []))
   const [connectionFolderAssignments, setConnectionFolderAssignments] = useState<Record<string, string>>(() => readPersistedJson<Record<string, string>>(STORAGE_CONNECTION_FOLDER_ASSIGNMENTS, {}))
@@ -1844,6 +2352,10 @@ function App(): React.JSX.Element {
   useEffect(() => {
     localStorage.setItem(STORAGE_QUERY_WORKSPACES, JSON.stringify(persistedQueryWorkspaces))
   }, [persistedQueryWorkspaces])
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_SHORTCUT_SETTINGS, JSON.stringify(shortcutSettings))
+  }, [shortcutSettings])
 
   useEffect(() => {
     if (!connectionsInitialized) {
@@ -1952,6 +2464,9 @@ function App(): React.JSX.Element {
   const resourceTreeContainerRef = useRef<HTMLDivElement | null>(null)
   const resourceTreeViewportRef = useRef<HTMLDivElement | null>(null)
   const workspaceShellRef = useRef<HTMLDivElement | null>(null)
+  const resourcePanelRef = useRef<HTMLDivElement | null>(null)
+  const mainPanelRef = useRef<HTMLDivElement | null>(null)
+  const aiDockPanelRef = useRef<HTMLDivElement | null>(null)
   const selectedColumnRefs = useRef<Record<string, string | undefined>>({})
   const selectedCellRefs = useRef<Record<string, string[] | undefined>>({})
   const runtimeSelectedCellRefs = useRef<Record<string, string[] | undefined>>({})
@@ -1978,8 +2493,9 @@ function App(): React.JSX.Element {
   const dragOverFolderTargetRef = useRef<{ folderId: string; zone: 'before' | 'after' } | undefined>(undefined)
   const dragOverConnectionTargetRef = useRef<{ connectionId: string; folderId?: string; zone: 'before' | 'after' } | undefined>(undefined)
   const draggingConnectionIdsRef = useRef<string[]>([])
-  const aiPanelResizeRef = useRef<{ startX: number; startSize: number } | null>(null)
-  const resourcePanelResizeRef = useRef<{ startX: number; startSize: number } | null>(null)
+  const queryResultToggleRefs = useRef<Record<string, HTMLButtonElement | null>>({})
+  const aiPanelResizeRef = useRef<{ startX: number; startSize: number; lastSize?: number } | null>(null)
+  const resourcePanelResizeRef = useRef<{ startX: number; startSize: number; lastSize?: number } | null>(null)
   const draggingConnectionFolderIdRef = useRef<string | undefined>(undefined)
   const ddlPreviewModalRef = useRef<DdlPreviewModalHandle | null>(null)
 
@@ -2051,11 +2567,21 @@ function App(): React.JSX.Element {
   }
 
   const normalizeRequestError = (error: unknown): Error => {
-    const message = error instanceof Error ? error.message : String(error || '操作失败')
+    let message = error instanceof Error ? error.message : String(error || '操作失败')
+    message = message
+      .replace(/^Error invoking remote method 'api:request':\s*Error:\s*/i, '')
+      .replace(/\s*\(Background on this error at:[\s\S]*$/i, '')
+      .trim()
+
+    const friendlyPrefixMatch = message.match(/((?:SQL\s*语法错误|SQL\s*语句错误|数据库操作失败|Oracle\s*数据库操作失败|Redis\s*操作失败|PostgreSQL\s*\/\s*高斯数据库[^：:]*|Oracle\s*SQL\s*中引用了不存在的字段|Oracle\s*表或视图不存在|目标数据库不存在|数据表不存在|当前对象类型不支持查看\s*DDL)[：:][\s\S]*)/)
+    if (friendlyPrefixMatch?.[1]) {
+      message = friendlyPrefixMatch[1].trim()
+    }
+
     if (message.includes('Timeout reading from socket')) {
       return new Error('请求后端超时，请检查数据库主机和端口是否正确、服务是否已启动，或稍后重试')
     }
-    return error instanceof Error ? error : new Error(message)
+    return new Error(message || '操作失败')
   }
 
   const requestJsonRaw = useCallback(async <T,>(path: string, options?: RequestInit): Promise<T> => {
@@ -2135,8 +2661,12 @@ function App(): React.JSX.Element {
     const loadingText = connectionTreeLoading[connection.connection_id]
     const loading = Boolean(loadingText)
     const isFocused = focusedTreeNode?.connectionId === connection.connection_id && focusedTreeNode?.kind === 'connection'
-    const connectionMeta = connection.database?.trim()
-      ? `${connection.name} · ${connection.database}`
+    const isSelected = selectedConnectionIds.includes(connection.connection_id)
+    const connectionAddress = connection.host?.trim()
+      ? `${connection.host}${connection.port ? `:${connection.port}` : ''}`
+      : undefined
+    const connectionMeta = connectionAddress
+      ? `${connection.name} · ${connectionAddress}`
       : connection.name
     const currentFolderId = connectionFolderAssignments[connection.connection_id]
     const connectionDropZone = dragOverConnectionTarget?.connectionId === connection.connection_id
@@ -2186,7 +2716,7 @@ function App(): React.JSX.Element {
       }}
         */}
       <Flex
-        className={`connection-tree-title ${connection.is_open ? 'is-open' : 'is-closed'}${connectionDropZone ? ` connection-drop-${connectionDropZone}` : ''}`}
+        className={`connection-tree-title ${connection.is_open ? 'is-open' : 'is-closed'}${isSelected ? ' is-selected' : ''}${connectionDropZone ? ` connection-drop-${connectionDropZone}` : ''}`}
         align="center"
         title={connectionMeta}
         data-connection-id={connection.connection_id}
@@ -2233,15 +2763,17 @@ function App(): React.JSX.Element {
           <Typography.Text className="connection-tree-name" ellipsis title={connection.name}>
             {highlightTreeSearchText(connection.name)}
           </Typography.Text>
-          <span className="connection-tree-type">{DATABASE_TYPE_LABELS[connection.database_type]}</span>
-          <Typography.Text type="secondary" className="connection-tree-address" ellipsis title={connection.database || '未设置默认库'}>
-            {highlightTreeSearchText(connection.database || '默认')}
-          </Typography.Text>
+          {connectionAddress && (
+            <Typography.Text type="secondary" className="connection-tree-address" ellipsis title={connectionAddress}>
+              {highlightTreeSearchText(connectionAddress)}
+            </Typography.Text>
+          )}
         </div>
-        {isFocused && (
+        {(isFocused || isSelected) && (
           <Space className="connection-tree-actions" size={2}>
             {renderDatabaseSelector(connection.connection_id)}
             <Button
+              className="connection-tree-icon-btn"
               type="text"
               size="small"
               icon={<ReloadOutlined />}
@@ -2254,6 +2786,7 @@ function App(): React.JSX.Element {
               }}
             />
             <Button
+              className="connection-tree-icon-btn"
               type="text"
               size="small"
               icon={<EditOutlined />}
@@ -2263,6 +2796,7 @@ function App(): React.JSX.Element {
               }}
             />
             <Button
+              className="connection-tree-icon-btn"
               type="text"
               danger
               size="small"
@@ -3613,11 +4147,22 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       const shellWidth = shell.getBoundingClientRect().width
       const nextSize = Math.min(500, Math.max(220, resizeState.startSize + (event.clientX - resizeState.startX)))
       const boundedSize = Math.min(nextSize, Math.max(220, shellWidth - (aiPanelOpen ? aiPanelSize : 0) - 260))
-      setResourcePanelSize(boundedSize)
+      if (resourcePanelRef.current) {
+        resourcePanelRef.current.style.width = `${boundedSize}px`
+        resourcePanelRef.current.style.flex = `0 0 ${boundedSize}px`
+      }
+      if (mainPanelRef.current) {
+        mainPanelRef.current.style.width = ''
+      }
+      resourcePanelResizeRef.current = { ...resizeState, lastSize: boundedSize }
     }
     const handleMouseUp = (): void => {
+      const lastSize = resourcePanelResizeRef.current?.lastSize
       resourcePanelResizeRef.current = null
       setResizingResourcePanel(false)
+      if (typeof lastSize === 'number') {
+        setResourcePanelSize(lastSize)
+      }
     }
     window.addEventListener('mousemove', handleMouseMove)
     window.addEventListener('mouseup', handleMouseUp)
@@ -3640,11 +4185,19 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       const shellWidth = shell.getBoundingClientRect().width
       const nextSize = Math.min(720, Math.max(260, resizeState.startSize - (event.clientX - resizeState.startX)))
       const boundedSize = Math.min(nextSize, Math.max(260, shellWidth - resourcePanelSize - 260))
-      setAiPanelSize(boundedSize)
+      if (aiDockPanelRef.current) {
+        aiDockPanelRef.current.style.width = `${boundedSize}px`
+        aiDockPanelRef.current.style.flex = `0 0 ${boundedSize}px`
+      }
+      resizeState.lastSize = boundedSize
     }
     const handleMouseUp = (): void => {
+      const lastSize = aiPanelResizeRef.current?.lastSize
       aiPanelResizeRef.current = null
       setResizingAiPanel(false)
+      if (typeof lastSize === 'number') {
+        setAiPanelSize(lastSize)
+      }
     }
     window.addEventListener('mousemove', handleMouseMove)
     window.addEventListener('mouseup', handleMouseUp)
@@ -3665,6 +4218,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
 
       return nextTabs
     })
+    setCellInspector((current) => current?.tabKey === key ? null : current)
     setTableSearchUiState((current) => {
       if (!(key in current)) {
         return current
@@ -3673,6 +4227,11 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       delete next[key]
       return next
     })
+    delete selectedCellRefs.current[key]
+    delete runtimeSelectedCellRefs.current[key]
+    delete contextMenuCellSelectionRefs.current[key]
+    delete selectedColumnRefs.current[key]
+    delete tableBodyRefs.current[key]
   }
 
   const connectionMap = useMemo(() => new Map(connections.map((connection) => [connection.connection_id, connection])), [connections])
@@ -4580,7 +5139,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
 
     return (
       <Flex align="center" justify="space-between" className="tree-title-with-size">
-        <span className="table-tree-title">
+        <span className="table-tree-title" title={node.kind === 'table' ? (node.comment?.trim() || String(node.title ?? '')) : String(node.title ?? '')}>
           {highlightTreeSearchText(String(node.title ?? ''))}
         </span>
         <span className="tree-node-actions">
@@ -4605,7 +5164,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
   const renderResultStatus = (tab: WorkspaceTab): React.ReactNode => {
     const connection = getConnection(tab.connectionId)
     const totalRows = tab.result?.total_count ?? tab.result?.row_count
-    const showPager = tab.kind !== 'table-list'
+    const showPager = tab.kind !== 'table-list' && tab.resultKind !== 'command' && tab.resultKind !== 'error'
     const rowText = tab.result
       ? tab.kind === 'preview'
         ? `总行数 ${totalRows ?? 0} 行`
@@ -4636,6 +5195,37 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         {showPager && <div className="result-status-right">{renderResultPager(tab)}</div>}
       </Flex>
     )
+  }
+
+  const renderQueryExecutionStatus = (tab: WorkspaceTab): React.ReactNode => {
+    if (tab.resultKind === 'command') {
+      return (
+        <div className="query-execution-card success">
+          <Button type="text" size="small" icon={<CloseOutlined />} className="query-execution-close" aria-label="关闭" onClick={() => updateWorkspaceTab(tab.key, { resultKind: undefined, commandMessage: undefined, commandAffectedRows: undefined, error: undefined })} />
+          <CheckCircleOutlined />
+          <div className="query-execution-card-body">
+            <Typography.Text strong>{tab.commandMessage || '执行成功'}</Typography.Text>
+            <Typography.Text type="secondary">
+              影响数据 {tab.commandAffectedRows ?? 0} 行
+            </Typography.Text>
+          </div>
+        </div>
+      )
+    }
+
+    if (tab.resultKind === 'error') {
+      return (
+        <div className="query-execution-card error">
+          <Button type="text" size="small" icon={<CloseOutlined />} className="query-execution-close" aria-label="关闭" onClick={() => updateWorkspaceTab(tab.key, { resultKind: undefined, error: undefined })} />
+          <CloseCircleOutlined />
+          <div className="query-execution-card-body">
+            <Typography.Text>{tab.error || '未知错误'}</Typography.Text>
+          </div>
+        </div>
+      )
+    }
+
+    return null
   }
 
   const renderEditableCell = (
@@ -4672,7 +5262,12 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             rowDragAnchorRefs.current[tabKey] = undefined
             cellDragAnchorRefs.current[tabKey] = undefined
             pendingCellDragTargetRefs.current[tabKey] = undefined
-            runtimeSelectedCellRefs.current[tabKey] = undefined
+            const committedSelection = selectedCellRefs.current[tabKey] ?? []
+            if (!committedSelection.includes(cellKey)) {
+              runtimeSelectedCellRefs.current[tabKey] = undefined
+            } else {
+              runtimeSelectedCellRefs.current[tabKey] = [...committedSelection]
+            }
             clearRuntimeColumnSelection(tabKey)
             onContextSelection(cellKey)
           }}
@@ -4758,24 +5353,24 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     const connection = getConnection(tab.connectionId)
     const showPreviewActions = tab.kind === 'preview' && tab.connectionId && tab.tableName && connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis'
     const showRedisRefresh = tab.kind === 'redis-browser' && tab.connectionId && tab.databaseName
-    const showPageSearch = tab.kind === 'preview' || tab.kind === 'query'
-    const showDdlPreview = Boolean(tab.kind === 'preview' && tab.connectionId && tab.tableName)
+    const showPreviewSearch = tab.kind === 'preview'
+    const showPreviewDdl = Boolean(tab.kind === 'preview' && tab.connectionId && tab.tableName)
 
     const leftActions = (
       <Space size={4} className="table-data-actions">
         {showRedisRefresh && (
           <>
-            <Button size="small" icon={<ReloadOutlined />} title="刷新" aria-label="刷新" loading={tab.loading} onClick={() => void previewRedisDatabase(tab.connectionId!, tab.databaseName!, tab.limit, tab.page)} />
-            <Button size="small" icon={<PlusOutlined />} title="新增一行" aria-label="新增一行" onClick={() => addRedisRow(tab)} />
-            <Button type="primary" size="small" icon={<SaveOutlined />} title="提交" aria-label="提交" disabled={countRedisPendingChanges(tab) === 0} loading={tab.loading} onClick={() => void submitRedisChanges(tab)} />
+            <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<ReloadOutlined />} title="刷新" aria-label="刷新" loading={tab.loading} onClick={() => void previewRedisDatabase(tab.connectionId!, tab.databaseName!, tab.limit, tab.page)} />
+            <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<PlusOutlined />} title="新增一行" aria-label="新增一行" onClick={() => addRedisRow(tab)} />
+            <Button className="table-toolbar-icon-btn" type="text" size="small" icon={<SaveOutlined />} title="提交" aria-label="提交" disabled={countRedisPendingChanges(tab) === 0} loading={tab.loading} onClick={() => void submitRedisChanges(tab)} />
           </>
         )}
         {showPreviewActions && (
           <>
-            <Button size="small" icon={<ReloadOutlined />} title="刷新" aria-label="刷新" loading={tab.loading} onClick={() => void previewTable(tab.connectionId!, tab.tableName!, tab.databaseName, tab.pgDatabaseName, tab.limit, tab.page, tab.where)} />
-            <Button size="small" icon={<PlusOutlined />} title="新增行" aria-label="新增行" onClick={() => addPreviewRow(tab)} />
-            <Button size="small" icon={<MinusOutlined />} title="删除选中行" aria-label="删除选中行" disabled={!tab.selectedRowKeys?.length} onClick={() => markSelectedRowsDeleted(tab)} />
-            <Button type="primary" size="small" icon={<SaveOutlined />} title="提交" aria-label="提交" disabled={countPendingChanges(tab) === 0} loading={tab.loading} onClick={() => void submitPreviewChanges(tab)} />
+            <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<ReloadOutlined />} title="刷新" aria-label="刷新" loading={tab.loading} onClick={() => void previewTable(tab.connectionId!, tab.tableName!, tab.databaseName, tab.pgDatabaseName, tab.limit, tab.page, tab.where)} />
+            <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<PlusOutlined />} title="新增行" aria-label="新增行" onClick={() => addPreviewRow(tab)} />
+            <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<MinusOutlined />} title="删除选中行" aria-label="删除选中行" disabled={!tab.selectedRowKeys?.length} onClick={() => markSelectedRowsDeleted(tab)} />
+            <Button className="table-toolbar-icon-btn" type="text" size="small" icon={<SaveOutlined />} title="提交" aria-label="提交" disabled={countPendingChanges(tab) === 0} loading={tab.loading} onClick={() => void submitPreviewChanges(tab)} />
           </>
         )}
       </Space>
@@ -4785,13 +5380,63 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       <ResultTableHeader
         leftActions={leftActions}
         whereInput={renderWhereInput(tab)}
-        showPageSearch={showPageSearch}
+        rightActions={showPreviewSearch || showPreviewDdl ? (
+          <Space size={4} className="table-toolbar-inline-actions">
+            {showPreviewSearch && (
+              <Button
+                size="small"
+                type="text"
+                icon={<SearchOutlined />}
+                title="页内搜索"
+                aria-label="页内搜索"
+                className={searchState.query.trim() || searchState.visible ? 'table-toolbar-icon-btn table-toolbar-toggle is-active' : 'table-toolbar-icon-btn table-toolbar-toggle'}
+                onClick={() => {
+                  if (searchState.query.trim() || searchState.visible) {
+                    clearActiveSearchCellHighlight(tab.key)
+                    updateTableSearchState(tab, {
+                      visible: false,
+                      query: '',
+                      filterRows: false,
+                      activeMatchIndex: 0
+                    })
+                    return
+                  }
+                  updateTableSearchState(tab, { visible: true })
+                }}
+              />
+            )}
+            {showPreviewDdl && (
+              <Button
+                size="small"
+                type="text"
+                title="查看 DDL"
+                aria-label="查看 DDL"
+                className="table-toolbar-icon-btn table-ddl-button"
+                onClick={() => void showObjectDdl(tab.connectionId!, tab.tableName!, tab.objectType ?? 'table', tab.databaseName, tab.pgDatabaseName)}
+              >
+                DDL
+              </Button>
+            )}
+          </Space>
+        ) : null}
         searchState={searchState}
         searchMeta={searchMeta}
         onSearchStateChange={(patch) => updateTableSearchState(tab, patch)}
         onClearActiveHighlight={() => clearActiveSearchCellHighlight(tab.key)}
-        showDdlPreview={showDdlPreview}
-        onOpenDdl={() => void showObjectDdl(tab.connectionId!, tab.tableName!, tab.objectType ?? 'table', tab.databaseName, tab.pgDatabaseName)}
+        searchVisible={Boolean(searchState.query.trim() || searchState.visible)}
+        onToggleSearch={() => {
+          if (searchState.query.trim() || searchState.visible) {
+            clearActiveSearchCellHighlight(tab.key)
+            updateTableSearchState(tab, {
+              visible: false,
+              query: '',
+              filterRows: false,
+              activeMatchIndex: 0
+            })
+            return
+          }
+          updateTableSearchState(tab, { visible: true })
+        }}
       />
     )
   }
@@ -4871,6 +5516,8 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     const page = tab.page ?? 1
     const totalPages = tab.result?.total_count ? Math.max(1, Math.ceil(tab.result.total_count / limit)) : undefined
     const hasNext = totalPages ? page < totalPages : !!tab.result?.limited
+    const showPageSearch = tab.kind === 'query'
+    const searchState = getImmediateTableSearchState(tab)
     const jumpToPage = (rawValue: string): void => {
       const parsed = Number(rawValue.trim())
       if (!Number.isFinite(parsed) || parsed < 1) {
@@ -4884,8 +5531,8 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
 
     return (
       <Space size={4} className="result-pager">
-        <Button size="small" icon={<DoubleLeftOutlined />} title="棣栭〉" aria-label="棣栭〉" disabled={tab.loading || page <= 1} onClick={() => void changeTabPage(tab, 1)} />
-        <Button size="small" icon={<LeftOutlined />} title="上一页" aria-label="上一页" disabled={tab.loading || page <= 1} onClick={() => void changeTabPage(tab, page - 1)} />
+        <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<DoubleLeftOutlined />} title="棣栭〉" aria-label="棣栭〉" disabled={tab.loading || page <= 1} onClick={() => void changeTabPage(tab, 1)} />
+        <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<LeftOutlined />} title="上一页" aria-label="上一页" disabled={tab.loading || page <= 1} onClick={() => void changeTabPage(tab, page - 1)} />
         <Input
           size="small"
           key={`${tab.key}:${page}:${totalPages ?? 'open'}`}
@@ -4901,16 +5548,39 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             event.currentTarget.value = String(page)
           }}
         />
-        <Button size="small" icon={<RightOutlined />} title="下一页" aria-label="下一页" disabled={tab.loading || !hasNext} onClick={() => void changeTabPage(tab, page + 1)} />
-        <Button size="small" icon={<DoubleRightOutlined />} title="末页" aria-label="末页" disabled={tab.loading || !totalPages || page >= totalPages} onClick={() => totalPages && void changeTabPage(tab, totalPages)} />
+        <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<RightOutlined />} title="下一页" aria-label="下一页" disabled={tab.loading || !hasNext} onClick={() => void changeTabPage(tab, page + 1)} />
+        <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<DoubleRightOutlined />} title="末页" aria-label="末页" disabled={tab.loading || !totalPages || page >= totalPages} onClick={() => totalPages && void changeTabPage(tab, totalPages)} />
         <Select
           size="small"
+          variant="borderless"
           value={limit}
           className="result-limit-select"
           options={[300, 500, 1000].map((value) => ({ label: `${value} 条/页`, value }))}
           disabled={tab.loading}
           onChange={(value) => void changeTabLimit(tab, value)}
         />
+        {showPageSearch && (
+          <Button
+            size="small"
+            icon={<SearchOutlined />}
+            title="页内搜索"
+            aria-label="页内搜索"
+            className={searchState.query.trim() || searchState.visible ? 'table-toolbar-toggle is-active' : 'table-toolbar-toggle'}
+            onClick={() => {
+              if (searchState.query.trim() || searchState.visible) {
+                clearActiveSearchCellHighlight(tab.key)
+                updateTableSearchState(tab, {
+                  visible: false,
+                  query: '',
+                  filterRows: false,
+                  activeMatchIndex: 0
+                })
+                return
+              }
+              updateTableSearchState(tab, { visible: true })
+            }}
+          />
+        )}
       </Space>
     )
   }
@@ -5026,7 +5696,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           resetKey: '',
           focusSearchMatch: () => undefined
         })}
-        {tab.error && <Alert message="加载失败" description={tab.error} type="error" showIcon />}
+        {tab.error && <Alert className="result-inline-alert" message={tab.error} type="error" showIcon closable onClose={() => updateWorkspaceTab(tab.key, { error: undefined })} />}
         <div className="redis-browser-list">
           {tab.loading && <Typography.Text type="secondary">加载中...</Typography.Text>}
           {!tab.loading && Object.values(edits).filter((edit) => !edit.deleted).length === 0 && <Typography.Text type="secondary">当前 DB 暂无 Key</Typography.Text>}
@@ -5068,6 +5738,14 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
   }
 
   const renderResultTable = (tab: WorkspaceTab): React.ReactNode => {
+    if (tab.kind === 'query' && !tab.resultVisible) {
+      return (
+        <div className="query-result-empty">
+          <Typography.Text type="secondary">执行 SQL 后在这里查看查询结果或执行状态</Typography.Text>
+        </div>
+      )
+    }
+
     const searchState = getImmediateTableSearchState(tab)
     const supportsCellSelection = tab.kind === 'preview' || tab.kind === 'query' || tab.kind === 'table-list'
     const supportsWritableCells = tab.kind === 'preview'
@@ -5527,9 +6205,13 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         if (needsCommit) {
           commitRuntimeCellSelection(tab.key, selection)
         } else {
-          clearRuntimeCellSelection(tab.key)
+          runtimeSelectedCellRefs.current[tab.key] = [...selection]
+          updateRenderedCellSelection(tab.key, selection)
+          requestAnimationFrame(() => updateRenderedCellSelection(tab.key, selection))
         }
         setCellInspector({ tabKey: tab.key, view })
+        requestAnimationFrame(() => syncRenderedCellSelection(tab.key))
+        requestAnimationFrame(() => requestAnimationFrame(() => syncRenderedCellSelection(tab.key)))
         contextMenuCellSelectionRefs.current[tab.key] = undefined
         return
       }
@@ -6065,7 +6747,11 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           resetKey: `${searchState.query}\u0000${searchState.caseSensitive ? 1 : 0}\u0000${searchState.regex ? 1 : 0}\u0000${searchState.wholeWord ? 1 : 0}\u0000${searchState.filterRows ? 1 : 0}\u0000${searchMatches.length}`,
           focusSearchMatch
         })}
-        {tab.error && <Alert message="执行失败" description={tab.error} type="error" showIcon />}
+        {(tab.resultKind === 'command' || tab.resultKind === 'error') && renderQueryExecutionStatus(tab)}
+        {tab.error && tab.resultKind !== 'error' && <Alert className="result-inline-alert" message={tab.error} type="error" showIcon closable onClose={() => updateWorkspaceTab(tab.key, { error: undefined })} />}
+        {tab.resultKind === 'command' || tab.resultKind === 'error'
+          ? null
+          : (
         <div className={`result-table-content${inspectorVisible ? ' with-inspector' : ''}`}>
         <ResultTableBodyView
           tab={tab}
@@ -6157,6 +6843,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         />
         {inspectorVisible && renderCellInspector()}
         </div>
+            )}
       </div>
     )
   }
@@ -6266,6 +6953,10 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       const schemaKey = tab.connectionId && tab.pgDatabaseName ? `${tab.connectionId}:${tab.pgDatabaseName}` : ''
       const schemaOptions = schemaKey ? (allSchemas[schemaKey] ?? []) : []
 
+      const resultVisible = Boolean(tab.resultVisible)
+      const resultCollapsed = Boolean(tab.resultCollapsed)
+      const queryEditorHeight = tab.queryEditorHeight ?? 280
+
       return (
         <div className="query-workspace">
           <Space className="query-toolbar">
@@ -6324,27 +7015,113 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                 options={schemaOptions.map((name) => ({ label: name, value: name }))}
               />
             )}
-            <Button type="primary" icon={<PlayCircleOutlined />} loading={tab.loading} onClick={() => void runQuery(tab, selectedSqlByTab[tab.key])}>
+            <Button
+              type="primary"
+              icon={<PlayCircleOutlined />}
+              loading={tab.loading}
+              onClick={() => void runQuery(tab, sqlExecutionContextByTab[tab.key]?.selectedSql || sqlExecutionContextByTab[tab.key]?.currentStatementSql || tab.sql)}
+            >
               执行
             </Button>
           </Space>
-          <Splitter className="query-body-splitter" layout="vertical">
-            <Splitter.Panel defaultSize={280} min={160} max="75%" className="sql-editor-panel">
+          {resultVisible && !resultCollapsed ? (
+            <div className="query-splitter-wrap">
+            <button
+              type="button"
+              className="query-result-toggle query-result-toggle-collapse"
+              style={{ top: `${Math.max(44, queryEditorHeight)}px` }}
+              ref={(element) => { queryResultToggleRefs.current[tab.key] = element }}
+              onClick={() => updateWorkspaceTab(tab.key, { resultCollapsed: true })}
+              aria-label="收起查询结果"
+              title="收起查询结果"
+            >
+              <DownOutlined />
+            </button>
+            <Splitter
+              className="query-body-splitter"
+              layout="vertical"
+              onResize={(sizes) => {
+                const nextHeight = sizes[0]
+                if (typeof nextHeight === 'number' && Number.isFinite(nextHeight)) {
+                  const toggle = queryResultToggleRefs.current[tab.key]
+                  if (toggle) {
+                    toggle.style.top = `${Math.max(44, nextHeight)}px`
+                  }
+                }
+              }}
+              onResizeEnd={(sizes) => {
+                const nextHeight = sizes[0]
+                if (typeof nextHeight === 'number' && Number.isFinite(nextHeight)) {
+                  updateWorkspaceTab(tab.key, { queryEditorHeight: nextHeight })
+                }
+              }}
+            >
+              <Splitter.Panel defaultSize={queryEditorHeight} min={160} max="75%" className="sql-editor-panel">
+                <div className="sql-editor-container">
+                  <SqlEditor
+                    value={tab.sql}
+                    onChange={(sql) => updateWorkspaceTab(tab.key, { sql })}
+                    onExecute={(payload) => void runQuery(tab, payload.sql)}
+                    onSelectionChange={(payload) => setSqlExecutionContextByTab((current) => ({
+                      ...current,
+                      [tab.key]: {
+                        selectedSql: payload.selectedSql,
+                        currentStatementSql: payload.currentStatementSql
+                      }
+                    }))}
+                    theme={theme}
+                    completionContext={buildSqlCompletionContext(tab)}
+                    shortcuts={{
+                      execute: shortcutSettings.sql_execute,
+                      deleteLine: shortcutSettings.sql_delete_line,
+                      duplicateLineDown: shortcutSettings.sql_duplicate_line_down
+                    }}
+                  />
+                </div>
+              </Splitter.Panel>
+              <Splitter.Panel min={120}>
+                <div className="query-result-panel">
+                  {renderResultTable(tab)}
+                </div>
+              </Splitter.Panel>
+            </Splitter>
+            </div>
+          ) : (
+            <div className="query-editor-only">
               <div className="sql-editor-container">
                 <SqlEditor
                   value={tab.sql}
                   onChange={(sql) => updateWorkspaceTab(tab.key, { sql })}
-                  onExecute={(selectedSql) => void runQuery(tab, selectedSql)}
-                  onSelectionChange={(selectedSql) => setSelectedSqlByTab((current) => ({ ...current, [tab.key]: selectedSql }))}
+                  onExecute={(payload) => void runQuery(tab, payload.sql)}
+                  onSelectionChange={(payload) => setSqlExecutionContextByTab((current) => ({
+                    ...current,
+                    [tab.key]: {
+                      selectedSql: payload.selectedSql,
+                      currentStatementSql: payload.currentStatementSql
+                    }
+                  }))}
                   theme={theme}
                   completionContext={buildSqlCompletionContext(tab)}
+                  shortcuts={{
+                    execute: shortcutSettings.sql_execute,
+                    deleteLine: shortcutSettings.sql_delete_line,
+                    duplicateLineDown: shortcutSettings.sql_duplicate_line_down
+                  }}
                 />
               </div>
-            </Splitter.Panel>
-            <Splitter.Panel min={120}>
-              {renderResultTable(tab)}
-            </Splitter.Panel>
-          </Splitter>
+              {resultVisible && resultCollapsed && (
+                <button
+                  type="button"
+                  className="query-result-toggle query-result-toggle-expand"
+                  onClick={() => updateWorkspaceTab(tab.key, { resultCollapsed: false })}
+                  aria-label="展开查询结果"
+                  title="展开查询结果"
+                >
+                  <UpOutlined />
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )
     }
@@ -6458,6 +7235,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       return {
         key: `${kind}:${connectionId}:${pgDatabaseName ?? ''}:${databaseName ?? ''}:${resolvedType}:${object.name}`,
         title: object.name,
+        comment: object.comment ?? null,
         icon: plainObjectIconByType[resolvedType] ?? group.icon,
         kind,
         connectionId,
@@ -6769,12 +7547,89 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       { key: 'mongodb', label: 'MongoDB', icon: <img src={mongoIcon} alt="" style={{ width: 16, height: 16 }} /> },
       { key: 'redis', label: 'Redis', icon: <img src={redisIcon} alt="Redis" style={{ width: 16, height: 16 }} /> },
       { key: 'clickhouse', label: 'ClickHouse', icon: <img src={clickhouseIcon} alt="ClickHouse" style={{ width: 16, height: 16 }} /> },
-      { type: 'divider' as const },
-      { key: 'dm', label: '达梦', icon: <img src={dmIcon} alt="" style={{ width: 16, height: 16 }} /> },
-      { key: 'gaussdb', label: '高斯数据库', icon: <DatabaseOutlined /> }
+      {
+        key: 'others',
+        label: '其他',
+        icon: <DatabaseOutlined />,
+        children: [
+          { key: 'dm', label: '达梦', icon: <img src={dmIcon} alt="" style={{ width: 16, height: 16 }} /> },
+          { key: 'gaussdb', label: '高斯数据库', icon: <DatabaseOutlined /> }
+        ]
+      }
     ],
-    onClick: ({ key }: { key: string }) => void openConnectionModal(key as DatabaseType)
+    onClick: ({ key }: { key: string }) => {
+      if (key === 'others') {
+        return
+      }
+      void openConnectionModal(key as DatabaseType)
+    }
   }
+
+  const importConnectionPreviewColumns: ColumnsType<ImportConnectionCandidate> = [
+    {
+      title: '名称',
+      dataIndex: 'name',
+      key: 'name',
+      width: 180,
+      ellipsis: true
+    },
+    {
+      title: '类型',
+      dataIndex: 'database_type',
+      key: 'database_type',
+      width: 100,
+      render: (value?: DatabaseType) => value ? DATABASE_TYPE_LABELS[value] : '-'
+    },
+    {
+      title: '主机',
+      dataIndex: 'host',
+      key: 'host',
+      width: 160,
+      ellipsis: true,
+      render: (value?: string) => value || '-'
+    },
+    {
+      title: '端口',
+      dataIndex: 'port',
+      key: 'port',
+      width: 90,
+      render: (value?: number) => value ?? '-'
+    },
+    {
+      title: '数据库 / Schema',
+      dataIndex: 'database',
+      key: 'database',
+      width: 180,
+      ellipsis: true,
+      render: (value?: string) => value || '-'
+    },
+    {
+      title: '用户名',
+      dataIndex: 'username',
+      key: 'username',
+      width: 120,
+      ellipsis: true,
+      render: (value?: string) => value || '-'
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      width: 120,
+      render: (value: ImportConnectionCandidateStatus) => (
+        <Tag color={value === 'ready' ? 'success' : value === 'warning' ? 'warning' : 'error'}>
+          {value === 'ready' ? '可导入' : value === 'warning' ? '需确认' : '解析失败'}
+        </Tag>
+      )
+    },
+    {
+      title: '说明',
+      dataIndex: 'message',
+      key: 'message',
+      ellipsis: true,
+      render: (value?: string) => value || '-'
+    }
+  ]
 
   const resourceCreateMenu = {
     items: [
@@ -6999,6 +7854,201 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     )
   }
 
+  const buildImportConnectionUniqueName = (baseName: string, usedNames: Set<string>): string => {
+    const trimmed = baseName.trim() || '未命名连接'
+    let nextName = trimmed
+    let suffix = 1
+
+    while (usedNames.has(nextName.trim().toLocaleLowerCase())) {
+      nextName = `${trimmed}（${suffix}）`
+      suffix += 1
+    }
+
+    usedNames.add(nextName.trim().toLocaleLowerCase())
+    return nextName
+  }
+
+  const isConnectionPasswordRetryError = (message: string): boolean => {
+    const normalized = message.toLowerCase()
+    return normalized.includes('密码错误') ||
+      normalized.includes('用户名或密码错误') ||
+      normalized.includes('用户名密码错误') ||
+      normalized.includes('认证失败') ||
+      normalized.includes('authentication failed') ||
+      normalized.includes('wrongpass') ||
+      normalized.includes('invalid username-password pair')
+  }
+
+  const closeConnectionPasswordPrompt = (): void => {
+    setConnectionPasswordPromptOpen(false)
+    setConnectionPasswordPromptConnectionId('')
+    setConnectionPasswordPromptConnectionName('')
+    setConnectionPasswordPromptReason('')
+    setConnectionPasswordDraft('')
+  }
+
+  const openConnectionPasswordPrompt = (connection: ConnectionInfo, reason: string): void => {
+    setConnectionPasswordPromptConnectionId(connection.connection_id)
+    setConnectionPasswordPromptConnectionName(connection.name)
+    setConnectionPasswordPromptReason(reason)
+    setConnectionPasswordDraft('')
+    setConnectionPasswordPromptOpen(true)
+  }
+
+  const resetImportConnectionState = (): void => {
+    setImportConnectionSource('datagrip')
+    setImportConnectionRawText('')
+    setImportConnectionCandidates([])
+    setImportConnectionParsing(false)
+    setImportingConnections(false)
+  }
+
+  const openImportConnectionModal = (): void => {
+    resetImportConnectionState()
+    setImportConnectionModalOpen(true)
+  }
+
+  const closeImportConnectionModal = (): void => {
+    setImportConnectionModalOpen(false)
+    resetImportConnectionState()
+  }
+
+  const closeImportConnectionResultModal = (): void => {
+    setImportConnectionResultOpen(false)
+    setImportConnectionResult(null)
+  }
+
+  const parseImportConnections = (): void => {
+    const rawText = importConnectionRawText.trim()
+    if (!rawText) {
+      messageApi.warning('请先粘贴连接配置文本')
+      return
+    }
+
+    if (importConnectionSource !== 'datagrip') {
+      messageApi.warning('当前仅支持 DataGrip 导入')
+      return
+    }
+
+    setImportConnectionParsing(true)
+    try {
+      const usedNames = new Set(connections.map((connection) => connection.name.trim().toLocaleLowerCase()).filter(Boolean))
+      const candidates = parseDataGripImportText(rawText).map<ImportConnectionCandidate>((candidate) => {
+        if (!candidate.payload) {
+          return candidate
+        }
+
+        const originalName = candidate.payload.name
+        const uniqueName = buildImportConnectionUniqueName(originalName, usedNames)
+        if (uniqueName === originalName) {
+          return candidate
+        }
+
+        const renamedMessage = `名称重复，已自动调整为 ${uniqueName}`
+        return {
+          ...candidate,
+          name: uniqueName,
+          payload: {
+            ...candidate.payload,
+            name: uniqueName
+          },
+          status: 'warning',
+          message: candidate.message ? `${candidate.message}；${renamedMessage}` : renamedMessage
+        }
+      })
+      setImportConnectionCandidates(candidates)
+      if (candidates.length === 0) {
+        messageApi.warning('未识别到可导入的连接配置')
+      }
+    } catch (error) {
+      showError(error instanceof Error ? error.message : '解析连接配置失败')
+    } finally {
+      setImportConnectionParsing(false)
+    }
+  }
+
+  const importParsedConnections = async (): Promise<void> => {
+    const readyCandidates = importConnectionCandidates.filter((candidate) => candidate.payload && candidate.status !== 'error')
+    if (readyCandidates.length === 0) {
+      messageApi.warning('没有可导入的连接')
+      return
+    }
+
+    setImportingConnections(true)
+    const result: ImportConnectionResult = {
+      success: [],
+      failed: []
+    }
+    let nextConnections = connections
+    const usedNames = new Set(nextConnections.map((connection) => connection.name.trim().toLocaleLowerCase()).filter(Boolean))
+
+    try {
+      for (const candidate of readyCandidates) {
+        const payload = candidate.payload
+        if (!payload) {
+          continue
+        }
+
+        const importName = buildImportConnectionUniqueName(payload.name, usedNames)
+        const normalizedName = importName.trim().toLocaleLowerCase()
+        if (!normalizedName) {
+          result.failed.push({
+            name: candidate.name,
+            database_type: candidate.database_type,
+            message: '连接名称不能为空'
+          })
+          continue
+        }
+
+        try {
+          const finalPayload: ConnectionFormValues = importName === payload.name
+            ? payload
+            : {
+                ...payload,
+                name: importName
+              }
+          const finalMessage = importName === candidate.name
+            ? candidate.message
+            : [candidate.message, `再次导入时名称已自动调整为 ${importName}`].filter(Boolean).join('；')
+          const created = await requestJson<ConnectionInfo>('/connections', {
+            method: 'POST',
+            body: JSON.stringify(cleanFormValues(finalPayload))
+          })
+          nextConnections = [...nextConnections, created]
+          result.success.push({
+            name: created.name,
+            database_type: created.database_type,
+            message: finalMessage
+          })
+        } catch (error) {
+          result.failed.push({
+            name: importName,
+            database_type: candidate.database_type,
+            message: error instanceof Error ? error.message : '导入失败'
+          })
+        }
+      }
+
+      setConnections(nextConnections)
+      refreshTree(nextConnections)
+      if (result.success.length > 0) {
+        const lastImported = nextConnections[nextConnections.length - 1]
+        if (lastImported) {
+          setSelectedConnectionId(lastImported.connection_id)
+          selectConnectionNodes([lastImported.connection_id], lastImported.connection_id)
+        }
+      }
+      setImportConnectionResult(result)
+      setImportConnectionModalOpen(false)
+      setImportConnectionResultOpen(true)
+      if (result.success.length > 0) {
+        messageApi.success(`已导入 ${result.success.length} 个连接`)
+      }
+    } finally {
+      setImportingConnections(false)
+    }
+  }
+
   const driverTypeOptionsForDatabase = (databaseType: DriverDatabaseType): { label: string; value: DriverType }[] =>
     DRIVER_DATABASE_META[databaseType].supportedDriverTypes.map((type) => ({
       value: type,
@@ -7190,9 +8240,29 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     }
   }
 
+  const retryOpenConnectionWithPassword = async (connectionId: string, password: string): Promise<ConnectionInfo> => {
+    const request = await requestJson<ConnectionFormValues>(`/connections/${connectionId}`)
+    const updated = await requestJson<ConnectionInfo>(`/connections/${connectionId}`, {
+      method: 'PUT',
+      body: JSON.stringify(cleanFormValues({
+        ...request,
+        password
+      }))
+    })
+    setConnections((current) => current.map((item) => (item.connection_id === connectionId ? updated : item)))
+    setTreeData((current) => replaceConnectionNode(current, updated))
+    return await requestJson<ConnectionInfo>(`/connections/${connectionId}/open`, { method: 'POST' })
+  }
+
   const openConnectionById = async (connectionId: string): Promise<ConnectionInfo | undefined> => {
     setConnectionTreeLoadingText(connectionId, '正在打开连接...')
     try {
+      const currentConnection = getConnection(connectionId)
+      if (currentConnection && !currentConnection.has_password && currentConnection.database_type !== 'sqlite') {
+        openConnectionPasswordPrompt(currentConnection, '当前连接未保存密码，请输入密码后重试')
+        return undefined
+      }
+
       const connection = await requestJson<ConnectionInfo>(`/connections/${connectionId}/open`, { method: 'POST' })
 
       setConnections((current) => current.map((c) => (c.connection_id === connectionId ? connection : c)))
@@ -7209,8 +8279,50 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       }
       return connection
     } catch (err) {
-      showError(err instanceof Error ? err.message : '打开连接失败')
+      const errorMessage = err instanceof Error ? err.message : '打开连接失败'
+      const currentConnection = getConnection(connectionId)
+      if (currentConnection && currentConnection.database_type !== 'sqlite' && isConnectionPasswordRetryError(errorMessage)) {
+        openConnectionPasswordPrompt(currentConnection, errorMessage)
+        return undefined
+      }
+      showError(errorMessage)
       return undefined
+    } finally {
+      setConnectionTreeLoadingText(connectionId)
+    }
+  }
+
+  const submitConnectionPasswordPrompt = async (): Promise<void> => {
+    const connectionId = connectionPasswordPromptConnectionId
+    const password = connectionPasswordDraft
+    if (!connectionId) {
+      return
+    }
+    if (!password.trim()) {
+      messageApi.warning('请输入密码')
+      return
+    }
+
+    setConnectionTreeLoadingText(connectionId, '正在验证密码...')
+    try {
+      const connection = await retryOpenConnectionWithPassword(connectionId, password)
+      setConnections((current) => current.map((c) => (c.connection_id === connectionId ? connection : c)))
+      setTreeData((current) => replaceConnectionNode(current, connection))
+
+      const connKey = `connection:${connectionId}`
+      setExpandedKeys((current) => current.includes(connKey) ? current : [...current, connKey])
+
+      if (connection.database_type === 'sqlite') {
+        setTreeData((current) => updateTreeNode(current, connKey, buildConnectionNode(connection).children ?? []))
+      } else {
+        setConnectionTreeLoadingText(connectionId, '正在加载库表...')
+        await preloadConnectionTree(connection)
+      }
+      closeConnectionPasswordPrompt()
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : '密码验证失败'
+      setConnectionPasswordPromptReason(errorMessage)
+      showError(errorMessage)
     } finally {
       setConnectionTreeLoadingText(connectionId)
     }
@@ -8121,7 +9233,6 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       refreshDatabaseNode(tab.connectionId, tab.databaseName)
     } catch (err) {
       updateWorkspaceTab(tab.key, { loading: false, error: err instanceof Error ? err.message : '提交 Redis 数据失败' })
-      showError(err instanceof Error ? err.message : '提交 Redis 数据失败')
     }
   }
 
@@ -8170,7 +9281,6 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       updateWorkspaceTab(tab.key, { result, columnInfoMap, editRows: buildEditableRows(result.rows), selectedRowKeys: [], selectedRowKeyMap: {}, columnFilterOptions: undefined, where: tab.where?.trim() ?? '', loading: false, error: undefined })
     } catch (err) {
       updateWorkspaceTab(tab.key, { loading: false, error: err instanceof Error ? err.message : '提交表数据失败' })
-      showError(err instanceof Error ? err.message : '提交表数据失败')
     }
   }
 
@@ -8224,7 +9334,6 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       updateWorkspaceTab(tabKey, { result, columnInfoMap, editRows: buildEditableRows(result.rows), selectedRowKeys: [], selectedRowKeyMap: {}, columnFilterOptions: undefined, where: whereCondition, loading: false, error: undefined })
     } catch (err) {
       updateWorkspaceTab(tabKey, { loading: false, error: err instanceof Error ? err.message : '加载表数据失败' })
-      showError(err instanceof Error ? err.message : '加载表数据失败')
     }
   }
 
@@ -8354,6 +9463,10 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         limit: 1000,
         page: 1,
         loading: false,
+        resultVisible: false,
+        resultCollapsed: false,
+        resultKind: 'query',
+        queryEditorHeight: 280,
         persistedAt: Date.now()
         }
     ])
@@ -8398,6 +9511,10 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         limit: 1000,
         page: 1,
         loading: false,
+        resultVisible: false,
+        resultCollapsed: false,
+        resultKind: 'query',
+        queryEditorHeight: 280,
         persistedAt: item.persistedAt
       }
     ])
@@ -8475,9 +9592,17 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
   }
 
   const runQuery = async (tab: WorkspaceTab, selectedSql?: string): Promise<void> => {
-    const sqlToExecute = selectedSql?.trim() || tab.sql
+    const executionContext = sqlExecutionContextByTab[tab.key]
+    const sqlToExecute = selectedSql?.trim()
+      || executionContext?.selectedSql?.trim()
+      || executionContext?.currentStatementSql?.trim()
+      || tab.sql.trim()
 
     if (!tab.connectionId) {
+      return
+    }
+
+    if (!sqlToExecute) {
       return
     }
 
@@ -8499,7 +9624,15 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       return
     }
 
-    updateWorkspaceTab(tab.key, { loading: true, error: undefined })
+    updateWorkspaceTab(tab.key, {
+      loading: true,
+      error: undefined,
+      resultVisible: true,
+      resultCollapsed: false,
+      resultKind: 'query',
+      commandMessage: undefined,
+      commandAffectedRows: undefined
+    })
 
     try {
       const connection = getConnection(tab.connectionId)
@@ -8514,10 +9647,35 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           pg_database: isSchemaScopedType(connection?.database_type) ? (tab.pgDatabaseName || undefined) : undefined
         })
       })
-      updateWorkspaceTab(tab.key, { result, page: tab.page ?? 1, selectedRowKeys: [], selectedRowKeyMap: {}, columnFilterOptions: undefined, loading: false, error: undefined })
+      const isCommandResult = result.columns.length === 2
+        && result.columns.includes('message')
+        && result.columns.includes('affected_rows')
+        && result.rows.length === 1
+      const commandRow = isCommandResult ? result.rows[0] : undefined
+      updateWorkspaceTab(tab.key, {
+        result,
+        page: tab.page ?? 1,
+        selectedRowKeys: [],
+        selectedRowKeyMap: {},
+        columnFilterOptions: undefined,
+        loading: false,
+        error: undefined,
+        resultVisible: true,
+        resultCollapsed: false,
+        resultKind: isCommandResult ? 'command' : 'query',
+        commandMessage: isCommandResult && typeof commandRow?.message === 'string' ? commandRow.message : undefined,
+        commandAffectedRows: isCommandResult && typeof commandRow?.affected_rows === 'number' ? commandRow.affected_rows : null
+      })
     } catch (err) {
-      updateWorkspaceTab(tab.key, { loading: false, error: err instanceof Error ? err.message : '查询失败' })
-      showError(err instanceof Error ? err.message : '查询失败')
+      updateWorkspaceTab(tab.key, {
+        loading: false,
+        error: err instanceof Error ? err.message : '查询失败',
+        resultVisible: true,
+        resultCollapsed: false,
+        resultKind: 'error',
+        commandMessage: undefined,
+        commandAffectedRows: undefined
+      })
     }
   }
 
@@ -8728,24 +9886,28 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       </Layout.Header>
       <Layout.Content className="app-content">
         <div ref={workspaceShellRef} className="workspace">
-          <div className="resource-panel" style={{ width: resourcePanelSize, flex: `0 0 ${resourcePanelSize}px` }}>
+          <div ref={resourcePanelRef} className="resource-panel" style={{ width: resourcePanelSize, flex: `0 0 ${resourcePanelSize}px` }}>
             <div className="resource-header">
               <Space direction="vertical" size={2}>
                 <Typography.Text className="panel-kicker">DATABASE EXPLORER</Typography.Text>
                 <Typography.Title level={5} className="panel-title">数据资产</Typography.Title>
               </Space>
-              <Dropdown menu={resourceCreateMenu} trigger={['click']}>
-                <Button className="resource-add" type="primary" size="small" icon={<PlusOutlined />}>新建</Button>
-              </Dropdown>
+              <Space size={8}>
+                <Button className="resource-import" size="small" icon={<LoginOutlined />} onClick={openImportConnectionModal}>导入连接</Button>
+                <Dropdown menu={resourceCreateMenu} trigger={['click']}>
+                  <Button className="resource-add" type="primary" size="small" icon={<PlusOutlined />}>新建</Button>
+                </Dropdown>
+              </Space>
             </div>
             <div className="connection-summary-strip">
-              <span className="summary-pill"><strong>{connections.length}</strong> 连接</span>
-              <span className="summary-pill"><strong>{connectionFolders.length}</strong> 分组</span>
-              <span className="summary-pill accent"><strong>{workspaceTabs.length}</strong> 工作页</span>
+              <span className="summary-pill summary-pill-connections"><strong>{connections.length}</strong> 连接</span>
+              <span className="summary-pill summary-pill-folders"><strong>{connectionFolders.length}</strong> 分组</span>
+              <span className="summary-pill summary-pill-tabs"><strong>{workspaceTabs.length}</strong> 工作页</span>
             </div>
             <div className="resource-toolbar">
               <Space size={4}>
                 <Button
+                  className="resource-toolbar-icon-btn"
                   size="small"
                   type={treeSearchOpen ? 'primary' : 'text'}
                   icon={<SearchOutlined />}
@@ -8759,6 +9921,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                   }}
                 />
                 <Button
+                  className="resource-toolbar-icon-btn"
                   size="small"
                   type="text"
                   icon={<AimOutlined />}
@@ -8988,11 +10151,11 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
               setResizingResourcePanel(true)
             }}
           />
-          <div className="main-panel">
-            <div className={`studio-shell${resizingResourcePanel ? ' studio-shell-suspended' : ''}`}>
+          <div ref={mainPanelRef} className="main-panel">
+            <div className={`studio-shell${resizingResourcePanel || resizingAiPanel ? ' studio-shell-suspended' : ''}`}>
               <div className="editor-placeholder">
                 {workspaceTabs.length === 0 ? (
-                  <div className="empty-workspace"><FileAddOutlined /><Typography.Text type="secondary">连接数据库后，可以浏览库表结构、预览数据、编写 SQL，并让 Djinn Agent 辅助分析与执行受控操作。</Typography.Text><Space><Dropdown menu={connectionCreateMenu} trigger={['click']}><Button icon={<PlusOutlined />}>创建连接</Button></Dropdown></Space></div>
+                  <div className="empty-workspace"><FileAddOutlined /><Typography.Text type="secondary">连接数据库后，可以浏览库表结构、预览数据、编写 SQL，并让 Djinn Agent 辅助分析与执行受控操作。</Typography.Text><Space><Button icon={<LoginOutlined />} onClick={openImportConnectionModal}>导入连接</Button><Dropdown menu={connectionCreateMenu} trigger={['click']}><Button icon={<PlusOutlined />}>创建连接</Button></Dropdown></Space></div>
                 ) : (
                   <WorkspaceTabsView
                     workspaceTabs={workspaceTabs}
@@ -9014,7 +10177,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                       setResizingAiPanel(true)
                     }}
                   />
-                  <div className="ai-dock-panel" style={{ width: aiPanelSize, flex: `0 0 ${aiPanelSize}px` }}>
+                  <div ref={aiDockPanelRef} className="ai-dock-panel" style={{ width: aiPanelSize, flex: `0 0 ${aiPanelSize}px` }}>
                     <MemoAIPanel
                       requestJson={requestJson}
                       connectionContext={{
@@ -9030,16 +10193,21 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                       contextSources={effectiveAIContextSources}
                       primaryContextSourceId={primaryAIContextSource?.id}
                       onRemoveContextSource={removeAIContextSource}
-                      onWorkspaceAction={(action: AIWorkspaceAction) => {
-                        if (action.type === 'append_query_sql') {
-                          appendSqlToQueryWorkspace(action.sql, action.title)
-                        }
-                      }}
-                      onAgentDataChanged={refreshAfterAgentChange}
-                    />
-                  </div>
-                </>
-              )}
+                    onWorkspaceAction={(action: AIWorkspaceAction) => {
+                      if (action.type === 'append_query_sql') {
+                        appendSqlToQueryWorkspace(action.sql, action.title)
+                      }
+                    }}
+                    onAgentDataChanged={refreshAfterAgentChange}
+                    shortcuts={{
+                      send: shortcutSettings.ai_send,
+                      newline: shortcutSettings.ai_newline,
+                      stop: shortcutSettings.ai_stop
+                    }}
+                  />
+                </div>
+              </>
+            )}
             </div>
           </div>
         </div>
@@ -9129,6 +10297,139 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           ))}
         </div>
       </Modal>
+      <Modal
+        title="导入连接"
+        open={importConnectionModalOpen}
+        width={980}
+        onCancel={closeImportConnectionModal}
+        maskClosable={false}
+        footer={(
+          <Space>
+            <Button onClick={closeImportConnectionModal}>关闭</Button>
+            <Button loading={importConnectionParsing} onClick={parseImportConnections}>解析</Button>
+            <Button
+              type="primary"
+              loading={importingConnections}
+              disabled={importConnectionCandidates.filter((candidate) => candidate.payload && candidate.status !== 'error').length === 0}
+              onClick={() => void importParsedConnections()}
+            >
+              导入
+            </Button>
+          </Space>
+        )}
+      >
+        <Space direction="vertical" className="full-width" size={16}>
+          <Form layout="vertical">
+            <Form.Item label="来源">
+              <Select
+                value={importConnectionSource}
+                options={IMPORT_CONNECTION_SOURCE_OPTIONS}
+                onChange={(value) => setImportConnectionSource(value as ImportConnectionSource)}
+              />
+            </Form.Item>
+            <Form.Item label="连接配置文本" extra="选中复制DataGrip/IDEA中的数据源并复制粘贴到上方。">
+              <Input.TextArea
+                value={importConnectionRawText}
+                autoSize={{ minRows: 10, maxRows: 18 }}
+                placeholder="#DataSourceSettings# ..."
+                onChange={(event) => setImportConnectionRawText(event.target.value)}
+              />
+            </Form.Item>
+          </Form>
+          {importConnectionCandidates.length > 0 && (
+            <Space direction="vertical" className="full-width" size={10}>
+              <Flex justify="space-between" align="center">
+                <Typography.Text strong>解析结果</Typography.Text>
+                <Typography.Text type="secondary">
+                  共 {importConnectionCandidates.length} 个，{importConnectionCandidates.filter((candidate) => candidate.status !== 'error' && candidate.payload).length} 个可导入
+                </Typography.Text>
+              </Flex>
+              <Table
+                rowKey="key"
+                size="small"
+                pagination={false}
+                scroll={{ y: 280 }}
+                columns={importConnectionPreviewColumns}
+                dataSource={importConnectionCandidates}
+              />
+            </Space>
+          )}
+        </Space>
+      </Modal>
+      <Modal
+        title="导入结果"
+        open={importConnectionResultOpen}
+        width={880}
+        onCancel={closeImportConnectionResultModal}
+        footer={<Button type="primary" onClick={closeImportConnectionResultModal}>关闭</Button>}
+        maskClosable={false}
+      >
+        {importConnectionResult && (
+          <Space direction="vertical" className="full-width" size={12}>
+            <Alert
+              type={importConnectionResult.failed.length > 0 ? 'warning' : 'success'}
+              showIcon
+              message={`成功 ${importConnectionResult.success.length} 个，失败 ${importConnectionResult.failed.length} 个`}
+            />
+            {importConnectionResult.success.length > 0 && (
+              <Space direction="vertical" className="full-width" size={8}>
+                <Typography.Text strong>导入成功</Typography.Text>
+                <Table
+                  rowKey={(record) => `${record.name}-${record.database_type ?? 'unknown'}-success`}
+                  size="small"
+                  pagination={false}
+                  columns={[
+                    { title: '名称', dataIndex: 'name', key: 'name', width: 220, ellipsis: true },
+                    { title: '类型', dataIndex: 'database_type', key: 'database_type', width: 100, render: (value?: DatabaseType) => value ? DATABASE_TYPE_LABELS[value] : '-' },
+                    { title: '说明', dataIndex: 'message', key: 'message', ellipsis: true, render: (value?: string) => value || '-' }
+                  ]}
+                  dataSource={importConnectionResult.success}
+                />
+              </Space>
+            )}
+            {importConnectionResult.failed.length > 0 && (
+              <Space direction="vertical" className="full-width" size={8}>
+                <Typography.Text strong>导入失败</Typography.Text>
+                <Table
+                  rowKey={(record) => `${record.name}-${record.database_type ?? 'unknown'}-failed`}
+                  size="small"
+                  pagination={false}
+                  columns={[
+                    { title: '名称', dataIndex: 'name', key: 'name', width: 220, ellipsis: true },
+                    { title: '类型', dataIndex: 'database_type', key: 'database_type', width: 100, render: (value?: DatabaseType) => value ? DATABASE_TYPE_LABELS[value] : '-' },
+                    { title: '失败原因', dataIndex: 'message', key: 'message', ellipsis: true, render: (value?: string) => value || '-' }
+                  ]}
+                  dataSource={importConnectionResult.failed}
+                />
+              </Space>
+            )}
+          </Space>
+        )}
+      </Modal>
+      <Modal
+        title="输入连接密码"
+        open={connectionPasswordPromptOpen}
+        onCancel={closeConnectionPasswordPrompt}
+        onOk={() => void submitConnectionPasswordPrompt()}
+        okText="重试连接"
+        cancelText="取消"
+        maskClosable={false}
+      >
+        <Space direction="vertical" className="full-width" size={12}>
+          <Typography.Text>
+            <Typography.Text strong>连接：</Typography.Text>
+            {connectionPasswordPromptConnectionName}
+          </Typography.Text>
+          <Alert type="warning" showIcon message={connectionPasswordPromptReason || '请输入密码后重试连接'} />
+          <Input.Password
+            autoFocus
+            value={connectionPasswordDraft}
+            placeholder="请输入密码"
+            onChange={(event) => setConnectionPasswordDraft(event.target.value)}
+            onPressEnter={() => void submitConnectionPasswordPrompt()}
+          />
+        </Space>
+      </Modal>
       <Modal title="设置" open={driverManagerOpen} footer={null} onCancel={() => setDriverManagerOpen(false)} width={1040} maskClosable={false}>
         <Flex gap={18} align="stretch" className="settings-layout">
           <div className="settings-sidebar">
@@ -9138,6 +10439,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
               onClick={({ key }) => switchSettingsSection(key as SettingsSection)}
               items={[
                 { key: 'app', icon: <SettingOutlined />, label: '应用' },
+                { key: 'shortcuts', icon: <ThunderboltOutlined />, label: '快捷键' },
                 { key: 'drivers', icon: <DatabaseOutlined />, label: '驱动管理' }
               ]}
             />
@@ -9152,6 +10454,97 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                 <Button icon={<GithubOutlined />} onClick={() => void window.api.openProjectHome()}>
                   GitHub
                 </Button>
+              </Space>
+            ) : settingsSection === 'shortcuts' ? (
+              <Space direction="vertical" className="full-width" size="large">
+                <div>
+                  <Typography.Title level={5} style={{ marginTop: 0 }}>SQL 编辑器</Typography.Title>
+                  <Space direction="vertical" className="full-width" size="middle">
+                    <ShortcutRecorder
+                      label={SHORTCUT_SETTING_LABELS.sql_execute}
+                      value={shortcutSettings.sql_execute}
+                      defaultValue={DEFAULT_SHORTCUT_SETTINGS.sql_execute}
+                      recording={recordingShortcutAction === 'sql_execute'}
+                      onStartRecord={() => setRecordingShortcutAction('sql_execute')}
+                      onCancel={() => setRecordingShortcutAction(null)}
+                      onChange={(value) => {
+                        setShortcutSettings((current) => ({ ...current, sql_execute: value }))
+                        setRecordingShortcutAction(null)
+                      }}
+                      onReset={() => setShortcutSettings((current) => ({ ...current, sql_execute: DEFAULT_SHORTCUT_SETTINGS.sql_execute }))}
+                    />
+                    <ShortcutRecorder
+                      label={SHORTCUT_SETTING_LABELS.sql_delete_line}
+                      value={shortcutSettings.sql_delete_line}
+                      defaultValue={DEFAULT_SHORTCUT_SETTINGS.sql_delete_line}
+                      recording={recordingShortcutAction === 'sql_delete_line'}
+                      onStartRecord={() => setRecordingShortcutAction('sql_delete_line')}
+                      onCancel={() => setRecordingShortcutAction(null)}
+                      onChange={(value) => {
+                        setShortcutSettings((current) => ({ ...current, sql_delete_line: value }))
+                        setRecordingShortcutAction(null)
+                      }}
+                      onReset={() => setShortcutSettings((current) => ({ ...current, sql_delete_line: DEFAULT_SHORTCUT_SETTINGS.sql_delete_line }))}
+                    />
+                    <ShortcutRecorder
+                      label={SHORTCUT_SETTING_LABELS.sql_duplicate_line_down}
+                      value={shortcutSettings.sql_duplicate_line_down}
+                      defaultValue={DEFAULT_SHORTCUT_SETTINGS.sql_duplicate_line_down}
+                      recording={recordingShortcutAction === 'sql_duplicate_line_down'}
+                      onStartRecord={() => setRecordingShortcutAction('sql_duplicate_line_down')}
+                      onCancel={() => setRecordingShortcutAction(null)}
+                      onChange={(value) => {
+                        setShortcutSettings((current) => ({ ...current, sql_duplicate_line_down: value }))
+                        setRecordingShortcutAction(null)
+                      }}
+                      onReset={() => setShortcutSettings((current) => ({ ...current, sql_duplicate_line_down: DEFAULT_SHORTCUT_SETTINGS.sql_duplicate_line_down }))}
+                    />
+                  </Space>
+                </div>
+                <div>
+                  <Typography.Title level={5} style={{ marginTop: 0 }}>AI 窗口</Typography.Title>
+                  <Space direction="vertical" className="full-width" size="middle">
+                    <ShortcutRecorder
+                      label={SHORTCUT_SETTING_LABELS.ai_send}
+                      value={shortcutSettings.ai_send}
+                      defaultValue={DEFAULT_SHORTCUT_SETTINGS.ai_send}
+                      recording={recordingShortcutAction === 'ai_send'}
+                      onStartRecord={() => setRecordingShortcutAction('ai_send')}
+                      onCancel={() => setRecordingShortcutAction(null)}
+                      onChange={(value) => {
+                        setShortcutSettings((current) => ({ ...current, ai_send: value }))
+                        setRecordingShortcutAction(null)
+                      }}
+                      onReset={() => setShortcutSettings((current) => ({ ...current, ai_send: DEFAULT_SHORTCUT_SETTINGS.ai_send }))}
+                    />
+                    <ShortcutRecorder
+                      label={SHORTCUT_SETTING_LABELS.ai_newline}
+                      value={shortcutSettings.ai_newline}
+                      defaultValue={DEFAULT_SHORTCUT_SETTINGS.ai_newline}
+                      recording={recordingShortcutAction === 'ai_newline'}
+                      onStartRecord={() => setRecordingShortcutAction('ai_newline')}
+                      onCancel={() => setRecordingShortcutAction(null)}
+                      onChange={(value) => {
+                        setShortcutSettings((current) => ({ ...current, ai_newline: value }))
+                        setRecordingShortcutAction(null)
+                      }}
+                      onReset={() => setShortcutSettings((current) => ({ ...current, ai_newline: DEFAULT_SHORTCUT_SETTINGS.ai_newline }))}
+                    />
+                    <ShortcutRecorder
+                      label={SHORTCUT_SETTING_LABELS.ai_stop}
+                      value={shortcutSettings.ai_stop}
+                      defaultValue={DEFAULT_SHORTCUT_SETTINGS.ai_stop}
+                      recording={recordingShortcutAction === 'ai_stop'}
+                      onStartRecord={() => setRecordingShortcutAction('ai_stop')}
+                      onCancel={() => setRecordingShortcutAction(null)}
+                      onChange={(value) => {
+                        setShortcutSettings((current) => ({ ...current, ai_stop: value }))
+                        setRecordingShortcutAction(null)
+                      }}
+                      onReset={() => setShortcutSettings((current) => ({ ...current, ai_stop: DEFAULT_SHORTCUT_SETTINGS.ai_stop }))}
+                    />
+                  </Space>
+                </div>
               </Space>
             ) : (
               <Space direction="vertical" className="full-width" size="middle">
@@ -9381,7 +10774,33 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           ) : (
             <>
               <Form.Item name="host" label="主机" rules={[{ required: true, message: '请输入主机' }]}><Input placeholder="127.0.0.1" /></Form.Item>
-              <Form.Item name="port" label="端口" rules={[{ required: true, message: '请输入端口' }]}><InputNumber min={1} max={65535} className="full-width" placeholder={databaseType === 'postgresql' ? '5432' : databaseType === 'gaussdb' ? '8000' : databaseType === 'oracle' ? '1521' : databaseType === 'dm' ? '5236' : databaseType === 'mongodb' ? '27017' : databaseType === 'redis' ? '6379' : databaseType === 'clickhouse' ? '8123' : '3306'} /></Form.Item>
+              <Form.Item
+                name="port"
+                label="端口"
+                rules={[
+                  { required: true, message: '请输入端口' },
+                  ...(databaseType === 'clickhouse'
+                    ? [{
+                      validator: async (_rule: unknown, value: unknown) => {
+                        const normalized = typeof value === 'number' ? String(value) : typeof value === 'string' ? value.trim() : ''
+                        if (!normalized) {
+                          return
+                        }
+                        const segments = normalized.split(',').map((item) => item.trim()).filter(Boolean)
+                        if (segments.length === 0 || segments.some((item) => !/^\d+$/.test(item) || Number(item) < 1 || Number(item) > 65535)) {
+                          throw new Error('ClickHouse 端口支持单个端口或逗号分隔的多个端口')
+                        }
+                      }
+                    }]
+                    : [])
+                ]}
+              >
+                {databaseType === 'clickhouse' ? (
+                  <Input className="full-width" placeholder="例如：8123 或 8123,8124" />
+                ) : (
+                  <InputNumber min={1} max={65535} className="full-width" placeholder={databaseType === 'postgresql' ? '5432' : databaseType === 'gaussdb' ? '8000' : databaseType === 'oracle' ? '1521' : databaseType === 'dm' ? '5236' : databaseType === 'mongodb' ? '27017' : databaseType === 'redis' ? '6379' : '3306'} />
+                )}
+              </Form.Item>
               <Form.Item name="username" label="用户名" rules={databaseType === 'mongodb' || databaseType === 'redis' ? undefined : [{ required: true, message: '请输入用户名' }]}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'gaussdb' ? 'gaussdb' : databaseType === 'oracle' ? 'system' : databaseType === 'dm' ? 'SYSDBA' : databaseType === 'redis' ? 'Redis ACL 用户名，可选' : databaseType === 'clickhouse' ? 'default' : undefined} /></Form.Item>
               <Form.Item name="password" label="密码"><Input.Password /></Form.Item>
               <Form.Item name="database" label={databaseType === 'postgresql' || databaseType === 'gaussdb' ? '数据库名' : databaseType === 'oracle' ? '服务名' : databaseType === 'dm' ? '默认 Schema（可选）' : databaseType === 'mongodb' ? '认证库/默认库（可选）' : databaseType === 'redis' ? '默认 DB 序号（可选）' : databaseType === 'clickhouse' ? '默认数据库' : '默认数据库（可选）'} rules={databaseType === 'postgresql' || databaseType === 'gaussdb' || databaseType === 'oracle' ? [{ required: true, message: databaseType === 'oracle' ? '请输入服务名' : '请输入数据库名' }] : undefined}><Input placeholder={databaseType === 'postgresql' ? 'postgres' : databaseType === 'gaussdb' ? 'postgres' : databaseType === 'oracle' ? '例如：orclpdb1' : databaseType === 'dm' ? '不填则使用默认 Schema' : databaseType === 'mongodb' ? '默认 admin，也可填业务库名' : databaseType === 'redis' ? '默认 0，例如 0、1、2' : databaseType === 'clickhouse' ? '默认 default' : '不填则连接服务器并加载全部数据库'} /></Form.Item>

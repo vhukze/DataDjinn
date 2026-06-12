@@ -474,7 +474,7 @@ class StoredConnection(BaseModel):
     name: str
     database_type: DatabaseType
     host: str | None = None
-    port: int | None = None
+    port: int | str | None = None
     username: str | None = None
     encrypted_password: str | None = None
     database: str | None = None
@@ -491,6 +491,25 @@ def _manual_driver_id(request: ConnectionRequest | StoredConnection) -> str | No
 
 def _manual_driver_path(request: ConnectionRequest | StoredConnection) -> str | None:
     return request.driver_path or request.dm_driver_path
+
+
+def _resolve_clickhouse_port(port_value: int | str | None) -> tuple[int | None, str | None]:
+    if port_value is None:
+        return None, None
+    if isinstance(port_value, int):
+        return port_value, None
+
+    port_text = str(port_value).strip()
+    if not port_text:
+        return None, None
+
+    port_candidates = [item.strip() for item in port_text.split(",") if item.strip()]
+    if not port_candidates:
+        return None, None
+
+    first_port = int(port_candidates[0])
+    alt_ports = ",".join(port_candidates[1:]) or None
+    return first_port, alt_ports
 
 
 def _data_blob(data: bytes):
@@ -851,13 +870,16 @@ class ConnectionManager:
             raise ValueError("ClickHouse 端口不能为空")
 
         _ensure_clickhouse_dialect_registered()
+        primary_port, _ = _resolve_clickhouse_port(request.port)
+        if not primary_port:
+            raise ValueError("ClickHouse 端口不能为空")
 
         url = URL.create(
             "clickhousedb",
             username=request.username or "default",
             password=request.password or "",
             host=request.host,
-            port=request.port,
+            port=primary_port,
             database=request.database or "default",
         )
         return create_engine(url, pool_pre_ping=True)
@@ -1115,6 +1137,8 @@ class ConnectionManager:
             connection_id=connection_id,
             name=request.name,
             database_type=request.database_type,
+            host=request.host,
+            port=request.port,
             database=self._display_database(request),
             has_password=bool(request.password or stored and stored.encrypted_password),
             is_open=is_open,

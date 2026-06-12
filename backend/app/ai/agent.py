@@ -1,5 +1,8 @@
 import hashlib
 import json
+import math
+import re
+import unicodedata
 from collections.abc import Iterator
 from typing import Any, Literal
 from urllib.error import HTTPError, URLError
@@ -167,6 +170,18 @@ class AICompactResponse(BaseModel):
     summary: str
 
 
+class AIContextStatsRequest(BaseModel):
+    messages: list[AIMessage]
+    config: AIConfig
+    workspace: AgentWorkspaceContext | None = None
+
+
+class AIContextStatsResponse(BaseModel):
+    used_tokens: int
+    max_tokens: int
+    usage_ratio: float
+
+
 class AIPingResponse(BaseModel):
     success: bool
     message: str
@@ -184,6 +199,60 @@ WRITE_SQL_TYPES = {"INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP", "TRU
 READONLY_SQL_TYPES = {"SELECT", "WITH"}
 PENDING_CONFIRMATIONS: dict[str, PendingConfirmation] = {}
 ANTHROPIC_VERSION = "2023-06-01"
+
+_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+
+
+def estimate_text_tokens(text: str) -> int:
+    if not text:
+        return 0
+    normalized = unicodedata.normalize("NFKC", text)
+    cjk_count = len(_CJK_RE.findall(normalized))
+    non_cjk = _CJK_RE.sub(" ", normalized)
+    ascii_word_count = len(re.findall(r"[A-Za-z0-9_]+", non_cjk))
+    punctuation_count = len(re.findall(r"[^\w\s]", normalized))
+    whitespace_cost = math.ceil(len(re.findall(r"\s+", normalized)) * 0.2)
+    remainder_chars = max(0, len(normalized) - cjk_count - sum(len(word) for word in re.findall(r"[A-Za-z0-9_]+", non_cjk)))
+    remainder_cost = math.ceil(remainder_chars / 3)
+    return max(1, cjk_count + ascii_word_count + punctuation_count + whitespace_cost + remainder_cost)
+
+
+def estimate_message_tokens(messages: list[dict[str, Any]]) -> int:
+    total = 0
+    for message in messages:
+        total += 6
+        total += estimate_text_tokens(str(message.get("role", "")))
+        content = message.get("content")
+        if isinstance(content, str):
+            total += estimate_text_tokens(content)
+        elif content is not None:
+            total += estimate_text_tokens(json.dumps(content, ensure_ascii=False, default=str))
+        tool_calls = message.get("tool_calls")
+        if tool_calls:
+            total += estimate_text_tokens(json.dumps(tool_calls, ensure_ascii=False, default=str))
+        if message.get("tool_call_id"):
+            total += estimate_text_tokens(str(message["tool_call_id"]))
+    return total + 3
+
+
+def model_context_limit(model: str, provider: str) -> int:
+    normalized = model.lower()
+    if provider == "anthropic":
+        return 200_000
+    if any(token in normalized for token in ("gpt-4.1", "gpt-4o", "o1", "o3", "o4")):
+        return 128_000
+    if "gpt-4" in normalized:
+        return 128_000
+    if "gpt-3.5" in normalized:
+        return 16_000
+    return 32_000
+
+
+def build_context_stats(messages: list[dict[str, Any]], config: AIConfig) -> AIContextStatsResponse:
+    used_tokens = estimate_message_tokens(messages)
+    max_tokens = model_context_limit(config.model, config.provider)
+    ratio = 0 if max_tokens <= 0 else min(1.0, used_tokens / max_tokens)
+    return AIContextStatsResponse(used_tokens=used_tokens, max_tokens=max_tokens, usage_ratio=ratio)
 
 
 DATABASE_TOOLS = [

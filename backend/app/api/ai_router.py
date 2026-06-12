@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from openai import OpenAI
 
-from app.ai.agent import AIChatRequest, AICompactRequest, AICompactResponse, AIConfig, AIMessage, AIPingRequest, AIPingResponse, AgentConfirmRequest, AnthropicMessagesClient, DatabaseAgent, PENDING_CONFIRMATIONS, build_system_prompt, sql_hash
+from app.ai.agent import AIChatRequest, AICompactRequest, AICompactResponse, AIConfig, AIContextStatsRequest, AIContextStatsResponse, AIMessage, AIPingRequest, AIPingResponse, AgentConfirmRequest, AnthropicMessagesClient, DatabaseAgent, PENDING_CONFIRMATIONS, build_context_stats, build_system_prompt, sql_hash
 from app.db.backup_manager import backup_manager
 from app.db.connection_manager import connection_manager
 from app.db.error_utils import friendly_error
@@ -99,6 +99,16 @@ def compact_context(request: AICompactRequest) -> AICompactResponse:
         )
         summary = response.choices[0].message.content or "当前会话暂无可压缩摘要。"
         return AICompactResponse(summary=summary)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
+
+
+@router.post("/context-stats", response_model=AIContextStatsResponse)
+def context_stats(request: AIContextStatsRequest) -> AIContextStatsResponse:
+    try:
+        messages = [AIMessage(role="system", content=build_system_prompt("none", "未选择上下文", request.workspace)).model_dump(exclude_none=True)]
+        messages.extend(message.model_dump(exclude_none=True) for message in request.messages if message.role != "system")
+        return build_context_stats(messages, request.config)
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
 

@@ -9,7 +9,7 @@ class ConnectionRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     database_type: DatabaseType
     host: str | None = None
-    port: int | None = None
+    port: int | str | None = None
     username: str | None = None
     password: str | None = None
     database: str | None = None
@@ -24,6 +24,8 @@ class ConnectionInfo(BaseModel):
     connection_id: str
     name: str
     database_type: DatabaseType
+    host: str | None = None
+    port: int | str | None = None
     database: str
     has_password: bool = False
     is_open: bool = False

@@ -128,7 +128,12 @@ def get_objects(connection_id: str, database: str | None = None, pg_database: st
     if engine is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="连接已关闭，请先打开连接")
 
-    return DbObjectsResponse(objects=list_db_objects(engine, database, pg_database, type))
+    objects = list_db_objects(engine, database, pg_database, type)
+    if type in {None, "table"}:
+        for obj in objects:
+            if obj.type == "table" and not obj.comment:
+                obj.comment = get_table_comment(engine, obj.name, database, pg_database)
+    return DbObjectsResponse(objects=objects)
 
 
 @router.get("/{connection_id}/objects/{object_name}/ddl", response_model=ObjectDdlResponse)

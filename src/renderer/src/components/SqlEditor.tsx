@@ -39,12 +39,17 @@ export interface SqlCompletionContext {
 interface SqlEditorProps {
   value: string
   onChange: (value: string) => void
-  onExecute?: (sql?: string) => void
-  onSelectionChange?: (sql: string) => void
+  onExecute?: (payload: { sql?: string; selectedSql: string; currentStatementSql: string }) => void
+  onSelectionChange?: (payload: { selectedSql: string; currentStatementSql: string }) => void
   theme: 'dark' | 'light'
   completionContext?: SqlCompletionContext
   readOnly?: boolean
   height?: string
+  shortcuts?: {
+    execute?: string
+    deleteLine?: string
+    duplicateLineDown?: string
+  }
 }
 
 const COMMON_KEYWORDS = [
@@ -203,13 +208,141 @@ const getDotQualifier = (text: string): string | undefined => {
   return match?.[1]?.replace(/^`|`$/g, '').replace(/^"|"$/g, '')
 }
 
-function SqlEditor({ value, onChange, onExecute, onSelectionChange, theme, completionContext, readOnly = false, height = '100%' }: SqlEditorProps): React.JSX.Element {
+const splitSqlStatements = (sql: string): { text: string; start: number; end: number }[] => {
+  const statements: { text: string; start: number; end: number }[] = []
+  let quote: "'" | '"' | '`' | null = null
+  let lineComment = false
+  let blockComment = false
+  let start = 0
+
+  for (let index = 0; index < sql.length; index += 1) {
+    const char = sql[index]
+    const next = sql[index + 1]
+
+    if (lineComment) {
+      if (char === '\n') {
+        lineComment = false
+      }
+      continue
+    }
+
+    if (blockComment) {
+      if (char === '*' && next === '/') {
+        blockComment = false
+        index += 1
+      }
+      continue
+    }
+
+    if (quote) {
+      if (char === quote) {
+        if ((quote === "'" || quote === '"') && next === quote) {
+          index += 1
+          continue
+        }
+        quote = null
+      }
+      continue
+    }
+
+    if (char === '-' && next === '-') {
+      lineComment = true
+      index += 1
+      continue
+    }
+
+    if (char === '/' && next === '*') {
+      blockComment = true
+      index += 1
+      continue
+    }
+
+    if (char === "'" || char === '"' || char === '`') {
+      quote = char
+      continue
+    }
+
+    if (char === ';') {
+      const raw = sql.slice(start, index)
+      const trimmed = raw.trim()
+      if (trimmed) {
+        const trimmedStartOffset = raw.search(/\S/)
+        const trimmedEndOffset = raw.length - raw.trimEnd().length
+        const statementStart = start + Math.max(0, trimmedStartOffset)
+        const statementEnd = index - trimmedEndOffset
+        statements.push({ text: trimmed, start: statementStart, end: statementEnd })
+      }
+      start = index + 1
+    }
+  }
+
+  const tail = sql.slice(start)
+  const trimmedTail = tail.trim()
+  if (trimmedTail) {
+    const trimmedStartOffset = tail.search(/\S/)
+    const trimmedEndOffset = tail.length - tail.trimEnd().length
+    const statementStart = start + Math.max(0, trimmedStartOffset)
+    const statementEnd = sql.length - trimmedEndOffset
+    statements.push({ text: trimmedTail, start: statementStart, end: statementEnd })
+  }
+
+  return statements
+}
+
+const normalizeShortcut = (shortcut?: string): string => shortcut?.replace(/\s+/g, '').toLowerCase() ?? ''
+
+const parseKeybinding = (shortcut?: string): number | null => {
+  const normalized = normalizeShortcut(shortcut)
+  if (!normalized) {
+    return null
+  }
+
+  const parts = normalized.split('+').filter(Boolean)
+  let binding = 0
+  let keyCode: number | null = null
+
+  for (const part of parts) {
+    if (part === 'ctrl' || part === 'cmd' || part === 'ctrlcmd') {
+      binding |= monaco.KeyMod.CtrlCmd
+      continue
+    }
+    if (part === 'shift') {
+      binding |= monaco.KeyMod.Shift
+      continue
+    }
+    if (part === 'alt' || part === 'option') {
+      binding |= monaco.KeyMod.Alt
+      continue
+    }
+    if (part === 'enter') {
+      keyCode = monaco.KeyCode.Enter
+      continue
+    }
+    if (part === 'arrowdown') {
+      keyCode = monaco.KeyCode.DownArrow
+      continue
+    }
+    if (part === 'd') {
+      keyCode = monaco.KeyCode.KeyD
+      continue
+    }
+    if (part.length === 1 && /^[a-z]$/.test(part)) {
+      keyCode = monaco.KeyCode[`Key${part.toUpperCase()}` as keyof typeof monaco.KeyCode] as number
+      continue
+    }
+    return null
+  }
+
+  return keyCode == null ? null : (binding | keyCode)
+}
+
+function SqlEditor({ value, onChange, onExecute, onSelectionChange, theme, completionContext, readOnly = false, height = '100%', shortcuts }: SqlEditorProps): React.JSX.Element {
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null)
   const monacoRef = useRef<typeof Monaco | null>(null)
   const completionDisposableRef = useRef<Monaco.IDisposable | null>(null)
   const contextRef = useRef<SqlCompletionContext | undefined>(completionContext)
-  const executeRef = useRef<((sql?: string) => void) | undefined>(onExecute)
-  const selectionChangeRef = useRef<((sql: string) => void) | undefined>(onSelectionChange)
+  const executeRef = useRef<((payload: { sql?: string; selectedSql: string; currentStatementSql: string }) => void) | undefined>(onExecute)
+  const selectionChangeRef = useRef<((payload: { selectedSql: string; currentStatementSql: string }) => void) | undefined>(onSelectionChange)
 
   useEffect(() => {
     contextRef.current = completionContext
@@ -303,6 +436,36 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, theme, compl
     return model.getValueInRange(selection).trim()
   }
 
+  const getCurrentStatementSql = (editor: Monaco.editor.IStandaloneCodeEditor): string => {
+    const model = editor.getModel()
+    const position = editor.getPosition()
+    if (!model || !position) {
+      return ''
+    }
+
+    const fullSql = model.getValue()
+    const statements = splitSqlStatements(fullSql)
+    if (statements.length <= 1) {
+      return model.getLineContent(position.lineNumber).trim() || fullSql.trim()
+    }
+
+    const offset = model.getOffsetAt(position)
+    for (const statement of statements) {
+      if (offset >= statement.start && offset <= statement.end) {
+        return statement.text
+      }
+    }
+
+    return model.getLineContent(position.lineNumber).trim() || fullSql.trim()
+  }
+
+  const emitSelectionState = (editor: Monaco.editor.IStandaloneCodeEditor): void => {
+    selectionChangeRef.current?.({
+      selectedSql: getSelectedSql(editor),
+      currentStatementSql: getCurrentStatementSql(editor)
+    })
+  }
+
   const handleMount: OnMount = (editor, monaco) => {
     editorRef.current = editor
     monacoRef.current = monaco
@@ -311,17 +474,42 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, theme, compl
     }
 
     editor.onDidChangeCursorSelection(() => {
-      selectionChangeRef.current?.(getSelectedSql(editor))
+      emitSelectionState(editor)
     })
 
     if (!readOnly) {
+      const executeKeybinding = parseKeybinding(shortcuts?.execute) ?? (monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter)
+      const deleteLineKeybinding = parseKeybinding(shortcuts?.deleteLine) ?? (monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyD)
+      const duplicateLineDownKeybinding = parseKeybinding(shortcuts?.duplicateLineDown) ?? (monaco.KeyMod.CtrlCmd | monaco.KeyMod.Alt | monaco.KeyCode.DownArrow)
       editor.addAction({
         id: 'execute-query',
         label: 'Execute Query',
-        keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter],
-        run: () => executeRef.current?.(getSelectedSql(editor) || undefined)
+        keybindings: [executeKeybinding],
+        run: () => {
+          const selectedSql = getSelectedSql(editor)
+          const currentStatementSql = getCurrentStatementSql(editor)
+          executeRef.current?.({
+            sql: selectedSql || currentStatementSql || undefined,
+            selectedSql,
+            currentStatementSql
+          })
+        }
+      })
+      editor.addAction({
+        id: 'delete-line',
+        label: 'Delete Line',
+        keybindings: [deleteLineKeybinding],
+        run: () => editor.trigger('keyboard', 'editor.action.deleteLines', null)
+      })
+      editor.addAction({
+        id: 'duplicate-line-down',
+        label: 'Duplicate Line Down',
+        keybindings: [duplicateLineDownKeybinding],
+        run: () => editor.trigger('keyboard', 'editor.action.copyLinesDownAction', null)
       })
     }
+
+    emitSelectionState(editor)
   }
 
   return (

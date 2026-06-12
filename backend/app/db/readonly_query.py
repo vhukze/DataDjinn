@@ -16,6 +16,10 @@ READONLY_TYPES = {"SELECT", "WITH"}
 INTERNAL_PAGING_COLUMNS = {"DATADJINN_RN"}
 
 
+def _split_sql_statements(sql: str) -> list[str]:
+    return [str(statement).strip().rstrip(";") for statement in sqlparse.parse(sql) if str(statement).strip()]
+
+
 def _is_schema_scoped_engine(engine: Engine) -> bool:
     return engine.dialect.name in {"postgresql", "gaussdb"}
 
@@ -133,15 +137,28 @@ def execute_query(engine: Engine, sql: str, limit: int | None, offset: int = 0, 
                 cleanup_engine = True
 
     try:
-        statement = _validate_single_sql(sql)
-        statement_type = sqlparse.parse(statement)[0].get_type().upper()
+        statements = _split_sql_statements(sql)
+        if not statements:
+            raise ValueError("SQL 语句不能为空")
+
+        statement_types = [sqlparse.parse(statement)[0].get_type().upper() for statement in statements]
+        has_readonly = any(statement_type in READONLY_TYPES for statement_type in statement_types)
+
+        if has_readonly:
+            if len(statements) != 1:
+                raise ValueError("包含查询语句时一次只能执行一条 SQL")
+            statement = statements[0]
+            statement_type = statement_types[0]
+        else:
+            statement = statements[0]
+            statement_type = statement_types[0]
 
         if statement_type in READONLY_TYPES:
             if database and engine.dialect.name in {"mysql", "postgresql", "gaussdb", "dm", "dmPython", "oracle", "clickhouse", "clickhousedb"}:
                 return _execute_on_connection_with_context(engine, statement, limit, offset, database)
             return _execute_limited_query(engine, statement, limit, offset)
 
-        return _execute_mutation_query(engine, statement, database)
+        return _execute_mutation_statements(engine, statements, database)
     finally:
         if cleanup_engine:
             engine.dispose()
@@ -660,6 +677,40 @@ def _execute_mutation_query(engine: Engine, sql: str, database: str | None = Non
             limited=False,
             total_count=None
         )
+
+
+def _execute_mutation_statements(engine: Engine, statements: list[str], database: str | None = None) -> QueryResponse:
+    if len(statements) == 1:
+        return _execute_mutation_query(engine, statements[0], database)
+
+    total_affected_rows = 0
+    with engine.begin() as connection:
+        if database:
+            preparer = engine.dialect.identifier_preparer
+            quoted = preparer.quote(database)
+            if _is_schema_scoped_engine(engine):
+                connection.execute(text(f"SET search_path TO {quoted}"))
+            elif engine.dialect.name in {"dm", "dmPython"}:
+                connection.execute(text(f"SET SCHEMA {quoted}"))
+            elif engine.dialect.name == "oracle":
+                connection.execute(text(f"ALTER SESSION SET CURRENT_SCHEMA = {quoted}"))
+            elif engine.dialect.name in {"mysql", "clickhouse", "clickhousedb"}:
+                connection.execute(text(f"USE {quoted}"))
+
+        for statement in statements:
+            result = connection.execute(text(statement))
+            if getattr(result, "returns_rows", False):
+                raise ValueError("多条 SQL 执行中不支持夹带查询语句")
+            if result.rowcount is not None and result.rowcount > 0:
+                total_affected_rows += result.rowcount
+
+    return QueryResponse(
+        columns=["message", "affected_rows"],
+        rows=[{"message": f"共成功执行 {len(statements)} 条 SQL", "affected_rows": total_affected_rows}],
+        row_count=1,
+        limited=False,
+        total_count=None
+    )
 
 
 def _validate_single_sql(sql: str) -> str:

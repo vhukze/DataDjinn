@@ -1,5 +1,5 @@
-import { CheckCircleOutlined, ClockCircleOutlined, CloseCircleOutlined, CloseOutlined, DatabaseOutlined, DeleteOutlined, DownOutlined, ExclamationCircleOutlined, LoadingOutlined, PlusOutlined, RightOutlined, RobotOutlined, SettingOutlined, StopOutlined, ToolOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, Collapse, Flex, Form, Input, List, Modal, Select, Space, Steps, Switch, Tag, Typography, message } from 'antd'
+import { CheckCircleOutlined, ClockCircleOutlined, CloseCircleOutlined, CloseOutlined, DatabaseOutlined, DeleteOutlined, DownOutlined, ExclamationCircleOutlined, LoadingOutlined, PlusOutlined, RightOutlined, RobotOutlined, SendOutlined, SettingOutlined, StopOutlined, ToolOutlined } from '@ant-design/icons'
+import { Alert, Button, Card, Collapse, Dropdown, Flex, Form, Input, List, Modal, Progress, Select, Space, Steps, Switch, Tag, Typography, message } from 'antd'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -51,6 +51,13 @@ type AISession = {
   updatedAt: number
   messages: ChatMessage[]
   compactedAt?: number
+  compressedSummary?: string
+}
+
+type AIContextStats = {
+  used_tokens: number
+  max_tokens: number
+  usage_ratio: number
 }
 
 type ToolCallView = {
@@ -177,6 +184,11 @@ interface AIPanelProps {
   onRemoveContextSource?: (sourceId: string) => void
   onWorkspaceAction?: (action: AgentWorkspaceAction) => void
   onAgentDataChanged?: () => void
+  shortcuts?: {
+    send?: string
+    newline?: string
+    stop?: string
+  }
 }
 
 const createAIConfigItem = (config?: Partial<AIConfigItem>): AIConfigItem => ({
@@ -203,9 +215,28 @@ const activeAIConfig = (configs: AIConfigItem[]): AIConfig | null => {
   }
 }
 
-const AUTO_COMPACT_TOKEN_THRESHOLD = 12000
-const CONTEXT_WARNING_TOKEN_THRESHOLD = 8000
+const AUTO_COMPACT_USAGE_RATIO = 0.8
 const MIN_MESSAGES_TO_COMPACT = 6
+
+const normalizeShortcut = (shortcut?: string): string => shortcut?.replace(/\s+/g, '').toLowerCase() ?? ''
+
+const buildShortcutFromKeyboardEvent = (event: { ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey: boolean; key: string }): string => {
+  const normalizedKey = event.key.length === 1 ? event.key.toLowerCase() : event.key.toLowerCase()
+  return [
+    event.ctrlKey || event.metaKey ? 'ctrl' : '',
+    event.altKey ? 'alt' : '',
+    event.shiftKey ? 'shift' : '',
+    normalizedKey
+  ].filter(Boolean).join('+')
+}
+
+const formatTokenK = (value: number): string => {
+  if (value >= 1000) {
+    const scaled = value / 1000
+    return `${scaled >= 100 ? scaled.toFixed(0) : scaled >= 10 ? scaled.toFixed(1) : scaled.toFixed(2)}k`
+  }
+  return String(value)
+}
 
 const isDraftSession = (session: AISession): boolean => session.messages.length === 0
 
@@ -238,8 +269,6 @@ const createSession = (): AISession => {
 }
 
 const sessionTitle = (content: string): string => content.replace(/\s+/g, ' ').slice(0, 24) || '新会话'
-
-const estimateTokens = (value: unknown): number => Math.ceil(JSON.stringify(value ?? '').length / 3)
 
 const contextSourceTitle = (source: AIContextSource): string => {
   if (source.type === 'schema') {
@@ -294,7 +323,7 @@ const parseSseLines = (buffer: string): { events: StreamEvent[]; rest: string } 
   return { events, rest }
 }
 
-export default function AIPanel({ requestJson, connectionContext, workspace, contextSources = [], primaryContextSourceId, onRemoveContextSource, onWorkspaceAction, onAgentDataChanged }: AIPanelProps): React.JSX.Element {
+export default function AIPanel({ requestJson, connectionContext, workspace, contextSources = [], primaryContextSourceId, onRemoveContextSource, onWorkspaceAction, onAgentDataChanged, shortcuts }: AIPanelProps): React.JSX.Element {
   const [messageApi, contextHolder] = message.useMessage()
   const showError = (error: unknown, fallback = '操作失败'): void => {
     const content = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
@@ -320,15 +349,30 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
   const [input, setInput] = useState('')
   const [sessions, setSessions] = useState<AISession[]>([])
   const [activeSessionId, setActiveSessionId] = useState<string>('')
+  const [selectedConfigId, setSelectedConfigId] = useState<string>('')
+  const [contextStats, setContextStats] = useState<AIContextStats | null>(null)
   const streamIdRef = useRef<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const persistTimerRef = useRef<number | null>(null)
   const queuedStreamEventsRef = useRef<QueuedStreamUpdate[]>([])
   const streamFlushFrameRef = useRef<number | null>(null)
   const suppressAutoScrollRef = useRef(false)
+  const autoCompactRunningRef = useRef(false)
 
-  const config = activeAIConfig(configs)
-  const activeConfigItem = configs.find((item) => item.enabled)
+  const activeConfigItem = useMemo(() => {
+    if (selectedConfigId) {
+      return configs.find((item) => item.id === selectedConfigId) ?? configs.find((item) => item.enabled)
+    }
+    return configs.find((item) => item.enabled)
+  }, [configs, selectedConfigId])
+  const config = activeConfigItem && activeConfigItem.base_url && activeConfigItem.api_key && activeConfigItem.model
+    ? {
+        provider: activeConfigItem.provider ?? 'openai-compatible',
+        base_url: activeConfigItem.base_url,
+        api_key: activeConfigItem.api_key,
+        model: activeConfigItem.model
+      }
+    : null
   const ready = Boolean(config)
   const hasDatabaseContext = Boolean(connectionContext.connectionId)
   const canChat = ready
@@ -339,8 +383,22 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
     () => messages.map((item) => ({ role: item.role, content: item.content })),
     [messages]
   )
-  const contextTokens = estimateTokens({ messages: apiMessages, workspace })
-  const contextLevel = contextTokens >= AUTO_COMPACT_TOKEN_THRESHOLD ? 'full' : contextTokens >= CONTEXT_WARNING_TOKEN_THRESHOLD ? 'warning' : 'ok'
+  const buildConversationMessages = (session?: AISession): Array<{ role: string; content: string }> => {
+    if (!session) {
+      return []
+    }
+    const nextMessages = session.messages.map((item) => ({ role: item.role, content: item.content }))
+    if (session.compressedSummary) {
+      nextMessages.unshift({
+        role: 'assistant',
+        content: `以下是当前会话已压缩的上下文摘要：\n\n${session.compressedSummary}`
+      })
+    }
+    return nextMessages
+  }
+  const contextUsagePercent = Math.round((contextStats?.usage_ratio ?? 0) * 100)
+  const contextProgressPercent = contextUsagePercent > 0 ? Math.max(contextUsagePercent, 4) : 0
+  const contextLevel = contextUsagePercent >= 80 ? 'full' : contextUsagePercent >= 60 ? 'warning' : 'ok'
 
   useEffect(() => {
     void Promise.all([window.api.getAIConfigs(), window.api.getAIConfig()]).then(([storedConfigs, legacyConfig]) => {
@@ -353,6 +411,8 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
       if (storedConfigs.length === 0 && nextConfigs.length > 0) {
         void window.api.setAIConfigs(nextConfigs)
       }
+      const initialActive = nextConfigs.find((item) => item.enabled) ?? nextConfigs[0]
+      setSelectedConfigId(initialActive?.id ?? '')
     })
     void window.api.getAISessions().then((stored) => {
       const restoredSessions = normalizeSessions(stored as AISession[])
@@ -361,6 +421,28 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
       setActiveSessionId(restored[0].id)
     })
   }, [])
+
+  useEffect(() => {
+    if (!activeConfigItem && configs.length > 0) {
+      setSelectedConfigId(configs[0].id)
+    }
+  }, [activeConfigItem, configs])
+
+  useEffect(() => {
+    if (!config) {
+      setContextStats(null)
+      return
+    }
+    const sessionMessages = buildConversationMessages(activeSession)
+    void requestJson<AIContextStats>('/ai/context-stats', {
+      method: 'POST',
+      body: JSON.stringify({
+        messages: sessionMessages,
+        config,
+        workspace
+      })
+    }).then(setContextStats).catch(() => setContextStats(null))
+  }, [activeSession?.compressedSummary, activeSession?.messages, config, requestJson, workspace])
 
   useEffect(() => {
     if (suppressAutoScrollRef.current) {
@@ -593,6 +675,15 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
 
     setCompacting(true)
     try {
+      const compactingMessageId = crypto.randomUUID()
+      updateActiveSession((currentSession) => ({
+        ...currentSession,
+        updatedAt: Date.now(),
+        messages: [
+          ...currentSession.messages,
+          { id: compactingMessageId, role: 'assistant', content: '自动压缩上下文中…' }
+        ]
+      }), { persist: true })
       const result = await requestJson<{ summary: string }>('/ai/compact', {
         method: 'POST',
         body: JSON.stringify({
@@ -601,23 +692,16 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
           workspace
         })
       })
-      const now = Date.now()
-      const compactedSession: AISession = {
-        id: crypto.randomUUID(),
-        title: `${session.title} · 压缩`,
-        createdAt: now,
-        updatedAt: now,
-        compactedAt: now,
-        messages: [
-          {
-            id: crypto.randomUUID(),
-            role: 'assistant',
-            content: `以下是从上一段会话压缩得到的上下文摘要，后续对话会基于它继续：\n\n${result.summary}`
-          }
-        ]
-      }
-      persistSessions([compactedSession, ...sessions])
-      setActiveSessionId(compactedSession.id)
+      updateActiveSession((currentSession) => ({
+        ...currentSession,
+        updatedAt: Date.now(),
+        compactedAt: Date.now(),
+        compressedSummary: result.summary,
+        messages: currentSession.messages
+          .filter((item) => item.id === compactingMessageId || item.role === 'user' || item.role === 'assistant')
+          .slice(-2)
+          .map((item) => item.id === compactingMessageId ? { ...item, content: '已自动压缩上下文。' } : item)
+      }), { persist: true })
       return true
     } catch (err) {
       showError(err instanceof Error ? err.message : '上下文压缩失败')
@@ -699,10 +783,15 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
       return
     }
 
-    let nextApiMessages = apiMessages
-    if (contextTokens >= AUTO_COMPACT_TOKEN_THRESHOLD && await compactActiveSession()) {
-      messageApi.info('上下文接近上限，已自动压缩并开启新会话，请在新会话中继续发送')
-      return
+    let nextApiMessages = buildConversationMessages(activeSession)
+    if ((contextStats?.usage_ratio ?? 0) >= AUTO_COMPACT_USAGE_RATIO && !autoCompactRunningRef.current) {
+      autoCompactRunningRef.current = true
+      try {
+        await compactActiveSession()
+      } finally {
+        autoCompactRunningRef.current = false
+      }
+      nextApiMessages = buildConversationMessages(sessions.find((item) => item.id === activeSessionId))
     }
 
     const userMessage: ChatMessage = { id: crypto.randomUUID(), role: 'user', content }
@@ -1194,40 +1283,87 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
             )}
           />
         </div>
-        <Flex gap={8} className="ai-input-bar">
+        <div className="ai-input-shell">
           <Input.TextArea
             value={input}
+            className="ai-input-box"
             onChange={(event) => setInput(event.target.value)}
             onPressEnter={(event) => {
-              if (!event.shiftKey) {
+              const pressed = normalizeShortcut(buildShortcutFromKeyboardEvent({
+                ctrlKey: event.ctrlKey,
+                metaKey: event.metaKey,
+                altKey: event.altKey,
+                shiftKey: event.shiftKey,
+                key: 'Enter'
+              }))
+              const sendShortcut = normalizeShortcut(shortcuts?.send || 'Enter')
+              const newlineShortcut = normalizeShortcut(shortcuts?.newline || 'Shift+Enter')
+
+              if (pressed === sendShortcut) {
                 event.preventDefault()
                 void sendMessage()
+                return
+              }
+
+              if (pressed !== newlineShortcut) {
+                event.preventDefault()
               }
             }}
-            placeholder="输入问题，Enter 发送，Shift+Enter 换行"
-            autoSize={{ minRows: 2, maxRows: 5 }}
+            onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing) {
+                return
+              }
+              const stopShortcut = normalizeShortcut(shortcuts?.stop || 'Ctrl+C')
+              const pressed = normalizeShortcut(buildShortcutFromKeyboardEvent(event))
+              if (sending && pressed === stopShortcut) {
+                event.preventDefault()
+                stopMessage()
+              }
+            }}
+            placeholder="输入问题"
+            autoSize={{ minRows: 5, maxRows: 10 }}
           />
-          {sending ? (
-            <Button danger icon={<StopOutlined />} onClick={stopMessage}>停止</Button>
-          ) : (
-            <Button type="primary" disabled={!ready || !input.trim() || !activeSessionId} onClick={() => void sendMessage()}>发送</Button>
-          )}
-        </Flex>
-        <Flex justify="space-between" align="center" className="ai-model-hint">
-          <Typography.Text type="secondary">当前模型：{config ? `${activeConfigItem?.name ?? 'AI'} · ${config.model}` : '未连接 AI'}</Typography.Text>
-          <Space size={6}>
-            <Tag color={contextLevel === 'full' ? 'error' : contextLevel === 'warning' ? 'warning' : 'success'}>上下文约 {contextTokens.toLocaleString()} tokens</Tag>
-            <Button size="small" type="link" loading={compacting} onClick={() => {
-              void compactActiveSession().then((compacted) => {
-                if (compacted) {
-                  messageApi.success('上下文已压缩，并已开启新会话')
-                } else {
-                  messageApi.info('当前会话内容较少，暂不需要压缩')
-                }
-              })
-            }}>/compact</Button>
-          </Space>
-        </Flex>
+          <div className="ai-input-footer">
+            <Dropdown
+              trigger={['click']}
+              placement="topLeft"
+              menu={{
+                selectable: true,
+                selectedKeys: selectedConfigId ? [selectedConfigId] : [],
+                items: configs
+                  .filter((item) => item.base_url && item.api_key && item.model)
+                  .map((item) => ({
+                    key: item.id,
+                    label: `${item.name} · ${item.model}`
+                  })),
+                onClick: ({ key }) => setSelectedConfigId(String(key))
+              }}
+            >
+              <button type="button" className="ai-model-trigger">
+                <span className="ai-model-trigger-name">{activeConfigItem?.model ?? '未连接 AI'}</span>
+                <DownOutlined />
+              </button>
+            </Dropdown>
+            <div className="ai-context-meter">
+              <Progress
+                percent={contextProgressPercent}
+                size={['100%', 6]}
+                status={contextLevel === 'full' ? 'exception' : 'normal'}
+                showInfo={false}
+                trailColor="rgba(255,255,255,0.08)"
+                strokeColor={contextLevel === 'full' ? '#ff6b6b' : contextLevel === 'warning' ? '#f7c45c' : '#79d7ff'}
+              />
+              <Typography.Text type="secondary" className="ai-context-meter-text">
+                {contextStats ? `上下文 ${formatTokenK(contextStats.used_tokens)} / ${formatTokenK(contextStats.max_tokens)}` : '上下文统计中…'}
+              </Typography.Text>
+            </div>
+            {sending ? (
+              <Button danger className="ai-send-button" icon={<StopOutlined />} onClick={stopMessage} />
+            ) : (
+              <Button type="primary" className="ai-send-button" icon={<SendOutlined />} disabled={!ready || !input.trim() || !activeSessionId} onClick={() => void sendMessage()} />
+            )}
+          </div>
+        </div>
       </Space>
       <Modal title="AI 设置" open={settingsOpen} onCancel={() => setSettingsOpen(false)} footer={null} width={640}>
         <Space direction="vertical" className="full-width" size="middle">

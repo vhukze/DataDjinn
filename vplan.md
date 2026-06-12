@@ -1,5 +1,178 @@
 # VPlan
 
+## 2026-06-04：表设计器属性全量扩展方案
+### 目标
+
+- 在创建表和修改表界面补齐以下属性：
+  - 表注释
+  - 字段注释
+  - 字段唯一
+  - 字段自增
+  - 自增步长
+  - 字段最小值
+  - 字段最大值
+- 前端界面继续保持接近 DataGrip 的结构编辑器风格，但不展示底部 SQL 预览。
+- 后端真实承接这些属性，不能只做前端展示。
+- 对不同数据库做能力分级，避免 UI 假装支持。
+
+### 范围决策
+
+- 一期直接覆盖创建表与修改表两条链路。
+- 重点支持关系型数据库：
+  - `MySQL`
+  - `PostgreSQL`
+  - `SQLite`
+- 兼容展示但不强做完整编辑能力：
+  - `达梦`
+  - `ClickHouse`
+  - `MongoDB`
+  - `Redis`
+- 原因：
+  - 现有修改表后端只支持 `MySQL / SQLite`，这次会补到 `PostgreSQL`。
+  - `达梦 / ClickHouse` 在注释、自增、约束表达上的差异更大，一期先保证创建表不误导、编辑态按能力受限。
+
+### 后端改造
+
+#### 1. 扩展 schema
+
+- 扩展 `backend/app/schemas/metadata.py`
+- `ColumnInfo` 新增：
+  - `comment`
+  - `unique`
+  - `auto_increment`
+  - `auto_increment_step`
+  - `minimum`
+  - `maximum`
+- `TableUpdateColumn` 同步扩展以上字段。
+- `TableUpdateRequest` 新增：
+  - `table_comment`
+- 增加长度与基础格式校验，避免前端把明显非法值直接送进 DDL。
+
+#### 2. 补齐列元数据读取
+
+- 扩展 `backend/app/db/metadata.py:list_columns()`
+- `MySQL`
+  - 读取 `information_schema.columns` 的字段注释、自增信息。
+  - 读取 `information_schema.statistics` 判断单字段唯一索引。
+  - 读取 `information_schema.tables` 获取表注释。
+- `PostgreSQL`
+  - 通过 `col_description` / `obj_description` 读取字段注释和表注释。
+  - 通过 `pg_constraint` / `pg_index` 判断唯一约束。
+  - 通过 `information_schema.columns.column_default` 识别 identity / sequence 自增。
+- `SQLite`
+  - 通过 `PRAGMA table_info`、`PRAGMA index_list`、`PRAGMA index_info` 推断主键、唯一。
+  - 注释、自增步长、最小值、最大值无稳定系统表支持，优先从建表 SQL 做有限提取；无法可靠提取时返回空值。
+
+#### 3. 建表 DDL 生成
+
+- 不再让前端拼完整关系型 DDL。
+- 后端新增统一建表语句生成函数，按数据库类型输出：
+  - 列定义
+  - 主键
+  - 唯一
+  - 自增 / identity
+  - `CHECK` 约束（最小值 / 最大值）
+  - 表注释 / 字段注释
+- 其中：
+  - `MySQL` 使用 `COMMENT`、`AUTO_INCREMENT`、`UNIQUE`、`CHECK`
+  - `PostgreSQL` 使用 `GENERATED ... AS IDENTITY` 或序列、`COMMENT ON`、`CHECK`
+  - `SQLite` 使用内联 `PRIMARY KEY AUTOINCREMENT`、`UNIQUE`、`CHECK`
+
+#### 4. 修改表 DDL 生成
+
+- 保留“修改表”能力分级，不做超出当前数据库安全边界的假支持。
+- `MySQL`
+  - 支持修改字段类型、可空、注释、唯一、自增、步长、最小/最大值。
+  - 支持修改表注释。
+- `PostgreSQL`
+  - 新增支持字段类型、可空、注释、唯一、identity、最小/最大值。
+  - 支持修改表注释。
+- `SQLite`
+  - 仍采用重建表策略。
+  - 尽量保留主键、唯一、非空、检查约束。
+  - 注释仍以“不支持稳定持久化”为准，不承诺数据库级保存。
+- `达梦 / ClickHouse`
+  - 修改表界面只展示只读或受限说明，不提交这些新增属性。
+
+### 前端改造
+
+#### 1. 扩展列模型
+
+- 扩展 `src/renderer/src/App.tsx` 中的 `ColumnInfo` / `ColumnDef`
+- 新增字段：
+  - `comment`
+  - `unique`
+  - `autoIncrement`
+  - `autoIncrementStep`
+  - `minimum`
+  - `maximum`
+- 增加表级状态：
+  - `newTableComment`
+  - `editingTableComment`
+
+#### 2. 重构结构编辑器
+
+- 在 `renderTableDesigner()` 中补齐字段列：
+  - 名称
+  - 类型
+  - 主键
+  - 非空
+  - 唯一
+  - 自增
+  - 步长
+  - 最小值
+  - 最大值
+  - 注释
+- 交互规则：
+  - 主键自动联动非空。
+  - 自增仅允许数值类型启用。
+  - 自增开启后自动关闭可空。
+  - 步长仅在支持且启用自增时可编辑。
+  - 最小值/最大值支持为空，并校验 `min <= max`。
+- 在表头区域增加表注释输入。
+
+#### 3. 提交流程
+
+- 创建表：
+  - 发送结构化 payload 到后端，由后端生成并执行 DDL。
+- 修改表：
+  - 发送完整列定义和表注释到现有更新接口扩展版。
+- 对不支持的数据库在 UI 上直接禁用并显示原因，不允许用户填完后再报错。
+
+### 数据库差异策略
+
+- `MySQL`
+  - 完整支持本次新增属性。
+- `PostgreSQL`
+  - 完整支持本次新增属性，表/字段注释通过单独 `COMMENT ON` 实现。
+- `SQLite`
+  - 支持唯一、自增、最小值、最大值。
+  - 不承诺真正持久化表/字段注释和步长。
+- `达梦`
+  - 创建表阶段先保留现状；编辑态不给出这些新能力入口。
+- `ClickHouse`
+  - 仅保留必要字段定义，不提供这些关系型约束属性入口。
+- `MongoDB / Redis`
+  - 不适用，继续维持轻量创建逻辑。
+
+### 实施步骤
+
+1. 扩展后端 schema 和前端类型定义。
+2. 扩展列元数据接口返回更多属性。
+3. 新增后端统一建表 DDL 生成与执行入口。
+4. 扩展修改表 DDL 生成，补上 `PostgreSQL`，增强 `MySQL / SQLite`。
+5. 重构前端表设计器列和表注释区域。
+6. 为不同数据库加能力开关和禁用说明。
+7. 做静态校验与回归检查。
+
+### 验收标准
+
+- 创建表界面可编辑表注释、字段注释、唯一、自增、步长、最小值、最大值。
+- 修改表界面在 `MySQL / PostgreSQL / SQLite` 下按各自能力正常提交。
+- 表设计器重新打开时，已存在的字段属性能正确回显。
+- 不支持的数据库不会出现误导性的可编辑控件。
+- 现有创建集合、创建 ClickHouse 表、旧版简单改列能力不回退。
+
 ## 2026-05-24：结果表格分页沉底修复方案
 
 ### 目标

@@ -24,6 +24,7 @@ class TableInfo(BaseModel):
 class DbObjectInfo(BaseModel):
     name: str
     type: str
+    comment: str | None = None
     size_bytes: int | None = None
     size_display: str | None = None
     storage_size_bytes: int | None = None
