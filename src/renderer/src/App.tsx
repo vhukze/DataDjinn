@@ -19,6 +19,7 @@
   EyeOutlined,
   FolderAddOutlined,
   FolderOpenOutlined,
+  LoadingOutlined,
   LoginOutlined,
   MinusOutlined,
   MoonOutlined,
@@ -202,6 +203,9 @@ type WhereClauseInputProps = {
   tabKey: string
   columns: string[]
   value?: string
+  label?: string
+  placeholder?: string
+  disableSuggestions?: boolean
   onSubmit: (value: string) => void
 }
 
@@ -209,11 +213,15 @@ const WhereClauseInput = memo(function WhereClauseInput({
   tabKey,
   columns,
   value,
+  label,
+  placeholder,
+  disableSuggestions,
   onSubmit
 }: WhereClauseInputProps) {
   const [inputValue, setInputValue] = useState(value ?? '')
   const [highlightedIndex, setHighlightedIndex] = useState(0)
   const [suggestionsDismissed, setSuggestionsDismissed] = useState(false)
+  const inputRef = useRef<InputRef | null>(null)
 
   useEffect(() => {
     setInputValue(value ?? '')
@@ -221,7 +229,14 @@ const WhereClauseInput = memo(function WhereClauseInput({
     setSuggestionsDismissed(false)
   }, [tabKey, value])
 
+  useEffect(() => {
+    inputRef.current?.focus()
+  }, [])
+
   const suggestionState = useMemo(() => {
+    if (disableSuggestions) {
+      return { token: '', start: -1, options: [] as string[] }
+    }
     const match = /(^|[^A-Za-z0-9_"])([A-Za-z_][A-Za-z0-9_]*)$/.exec(inputValue)
     if (!match) {
       return { token: '', start: -1, options: [] as string[] }
@@ -296,7 +311,7 @@ const WhereClauseInput = memo(function WhereClauseInput({
   return (
     <div className="preview-where-shell">
       <div className="preview-where-inline">
-        <span className="preview-where-label">WHERE</span>
+        <span className="preview-where-label">{label ?? 'WHERE'}</span>
         <div className="preview-where-editor">
           {inputValue && (
             <span
@@ -306,19 +321,29 @@ const WhereClauseInput = memo(function WhereClauseInput({
             />
           )}
         <Input
+          ref={inputRef}
           className="preview-where-field"
           size="small"
           variant="borderless"
           value={inputValue}
-          placeholder="输入过滤条件，例如：id = 2，回车查询"
-            onChange={(event) => {
-              setInputValue(event.currentTarget.value)
-              setHighlightedIndex(0)
-              setSuggestionsDismissed(false)
-            }}
-            onKeyDown={handleWhereInputKeyDown}
-            onPressEnter={() => undefined}
-          />
+          placeholder={placeholder ?? '输入过滤条件，例如：id = 2，回车查询'}
+          allowClear
+          onChange={(event) => {
+            setInputValue(event.currentTarget.value)
+            setHighlightedIndex(0)
+            setSuggestionsDismissed(false)
+          }}
+          onClear={() => {
+            setInputValue('')
+            setHighlightedIndex(0)
+            setSuggestionsDismissed(false)
+            requestAnimationFrame(() => {
+              inputRef.current?.focus()
+            })
+          }}
+          onKeyDown={handleWhereInputKeyDown}
+          onPressEnter={() => undefined}
+        />
         </div>
       </div>
       {suggestionsOpen && (
@@ -1077,6 +1102,8 @@ type QueryResponse = {
   row_count: number
   limited: boolean
   total_count?: number | null
+  sort_column?: string | null
+  sort_direction?: string | null
 }
 
 type QueryResultKind = 'query' | 'command' | 'error'
@@ -1121,7 +1148,22 @@ type RedisExpandedValues = Record<string, true>
 
 type CellInspectorView = 'record' | 'value' | 'aggregate'
 
-type CellInspectorState = { tabKey: string; view: CellInspectorView }
+type ValueDisplayMode = 'raw' | 'json'
+
+const tryFormatJsonText = (value: unknown): string | null => {
+  if (value === null || value === undefined || isDefaultValueMarker(value)) {
+    return null
+  }
+  const raw = typeof value === 'string' ? value.trim() : JSON.stringify(value)
+  if (!raw) {
+    return null
+  }
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2)
+  } catch {
+    return null
+  }
+}
 
 type WorkspaceTab = {
   key: string
@@ -1155,6 +1197,7 @@ type WorkspaceTab = {
   commandMessage?: string
   commandAffectedRows?: number | null
   queryEditorHeight?: number
+  valueDisplayMode?: ValueDisplayMode
   redisMode?: RedisBrowserMode
   redisExpandedValues?: RedisExpandedValues
   redisEdits?: Record<string, RedisKeyEdit>
@@ -1173,9 +1216,12 @@ type PersistedQueryWorkspace = {
   key: string
   title: string
   connectionId?: string
+  connectionName?: string
   databaseName?: string
   pgDatabaseName?: string
   sql: string
+  limit?: number
+  queryEditorHeight?: number
   persistedAt: number
 }
 
@@ -1458,6 +1504,44 @@ const SearchHighlightedText = memo(function SearchHighlightedText({
   }
   return <span className={className} dangerouslySetInnerHTML={{ __html: highlightedHtml }} />
 })
+
+const isResultTableScrollbarInteraction = (event: React.MouseEvent<HTMLDivElement>): boolean => {
+  const target = event.target as HTMLElement | null
+  if (target?.closest('.ant-table-tbody-virtual-scrollbar, .rc-virtual-list-scrollbar')) {
+    return true
+  }
+
+  const container = event.currentTarget
+  const rect = container.getBoundingClientRect()
+  const scrollbarWidth = container.offsetWidth - container.clientWidth
+  const scrollbarHeight = container.offsetHeight - container.clientHeight
+  const pointerX = event.clientX - rect.left
+  const pointerY = event.clientY - rect.top
+
+  if (scrollbarWidth > 0 && container.scrollHeight > container.clientHeight) {
+    const verticalScrollbarStart = rect.width - scrollbarWidth
+    if (pointerX >= verticalScrollbarStart) {
+      return true
+    }
+  }
+
+  if (scrollbarHeight > 0 && container.scrollWidth > container.clientWidth) {
+    const horizontalScrollbarStart = rect.height - scrollbarHeight
+    if (pointerY >= horizontalScrollbarStart) {
+      return true
+    }
+  }
+
+  return false
+}
+
+const scheduleSelectionRenderSync = (callback: () => void): void => {
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      callback()
+    })
+  })
+}
 
 const PageSearchControls = memo(function PageSearchControls({
   state,
@@ -1863,6 +1947,292 @@ const ResultTableHeader = memo(function ResultTableHeader({
   )
 })
 
+type CellInspectorPanelHandle = {
+  open: (view: CellInspectorView, selection: string[]) => void
+  close: () => void
+  setSelection: (selection: string[]) => void
+}
+
+const CellInspectorPanel = memo(forwardRef<CellInspectorPanelHandle, {
+  tabKey: string
+  orderedColumns: string[]
+  rowByKey: Map<string, EditableRow>
+  columnInfoMap?: Record<string, ColumnInfo>
+  editable: boolean
+  valueDisplayMode?: ValueDisplayMode
+  onToggleValueDisplay: () => void
+  onUpdateValue: (rowKey: string, column: string, rawValue: string) => void
+}>(
+  function CellInspectorPanel({
+    tabKey,
+    orderedColumns,
+    rowByKey,
+    columnInfoMap,
+    editable,
+    valueDisplayMode,
+    onToggleValueDisplay,
+    onUpdateValue
+  }, ref) {
+    const [open, setOpen] = useState(false)
+    const [view, setView] = useState<CellInspectorView>('record')
+    const [selection, setSelection] = useState<string[]>([])
+    const openRef = useRef(open)
+
+    useEffect(() => {
+      openRef.current = open
+    }, [open])
+
+    useImperativeHandle(ref, () => ({
+      open: (nextView, nextSelection) => {
+        setSelection((current) => (
+          current.length === nextSelection.length && current.every((item, index) => item === nextSelection[index])
+            ? current
+            : [...nextSelection]
+        ))
+        setView(nextView)
+        setOpen(true)
+      },
+      close: () => {
+        setOpen(false)
+      },
+      setSelection: (nextSelection) => {
+        if (!openRef.current) {
+          return
+        }
+        setSelection((current) => (
+          current.length === nextSelection.length && current.every((item, index) => item === nextSelection[index])
+            ? current
+            : [...nextSelection]
+        ))
+      }
+    }), [])
+
+    const orderedRowKeys = useMemo(() => Array.from(rowByKey.keys()), [rowByKey])
+    const orderedRowKeysByLength = useMemo(() => [...orderedRowKeys].sort((left, right) => right.length - left.length), [orderedRowKeys])
+    const orderedColumnIndexMap = useMemo(() => Object.fromEntries(orderedColumns.map((column, index) => [column, index] as const)), [orderedColumns])
+
+    const bounds = useMemo(() => {
+      const parseCellKey = (cellKey: string): { rowKey: string; column: string } | null => {
+        for (const rowKey of orderedRowKeysByLength) {
+          const prefix = `${rowKey}:`
+          if (cellKey.startsWith(prefix)) {
+            return { rowKey, column: cellKey.slice(prefix.length) }
+          }
+        }
+        return null
+      }
+
+      const entries = selection
+        .map((cellKey) => {
+          const parsed = parseCellKey(cellKey)
+          if (!parsed) {
+            return null
+          }
+          const rowIndex = orderedRowKeys.indexOf(parsed.rowKey)
+          const columnIndex = orderedColumnIndexMap[parsed.column]
+          if (rowIndex < 0 || columnIndex === undefined) {
+            return null
+          }
+          return {
+            cellKey,
+            rowKey: parsed.rowKey,
+            column: parsed.column,
+            rowIndex,
+            columnIndex,
+            value: rowByKey.get(parsed.rowKey)?.[parsed.column]
+          }
+        })
+        .filter((entry): entry is {
+          cellKey: string
+          rowKey: string
+          column: string
+          rowIndex: number
+          columnIndex: number
+          value: unknown
+        } => entry !== null)
+
+      if (entries.length === 0) {
+        return null
+      }
+
+      const rowIndexes = entries.map((entry) => entry.rowIndex)
+      const columnIndexes = entries.map((entry) => entry.columnIndex)
+      const rowStart = Math.min(...rowIndexes)
+      const rowEnd = Math.max(...rowIndexes)
+      const columnStart = Math.min(...columnIndexes)
+      const columnEnd = Math.max(...columnIndexes)
+
+      return {
+        rowKeys: orderedRowKeys.slice(rowStart, rowEnd + 1),
+        columns: orderedColumns.slice(columnStart, columnEnd + 1)
+      }
+    }, [orderedColumnIndexMap, orderedColumns, orderedRowKeys, orderedRowKeysByLength, rowByKey, selection])
+
+    const columnTypeOf = (column: string): string | undefined => columnInfoMap?.[column]?.type ?? undefined
+    const anchorSelection = useMemo(() => {
+      if (!bounds) {
+        return null
+      }
+      const rowKey = bounds.rowKeys[0]
+      const column = bounds.columns[0]
+      return {
+        rowKey,
+        column,
+        value: rowByKey.get(rowKey)?.[column]
+      }
+    }, [bounds, rowByKey])
+    const formattedJsonValue = useMemo(
+      () => tryFormatJsonText(anchorSelection?.value),
+      [anchorSelection?.value]
+    )
+
+    const renderRecordView = (): React.ReactNode => {
+      if (!bounds) {
+        return <div className="cell-inspector-empty"><Typography.Text type="secondary">请选择单元格后查看记录</Typography.Text></div>
+      }
+      return (
+        <div className="cell-inspector-records">
+          {bounds.rowKeys.map((rowKey) => {
+            const row = rowByKey.get(rowKey)
+            return (
+              <div className="cell-inspector-record" key={rowKey}>
+                {orderedColumns.map((column) => (
+                  <div className="cell-inspector-field" key={column}>
+                    <div className="cell-inspector-field-label">
+                      <Typography.Text type="secondary" ellipsis title={column}>{column}</Typography.Text>
+                      {columnTypeOf(column) && <span className="cell-inspector-field-type">{columnTypeOf(column)}</span>}
+                    </div>
+                    <Input.TextArea
+                      className="cell-inspector-field-value"
+                      readOnly={!editable}
+                      rows={3}
+                      value={row?.[column] === null || row?.[column] === undefined || isDefaultValueMarker(row?.[column]) ? '' : String(row?.[column])}
+                      placeholder={row?.[column] === null || row?.[column] === undefined ? 'NULL' : isDefaultValueMarker(row?.[column]) ? 'DEFAULT' : undefined}
+                      onChange={(event) => {
+                        if (!editable) {
+                          return
+                        }
+                        onUpdateValue(rowKey, column, event.currentTarget.value)
+                      }}
+                    />
+                  </div>
+                ))}
+              </div>
+            )
+          })}
+        </div>
+      )
+    }
+
+    const renderValueView = (): React.ReactNode => {
+      if (!bounds || !anchorSelection) {
+        return <div className="cell-inspector-empty"><Typography.Text type="secondary">请选择单元格后查看值</Typography.Text></div>
+      }
+      const anchorRowKey = anchorSelection.rowKey
+      const anchorColumn = anchorSelection.column
+      const anchorValue = anchorSelection.value
+      const readonlyJsonMode = valueDisplayMode === 'json' && Boolean(formattedJsonValue)
+      return (
+        <div className="cell-inspector-value-wrap">
+          <Flex align="center" justify="space-between" gap={8} className="cell-inspector-value-toolbar">
+            <Typography.Text type="secondary" className="cell-inspector-value-meta">{anchorColumn}{columnTypeOf(anchorColumn) ? ` · ${columnTypeOf(anchorColumn)}` : ''}</Typography.Text>
+            {formattedJsonValue && (
+              <Button type="text" size="small" onClick={onToggleValueDisplay}>
+                {readonlyJsonMode ? '原始编辑' : 'JSON 格式化'}
+              </Button>
+            )}
+          </Flex>
+          <Input.TextArea
+            className="cell-inspector-value-area"
+            readOnly={!editable || readonlyJsonMode}
+            value={readonlyJsonMode
+              ? formattedJsonValue ?? ''
+              : anchorValue === null || anchorValue === undefined || isDefaultValueMarker(anchorValue)
+                ? ''
+                : String(anchorValue)}
+            placeholder={anchorValue === null || anchorValue === undefined ? 'NULL' : isDefaultValueMarker(anchorValue) ? 'DEFAULT' : undefined}
+            onChange={(event) => {
+              if (!editable || readonlyJsonMode) {
+                return
+              }
+              onUpdateValue(anchorRowKey, anchorColumn, event.currentTarget.value)
+            }}
+          />
+        </div>
+      )
+    }
+
+    const renderAggregateView = (): React.ReactNode => {
+      if (!bounds) {
+        return <div className="cell-inspector-empty"><Typography.Text type="secondary">请选择单元格后查看聚合</Typography.Text></div>
+      }
+      const flatValues = bounds.rowKeys.flatMap((rowKey) => bounds.columns.map((column) => rowByKey.get(rowKey)?.[column]))
+      const nonEmpty = flatValues.filter((value) => value !== null && value !== undefined && !isDefaultValueMarker(value))
+      const numbers = nonEmpty
+        .map((value) => (typeof value === 'number' ? value : Number(String(value))))
+        .filter((value) => Number.isFinite(value)) as number[]
+      const rowsCount = bounds.rowKeys.length
+      const colsCount = bounds.columns.length
+      const formatNumber = (value: number): string => Number.isFinite(value) ? (Number.isInteger(value) ? String(value) : value.toFixed(2)) : '-'
+      const stats: Array<{ order: number; label: string; value: string }> = [
+        { order: 1, label: '非空值数量', value: String(nonEmpty.length) },
+        { order: 2, label: '数值数量', value: String(numbers.length) },
+        { order: 3, label: '选中行数', value: String(rowsCount) },
+        { order: 4, label: '选中列数', value: String(colsCount) }
+      ]
+      if (numbers.length > 0) {
+        const sum = numbers.reduce((total, value) => total + value, 0)
+        const avg = sum / numbers.length
+        const sorted = [...numbers].sort((left, right) => left - right)
+        const middle = Math.floor(sorted.length / 2)
+        const median = sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle]
+        stats.push(
+          { order: 5, label: '求和', value: formatNumber(sum) },
+          { order: 6, label: '平均值', value: formatNumber(avg) },
+          { order: 7, label: '最小值', value: formatNumber(sorted[0]) },
+          { order: 8, label: '最大值', value: formatNumber(sorted[sorted.length - 1]) },
+          { order: 9, label: '中位数', value: formatNumber(median) }
+        )
+      }
+      return (
+        <div className="cell-inspector-aggregate">
+          {stats.sort((left, right) => left.order - right.order).map((stat) => (
+            <div className="cell-inspector-aggregate-row" key={stat.label}>
+              <span className="cell-inspector-aggregate-label" title={stat.label}>{stat.label}</span>
+              <span className="cell-inspector-aggregate-value">{stat.value}</span>
+            </div>
+          ))}
+        </div>
+      )
+    }
+
+    return (
+      <div className={`cell-inspector${open ? ' is-open' : ''}`} data-tab-key={tabKey}>
+        <div className="cell-inspector-header">
+          <div className="cell-inspector-tabs">
+            <button type="button" className={`cell-inspector-tab${view === 'record' ? ' active' : ''}`} onClick={() => setView('record')}>记录</button>
+            <button type="button" className={`cell-inspector-tab${view === 'value' ? ' active' : ''}`} onClick={() => setView('value')}>值</button>
+            <button type="button" className={`cell-inspector-tab${view === 'aggregate' ? ' active' : ''}`} onClick={() => setView('aggregate')}>聚合</button>
+          </div>
+          <Button type="text" size="small" icon={<CloseOutlined />} onClick={() => setOpen(false)} aria-label="关闭" />
+        </div>
+        <div className="cell-inspector-body">
+          {view === 'record' ? renderRecordView() : view === 'value' ? renderValueView() : renderAggregateView()}
+        </div>
+      </div>
+    )
+  }
+), (prev, next) => (
+  prev.tabKey === next.tabKey
+  && prev.orderedColumns === next.orderedColumns
+  && prev.rowByKey === next.rowByKey
+  && prev.columnInfoMap === next.columnInfoMap
+  && prev.editable === next.editable
+  && prev.valueDisplayMode === next.valueDisplayMode
+  && prev.onToggleValueDisplay === next.onToggleValueDisplay
+  && prev.onUpdateValue === next.onUpdateValue
+))
+
 type ColumnDef = {
   key: string
   name: string
@@ -2187,6 +2557,7 @@ function App(): React.JSX.Element {
   const [aiPanelOpen, setAiPanelOpen] = useState(true)
   const [treeSearchOpen, setTreeSearchOpen] = useState(false)
   const [treeSearchText, setTreeSearchText] = useState('')
+  const treeSearchInputRef = useRef<InputRef | null>(null)
   const [resizingResourcePanel, setResizingResourcePanel] = useState(false)
   const [resizingAiPanel, setResizingAiPanel] = useState(false)
   const [aiContextSources, setAiContextSources] = useState<AIContextSource[]>([])
@@ -2450,8 +2821,6 @@ function App(): React.JSX.Element {
   const [draftSelectedSchemas, setDraftSelectedSchemas] = useState<Record<string, string[]>>({})
   const [completionTables, setCompletionTables] = useState<Record<string, string[]>>({})
   const [tableBodyHeights, setTableBodyHeights] = useState<Record<string, number>>({})
-  const [cellInspector, setCellInspector] = useState<CellInspectorState | null>(null)
-  const [cellSelectionVersion, setCellSelectionVersion] = useState(0)
   const [editingCells, setEditingCells] = useState<EditingCellState>({})
   const [resourceTreeHeight, setResourceTreeHeight] = useState(360)
   const [dragOverFolderTarget, setDragOverFolderTarget] = useState<{ folderId: string; zone: 'before' | 'after' }>()
@@ -2471,12 +2840,14 @@ function App(): React.JSX.Element {
   const selectedCellRefs = useRef<Record<string, string[] | undefined>>({})
   const runtimeSelectedCellRefs = useRef<Record<string, string[] | undefined>>({})
   const cellDragAnchorRefs = useRef<Record<string, { rowKey: string; column: string } | undefined>>({})
+  const scrollbarDragRefs = useRef<Record<string, boolean | undefined>>({})
   const pendingCellDragTargetRefs = useRef<Record<string, { rowKey: string; column: string } | undefined>>({})
   const pendingCellDragFrameRefs = useRef<Record<string, number | undefined>>({})
   const pendingRenderedCellSelectionFrameRefs = useRef<Record<string, number | undefined>>({})
   const committingEditingCellRefs = useRef<Record<string, boolean | undefined>>({})
   const cellClipboardRef = useRef<{ text: string, values: unknown[][] } | null>(null)
   const contextMenuCellSelectionRefs = useRef<Record<string, string[] | undefined>>({})
+  const cellInspectorPanelRefs = useRef<Record<string, CellInspectorPanelHandle | null>>({})
   const inlineCellEditorRefs = useRef<Record<string, {
     rowKey: string
     column: string
@@ -2993,6 +3364,54 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     requestAnimationFrame(() => resolve())
   })
 
+  const locateTreePath = async (targetPath?: string[]): Promise<void> => {
+    if (!targetPath || targetPath.length === 0) {
+      return
+    }
+
+    for (let index = 0; index < targetPath.length - 1; index += 1) {
+      const currentMap = collectTreeNodesByKey(treeDataRef.current)
+      const currentNode = currentMap.get(targetPath[index])
+      if (!currentNode) {
+        return
+      }
+      if (!isTreeNodeChildrenLoaded(currentNode) && isLoadableTreeNode(currentNode)) {
+        await reloadNodeChildren({ ...currentNode, isLeaf: false })
+        await waitForNextFrame()
+      } else if (!expandedKeysRef.current.includes(currentNode.key as React.Key)) {
+        setExpandedKeys((current) => current.includes(currentNode.key as React.Key) ? current : [...current, currentNode.key as React.Key])
+        await waitForNextFrame()
+      }
+    }
+
+    const nodeMap = collectTreeNodesByKey(treeDataRef.current)
+    const targetNode = nodeMap.get(targetPath[targetPath.length - 1])
+    if (!targetNode) {
+      return
+    }
+
+    if (isLoadableTreeNode(targetNode) && !expandedKeysRef.current.includes(targetNode.key as React.Key)) {
+      setExpandedKeys((current) => current.includes(targetNode.key as React.Key) ? current : [...current, targetNode.key as React.Key])
+      await waitForNextFrame()
+    }
+
+    handleTreeSelection(targetNode)
+    resourceTreeContainerRef.current?.focus()
+    if (enableVirtualTree) {
+      const treeApi = resourceTreeRef.current as { scrollTo?: (options: { key: React.Key, align?: 'top' | 'bottom' | 'auto', offset?: number }) => void } | null
+      treeApi?.scrollTo?.({
+        key: targetNode.key as React.Key,
+        align: 'top',
+        offset: Math.max(Math.floor(resourceTreeHeight / 2) - RESOURCE_TREE_ITEM_HEIGHT, 0)
+      })
+      await waitForNextFrame()
+    } else {
+      await waitForNextFrame()
+    }
+    const selectedNode = resourceTreeViewportRef.current?.querySelector('.ant-tree-node-content-wrapper.ant-tree-node-selected')
+    selectedNode?.scrollIntoView({ block: 'center' })
+  }
+
   const locateActiveTreeNode = async (): Promise<void> => {
     const currentTab = workspaceTabs.find((tab) => tab.key === activeTabKey)
     if (!currentTab?.connectionId) {
@@ -3022,49 +3441,18 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         `database:${currentTab.connectionId}:${currentTab.databaseName}`
       ]
     } else if (currentTab.kind === 'query') {
-      targetPath = [`connection:${currentTab.connectionId}`]
+      targetPath = [
+        `connection:${currentTab.connectionId}`,
+        ...(currentTab.pgDatabaseName ? [`database:${currentTab.connectionId}:${currentTab.pgDatabaseName}`] : []),
+        ...(currentTab.databaseName && currentTab.pgDatabaseName
+          ? [`pg-schema:${currentTab.connectionId}:${currentTab.pgDatabaseName}:${currentTab.databaseName}`]
+          : currentTab.databaseName
+            ? [`database:${currentTab.connectionId}:${currentTab.databaseName}`]
+            : [])
+      ]
     }
 
-    if (!targetPath || targetPath.length === 0) {
-      return
-    }
-
-    for (let index = 0; index < targetPath.length - 1; index += 1) {
-      const currentMap = collectTreeNodesByKey(treeDataRef.current)
-      const currentNode = currentMap.get(targetPath[index])
-      if (!currentNode) {
-        return
-      }
-      if (!isTreeNodeChildrenLoaded(currentNode) && isLoadableTreeNode(currentNode)) {
-        await reloadNodeChildren({ ...currentNode, isLeaf: false })
-        await waitForNextFrame()
-      } else if (!expandedKeysRef.current.includes(currentNode.key as React.Key)) {
-        setExpandedKeys((current) => current.includes(currentNode.key as React.Key) ? current : [...current, currentNode.key as React.Key])
-        await waitForNextFrame()
-      }
-    }
-
-    const nodeMap = collectTreeNodesByKey(treeDataRef.current)
-    const targetNode = nodeMap.get(targetPath[targetPath.length - 1])
-    if (!targetNode) {
-      return
-    }
-
-    handleTreeSelection(targetNode)
-    resourceTreeContainerRef.current?.focus()
-    if (enableVirtualTree) {
-      const treeApi = resourceTreeRef.current as { scrollTo?: (options: { key: React.Key, align?: 'top' | 'bottom' | 'auto', offset?: number }) => void } | null
-      treeApi?.scrollTo?.({
-        key: targetNode.key as React.Key,
-        align: 'top',
-        offset: Math.max(Math.floor(resourceTreeHeight / 2) - RESOURCE_TREE_ITEM_HEIGHT, 0)
-      })
-      await waitForNextFrame()
-    } else {
-      await waitForNextFrame()
-    }
-    const selectedNode = resourceTreeViewportRef.current?.querySelector('.ant-tree-node-content-wrapper.ant-tree-node-selected')
-    selectedNode?.scrollIntoView({ block: 'center' })
+    await locateTreePath(targetPath)
   }
 
   const findTreeKeyPathByPredicate = (nodes: DatabaseTreeNode[], predicate: (node: DatabaseTreeNode) => boolean, parentPath: string[] = []): string[] | undefined => {
@@ -3104,6 +3492,15 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       highlighted?.scrollIntoView({ block: 'center' })
     })
   }, [treeData, treeSearchText])
+
+  useEffect(() => {
+    if (!treeSearchOpen) {
+      return
+    }
+    requestAnimationFrame(() => {
+      treeSearchInputRef.current?.focus()
+    })
+  }, [treeSearchOpen])
 
   const buildResourceTree = (nextConnections: ConnectionInfo[], currentNodes: DatabaseTreeNode[] = []): DatabaseTreeNode[] => {
     const existingConnectionNodes = collectConnectionNodesById(currentNodes)
@@ -3879,13 +4276,17 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     }
     const sql = tab.sql ?? ''
     const persistedAt = Date.now()
+    const connection = getConnection(tab.connectionId)
     const nextItem: PersistedQueryWorkspace = {
       key: tab.key,
       title: tab.title,
       connectionId: tab.connectionId,
+      connectionName: connection?.name,
       databaseName: tab.databaseName,
       pgDatabaseName: tab.pgDatabaseName,
       sql,
+      limit: tab.limit,
+      queryEditorHeight: tab.queryEditorHeight,
       persistedAt
     }
     setPersistedQueryWorkspaces((current) => {
@@ -3945,7 +4346,10 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       return
     }
     selectedCellRefs.current[tabKey] = cellKeys.length > 0 ? cellKeys : undefined
-    setCellSelectionVersion((value) => value + 1)
+  }
+
+  const syncInspectorSelection = (tabKey: string, cellKeys: string[]): void => {
+    cellInspectorPanelRefs.current[tabKey]?.setSelection(cellKeys)
   }
 
   const syncRenderedCellSelection = (tabKey: string): void => {
@@ -4072,7 +4476,8 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     }
 
     const updateTableBodyHeight = (): void => {
-      setTableBodyHeights((current) => ({ ...current, [activeTabKey]: Math.max(160, element.clientHeight - 39) }))
+      const nextHeight = Math.max(160, element.clientHeight - 39)
+      setTableBodyHeights((current) => current[activeTabKey] === nextHeight ? current : { ...current, [activeTabKey]: nextHeight })
     }
 
     updateTableBodyHeight()
@@ -4083,12 +4488,17 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
   }, [activeTabKey, workspaceTabs.length])
 
   useEffect(() => {
-    for (const tab of workspaceTabs) {
-      requestAnimationFrame(() => {
-        syncRenderedCellSelection(tab.key)
-      })
+    if (!activeTabKey) {
+      return
     }
-  }, [workspaceTabs])
+    const activeTab = workspaceTabs.find((tab) => tab.key === activeTabKey)
+    if (!activeTab || activeTab.loading) {
+      return
+    }
+    requestAnimationFrame(() => {
+      syncRenderedCellSelection(activeTabKey)
+    })
+  }, [activeTabKey, workspaceTabs])
 
   useEffect(() => {
     const element = resourceTreeViewportRef.current
@@ -4097,7 +4507,8 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     }
 
     const updateTreeHeight = (): void => {
-      setResourceTreeHeight(Math.max(240, Math.floor(element.clientHeight)))
+      const nextHeight = Math.max(240, Math.floor(element.clientHeight))
+      setResourceTreeHeight((current) => current === nextHeight ? current : nextHeight)
     }
 
     updateTreeHeight()
@@ -4218,7 +4629,6 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
 
       return nextTabs
     })
-    setCellInspector((current) => current?.tabKey === key ? null : current)
     setTableSearchUiState((current) => {
       if (!(key in current)) {
         return current
@@ -4229,7 +4639,10 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     })
     delete selectedCellRefs.current[key]
     delete runtimeSelectedCellRefs.current[key]
+    delete scrollbarDragRefs.current[key]
     delete contextMenuCellSelectionRefs.current[key]
+    cellInspectorPanelRefs.current[key]?.close()
+    delete cellInspectorPanelRefs.current[key]
     delete selectedColumnRefs.current[key]
     delete tableBodyRefs.current[key]
   }
@@ -4359,6 +4772,17 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
   const withWhereQuery = (path: string, where?: string): string => {
     const condition = where?.trim()
     return condition ? `${path}${path.includes('?') ? '&' : '?'}where=${encodeURIComponent(condition)}` : path
+  }
+
+  const withSortQuery = (path: string, sortState?: { column: string; direction: 'ascend' | 'descend' }): string => {
+    if (!sortState?.column) {
+      return path
+    }
+    const params = [
+      `sort_column=${encodeURIComponent(sortState.column)}`,
+      `sort_direction=${encodeURIComponent(sortState.direction)}`
+    ]
+    return `${path}${path.includes('?') ? '&' : '?'}${params.join('&')}`
   }
 
   const quoteTableName = (connectionId: string, tableName: string, databaseName?: string): string => {
@@ -4997,6 +5421,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
   }
 
   const renderTreeTitle = (node: DatabaseTreeNode): React.ReactNode => {
+    const loading = Boolean(node.key && treeLoadingKeysRef.current.has(node.key as React.Key))
     if (node.kind === 'folder' && node.folderId) {
       const folderChildren = (node.children as DatabaseTreeNode[] | undefined) ?? []
       const connectionCount = folderChildren.filter((child) => child.kind === 'connection').length
@@ -5022,7 +5447,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             }
           }}
         >
-          <span className="table-tree-title">{highlightTreeSearchText(String(node.title ?? ''))}</span>
+          <span className={`table-tree-title${loading ? ' is-loading' : ''}`}>{highlightTreeSearchText(String(node.title ?? ''))}</span>
           <Tag className="folder-count-tag">{connectionCount}</Tag>
         </Flex>
       )
@@ -5039,7 +5464,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
 
     if (node.kind === 'column') {
       const title = String(node.title ?? '')
-      return <span className="table-tree-title" title={title}>{highlightTreeSearchText(title)}</span>
+      return <span className={`table-tree-title${loading ? ' is-loading' : ''}`} title={title}>{highlightTreeSearchText(title)}</span>
     }
 
     if ((node.kind === 'database' || node.kind === 'pg-schema') && node.connectionId && node.databaseName) {
@@ -5056,7 +5481,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       return (
         <Flex align="center" justify="space-between" className="tree-title-row">
           <div className="tree-title-with-size">
-            <span className="table-tree-title">{highlightTreeSearchText(String(node.title ?? ''))}</span>
+            <span className={`table-tree-title${loading ? ' is-loading' : ''}`}>{highlightTreeSearchText(String(node.title ?? ''))}</span>
             <span className="tree-node-actions">
               {renderAIContextButton(node)}
               {node.sizeDisplay && <span className="tree-size-badge" title={`数据大小：${node.sizeDisplay}${node.storageSizeDisplay ? `，物理占用：${node.storageSizeDisplay}` : ''}`}>{node.sizeDisplay}</span>}
@@ -5244,6 +5669,11 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     return (
       <Dropdown
         trigger={['contextMenu']}
+        onOpenChange={(open) => {
+          if (!open) {
+            scheduleSelectionRenderSync(() => syncRenderedCellSelection(tabKey))
+          }
+        }}
         menu={{
           items: contextMenuItems,
           onClick: ({ key }) => {
@@ -5268,6 +5698,8 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             } else {
               runtimeSelectedCellRefs.current[tabKey] = [...committedSelection]
             }
+            syncRenderedCellSelection(tabKey)
+            scheduleSelectionRenderSync(() => syncRenderedCellSelection(tabKey))
             clearRuntimeColumnSelection(tabKey)
             onContextSelection(cellKey)
           }}
@@ -5319,6 +5751,23 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
   }
 
   const renderWhereInput = (tab: WorkspaceTab): React.ReactNode => {
+    if (tab.kind === 'redis-browser' && tab.connectionId && tab.databaseName) {
+      return (
+        <WhereClauseInput
+          tabKey={tab.key}
+          columns={['key', 'type', 'ttl', 'length', 'memory', 'value']}
+          label="KEY LIKE"
+          placeholder="输入 Redis Key 名称，回车模糊查询"
+          disableSuggestions
+          value={tab.where ?? ''}
+          onSubmit={(nextWhere) => {
+            updateWorkspaceTab(tab.key, { where: nextWhere })
+            void previewRedisDatabase(tab.connectionId!, tab.databaseName!, tab.limit, 1, tab.key, nextWhere)
+          }}
+        />
+      )
+    }
+
     if (tab.kind !== 'preview' || !tab.connectionId || !tab.tableName) {
       return null
     }
@@ -5353,14 +5802,14 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     const connection = getConnection(tab.connectionId)
     const showPreviewActions = tab.kind === 'preview' && tab.connectionId && tab.tableName && connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis'
     const showRedisRefresh = tab.kind === 'redis-browser' && tab.connectionId && tab.databaseName
-    const showPreviewSearch = tab.kind === 'preview'
+    const showPreviewSearch = tab.kind === 'preview' || tab.kind === 'redis-browser'
     const showPreviewDdl = Boolean(tab.kind === 'preview' && tab.connectionId && tab.tableName)
 
     const leftActions = (
       <Space size={4} className="table-data-actions">
         {showRedisRefresh && (
           <>
-            <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<ReloadOutlined />} title="刷新" aria-label="刷新" loading={tab.loading} onClick={() => void previewRedisDatabase(tab.connectionId!, tab.databaseName!, tab.limit, tab.page)} />
+            <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<ReloadOutlined />} title="刷新" aria-label="刷新" loading={tab.loading} onClick={() => void previewRedisDatabase(tab.connectionId!, tab.databaseName!, tab.limit, tab.page, tab.key, tab.where)} />
             <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<PlusOutlined />} title="新增一行" aria-label="新增一行" onClick={() => addRedisRow(tab)} />
             <Button className="table-toolbar-icon-btn" type="text" size="small" icon={<SaveOutlined />} title="提交" aria-label="提交" disabled={countRedisPendingChanges(tab) === 0} loading={tab.loading} onClick={() => void submitRedisChanges(tab)} />
           </>
@@ -5616,7 +6065,13 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     if (!container) {
       return
     }
-    clearRenderedCellSelection(tabKey)
+    const nextCellKeySet = new Set(cellKeys)
+    container.querySelectorAll<HTMLElement>('.cell-selected-runtime').forEach((element) => {
+      const renderedCellKey = element.dataset.cellKey ?? ''
+      if (!nextCellKeySet.has(renderedCellKey)) {
+        element.classList.remove('cell-selected-runtime')
+      }
+    })
     for (const cellKey of cellKeys) {
       container
         .querySelector<HTMLElement>(`.editable-cell[data-cell-key="${CSS.escape(cellKey)}"]`)
@@ -5641,13 +6096,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
 
   const clearRuntimeCellSelection = (tabKey: string): void => {
     runtimeSelectedCellRefs.current[tabKey] = undefined
-    clearRenderedCellSelection(tabKey)
-  }
-
-  const clearCommittedCellSelection = (tabKey: string): void => {
-    committedSelectedCellRangeRefs.current[tabKey] = undefined
-    clearRenderedCellSelection(tabKey)
-    updateSelectedCells(tabKey, [])
+    syncRenderedCellSelection(tabKey)
   }
 
   const setRuntimeCellSelection = (tabKey: string, cellKeys: string[]): void => {
@@ -5659,6 +6108,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     committedSelectedCellRangeRefs.current[tabKey] = cellKeys.length > 0 ? cellKeys : undefined
     updateSelectedCells(tabKey, cellKeys)
     updateRenderedCellSelection(tabKey, cellKeys)
+    syncInspectorSelection(tabKey, cellKeys)
   }
 
   const scheduleRenderedCellSelectionSync = (tabKey: string): void => {
@@ -5681,6 +6131,10 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
   }
 
   const commitRuntimeCellSelection = (tabKey: string, cellKeys: string[]): void => {
+    if (cellKeys.length === 0) {
+      clearRuntimeCellSelection(tabKey)
+      return
+    }
     clearRuntimeCellSelection(tabKey)
     setCommittedCellSelection(tabKey, cellKeys)
   }
@@ -5710,7 +6164,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             return (
               <div className={`redis-key-card${edit.state ? ' redis-key-card-dirty' : ''}`} key={rowKey}>
                 <button className="redis-expand-button" type="button" onClick={() => toggleRedisValue(tab.key, rowKey)} aria-label={expanded ? '收起值' : '展开值'}>
-                  {expanded ? '▼' : '▶'}
+                  {expanded ? <DownOutlined /> : <RightOutlined />}
                 </button>
                 <div className="redis-key-main">
                   <Flex align="center" gap={8} wrap="wrap">
@@ -5721,9 +6175,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                     {!edit.state && sourceRow.ttl !== undefined && <Tag>{redisTtlDisplay(sourceRow.ttl)}</Tag>}
                     {sourceRow.length !== undefined && <Tag>长度 {String(sourceRow.length)}</Tag>}
                     {sourceRow.memory !== undefined && <Tag>内存 {String(sourceRow.memory)} B</Tag>}
-                    <Button size="small" danger icon={<DeleteOutlined />} onClick={() => deleteRedisRow(tab.key, rowKey)}>
-                      删除
-                    </Button>
+                    <Button className="redis-delete-button" size="small" danger type="text" icon={<DeleteOutlined />} aria-label="删除" title="删除" onClick={() => deleteRedisRow(tab.key, rowKey)} />
                   </Flex>
                   {expanded && (
                     <Input.TextArea className="redis-value-editor" value={edit.value} autoSize={{ minRows: 4, maxRows: 14 }} onChange={(event) => updateRedisEdit(tab.key, rowKey, { value: event.target.value })} />
@@ -5758,23 +6210,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     const filteredRows = filterColumns.length > 0
       ? baseTableRows.filter((row) => filterColumns.every((column) => columnFilters[column]?.includes(tableFilterValueKey(row[column]))))
       : baseTableRows
-    const sortedRows = tab.sortState
-      ? [...filteredRows].sort((left, right) => {
-          const leftValue = left[tab.sortState!.column]
-          const rightValue = right[tab.sortState!.column]
-          const leftEmpty = leftValue === null || leftValue === undefined
-          const rightEmpty = rightValue === null || rightValue === undefined
-          if (leftEmpty || rightEmpty) {
-            return leftEmpty === rightEmpty ? 0 : leftEmpty ? -1 : 1
-          }
-          const leftNumber = Number(leftValue)
-          const rightNumber = Number(rightValue)
-          const result = Number.isFinite(leftNumber) && Number.isFinite(rightNumber)
-            ? leftNumber - rightNumber
-            : String(leftValue).localeCompare(String(rightValue), 'zh-Hans-CN', { numeric: true, sensitivity: 'base' })
-          return tab.sortState!.direction === 'ascend' ? result : -result
-        })
-      : filteredRows
+    const sortedRows = filteredRows
     const connection = getConnection(tab.connectionId)
     const pageSearchText = searchState.query.trim()
     const searchMatcher = createSearchMatcher(pageSearchText, {
@@ -5969,8 +6405,6 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       const currentSelection = getCommittedCellSelection()
       if (currentSelection.includes(cellKey)) {
         contextMenuCellSelectionRefs.current[tab.key] = currentSelection
-        updateRenderedCellSelection(tab.key, currentSelection)
-        requestAnimationFrame(() => updateRenderedCellSelection(tab.key, currentSelection))
         return currentSelection
       }
       clearRuntimeColumnSelection(tab.key)
@@ -5984,8 +6418,6 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       const nextSelection = [cellKey]
       setCommittedCellSelection(tab.key, nextSelection)
       contextMenuCellSelectionRefs.current[tab.key] = nextSelection
-      updateRenderedCellSelection(tab.key, nextSelection)
-      requestAnimationFrame(() => updateRenderedCellSelection(tab.key, nextSelection))
       return nextSelection
     }
 
@@ -6200,18 +6632,8 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       }
       if (actionKey === 'inspect-record' || actionKey === 'inspect-value' || actionKey === 'inspect-aggregate') {
         const view: CellInspectorView = actionKey === 'inspect-record' ? 'record' : actionKey === 'inspect-value' ? 'value' : 'aggregate'
-        const committedSelection = selectedCellRefs.current[tab.key] ?? []
-        const needsCommit = committedSelection.length !== selection.length || committedSelection.some((item, index) => item !== selection[index])
-        if (needsCommit) {
-          commitRuntimeCellSelection(tab.key, selection)
-        } else {
-          runtimeSelectedCellRefs.current[tab.key] = [...selection]
-          updateRenderedCellSelection(tab.key, selection)
-          requestAnimationFrame(() => updateRenderedCellSelection(tab.key, selection))
-        }
-        setCellInspector({ tabKey: tab.key, view })
-        requestAnimationFrame(() => syncRenderedCellSelection(tab.key))
-        requestAnimationFrame(() => requestAnimationFrame(() => syncRenderedCellSelection(tab.key)))
+        setCommittedCellSelection(tab.key, selection)
+        cellInspectorPanelRefs.current[tab.key]?.open(view, selection)
         contextMenuCellSelectionRefs.current[tab.key] = undefined
         return
       }
@@ -6287,7 +6709,23 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         : tab.sortState.direction === 'ascend'
           ? { column, direction: 'descend' as const }
           : undefined
-      updateWorkspaceTab(tab.key, { sortState: nextSort })
+      updateWorkspaceTab(tab.key, { sortState: nextSort, loading: tab.kind === 'preview' ? true : tab.loading })
+      if (tab.kind === 'preview' && tab.connectionId && tab.tableName) {
+        const previewObjectType = tab.objectType === 'view' ? 'view' : 'table'
+        requestAnimationFrame(() => {
+          void previewTable(
+            tab.connectionId!,
+            tab.tableName!,
+            tab.databaseName,
+            tab.pgDatabaseName,
+            tab.limit ?? PREVIEW_DEFAULT_LIMIT,
+            1,
+            tab.where,
+            previewObjectType,
+            nextSort
+          )
+        })
+      }
     }
 
     const updateColumnFilter = (column: string, values: string[]): void => {
@@ -6589,152 +7027,6 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     const tableScrollY = tableBodyHeights[tab.key] ?? 320
     const searchSignature = `${searchState.query}\u0000${searchState.caseSensitive ? 1 : 0}\u0000${searchState.regex ? 1 : 0}\u0000${searchState.wholeWord ? 1 : 0}\u0000${searchState.filterRows ? 1 : 0}`
     const editingCellKey = editingCells[tab.key] ? `${editingCells[tab.key]!.rowKey}:${editingCells[tab.key]!.column}` : undefined
-
-    void cellSelectionVersion
-    const inspectorVisible = cellInspector?.tabKey === tab.key && supportsCellSelection
-    const closeCellInspector = (): void => setCellInspector(null)
-    const switchInspectorView = (view: CellInspectorView): void => setCellInspector({ tabKey: tab.key, view })
-
-    const renderCellInspector = (): React.ReactNode => {
-      const selection = getCommittedCellSelection()
-      const bounds = getSelectionBounds(selection)
-      const view = cellInspector?.view ?? 'record'
-      const columnTypeOf = (column: string): string | undefined => tab.columnInfoMap?.[column]?.type ?? undefined
-      const inspectorEditable = supportsWritableCells && tab.kind === 'preview'
-      const updateInspectorValue = (rowKey: string, column: string, rawValue: string): void => {
-        updatePreviewCell(tab.key, rowKey, column, editableValue(rawValue))
-      }
-
-      const renderRecordView = (): React.ReactNode => {
-        if (!bounds) {
-          return <div className="cell-inspector-empty"><Typography.Text type="secondary">请选择单元格后查看记录</Typography.Text></div>
-        }
-        return (
-          <div className="cell-inspector-records">
-            {bounds.rowKeys.map((rowKey) => {
-              const row = rowByKey.get(rowKey)
-              return (
-                <div className="cell-inspector-record" key={rowKey}>
-                  {orderedColumns.map((column) => (
-                    <div className="cell-inspector-field" key={column}>
-                      <div className="cell-inspector-field-label">
-                        <Typography.Text type="secondary" ellipsis title={column}>{column}</Typography.Text>
-                        {columnTypeOf(column) && <span className="cell-inspector-field-type">{columnTypeOf(column)}</span>}
-                      </div>
-                      <Input.TextArea
-                        className="cell-inspector-field-value"
-                        readOnly={!inspectorEditable}
-                        autoSize={{ minRows: 1, maxRows: 6 }}
-                        value={row?.[column] === null || row?.[column] === undefined || isDefaultValueMarker(row?.[column]) ? '' : String(row?.[column])}
-                        placeholder={row?.[column] === null || row?.[column] === undefined ? 'NULL' : isDefaultValueMarker(row?.[column]) ? 'DEFAULT' : undefined}
-                        onChange={(event) => {
-                          if (!inspectorEditable) {
-                            return
-                          }
-                          updateInspectorValue(rowKey, column, event.currentTarget.value)
-                        }}
-                      />
-                    </div>
-                  ))}
-                </div>
-              )
-            })}
-          </div>
-        )
-      }
-
-      const renderValueView = (): React.ReactNode => {
-        if (!bounds) {
-          return <div className="cell-inspector-empty"><Typography.Text type="secondary">请选择单元格后查看值</Typography.Text></div>
-        }
-        const anchorRowKey = bounds.rowKeys[0]
-        const anchorColumn = bounds.columns[0]
-        const anchorValue = rowByKey.get(anchorRowKey)?.[anchorColumn]
-        return (
-          <div className="cell-inspector-value-wrap">
-            <Typography.Text type="secondary" className="cell-inspector-value-meta">{anchorColumn}{columnTypeOf(anchorColumn) ? ` · ${columnTypeOf(anchorColumn)}` : ''}</Typography.Text>
-            <Input.TextArea
-              className="cell-inspector-value-area"
-              readOnly={!inspectorEditable}
-              value={anchorValue === null || anchorValue === undefined || isDefaultValueMarker(anchorValue) ? '' : String(anchorValue)}
-              placeholder={anchorValue === null || anchorValue === undefined ? 'NULL' : isDefaultValueMarker(anchorValue) ? 'DEFAULT' : undefined}
-              onChange={(event) => {
-                if (!inspectorEditable) {
-                  return
-                }
-                updateInspectorValue(anchorRowKey, anchorColumn, event.currentTarget.value)
-              }}
-            />
-          </div>
-        )
-      }
-
-      const renderAggregateView = (): React.ReactNode => {
-        if (!bounds) {
-          return <div className="cell-inspector-empty"><Typography.Text type="secondary">请选择单元格后查看聚合</Typography.Text></div>
-        }
-        const flatValues = bounds.rowKeys.flatMap((rowKey) => bounds.columns.map((column) => rowByKey.get(rowKey)?.[column]))
-        const nonEmpty = flatValues.filter((value) => value !== null && value !== undefined && !isDefaultValueMarker(value))
-        const numbers = nonEmpty
-          .map((value) => (typeof value === 'number' ? value : Number(String(value))))
-          .filter((value) => Number.isFinite(value)) as number[]
-        const rowsCount = bounds.rowKeys.length
-        const colsCount = bounds.columns.length
-        const formatNumber = (value: number): string => {
-          if (!Number.isFinite(value)) {
-            return '-'
-          }
-          return Number.isInteger(value) ? String(value) : value.toFixed(2)
-        }
-        const stats: Array<{ order: number; label: string; value: string }> = [
-          { order: 1, label: '非空值数量', value: String(nonEmpty.length) },
-          { order: 2, label: '数值数量', value: String(numbers.length) },
-          { order: 3, label: '选中行数', value: String(rowsCount) },
-          { order: 4, label: '选中列数', value: String(colsCount) }
-        ]
-        if (numbers.length > 0) {
-          const sum = numbers.reduce((total, value) => total + value, 0)
-          const avg = sum / numbers.length
-          const sorted = [...numbers].sort((left, right) => left - right)
-          const middle = Math.floor(sorted.length / 2)
-          const median = sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle]
-          stats.push(
-            { order: 5, label: '求和', value: formatNumber(sum) },
-            { order: 6, label: '平均值', value: formatNumber(avg) },
-            { order: 7, label: '最小值', value: formatNumber(sorted[0]) },
-            { order: 8, label: '最大值', value: formatNumber(sorted[sorted.length - 1]) },
-            { order: 9, label: '中位数', value: formatNumber(median) }
-          )
-        }
-        return (
-          <div className="cell-inspector-aggregate">
-            {stats.sort((left, right) => left.order - right.order).map((stat) => (
-              <div className="cell-inspector-aggregate-row" key={stat.label}>
-                <span className="cell-inspector-aggregate-label" title={stat.label}>{stat.label}</span>
-                <span className="cell-inspector-aggregate-value">{stat.value}</span>
-              </div>
-            ))}
-          </div>
-        )
-      }
-
-      return (
-        <div className="cell-inspector">
-          <div className="cell-inspector-header">
-            <div className="cell-inspector-tabs">
-              <button type="button" className={`cell-inspector-tab${view === 'record' ? ' active' : ''}`} onClick={() => switchInspectorView('record')}>记录</button>
-              <button type="button" className={`cell-inspector-tab${view === 'value' ? ' active' : ''}`} onClick={() => switchInspectorView('value')}>值</button>
-              <button type="button" className={`cell-inspector-tab${view === 'aggregate' ? ' active' : ''}`} onClick={() => switchInspectorView('aggregate')}>聚合</button>
-            </div>
-            <Button type="text" size="small" icon={<CloseOutlined />} onClick={closeCellInspector} aria-label="关闭" />
-          </div>
-          <div className="cell-inspector-body">
-            {view === 'record' ? renderRecordView() : view === 'value' ? renderValueView() : renderAggregateView()}
-          </div>
-        </div>
-      )
-    }
-
     if (tab.kind === 'redis-browser') {
       return renderRedisBrowser(tab)
     }
@@ -6752,7 +7044,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         {tab.resultKind === 'command' || tab.resultKind === 'error'
           ? null
           : (
-        <div className={`result-table-content${inspectorVisible ? ' with-inspector' : ''}`}>
+        <div className="result-table-content">
         <ResultTableBodyView
           tab={tab}
           searchSignature={searchSignature}
@@ -6794,6 +7086,11 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             if (activeInlineEditor && !target.closest('.editable-cell-dom-input')) {
               commitInlineCellEditor(tab.key)
             }
+            if (isResultTableScrollbarInteraction(event)) {
+              scrollbarDragRefs.current[tab.key] = true
+              return
+            }
+            scrollbarDragRefs.current[tab.key] = undefined
             if (!target.closest('.row-number-button')) {
               clearSelectedRows()
             }
@@ -6803,11 +7100,14 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             if (!target.closest('[data-cell-key]')) {
               clearActiveSearchCellHighlight(tab.key)
               clearRuntimeCellSelection(tab.key)
-              clearCommittedCellSelection(tab.key)
             }
           }}
           onMouseUp={(event) => {
             if (event.button !== 0) {
+              return
+            }
+            if (scrollbarDragRefs.current[tab.key]) {
+              scrollbarDragRefs.current[tab.key] = undefined
               return
             }
             if (editingCells[tab.key]) {
@@ -6827,6 +7127,9 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             commitPreviewSelectedRows()
           }}
           onMouseLeave={() => {
+            if (scrollbarDragRefs.current[tab.key]) {
+              return
+            }
             if (!cellDragAnchorRefs.current[tab.key] && !rowDragAnchorRefs.current[tab.key]) {
               return
             }
@@ -6841,7 +7144,17 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             commitPreviewSelectedRows()
           }}
         />
-        {inspectorVisible && renderCellInspector()}
+        <CellInspectorPanel
+          ref={(instance) => { cellInspectorPanelRefs.current[tab.key] = instance }}
+          tabKey={tab.key}
+          orderedColumns={orderedColumns}
+          rowByKey={rowByKey}
+          columnInfoMap={tab.columnInfoMap}
+          editable={supportsWritableCells && tab.kind === 'preview'}
+          valueDisplayMode={tab.valueDisplayMode ?? 'raw'}
+          onToggleValueDisplay={() => updateWorkspaceTab(tab.key, { valueDisplayMode: (tab.valueDisplayMode ?? 'raw') === 'json' ? 'raw' : 'json' })}
+          onUpdateValue={(rowKey, column, rawValue) => updatePreviewCell(tab.key, rowKey, column, editableValue(rawValue))}
+        />
         </div>
             )}
       </div>
@@ -6891,8 +7204,9 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
 
   const preloadCompletionForDatabase = async (connectionId: string, databaseName: string): Promise<void> => {
     const cacheKey = `${connectionId}:${databaseName}`
+    const connection = getConnection(connectionId)
 
-    if (completionTables[cacheKey]) {
+    if (!connection?.is_open || completionTables[cacheKey]) {
       return
     }
 
@@ -6906,7 +7220,8 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
   }
 
   const ensureDatabasesLoaded = async (connectionId: string): Promise<void> => {
-    if (allDatabases[connectionId]) {
+    const connection = getConnection(connectionId)
+    if (!connection?.is_open || allDatabases[connectionId]) {
       return
     }
 
@@ -6921,6 +7236,11 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
 
   const ensureSchemasLoaded = async (connectionId: string, pgDatabaseName: string): Promise<string[]> => {
     const key = `${connectionId}:${pgDatabaseName}`
+    const connection = getConnection(connectionId)
+
+    if (!connection?.is_open) {
+      return []
+    }
 
     if (allSchemas[key]) {
       return allSchemas[key]
@@ -6964,6 +7284,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
               className="connection-select"
               placeholder="选择连接"
               value={tab.connectionId}
+              variant="borderless"
               onChange={(connectionId) => {
                 const nextConn = getConnection(connectionId)
                 void ensureDatabasesLoaded(connectionId)
@@ -6986,6 +7307,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                 className="database-select"
                 placeholder={isPg ? '选择 Database' : (isDm || connection?.database_type === 'oracle') ? '选择 Schema' : isMongo ? '选择数据库' : isRedis ? '选择 Redis DB' : isClickHouse ? '选择数据库' : '选择库'}
                 value={isPg ? (tab.pgDatabaseName || undefined) : (tab.databaseName || undefined)}
+                variant="borderless"
                 onChange={async (value) => {
                   if (isPg) {
                     const schemaNames = await ensureSchemasLoaded(tab.connectionId!, value)
@@ -7011,6 +7333,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                 className="schema-select"
                 placeholder="选择 Schema"
                 value={tab.databaseName || undefined}
+                variant="borderless"
                 onChange={(value) => updateWorkspaceTab(tab.key, { databaseName: value })}
                 options={schemaOptions.map((name) => ({ label: name, value: name }))}
               />
@@ -7154,6 +7477,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           sql: '',
           limit,
           page,
+          where: '',
           loading: true,
           redisMode: 'database',
           redisExpandedValues: {}
@@ -7161,13 +7485,14 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       ]
     })
 
-    await previewRedisDatabase(connectionId, databaseName, limit, page, tabKey)
+    await previewRedisDatabase(connectionId, databaseName, limit, page, tabKey, '')
   }
 
-  const previewRedisDatabase = async (connectionId: string, databaseName: string, limit = REDIS_DEFAULT_LIMIT, page = 1, tabKey = `redis:${connectionId}:${databaseName}`): Promise<void> => {
+  const previewRedisDatabase = async (connectionId: string, databaseName: string, limit = REDIS_DEFAULT_LIMIT, page = 1, tabKey = `redis:${connectionId}:${databaseName}`, where = ''): Promise<void> => {
     try {
-      const result = await requestJson<QueryResponse>(withPageQuery(withPgDatabase(`/connections/${connectionId}/tables/__DATADJINN_REDIS_DATABASE__/preview`, databaseName), limit, page))
-      updateWorkspaceTab(tabKey, { result, redisEdits: buildRedisEdits(result.rows), redisExpandedValues: {}, page, limit, loading: false, error: undefined })
+      const previewPath = withWhereQuery(withPageQuery(withPgDatabase(`/connections/${connectionId}/tables/__DATADJINN_REDIS_DATABASE__/preview`, databaseName), limit, page), where)
+      const result = await requestJson<QueryResponse>(previewPath)
+      updateWorkspaceTab(tabKey, { result, redisEdits: buildRedisEdits(result.rows), redisExpandedValues: {}, page, limit, where, loading: false, error: undefined })
     } catch (err) {
       updateWorkspaceTab(tabKey, { loading: false, error: err instanceof Error ? err.message : '加载 Redis Key 失败' })
       showError(err instanceof Error ? err.message : '加载 Redis Key 失败')
@@ -7193,33 +7518,6 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     setSelectedConnectionId((current) => current ?? data.connections[0]?.connection_id)
     setSelectedConnectionIds((current) => current.length > 0 ? current : (data.connections[0]?.connection_id ? [data.connections[0].connection_id] : []))
     setSelectedTreeKeys((current) => current.length > 0 ? current : (data.connections[0]?.connection_id ? [`connection:${data.connections[0].connection_id}`] : []))
-
-    for (const connection of data.connections) {
-      if (connection.is_open && (connection.database_type === 'mysql' || connection.database_type === 'postgresql' || connection.database_type === 'gaussdb' || connection.database_type === 'dm' || connection.database_type === 'oracle' || connection.database_type === 'mongodb' || connection.database_type === 'redis' || connection.database_type === 'clickhouse')) {
-        try {
-          const dbData = await requestJson<{ databases: DatabaseInfo[] }>(`/connections/${connection.connection_id}/databases`)
-          const dbNames = dbData.databases.map((d) => d.name)
-          setAllDatabases((current) => ({ ...current, [connection.connection_id]: dbNames }))
-          setSelectedDatabases((current) => {
-            if (!current[connection.connection_id]) {
-              if (isSchemaScopedType(connection.database_type)) {
-                const connDb = connection.database.split('@')[0]
-                if (dbNames.includes(connDb)) {
-                  return { ...current, [connection.connection_id]: [connDb] }
-                }
-              }
-
-              return { ...current, [connection.connection_id]: defaultSelectedDatabases(connection, dbNames, dbData.databases) }
-            }
-
-            const filtered = filterPersistedValues(current[connection.connection_id], dbNames)
-            return { ...current, [connection.connection_id]: filtered }
-          })
-        } catch {
-          // ignore
-        }
-      }
-    }
 
     refreshTree(data.connections)
   }
@@ -7363,6 +7661,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     }
 
     treeLoadingKeysRef.current.add(node.key)
+    setTreeData((current) => [...current])
     try {
       const children = await loadChildrenForNode(node)
       if (node.kind !== 'connection') {
@@ -7375,6 +7674,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       showError(err instanceof Error ? err.message : '加载树节点失败')
     } finally {
       treeLoadingKeysRef.current.delete(node.key)
+      setTreeData((current) => [...current])
     }
   }
 
@@ -7396,6 +7696,9 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
 
   const toggleOrLoadTreeNode = (node: DatabaseTreeNode): void => {
     if (!node.key || !isLoadableTreeNode(node)) {
+      return
+    }
+    if (treeLoadingKeysRef.current.has(node.key as React.Key)) {
       return
     }
 
@@ -8258,7 +8561,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     setConnectionTreeLoadingText(connectionId, '正在打开连接...')
     try {
       const currentConnection = getConnection(connectionId)
-      if (currentConnection && !currentConnection.has_password && currentConnection.database_type !== 'sqlite') {
+      if (currentConnection && !currentConnection.has_password && currentConnection.database_type !== 'sqlite' && currentConnection.database_type !== 'redis') {
         openConnectionPasswordPrompt(currentConnection, '当前连接未保存密码，请输入密码后重试')
         return undefined
       }
@@ -8281,7 +8584,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : '打开连接失败'
       const currentConnection = getConnection(connectionId)
-      if (currentConnection && currentConnection.database_type !== 'sqlite' && isConnectionPasswordRetryError(errorMessage)) {
+      if (currentConnection && currentConnection.database_type !== 'sqlite' && currentConnection.database_type !== 'redis' && isConnectionPasswordRetryError(errorMessage)) {
         openConnectionPasswordPrompt(currentConnection, errorMessage)
         return undefined
       }
@@ -9267,7 +9570,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     updateWorkspaceTab(tab.key, { loading: true, error: undefined })
 
     try {
-      const dataPath = withWhereQuery(withPageQuery(withPgDatabase(`/connections/${tab.connectionId}/tables/${encodeURIComponent(tab.tableName)}/data`, tab.databaseName, tab.pgDatabaseName), limit, page), tab.where)
+      const dataPath = withSortQuery(withWhereQuery(withPageQuery(withPgDatabase(`/connections/${tab.connectionId}/tables/${encodeURIComponent(tab.tableName)}/data`, tab.databaseName, tab.pgDatabaseName), limit, page), tab.where), tab.sortState)
       const [result, columnsData] = await Promise.all([
         requestJson<QueryResponse>(dataPath, {
           method: 'PUT',
@@ -9277,14 +9580,24 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       ])
       const columnInfoMap = Object.fromEntries(columnsData.columns.map((item) => [item.name, item] as const))
       setEditingCells((current) => ({ ...current, [tab.key]: undefined }))
-      requestAnimationFrame(() => syncRenderedCellSelection(tab.key))
       updateWorkspaceTab(tab.key, { result, columnInfoMap, editRows: buildEditableRows(result.rows), selectedRowKeys: [], selectedRowKeyMap: {}, columnFilterOptions: undefined, where: tab.where?.trim() ?? '', loading: false, error: undefined })
+      requestAnimationFrame(() => syncRenderedCellSelection(tab.key))
     } catch (err) {
       updateWorkspaceTab(tab.key, { loading: false, error: err instanceof Error ? err.message : '提交表数据失败' })
     }
   }
 
-  const previewTable = async (connectionId: string, tableName: string, databaseName?: string, pgDatabaseName?: string, limit = PREVIEW_DEFAULT_LIMIT, page = 1, where = '', objectType: 'table' | 'view' = 'table'): Promise<void> => {
+  const previewTable = async (
+    connectionId: string,
+    tableName: string,
+    databaseName?: string,
+    pgDatabaseName?: string,
+    limit = PREVIEW_DEFAULT_LIMIT,
+    page = 1,
+    where = '',
+    objectType: 'table' | 'view' = 'table',
+    sortState?: { column: string; direction: 'ascend' | 'descend' }
+  ): Promise<void> => {
     if (!ensureConnectionOpen(connectionId)) {
       return
     }
@@ -9323,15 +9636,17 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     })
 
     try {
-      const previewPath = withWhereQuery(withPageQuery(withPgDatabase(`/connections/${connectionId}/tables/${encodeURIComponent(tableName)}/preview`, databaseName, pgDatabaseName), limit, page), whereCondition)
+      const currentPreviewTab = workspaceTabs.find((tab) => tab.key === tabKey)
+      const effectiveSortState = sortState !== undefined ? sortState : currentPreviewTab?.sortState
+      const previewPath = withSortQuery(withWhereQuery(withPageQuery(withPgDatabase(`/connections/${connectionId}/tables/${encodeURIComponent(tableName)}/preview`, databaseName, pgDatabaseName), limit, page), whereCondition), effectiveSortState)
       const [result, columnsData] = await Promise.all([
         requestJson<QueryResponse>(previewPath),
         requestJson<ColumnsResponse>(withPgDatabase(`/connections/${connectionId}/tables/${encodeURIComponent(tableName)}/columns`, databaseName, pgDatabaseName))
       ])
       const columnInfoMap = Object.fromEntries(columnsData.columns.map((item) => [item.name, item] as const))
       setEditingCells((current) => ({ ...current, [tabKey]: undefined }))
-      requestAnimationFrame(() => syncRenderedCellSelection(tabKey))
       updateWorkspaceTab(tabKey, { result, columnInfoMap, editRows: buildEditableRows(result.rows), selectedRowKeys: [], selectedRowKeyMap: {}, columnFilterOptions: undefined, where: whereCondition, loading: false, error: undefined })
+      requestAnimationFrame(() => syncRenderedCellSelection(tabKey))
     } catch (err) {
       updateWorkspaceTab(tabKey, { loading: false, error: err instanceof Error ? err.message : '加载表数据失败' })
     }
@@ -9508,17 +9823,111 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         databaseName: item.databaseName,
         pgDatabaseName: item.pgDatabaseName,
         sql: item.sql,
-        limit: 1000,
+        limit: item.limit ?? 1000,
         page: 1,
         loading: false,
         resultVisible: false,
         resultCollapsed: false,
         resultKind: 'query',
-        queryEditorHeight: 280,
+        queryEditorHeight: item.queryEditorHeight ?? 280,
         persistedAt: item.persistedAt
       }
     ])
     setActiveTabKey(item.key)
+    const connection = item.connectionId ? getConnection(item.connectionId) : undefined
+    if (item.connectionId && connection?.is_open) {
+      void ensureDatabasesLoaded(item.connectionId)
+      if (item.pgDatabaseName) {
+        void ensureSchemasLoaded(item.connectionId, item.pgDatabaseName)
+      }
+      if (item.databaseName && !item.pgDatabaseName) {
+        void preloadCompletionForDatabase(item.connectionId, item.databaseName)
+      }
+    }
+  }
+
+  const resolveQueryExecutionContext = async (tab: WorkspaceTab): Promise<WorkspaceTab | undefined> => {
+    if (!tab.connectionId) {
+      return undefined
+    }
+
+    let connection = getConnection(tab.connectionId)
+    if (!connection) {
+      return undefined
+    }
+
+    if (!connection.is_open) {
+      const openedConnection = await openConnectionById(tab.connectionId)
+      if (!openedConnection) {
+        return undefined
+      }
+      connection = openedConnection
+    }
+
+    let nextDatabaseName = tab.databaseName
+    let nextPgDatabaseName = tab.pgDatabaseName
+
+    if (isDatabaseScopedType(connection.database_type) || connection.database_type === 'dm' || connection.database_type === 'oracle') {
+      const loadedDatabases = allDatabases[tab.connectionId] ?? []
+      if (loadedDatabases.length === 0) {
+        await ensureDatabasesLoaded(tab.connectionId)
+      }
+      const availableDatabases = allDatabases[tab.connectionId] ?? selectedDatabasesRef.current[tab.connectionId] ?? []
+      if (!nextDatabaseName || !availableDatabases.includes(nextDatabaseName)) {
+        nextDatabaseName = selectedDatabasesRef.current[tab.connectionId]?.[0]
+          ?? availableDatabases[0]
+          ?? getDefaultDatabaseName(connection)
+      }
+    }
+
+    if (isSchemaScopedType(connection.database_type)) {
+      const loadedDatabases = allDatabases[tab.connectionId] ?? []
+      if (loadedDatabases.length === 0) {
+        await ensureDatabasesLoaded(tab.connectionId)
+      }
+      const availablePgDatabases = allDatabases[tab.connectionId] ?? selectedDatabasesRef.current[tab.connectionId] ?? []
+      if (!nextPgDatabaseName || !availablePgDatabases.includes(nextPgDatabaseName)) {
+        nextPgDatabaseName = selectedDatabasesRef.current[tab.connectionId]?.[0]
+          ?? availablePgDatabases[0]
+          ?? getDefaultPgDatabase(connection)
+      }
+
+      if (nextPgDatabaseName) {
+        const schemaNames = await ensureSchemasLoaded(tab.connectionId, nextPgDatabaseName)
+        const schemaKey = `${tab.connectionId}:${nextPgDatabaseName}`
+        const selectedSchemaList = selectedSchemasRef.current[schemaKey] ?? schemaNames
+        if (!nextDatabaseName || !schemaNames.includes(nextDatabaseName)) {
+          nextDatabaseName = selectedSchemaList[0] ?? getDefaultPgSchema(schemaNames)
+        }
+      }
+    }
+
+    if (nextDatabaseName !== tab.databaseName || nextPgDatabaseName !== tab.pgDatabaseName) {
+      updateWorkspaceTab(tab.key, {
+        databaseName: nextDatabaseName,
+        pgDatabaseName: nextPgDatabaseName
+      })
+    }
+
+    setSelectedConnectionId(tab.connectionId)
+    setSelectedConnectionIds([tab.connectionId])
+    setSelectedTreeKeys([`connection:${tab.connectionId}`])
+    setExpandedKeys((current) => Array.from(new Set([
+      ...current,
+      `connection:${tab.connectionId}`,
+      ...(nextPgDatabaseName ? [`database:${tab.connectionId}:${nextPgDatabaseName}`] : []),
+      ...(nextDatabaseName && nextPgDatabaseName
+        ? [`pg-schema:${tab.connectionId}:${nextPgDatabaseName}:${nextDatabaseName}`]
+        : nextDatabaseName
+          ? [`database:${tab.connectionId}:${nextDatabaseName}`]
+          : [])
+    ])))
+
+    return {
+      ...tab,
+      databaseName: nextDatabaseName,
+      pgDatabaseName: nextPgDatabaseName
+    }
   }
 
   const appendSqlToQueryWorkspace = (sql: string, title?: string): void => {
@@ -9563,7 +9972,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     }
 
     if (tab.kind === 'redis-browser' && tab.connectionId && tab.databaseName) {
-      await previewRedisDatabase(tab.connectionId, tab.databaseName, limit, 1)
+      await previewRedisDatabase(tab.connectionId, tab.databaseName, limit, 1, tab.key, tab.where)
       return
     }
 
@@ -9582,7 +9991,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     }
 
     if (tab.kind === 'redis-browser' && tab.connectionId && tab.databaseName) {
-      await previewRedisDatabase(tab.connectionId, tab.databaseName, tab.limit ?? REDIS_DEFAULT_LIMIT, nextPage)
+      await previewRedisDatabase(tab.connectionId, tab.databaseName, tab.limit ?? REDIS_DEFAULT_LIMIT, nextPage, tab.key, tab.where)
       return
     }
 
@@ -9606,25 +10015,35 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       return
     }
 
-    if (!ensureConnectionOpen(tab.connectionId)) {
+    const resolvedTab = await resolveQueryExecutionContext(tab)
+    if (!resolvedTab) {
+      return
+    }
+    await locateTreePath([
+      `connection:${resolvedTab.connectionId}`,
+      ...(resolvedTab.pgDatabaseName ? [`database:${resolvedTab.connectionId}:${resolvedTab.pgDatabaseName}`] : []),
+      ...(resolvedTab.databaseName && resolvedTab.pgDatabaseName
+        ? [`pg-schema:${resolvedTab.connectionId}:${resolvedTab.pgDatabaseName}:${resolvedTab.databaseName}`]
+        : resolvedTab.databaseName
+          ? [`database:${resolvedTab.connectionId}:${resolvedTab.databaseName}`]
+          : [])
+    ])
+
+    const connection = getConnection(resolvedTab.connectionId)
+
+    if ((isDatabaseScopedType(connection?.database_type) || connection?.database_type === 'dm' || connection?.database_type === 'oracle') && !resolvedTab.databaseName) {
       return
     }
 
-    const connection = getConnection(tab.connectionId)
-
-    if ((isDatabaseScopedType(connection?.database_type)) && !tab.databaseName) {
+    if (isSchemaScopedType(connection?.database_type) && !resolvedTab.pgDatabaseName) {
       return
     }
 
-    if (isSchemaScopedType(connection?.database_type) && !tab.pgDatabaseName) {
+    if (isSchemaScopedType(connection?.database_type) && !resolvedTab.databaseName) {
       return
     }
 
-    if (isSchemaScopedType(connection?.database_type) && !tab.databaseName) {
-      return
-    }
-
-    updateWorkspaceTab(tab.key, {
+    updateWorkspaceTab(resolvedTab.key, {
       loading: true,
       error: undefined,
       resultVisible: true,
@@ -9635,16 +10054,16 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     })
 
     try {
-      const connection = getConnection(tab.connectionId)
+      const connection = getConnection(resolvedTab.connectionId)
       const result = await requestJson<QueryResponse>('/query', {
         method: 'POST',
         body: JSON.stringify({
-          connection_id: tab.connectionId,
+          connection_id: resolvedTab.connectionId,
           sql: sqlToExecute,
-          limit: tab.limit ?? QUERY_DEFAULT_LIMIT,
-          offset: Math.max(0, (tab.page ?? 1) - 1) * (tab.limit ?? QUERY_DEFAULT_LIMIT),
-          database: connection?.database_type === 'mysql' || connection?.database_type === 'dm' || connection?.database_type === 'oracle' || isSchemaScopedType(connection?.database_type) || connection?.database_type === 'mongodb' || connection?.database_type === 'redis' || connection?.database_type === 'clickhouse' ? (tab.databaseName || undefined) : undefined,
-          pg_database: isSchemaScopedType(connection?.database_type) ? (tab.pgDatabaseName || undefined) : undefined
+          limit: resolvedTab.limit ?? QUERY_DEFAULT_LIMIT,
+          offset: Math.max(0, (resolvedTab.page ?? 1) - 1) * (resolvedTab.limit ?? QUERY_DEFAULT_LIMIT),
+          database: connection?.database_type === 'mysql' || connection?.database_type === 'dm' || connection?.database_type === 'oracle' || isSchemaScopedType(connection?.database_type) || connection?.database_type === 'mongodb' || connection?.database_type === 'redis' || connection?.database_type === 'clickhouse' ? (resolvedTab.databaseName || undefined) : undefined,
+          pg_database: isSchemaScopedType(connection?.database_type) ? (resolvedTab.pgDatabaseName || undefined) : undefined
         })
       })
       const isCommandResult = result.columns.length === 2
@@ -9652,9 +10071,9 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         && result.columns.includes('affected_rows')
         && result.rows.length === 1
       const commandRow = isCommandResult ? result.rows[0] : undefined
-      updateWorkspaceTab(tab.key, {
+      updateWorkspaceTab(resolvedTab.key, {
         result,
-        page: tab.page ?? 1,
+        page: resolvedTab.page ?? 1,
         selectedRowKeys: [],
         selectedRowKeyMap: {},
         columnFilterOptions: undefined,
@@ -9667,7 +10086,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         commandAffectedRows: isCommandResult && typeof commandRow?.affected_rows === 'number' ? commandRow.affected_rows : null
       })
     } catch (err) {
-      updateWorkspaceTab(tab.key, {
+      updateWorkspaceTab(resolvedTab.key, {
         loading: false,
         error: err instanceof Error ? err.message : '查询失败',
         resultVisible: true,
@@ -9789,30 +10208,38 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     ? [primaryAIContextSource, ...aiContextSources.filter((source) => source.id !== primaryAIContextSource.id)]
     : aiContextSources
   const focusedConnection = getConnection(focusedTreeNode?.connectionId)
-  const focusedResource = focusedTreeNode
-    ? {
-        kind: focusedTreeNode.kind,
-        connectionId: focusedTreeNode.connectionId,
-        connectionName: focusedConnection?.name,
-        dbType: focusedConnection?.database_type,
-        database: isSchemaScopedType(focusedConnection?.database_type) ? focusedTreeNode.pgDatabaseName : focusedTreeNode.databaseName,
-        schema: isSchemaScopedType(focusedConnection?.database_type) ? focusedTreeNode.databaseName : undefined,
-        pgDatabase: focusedTreeNode.pgDatabaseName,
-        table: focusedTreeNode.tableName,
-        objectType: focusedTreeNode.objectType,
-        name: String(focusedTreeNode.title ?? focusedTreeNode.tableName ?? focusedTreeNode.databaseName ?? focusedConnection?.name ?? ''),
-        sizeDisplay: focusedTreeNode.sizeDisplay,
-        rowCount: focusedTreeNode.rowCount
-      }
-    : undefined
-  const connectionSummaries = connections.map((connection) => ({
+  const focusedResource = useMemo(() => (
+    focusedTreeNode
+      ? {
+          kind: focusedTreeNode.kind,
+          connectionId: focusedTreeNode.connectionId,
+          connectionName: focusedConnection?.name,
+          dbType: focusedConnection?.database_type,
+          database: isSchemaScopedType(focusedConnection?.database_type) ? focusedTreeNode.pgDatabaseName : focusedTreeNode.databaseName,
+          schema: isSchemaScopedType(focusedConnection?.database_type) ? focusedTreeNode.databaseName : undefined,
+          pgDatabase: focusedTreeNode.pgDatabaseName,
+          table: focusedTreeNode.tableName,
+          objectType: focusedTreeNode.objectType,
+          name: String(focusedTreeNode.title ?? focusedTreeNode.tableName ?? focusedTreeNode.databaseName ?? focusedConnection?.name ?? ''),
+          sizeDisplay: focusedTreeNode.sizeDisplay,
+          rowCount: focusedTreeNode.rowCount
+        }
+      : undefined
+  ), [focusedConnection?.database_type, focusedConnection?.name, focusedTreeNode])
+  const connectionSummaries = useMemo(() => connections.map((connection) => ({
     connectionId: connection.connection_id,
     name: connection.name,
     dbType: connection.database_type,
     database: connection.database,
     isOpen: connection.is_open,
     serverVersion: connection.server_version
-  }))
+  })), [connections])
+  const recentQueries = useMemo(
+    () => workspaceTabs.filter((tab) => tab.kind === 'query' && tab.sql.trim()).slice(-5).map((tab) => tab.sql),
+    [workspaceTabs]
+  )
+  const visibleResultColumns = activeTab?.result?.columns ?? []
+  const visibleResultSample = activeTab?.result?.rows.slice(0, 5) ?? []
 
   const aiWorkspacePayload = useMemo(() => ({
     active_sql: activeTab?.sql,
@@ -9825,11 +10252,11 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     current_pg_database: aiPgDatabase,
     focused_resource: focusedResource,
     connections: connectionSummaries,
-    recent_queries: workspaceTabs.filter((tab) => tab.kind === 'query' && tab.sql.trim()).slice(-5).map((tab) => tab.sql),
-    visible_result_columns: activeTab?.result?.columns ?? [],
-    visible_result_sample: activeTab?.result?.rows.slice(0, 5) ?? [],
+    recent_queries: recentQueries,
+    visible_result_columns: visibleResultColumns,
+    visible_result_sample: visibleResultSample,
     context_sources: effectiveAIContextSources
-  }), [activeTab, aiContextConnection, aiDatabase, aiPgDatabase, connectionSummaries, effectiveAIContextSources, focusedResource, workspaceTabs])
+  }), [activeTab?.kind, activeTab?.sql, activeTab?.tableName, aiContextConnection?.database_type, aiContextConnection?.name, aiContextConnection?.server_version, aiDatabase, aiPgDatabase, connectionSummaries, effectiveAIContextSources, focusedResource, recentQueries, visibleResultColumns, visibleResultSample])
 
   return (
     <ConfigProvider
@@ -9914,8 +10341,9 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                   title="搜索当前树"
                   aria-label="搜索当前树"
                   onClick={() => {
-                    setTreeSearchOpen((open) => !open)
-                    if (treeSearchOpen) {
+                    const nextOpen = !treeSearchOpen
+                    setTreeSearchOpen(nextOpen)
+                    if (!nextOpen) {
                       setTreeSearchText('')
                     }
                   }}
@@ -9932,6 +10360,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
               </Space>
               {treeSearchOpen && (
                     <Input
+                      ref={treeSearchInputRef}
                       size="small"
                       allowClear
                       className="tree-search-input"
@@ -10040,10 +10469,18 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                     height={enableVirtualTree ? resourceTreeHeight : undefined}
                     itemHeight={RESOURCE_TREE_ITEM_HEIGHT}
                     motion={false}
+                    switcherIcon={(nodeProps) => (
+                      nodeProps.eventKey != null && treeLoadingKeysRef.current.has(nodeProps.eventKey)
+                        ? <LoadingOutlined spin className="tree-node-loading-icon" />
+                        : undefined
+                    )}
                     treeData={treeData}
                     expandedKeys={expandedKeys}
                     onExpand={(keys, info) => {
                       const node = info.node as DatabaseTreeNode
+                      if (node.key && treeLoadingKeysRef.current.has(node.key as React.Key)) {
+                        return
+                      }
                       if (!info.expanded) {
                         collapseTreeNode(node)
                         return
@@ -10053,7 +10490,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                         activateAIContextFromNode(node)
                       }
                       if (!isTreeNodeChildrenLoaded(node) && isLoadableTreeNode(node)) {
-                        void reloadNodeChildren({ ...node, isLeaf: false }, false)
+                        void reloadNodeChildren({ ...node, isLeaf: false }, true)
                       }
                     }}
                     titleRender={(node) => renderTreeTitle(node as DatabaseTreeNode)}
@@ -10104,16 +10541,21 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                         void openRedisDatabaseBrowser(treeNode.connectionId, treeNode.databaseName)
                         return
                       }
-                      if ((treeNode.kind === 'table' || treeNode.kind === 'db-object') && treeNode.connectionId && treeNode.tableName && (treeNode.objectType === 'table' || treeNode.objectType === 'view')) {
-                        activateAIContextFromNode(treeNode)
-                        const connection = getConnection(treeNode.connectionId)
-                        if (connection?.database_type === 'redis') {
-                          void openRedisDatabaseBrowser(treeNode.connectionId, treeNode.databaseName ?? getDefaultDatabaseName(connection) ?? 'db0')
-                        } else {
-                          void previewTable(treeNode.connectionId, treeNode.tableName, treeNode.databaseName, treeNode.pgDatabaseName, PREVIEW_DEFAULT_LIMIT, 1, '', treeNode.objectType)
+                        if ((treeNode.kind === 'table' || treeNode.kind === 'db-object') && treeNode.connectionId && treeNode.tableName && (treeNode.objectType === 'table' || treeNode.objectType === 'view')) {
+                          activateAIContextFromNode(treeNode)
+                          const connection = getConnection(treeNode.connectionId)
+                          if (connection?.database_type === 'redis') {
+                            void openRedisDatabaseBrowser(treeNode.connectionId, treeNode.databaseName ?? getDefaultDatabaseName(connection) ?? 'db0')
+                          } else {
+                            const connectionId = treeNode.connectionId
+                            const tableName = treeNode.tableName
+                            const objectType: 'table' | 'view' = treeNode.objectType
+                            requestAnimationFrame(() => {
+                              void previewTable(connectionId, tableName, treeNode.databaseName, treeNode.pgDatabaseName, PREVIEW_DEFAULT_LIMIT, 1, '', objectType)
+                            })
+                          }
+                          return
                         }
-                        return
-                      }
                       if (treeNode.kind === 'connection' && treeNode.connectionId) {
                         const conn = getConnection(treeNode.connectionId)
                         if (conn && !conn.is_open) {
@@ -10251,7 +10693,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         <div className="query-history-modal">
           {Object.entries(
             persistedQueryWorkspaces.reduce<Record<string, PersistedQueryWorkspace[]>>((groups, item) => {
-              const connectionName = getConnection(item.connectionId)?.name ?? '未绑定连接'
+              const connectionName = getConnection(item.connectionId)?.name ?? item.connectionName ?? '未绑定连接'
               if (!groups[connectionName]) {
                 groups[connectionName] = []
               }

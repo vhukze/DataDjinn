@@ -237,9 +237,13 @@ def estimate_message_tokens(messages: list[dict[str, Any]]) -> int:
 
 def model_context_limit(model: str, provider: str) -> int:
     normalized = model.lower()
+    if any(token in normalized for token in ("200k", "claude-3-7", "claude-3.5", "claude-3.6", "sonnet-4", "opus-4")):
+        return 200_000
     if provider == "anthropic":
         return 200_000
     if any(token in normalized for token in ("gpt-4.1", "gpt-4o", "o1", "o3", "o4")):
+        return 128_000
+    if any(token in normalized for token in ("128k", "gpt-4-32k", "32k")):
         return 128_000
     if "gpt-4" in normalized:
         return 128_000

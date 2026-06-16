@@ -222,14 +222,16 @@ def _redis_value_preview(target: Any, key: str, key_type: str) -> Any:
     return None
 
 
-def _preview_redis_database(engine: Engine, limit: int | None, offset: int = 0, database_name: str | None = None) -> QueryResponse:
+def _preview_redis_database(engine: Engine, limit: int | None, offset: int = 0, database_name: str | None = None, where: str | None = None) -> QueryResponse:
     target = redis_client_for_database(engine, database_name)
     try:
+        pattern = (where or "").strip()
+        key_pattern = "*" if not pattern else pattern if any(token in pattern for token in ("*", "?", "[")) else f"*{pattern}*"
         if limit is None:
-            keys = [redis_text(key) for key in target.scan_iter(count=500)]
+            keys = [redis_text(key) for key in target.scan_iter(match=key_pattern, count=500)]
             return _redis_response([_redis_key_summary(target, key) for key in keys[offset:]], False)
 
-        keys = redis_scan_keys(target, offset + limit + 1)
+        keys = [redis_text(key) for key in islice(target.scan_iter(match=key_pattern, count=500), offset + limit + 1)]
         sliced = keys[offset:offset + limit + 1]
         return _redis_response([_redis_key_summary(target, key) for key in sliced[:limit]], len(sliced) > limit)
     finally:
@@ -487,13 +489,23 @@ def _execute_on_connection_with_context(engine: Engine, sql: str, limit: int | N
     return QueryResponse(columns=[column_name for _, column_name in columns], rows=rows, row_count=len(rows), limited=limited)
 
 
-def preview_table(engine: Engine, table_name: str, limit: int, offset: int = 0, database_name: str | None = None, pg_database: str | None = None, where: str | None = None) -> QueryResponse:
+def preview_table(
+    engine: Engine,
+    table_name: str,
+    limit: int,
+    offset: int = 0,
+    database_name: str | None = None,
+    pg_database: str | None = None,
+    where: str | None = None,
+    sort_column: str | None = None,
+    sort_direction: str | None = None,
+) -> QueryResponse:
     if is_mongo_client(engine):
         return _preview_mongo_collection(engine, table_name, limit, offset, database_name)
 
     if is_redis_client(engine):
         if table_name == "__DATADJINN_REDIS_DATABASE__":
-            return _preview_redis_database(engine, limit, offset, database_name)
+            return _preview_redis_database(engine, limit, offset, database_name, where)
         return _preview_redis_key(engine, table_name, limit, offset, database_name)
 
     if pg_database and _is_schema_scoped_engine(engine):
@@ -502,7 +514,7 @@ def preview_table(engine: Engine, table_name: str, limit: int, offset: int = 0, 
 
             engine = create_engine(engine.url.set(database=pg_database), pool_pre_ping=True)
             try:
-                return _preview_table_impl(engine, table_name, limit, offset, database_name, where)
+                return _preview_table_impl(engine, table_name, limit, offset, database_name, where, sort_column, sort_direction)
             finally:
                 engine.dispose()
 
@@ -510,14 +522,23 @@ def preview_table(engine: Engine, table_name: str, limit: int, offset: int = 0, 
         if callable(factory):
             next_engine = factory(pg_database)
             try:
-                return _preview_table_impl(next_engine, table_name, limit, offset, database_name, where)
+                return _preview_table_impl(next_engine, table_name, limit, offset, database_name, where, sort_column, sort_direction)
             finally:
                 next_engine.dispose()
 
-    return _preview_table_impl(engine, table_name, limit, offset, database_name, where)
+    return _preview_table_impl(engine, table_name, limit, offset, database_name, where, sort_column, sort_direction)
 
 
-def _preview_table_impl(engine: Engine, table_name: str, limit: int, offset: int, database_name: str | None = None, where: str | None = None) -> QueryResponse:
+def _preview_table_impl(
+    engine: Engine,
+    table_name: str,
+    limit: int,
+    offset: int,
+    database_name: str | None = None,
+    where: str | None = None,
+    sort_column: str | None = None,
+    sort_direction: str | None = None,
+) -> QueryResponse:
     preparer = engine.dialect.identifier_preparer
     quoted_table = preparer.quote(quoted_name(table_name, quote=True))
 
@@ -527,10 +548,22 @@ def _preview_table_impl(engine: Engine, table_name: str, limit: int, offset: int
     where_sql = _validate_preview_where(where)
     if where_sql and engine.dialect.name == "oracle":
         where_sql = _normalize_oracle_where_clause(engine, table_name, database_name, where_sql)
-    query = f"SELECT * FROM {quoted_table}{f' WHERE {where_sql}' if where_sql else ''}"
+    order_sql = _build_preview_order_sql(engine, sort_column, sort_direction)
+    query = f"SELECT * FROM {quoted_table}{f' WHERE {where_sql}' if where_sql else ''}{order_sql}"
     result = _execute_limited_query(engine, query, limit, offset)
     result.total_count = _count_preview_rows(engine, quoted_table, where_sql)
+    result.sort_column = sort_column
+    result.sort_direction = sort_direction
     return result
+
+
+def _build_preview_order_sql(engine: Engine, sort_column: str | None, sort_direction: str | None) -> str:
+    if not sort_column:
+        return ""
+
+    direction = "DESC" if str(sort_direction).lower() == "descend" else "ASC"
+    quoted_column = engine.dialect.identifier_preparer.quote(quoted_name(sort_column, quote=True))
+    return f" ORDER BY {quoted_column} {direction}"
 
 
 def _validate_preview_where(where: str | None) -> str:

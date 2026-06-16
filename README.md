@@ -123,7 +123,7 @@ Redis / MongoDB 导出为 JSON，适合迁移前留档、人工检查或和其�
 - `DataDjinn-x.x.x-win.zip` —— Windows 解压即用版
 - `DataDjinn-x.x.x.dmg` —— macOS 安装包
 
-当前最新版本：`v0.1.28`。
+当前最新版本：`v0.1.29`。
 
 解压版无需安装，解压后双击 `DataDjinn.exe` 即可运行。已内置 Python 运行时和所有后端依赖，无需额外安装任何环境。
 

@@ -55,10 +55,6 @@ def friendly_error(exc: Exception) -> str:
         return 'Redis 连接超时，请检查主机和端口是否正确、Redis 服务是否已启动、网络或防火墙是否放行该端口'
 
     if RedisError is not None and isinstance(cause, RedisError):
-        if RedisTimeoutError is not None and isinstance(cause, RedisTimeoutError):
-            return 'Redis 连接超时，请检查主机和端口是否正确、Redis 服务是否已启动、网络或防火墙是否放行该端口'
-        if RedisConnectionError is not None and isinstance(cause, RedisConnectionError):
-            return '无法连接到 Redis 服务，请检查主机和端口是否正确、Redis 服务是否已启动、网络或防火墙是否放行该端口'
         if RedisAuthenticationError is not None and isinstance(cause, RedisAuthenticationError):
             return 'Redis 用户名或密码错误，连接被拒绝'
         if RedisResponseError is not None and isinstance(cause, RedisResponseError):
@@ -68,6 +64,10 @@ def friendly_error(exc: Exception) -> str:
             if 'db index is out of range' in message.lower():
                 return 'Redis 数据库序号超出服务端配置范围，请检查默认 DB 序号'
             return f'Redis 操作失败：{message}'
+        if RedisTimeoutError is not None and isinstance(cause, RedisTimeoutError):
+            return 'Redis 连接超时，请检查主机和端口是否正确、Redis 服务是否已启动、网络或防火墙是否放行该端口'
+        if RedisConnectionError is not None and isinstance(cause, RedisConnectionError):
+            return '无法连接到 Redis 服务，请检查主机和端口是否正确、Redis 服务是否已启动、网络或防火墙是否放行该端口'
         return f'Redis 操作失败：{cause}'
 
     if isinstance(cause, MySQLOperationalError):

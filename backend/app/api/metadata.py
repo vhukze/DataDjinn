@@ -187,14 +187,24 @@ def get_columns(connection_id: str, table_name: str, database: str | None = None
 
 
 @router.get("/{connection_id}/tables/{table_name}/preview", response_model=QueryResponse)
-def preview(connection_id: str, table_name: str, limit: int = 1000, offset: int = 0, database: str | None = None, pg_database: str | None = None, where: str | None = None) -> QueryResponse:
+def preview(
+    connection_id: str,
+    table_name: str,
+    limit: int = 1000,
+    offset: int = 0,
+    database: str | None = None,
+    pg_database: str | None = None,
+    where: str | None = None,
+    sort_column: str | None = None,
+    sort_direction: str | None = None,
+) -> QueryResponse:
     engine = connection_manager.get_engine(connection_id)
 
     if engine is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="连接已关闭，请先打开连接")
 
     try:
-        return preview_table(engine, table_name, limit, offset, database, pg_database, where)
+        return preview_table(engine, table_name, limit, offset, database, pg_database, where, sort_column, sort_direction)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
     except Exception as exc:
@@ -202,7 +212,18 @@ def preview(connection_id: str, table_name: str, limit: int = 1000, offset: int 
 
 
 @router.put("/{connection_id}/tables/{table_name}/data", response_model=QueryResponse)
-def update_table_data(connection_id: str, table_name: str, request: TableDataChangeRequest, limit: int = 1000, offset: int = 0, database: str | None = None, pg_database: str | None = None, where: str | None = None) -> QueryResponse:
+def update_table_data(
+    connection_id: str,
+    table_name: str,
+    request: TableDataChangeRequest,
+    limit: int = 1000,
+    offset: int = 0,
+    database: str | None = None,
+    pg_database: str | None = None,
+    where: str | None = None,
+    sort_column: str | None = None,
+    sort_direction: str | None = None,
+) -> QueryResponse:
     engine = connection_manager.get_engine(connection_id)
 
     if engine is None:
@@ -215,7 +236,7 @@ def update_table_data(connection_id: str, table_name: str, request: TableDataCha
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=friendly_error(exc)) from exc
 
-    return preview_table(engine, table_name, limit, offset, database, pg_database, where)
+    return preview_table(engine, table_name, limit, offset, database, pg_database, where, sort_column, sort_direction)
 
 
 @router.put("/{connection_id}/redis/data", response_model=QueryResponse)

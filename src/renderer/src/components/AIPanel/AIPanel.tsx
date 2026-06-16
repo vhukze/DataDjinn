@@ -238,6 +238,26 @@ const formatTokenK = (value: number): string => {
   return String(value)
 }
 
+const inferModelContextLimit = (config?: AIConfig | null): number => {
+  if (!config?.model) {
+    return 32000
+  }
+  const normalized = `${config.provider ?? ''} ${config.model}`.toLowerCase()
+  if (normalized.includes('200k') || normalized.includes('claude-3-7') || normalized.includes('claude-3.5') || normalized.includes('claude-3.6') || normalized.includes('sonnet-4') || normalized.includes('opus-4')) {
+    return 200000
+  }
+  if (normalized.includes('128k') || normalized.includes('gpt-4.1') || normalized.includes('gpt-4o') || normalized.includes('gpt-4-32k') || normalized.includes('o1') || normalized.includes('o3') || normalized.includes('o4')) {
+    return 128000
+  }
+  if (normalized.includes('32k')) {
+    return 128000
+  }
+  if (normalized.includes('gpt-3.5')) {
+    return 16000
+  }
+  return config.provider === 'anthropic' ? 200000 : 32000
+}
+
 const isDraftSession = (session: AISession): boolean => session.messages.length === 0
 
 const normalizeSessions = (sessions: AISession[]): AISession[] => {
@@ -358,6 +378,7 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
   const streamFlushFrameRef = useRef<number | null>(null)
   const suppressAutoScrollRef = useRef(false)
   const autoCompactRunningRef = useRef(false)
+  const contextStatsRequestKeyRef = useRef('')
 
   const activeConfigItem = useMemo(() => {
     if (selectedConfigId) {
@@ -396,7 +417,8 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
     }
     return nextMessages
   }
-  const contextUsagePercent = Math.round((contextStats?.usage_ratio ?? 0) * 100)
+  const maxContextTokens = contextStats?.max_tokens ?? inferModelContextLimit(config)
+  const contextUsagePercent = maxContextTokens > 0 ? Math.round(((contextStats?.used_tokens ?? 0) / maxContextTokens) * 100) : 0
   const contextProgressPercent = contextUsagePercent > 0 ? Math.max(contextUsagePercent, 4) : 0
   const contextLevel = contextUsagePercent >= 80 ? 'full' : contextUsagePercent >= 60 ? 'warning' : 'ok'
 
@@ -430,17 +452,23 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
 
   useEffect(() => {
     if (!config) {
+      contextStatsRequestKeyRef.current = ''
       setContextStats(null)
       return
     }
     const sessionMessages = buildConversationMessages(activeSession)
+    const requestKey = JSON.stringify({
+      messages: sessionMessages,
+      config,
+      workspace
+    })
+    if (contextStatsRequestKeyRef.current === requestKey) {
+      return
+    }
+    contextStatsRequestKeyRef.current = requestKey
     void requestJson<AIContextStats>('/ai/context-stats', {
       method: 'POST',
-      body: JSON.stringify({
-        messages: sessionMessages,
-        config,
-        workspace
-      })
+      body: requestKey
     }).then(setContextStats).catch(() => setContextStats(null))
   }, [activeSession?.compressedSummary, activeSession?.messages, config, requestJson, workspace])
 
@@ -1354,7 +1382,7 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
                 strokeColor={contextLevel === 'full' ? '#ff6b6b' : contextLevel === 'warning' ? '#f7c45c' : '#79d7ff'}
               />
               <Typography.Text type="secondary" className="ai-context-meter-text">
-                {contextStats ? `上下文 ${formatTokenK(contextStats.used_tokens)} / ${formatTokenK(contextStats.max_tokens)}` : '上下文统计中…'}
+                {contextStats ? `上下文 ${formatTokenK(contextStats.used_tokens)} / ${formatTokenK(maxContextTokens)}` : '上下文统计中…'}
               </Typography.Text>
             </div>
             {sending ? (

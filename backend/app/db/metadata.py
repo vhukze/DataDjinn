@@ -1562,17 +1562,22 @@ def get_object_ddl(engine: Engine, object_name: str, object_type: str, database_
             if object_type == "trigger":
                 row = connection.execute(
                     text(
-                        "SELECT pg_get_triggerdef(t.oid, true) "
+                        "SELECT pg_get_triggerdef(t.oid, true), pg_get_functiondef(p.oid) "
                         "FROM pg_trigger t "
                         "JOIN pg_class c ON c.oid = t.tgrelid "
                         "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                        "JOIN pg_proc p ON p.oid = t.tgfoid "
                         "WHERE n.nspname = :schema AND t.tgname = :name "
                         "AND NOT t.tgisinternal "
                         "LIMIT 1"
                     ),
                     {"schema": schema_name, "name": object_name},
                 ).fetchone()
-                return f"{row[0]};" if row and row[0] else ""
+                if not row or not row[0]:
+                    return ""
+                trigger_ddl = f"{row[0]};"
+                function_ddl = row[1] if len(row) > 1 and row[1] else ""
+                return f"{trigger_ddl}\n\n{function_ddl}".strip()
 
             if object_type == "sequence":
                 return f"CREATE SEQUENCE {preparer.quote(schema_name)}.{preparer.quote(object_name)};"

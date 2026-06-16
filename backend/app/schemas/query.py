@@ -18,6 +18,8 @@ class QueryResponse(BaseModel):
     row_count: int
     limited: bool
     total_count: int | None = None
+    sort_column: str | None = None
+    sort_direction: str | None = None
 
 
 class SqlFileRunRequest(BaseModel):
