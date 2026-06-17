@@ -57,6 +57,7 @@ import {
   Popover,
   Progress,
   Select,
+  Spin,
   Space,
   Splitter,
   Switch,
@@ -1246,8 +1247,6 @@ type DefaultValueMarker = {
   __datadjinn_action__: 'default'
 }
 
-type EditingCellState = Record<string, { rowKey: string; column: string } | undefined>
-
 type TableSearchUiState = {
   visible: boolean
   query: string
@@ -1993,7 +1992,6 @@ const ColumnFilterTrigger = memo(function ColumnFilterTrigger({
 const ResultTableBodyView = memo(function ResultTableBodyView({
   tab,
   searchSignature,
-  editingCellKey,
   selectedRowKeyMap,
   tableColumns,
   tableRows,
@@ -2009,7 +2007,6 @@ const ResultTableBodyView = memo(function ResultTableBodyView({
 }: {
   tab: WorkspaceTab
   searchSignature: string
-  editingCellKey?: string
   selectedRowKeyMap: Record<string, true>
   tableColumns: ColumnsType<EditableRow>
   tableRows: EditableRow[]
@@ -2024,7 +2021,6 @@ const ResultTableBodyView = memo(function ResultTableBodyView({
   onMouseLeave: () => void
 }) {
   void searchSignature
-  void editingCellKey
 
   return (
     <div
@@ -2049,7 +2045,6 @@ const ResultTableBodyView = memo(function ResultTableBodyView({
           selectedRowKeyMap[row.__rowKey] ? 'row-selected' : ''
         ].filter(Boolean).join(' ')}
         size="small"
-        loading={tab.loading}
         columns={tableColumns}
         dataSource={tableRows}
         rowKey="__rowKey"
@@ -2063,7 +2058,6 @@ const ResultTableBodyView = memo(function ResultTableBodyView({
 }, (prev, next) => (
   prev.tab === next.tab
   && prev.searchSignature === next.searchSignature
-  && prev.editingCellKey === next.editingCellKey
   && prev.selectedRowKeyMap === next.selectedRowKeyMap
   && prev.tableScrollX === next.tableScrollX
   && prev.tableScrollY === next.tableScrollY
@@ -3037,7 +3031,6 @@ function App(): React.JSX.Element {
   const [draftSelectedSchemas, setDraftSelectedSchemas] = useState<Record<string, string[]>>({})
   const [completionTables, setCompletionTables] = useState<Record<string, string[]>>({})
   const [tableBodyHeights, setTableBodyHeights] = useState<Record<string, number>>({})
-  const [editingCells, setEditingCells] = useState<EditingCellState>({})
   const [resourceTreeHeight, setResourceTreeHeight] = useState(360)
   const [dragOverFolderTarget, setDragOverFolderTarget] = useState<{ folderId: string; zone: 'before' | 'after' }>()
   const [dragOverConnectionTarget, setDragOverConnectionTarget] = useState<{ connectionId: string; folderId?: string; zone: 'before' | 'after' }>()
@@ -3062,6 +3055,7 @@ function App(): React.JSX.Element {
   const pendingCellDragFrameRefs = useRef<Record<string, number | undefined>>({})
   const pendingRenderedCellSelectionFrameRefs = useRef<Record<string, number | undefined>>({})
   const committingEditingCellRefs = useRef<Record<string, boolean | undefined>>({})
+  const editingCellRefs = useRef<Record<string, { rowKey: string; column: string } | undefined>>({})
   const cellClipboardRef = useRef<{ text: string, values: unknown[][] } | null>(null)
   const contextMenuCellSelectionRefs = useRef<Record<string, string[] | undefined>>({})
   const cellInspectorPanelRefs = useRef<Record<string, CellInspectorPanelHandle | null>>({})
@@ -4617,12 +4611,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
   const clearInlineCellEditor = (tabKey: string): void => {
     closeInlineCellEditor(tabKey)
     committingEditingCellRefs.current[tabKey] = undefined
-    setEditingCells((current) => {
-      if (!current[tabKey]) {
-        return current
-      }
-      return { ...current, [tabKey]: undefined }
-    })
+    editingCellRefs.current[tabKey] = undefined
     syncRenderedCellSelection(tabKey)
   }
 
@@ -4636,13 +4625,13 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     const { rowKey, column } = current
     if (nextValue === current.initialInputValue) {
       closeEditingCell(tabKey, cellDisplayText(current.originalValue))
-      setEditingCells((state) => ({ ...state, [tabKey]: undefined }))
+      editingCellRefs.current[tabKey] = undefined
       return
     }
-    closeEditingCell(tabKey, cellDisplayText(editableValue(nextValue)))
-    window.setTimeout(() => {
-      updatePreviewCell(tabKey, rowKey, column, editableValue(nextValue))
-    }, 0)
+    const nextEditableValue = editableValue(nextValue)
+    closeEditingCell(tabKey, cellDisplayText(nextEditableValue))
+    editingCellRefs.current[tabKey] = undefined
+    updatePreviewCell(tabKey, rowKey, column, nextEditableValue)
   }
 
   const openInlineCellEditor = (tabKey: string, rowKey: string, column: string, host: HTMLElement, rawValue: unknown): void => {
@@ -4677,7 +4666,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     host.classList.add('editable-cell-inline-editing')
     host.appendChild(input)
     inlineCellEditorRefs.current[tabKey] = { rowKey, column, input, host, originalContent, originalValue: rawValue, initialInputValue }
-    setEditingCells((current) => ({ ...current, [tabKey]: { rowKey, column } }))
+    editingCellRefs.current[tabKey] = { rowKey, column }
     requestAnimationFrame(() => {
       input.focus()
       input.select()
@@ -5950,7 +5939,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             if (event.button !== 0) {
               return
             }
-            if (editingCells[tabKey]?.rowKey === rowKey && editingCells[tabKey]?.column === column) {
+            if (editingCellRefs.current[tabKey]?.rowKey === rowKey && editingCellRefs.current[tabKey]?.column === column) {
               return
             }
             rowDragAnchorRefs.current[tabKey] = undefined
@@ -7113,8 +7102,8 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                 event.stopPropagation()
                 applyRuntimeColumnSelection(tab.key, column)
                 clearRuntimeCellSelection(tab.key)
-                if (editingCells[tab.key]) {
-                  setEditingCells((current) => ({ ...current, [tab.key]: undefined }))
+                if (editingCellRefs.current[tab.key]) {
+                  editingCellRefs.current[tab.key] = undefined
                 }
               }}
               onDragStart={(event) => {
@@ -7246,7 +7235,6 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     const tableScrollX = Math.max((tab.result?.columns.length ?? 0) * 180 + (supportsCellSelection ? 34 : 0), 720)
     const tableScrollY = tableBodyHeights[tab.key] ?? 320
     const searchSignature = `${searchState.query}\u0000${searchState.caseSensitive ? 1 : 0}\u0000${searchState.regex ? 1 : 0}\u0000${searchState.wholeWord ? 1 : 0}\u0000${searchState.filterRows ? 1 : 0}`
-    const editingCellKey = editingCells[tab.key] ? `${editingCells[tab.key]!.rowKey}:${editingCells[tab.key]!.column}` : undefined
     if (tab.kind === 'redis-browser') {
       return renderRedisBrowser(tab)
     }
@@ -7265,10 +7253,14 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           ? null
           : (
         <div className="result-table-content">
+        {tab.loading && (
+          <div className="result-table-loading-overlay">
+            <Spin size="large" />
+          </div>
+        )}
         <ResultTableBodyView
           tab={tab}
           searchSignature={searchSignature}
-          editingCellKey={editingCellKey}
           selectedRowKeyMap={selectedRowKeyMap}
           tableColumns={tableColumns}
           tableRows={tableRows}
@@ -7331,7 +7323,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
               scrollbarDragRefs.current[tab.key] = undefined
               return
             }
-            if (editingCells[tab.key]) {
+            if (editingCellRefs.current[tab.key]) {
               rowDragAnchorRefs.current[tab.key] = undefined
               cellDragAnchorRefs.current[tab.key] = undefined
               pendingCellDragTargetRefs.current[tab.key] = undefined
@@ -9709,7 +9701,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       current.push({ column: patch.column, value: patch.value })
       rowPatches.set(patch.rowKey, current)
     }
-    setEditingCells((current) => ({ ...current, [tabKey]: undefined }))
+    editingCellRefs.current[tabKey] = undefined
     setWorkspaceTabs((current) =>
       current.map((tab) => {
         if (tab.key !== tabKey) {
@@ -9830,7 +9822,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         requestJson<ColumnsResponse>(withPgDatabase(`/connections/${tab.connectionId}/tables/${encodeURIComponent(tab.tableName)}/columns`, tab.databaseName, tab.pgDatabaseName))
       ])
       const columnInfoMap = Object.fromEntries(columnsData.columns.map((item) => [item.name, item] as const))
-      setEditingCells((current) => ({ ...current, [tab.key]: undefined }))
+      editingCellRefs.current[tab.key] = undefined
       updateWorkspaceTab(tab.key, { result, columnInfoMap, editRows: buildEditableRows(result.rows), selectedRowKeys: [], selectedRowKeyMap: {}, columnFilterOptions: undefined, where: tab.where?.trim() ?? '', loading: false, error: undefined })
       requestAnimationFrame(() => syncRenderedCellSelection(tab.key))
     } catch (err) {
@@ -9863,7 +9855,11 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       const exists = current.some((tab) => tab.key === tabKey)
 
       if (exists) {
-        return current.map((tab) => (tab.key === tabKey ? { ...tab, limit, page, where: whereCondition, objectType, loading: true, error: undefined } : tab))
+        return current.map((tab) => (
+          tab.key === tabKey
+            ? { ...tab, limit, page, where: whereCondition, objectType, loading: true, error: undefined }
+            : tab
+        ))
       }
 
       return [
@@ -9895,7 +9891,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         requestJson<ColumnsResponse>(withPgDatabase(`/connections/${connectionId}/tables/${encodeURIComponent(tableName)}/columns`, databaseName, pgDatabaseName))
       ])
       const columnInfoMap = Object.fromEntries(columnsData.columns.map((item) => [item.name, item] as const))
-      setEditingCells((current) => ({ ...current, [tabKey]: undefined }))
+      editingCellRefs.current[tabKey] = undefined
       updateWorkspaceTab(tabKey, { result, columnInfoMap, editRows: buildEditableRows(result.rows), selectedRowKeys: [], selectedRowKeyMap: {}, columnFilterOptions: undefined, where: whereCondition, loading: false, error: undefined })
       requestAnimationFrame(() => syncRenderedCellSelection(tabKey))
     } catch (err) {

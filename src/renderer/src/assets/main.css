@@ -2265,6 +2265,16 @@ body[data-theme="dark"] .ant-popover-message {
   margin: 6px 10px 0;
 }
 
+.result-table-loading-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--dj-bg-surface) 58%, transparent);
+}
+
 .result-table-content .result-table-body {
   flex: 1 1 auto;
   min-width: 0;
@@ -2457,7 +2467,6 @@ body[data-theme="dark"] .ant-popover-message {
   min-height: 0;
 }
 
-.result-table .ant-spin-container,
 .result-table .ant-table {
   display: flex;
   flex-direction: column;
