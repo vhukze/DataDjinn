@@ -32,8 +32,6 @@
   ReloadOutlined,
   RobotOutlined,
   SearchOutlined,
-  SortAscendingOutlined,
-  SortDescendingOutlined,
   HistoryOutlined,
   UnorderedListOutlined,
   UpOutlined,
@@ -76,6 +74,7 @@ import type { ColumnsType } from 'antd/es/table'
 import type { DataNode } from 'antd/es/tree'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
+import { createPortal, flushSync } from 'react-dom'
 import { forwardRef, memo, startTransition, useCallback, useDeferredValue, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { useTheme } from './context/ThemeContext'
 import AIPanel from './components/AIPanel'
@@ -1795,6 +1794,202 @@ const DdlPreviewModal = memo(forwardRef<DdlPreviewModalHandle, {
   }
 ))
 
+type ImperativeModalHandle = {
+  open: () => void
+  close: () => void
+}
+
+const ImperativeModalHost = memo(forwardRef<ImperativeModalHandle, {
+  title: string
+  width?: number
+  footer?: React.ReactNode | null
+  maskClosable?: boolean
+  children: React.ReactNode
+  onClosed?: () => void
+}>(function ImperativeModalHost({
+  title,
+  width,
+  footer = null,
+  maskClosable = false,
+  children,
+  onClosed
+}, ref) {
+  const [open, setOpen] = useState(false)
+
+  useImperativeHandle(ref, () => ({
+    open: () => setOpen(true),
+    close: () => setOpen(false)
+  }), [])
+
+  return (
+    <Modal
+      title={title}
+      open={open}
+      width={width}
+      footer={footer}
+      maskClosable={maskClosable}
+      destroyOnHidden
+      transitionName=""
+      maskTransitionName=""
+      onCancel={() => {
+        setOpen(false)
+        onClosed?.()
+      }}
+    >
+      {children}
+    </Modal>
+  )
+}))
+
+const LightweightPopover = memo(function LightweightPopover({
+  open,
+  anchorRef,
+  onClose,
+  children
+}: {
+  open: boolean
+  anchorRef: React.RefObject<HTMLElement | null>
+  onClose: () => void
+  children: React.ReactNode
+}) {
+  const panelRef = useRef<HTMLDivElement | null>(null)
+  const [position, setPosition] = useState<{ top: number; left: number }>()
+
+  useEffect(() => {
+    if (!open) {
+      return
+    }
+
+    const updatePosition = (): void => {
+      const anchor = anchorRef.current
+      if (!anchor) {
+        return
+      }
+      const rect = anchor.getBoundingClientRect()
+      setPosition({
+        top: rect.bottom + window.scrollY + 6,
+        left: Math.max(12, rect.right + window.scrollX - 240)
+      })
+    }
+
+    updatePosition()
+    window.addEventListener('scroll', updatePosition, true)
+    window.addEventListener('resize', updatePosition)
+
+    const handlePointerDown = (event: PointerEvent): void => {
+      const target = event.target as Node | null
+      if (panelRef.current?.contains(target) || anchorRef.current?.contains(target)) {
+        return
+      }
+      onClose()
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown, true)
+    return () => {
+      window.removeEventListener('scroll', updatePosition, true)
+      window.removeEventListener('resize', updatePosition)
+      document.removeEventListener('pointerdown', handlePointerDown, true)
+    }
+  }, [anchorRef, onClose, open])
+
+  if (!open || !position) {
+    return null
+  }
+
+  return createPortal(
+    <div
+      ref={panelRef}
+      className="lightweight-popover"
+      style={{ top: position.top, left: position.left }}
+      onMouseDown={(event) => event.stopPropagation()}
+    >
+      {children}
+    </div>,
+    document.body
+  )
+})
+
+const ColumnFilterTrigger = memo(function ColumnFilterTrigger({
+  column,
+  checkedValues,
+  sourceRows,
+  onChange
+}: {
+  column: string
+  checkedValues: string[]
+  sourceRows: EditableRow[]
+  onChange: (values: string[]) => void
+}) {
+  const buttonRef = useRef<HTMLButtonElement | null>(null)
+  const [open, setOpen] = useState(false)
+  const options = useMemo(() => buildColumnFilterOptions(sourceRows, column), [column, sourceRows])
+  const [draftValues, setDraftValues] = useState<string[]>(checkedValues)
+
+  useEffect(() => {
+    setDraftValues(checkedValues)
+  }, [checkedValues])
+
+  const allChecked = options.length > 0 && draftValues.length === options.length
+  const partiallyChecked = draftValues.length > 0 && draftValues.length < options.length
+
+  const applyFilterChange = (values: string[]): void => {
+    setDraftValues(values)
+    window.setTimeout(() => {
+      onChange(values)
+    }, 0)
+  }
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        className={`column-filter-button${draftValues.length > 0 ? ' active' : ''}`}
+        title="筛选本页数据"
+        onClick={(event) => {
+          event.stopPropagation()
+          setOpen((current) => !current)
+        }}
+      >
+        <FilterOutlined />
+      </button>
+      <LightweightPopover
+        open={open}
+        anchorRef={buttonRef}
+        onClose={() => setOpen(false)}
+      >
+        <div className="column-filter-popover">
+          <Space direction="vertical" className="column-filter-popover">
+            <Typography.Text strong>{column} 筛选</Typography.Text>
+            {options.length > 0 && (
+              <Checkbox
+                checked={allChecked}
+                indeterminate={partiallyChecked}
+                onChange={(event) => {
+                  applyFilterChange(event.target.checked ? options.map((option) => option.value) : [])
+                }}
+              >
+                全选
+              </Checkbox>
+            )}
+            <Checkbox.Group value={draftValues} onChange={(values) => applyFilterChange(values.map(String))}>
+              <Space direction="vertical" className="column-filter-options">
+                {options.length > 0 ? options.map((option) => (
+                  <Checkbox key={option.value} value={option.value}>
+                    {option.label} <Typography.Text type="secondary">({option.count})</Typography.Text>
+                  </Checkbox>
+                )) : (
+                  <Typography.Text type="secondary">暂无可筛选项</Typography.Text>
+                )}
+              </Space>
+            </Checkbox.Group>
+          </Space>
+        </div>
+      </LightweightPopover>
+    </>
+  )
+})
+
 const ResultTableBodyView = memo(function ResultTableBodyView({
   tab,
   searchSignature,
@@ -1805,6 +2000,7 @@ const ResultTableBodyView = memo(function ResultTableBodyView({
   tableScrollX,
   tableScrollY,
   setBodyRef,
+  setHeaderRef,
   onScrollCapture,
   onKeyDown,
   onMouseDown,
@@ -1820,6 +2016,7 @@ const ResultTableBodyView = memo(function ResultTableBodyView({
   tableScrollX: number
   tableScrollY: number
   setBodyRef: (element: HTMLDivElement | null) => void
+  setHeaderRef: (element: HTMLDivElement | null) => void
   onScrollCapture: () => void
   onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void
   onMouseDown: (event: React.MouseEvent<HTMLDivElement>) => void
@@ -1835,6 +2032,10 @@ const ResultTableBodyView = memo(function ResultTableBodyView({
       className="result-table-body"
       tabIndex={0}
       style={{ '--result-table-scroll-y': `${tableScrollY}px` } as React.CSSProperties}
+      onMouseEnter={(event) => {
+        const currentTarget = event.currentTarget
+        setHeaderRef(currentTarget.querySelector<HTMLDivElement>('.ant-table-thead'))
+      }}
       onScrollCapture={onScrollCapture}
       onKeyDown={onKeyDown}
       onMouseDown={onMouseDown}
@@ -1959,8 +2160,6 @@ const CellInspectorPanel = memo(forwardRef<CellInspectorPanelHandle, {
   rowByKey: Map<string, EditableRow>
   columnInfoMap?: Record<string, ColumnInfo>
   editable: boolean
-  valueDisplayMode?: ValueDisplayMode
-  onToggleValueDisplay: () => void
   onUpdateValue: (rowKey: string, column: string, rawValue: string) => void
 }>(
   function CellInspectorPanel({
@@ -1969,13 +2168,12 @@ const CellInspectorPanel = memo(forwardRef<CellInspectorPanelHandle, {
     rowByKey,
     columnInfoMap,
     editable,
-    valueDisplayMode,
-    onToggleValueDisplay,
     onUpdateValue
   }, ref) {
     const [open, setOpen] = useState(false)
     const [view, setView] = useState<CellInspectorView>('record')
     const [selection, setSelection] = useState<string[]>([])
+    const [valueDisplayMode, setValueDisplayMode] = useState<ValueDisplayMode>('raw')
     const openRef = useRef(open)
 
     useEffect(() => {
@@ -2086,6 +2284,10 @@ const CellInspectorPanel = memo(forwardRef<CellInspectorPanelHandle, {
       [anchorSelection?.value]
     )
 
+    useEffect(() => {
+      setValueDisplayMode('raw')
+    }, [anchorSelection?.rowKey, anchorSelection?.column, anchorSelection?.value])
+
     const renderRecordView = (): React.ReactNode => {
       if (!bounds) {
         return <div className="cell-inspector-empty"><Typography.Text type="secondary">请选择单元格后查看记录</Typography.Text></div>
@@ -2137,7 +2339,7 @@ const CellInspectorPanel = memo(forwardRef<CellInspectorPanelHandle, {
           <Flex align="center" justify="space-between" gap={8} className="cell-inspector-value-toolbar">
             <Typography.Text type="secondary" className="cell-inspector-value-meta">{anchorColumn}{columnTypeOf(anchorColumn) ? ` · ${columnTypeOf(anchorColumn)}` : ''}</Typography.Text>
             {formattedJsonValue && (
-              <Button type="text" size="small" onClick={onToggleValueDisplay}>
+              <Button type="text" size="small" onClick={() => setValueDisplayMode((current) => current === 'json' ? 'raw' : 'json')}>
                 {readonlyJsonMode ? '原始编辑' : 'JSON 格式化'}
               </Button>
             )}
@@ -2228,8 +2430,6 @@ const CellInspectorPanel = memo(forwardRef<CellInspectorPanelHandle, {
   && prev.rowByKey === next.rowByKey
   && prev.columnInfoMap === next.columnInfoMap
   && prev.editable === next.editable
-  && prev.valueDisplayMode === next.valueDisplayMode
-  && prev.onToggleValueDisplay === next.onToggleValueDisplay
   && prev.onUpdateValue === next.onUpdateValue
 ))
 
@@ -2507,6 +2707,18 @@ const buildColumnFilterOptions = (rows: EditableRow[], column: string): ColumnFi
   })))
 }
 
+const QUERY_SELECT_MIN_WIDTH = 160
+const QUERY_SELECT_MAX_WIDTH = 320
+const QUERY_SELECT_HORIZONTAL_PADDING = 52
+const QUERY_SELECT_CHAR_WIDTH = 8
+
+const getQuerySelectWidth = (labels: string[], fallbackLabel?: string): number => {
+  const candidates = [...labels, fallbackLabel ?? ''].filter(Boolean)
+  const longestLength = candidates.reduce((max, current) => Math.max(max, current.length), 0)
+  const estimatedWidth = longestLength * QUERY_SELECT_CHAR_WIDTH + QUERY_SELECT_HORIZONTAL_PADDING
+  return Math.min(QUERY_SELECT_MAX_WIDTH, Math.max(QUERY_SELECT_MIN_WIDTH, estimatedWidth))
+}
+
 function App(): React.JSX.Element {
   const [form] = Form.useForm<ConnectionFormValues>()
   const [driverForm] = Form.useForm<DriverFormValues>()
@@ -2532,6 +2744,7 @@ function App(): React.JSX.Element {
   const [connections, setConnections] = useState<ConnectionInfo[]>([])
   const [selectedConnectionId, setSelectedConnectionId] = useState<string>()
   const [connectionsInitialized, setConnectionsInitialized] = useState(false)
+  const [startupUiReady, setStartupUiReady] = useState(false)
   const [selectedConnectionIds, setSelectedConnectionIds] = useState<string[]>([])
   const [selectedTreeKeys, setSelectedTreeKeys] = useState<React.Key[]>([])
   const [connectionSelectionAnchorId, setConnectionSelectionAnchorId] = useState<string>()
@@ -2550,7 +2763,7 @@ function App(): React.JSX.Element {
   const [connectionPasswordDraft, setConnectionPasswordDraft] = useState('')
   const [workspaceTabs, setWorkspaceTabs] = useState<WorkspaceTab[]>([])
   const [activeTabKey, setActiveTabKey] = useState<string>()
-  const [queryHistoryOpen, setQueryHistoryOpen] = useState(false)
+  const [queryHistoryContentReady, setQueryHistoryContentReady] = useState(false)
   const [sqlExecutionContextByTab, setSqlExecutionContextByTab] = useState<Record<string, SqlEditorExecutionContext>>({})
   const [resourcePanelSize, setResourcePanelSize] = useState(340)
   const [aiPanelSize, setAiPanelSize] = useState(360)
@@ -2558,6 +2771,9 @@ function App(): React.JSX.Element {
   const [treeSearchOpen, setTreeSearchOpen] = useState(false)
   const [treeSearchText, setTreeSearchText] = useState('')
   const treeSearchInputRef = useRef<InputRef | null>(null)
+  const queryHistoryModalRef = useRef<ImperativeModalHandle | null>(null)
+  const settingsModalRef = useRef<ImperativeModalHandle | null>(null)
+  const updateModalRef = useRef<ImperativeModalHandle | null>(null)
   const [resizingResourcePanel, setResizingResourcePanel] = useState(false)
   const [resizingAiPanel, setResizingAiPanel] = useState(false)
   const [aiContextSources, setAiContextSources] = useState<AIContextSource[]>([])
@@ -2625,7 +2841,7 @@ function App(): React.JSX.Element {
   const [newTableName, setNewTableName] = useState('')
   const [newTableComment, setNewTableComment] = useState('')
   const [newTableColumns, setNewTableColumns] = useState<ColumnDef[]>([])
-  const [driverManagerOpen, setDriverManagerOpen] = useState(false)
+  const [settingsContentReady, setSettingsContentReady] = useState(false)
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('app')
   const [shortcutSettings, setShortcutSettings] = useState<ShortcutSettings>(() => ({
     ...DEFAULT_SHORTCUT_SETTINGS,
@@ -2645,7 +2861,7 @@ function App(): React.JSX.Element {
   const [folderNameDraft, setFolderNameDraft] = useState('')
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
   const [javaRestartRequired, setJavaRestartRequired] = useState(false)
-  const [updateModalOpen, setUpdateModalOpen] = useState(false)
+  const [updateModalContentReady, setUpdateModalContentReady] = useState(false)
   const [updateSettings, setUpdateSettings] = useState<UpdateSettings | null>(null)
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
@@ -2830,6 +3046,7 @@ function App(): React.JSX.Element {
   const expandedKeysRef = useRef<React.Key[]>([])
   const resourceTreeRef = useRef<unknown>(null)
   const tableBodyRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const tableHeaderRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const resourceTreeContainerRef = useRef<HTMLDivElement | null>(null)
   const resourceTreeViewportRef = useRef<HTMLDivElement | null>(null)
   const workspaceShellRef = useRef<HTMLDivElement | null>(null)
@@ -2882,9 +3099,11 @@ function App(): React.JSX.Element {
 
   const handleUpdateAvailable = (info: UpdateInfo, open = true): void => {
     setUpdateInfo(info)
-    setUpdateProgress(null)
+    if (!downloadingUpdate) {
+      setUpdateProgress(null)
+    }
     if (open && info.latestVersion !== updateSettings?.skippedUpdateVersion) {
-      setUpdateModalOpen(true)
+      openUpdateModal()
     }
   }
 
@@ -2934,7 +3153,7 @@ function App(): React.JSX.Element {
     }
     await window.api.skipUpdateVersion(updateInfo.latestVersion)
     await refreshUpdateSettings()
-    setUpdateModalOpen(false)
+    updateModalRef.current?.close()
   }
 
   const normalizeRequestError = (error: unknown): Error => {
@@ -6094,6 +6313,33 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     })
   }
 
+  const syncRuntimeSortButtons = (
+    tabKey: string,
+    sortState?: { column: string; direction: 'ascend' | 'descend' }
+  ): void => {
+    const container = tableHeaderRefs.current[tabKey]
+    if (!container) {
+      return
+    }
+
+    container.querySelectorAll<HTMLElement>('.column-sort-button').forEach((button) => {
+      const column = button.dataset.columnKey ?? ''
+      const icon = button.querySelector<HTMLElement>('.column-sort-icon')
+      const isActive = Boolean(sortState?.column && sortState.column === column)
+      button.classList.toggle('active', isActive)
+      if (!icon) {
+        return
+      }
+      if (!isActive) {
+        icon.textContent = '⇅'
+        icon.dataset.direction = 'none'
+        return
+      }
+      icon.textContent = sortState?.direction === 'descend' ? '↓' : '↑'
+      icon.dataset.direction = sortState?.direction ?? 'none'
+    })
+  }
+
   const clearRuntimeCellSelection = (tabKey: string): void => {
     runtimeSelectedCellRefs.current[tabKey] = undefined
     syncRenderedCellSelection(tabKey)
@@ -6709,10 +6955,16 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         : tab.sortState.direction === 'ascend'
           ? { column, direction: 'descend' as const }
           : undefined
-      updateWorkspaceTab(tab.key, { sortState: nextSort, loading: tab.kind === 'preview' ? true : tab.loading })
+      syncRuntimeSortButtons(tab.key, nextSort)
+      startTransition(() => {
+        updateWorkspaceTab(tab.key, { sortState: nextSort })
+      })
       if (tab.kind === 'preview' && tab.connectionId && tab.tableName) {
         const previewObjectType = tab.objectType === 'view' ? 'view' : 'table'
-        requestAnimationFrame(() => {
+        window.setTimeout(() => {
+          startTransition(() => {
+            updateWorkspaceTab(tab.key, { loading: true })
+          })
           void previewTable(
             tab.connectionId!,
             tab.tableName!,
@@ -6724,7 +6976,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             previewObjectType,
             nextSort
           )
-        })
+        }, 0)
       }
     }
 
@@ -6735,12 +6987,6 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       } else {
         nextFilters[column] = values
       }
-      updateWorkspaceTab(tab.key, { columnFilters: nextFilters })
-    }
-
-    const clearColumnFilter = (column: string): void => {
-      const nextFilters = { ...(tab.columnFilters ?? {}) }
-      delete nextFilters[column]
       updateWorkspaceTab(tab.key, { columnFilters: nextFilters })
     }
 
@@ -6833,32 +7079,20 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       updateWorkspaceTab(tab.key, { columnOrder: nextOrder, draggingColumn: undefined })
     }
 
-    const getColumnFilterOptions = (column: string): ColumnFilterOption[] => tab.columnFilterOptions?.[column] ?? []
-
-    const prepareColumnFilterOptions = (column: string): void => {
-      if (tab.columnFilterOptions?.[column]) {
-        return
-      }
-      updateWorkspaceTab(tab.key, {
-        columnFilterOptions: {
-          ...(tab.columnFilterOptions ?? {}),
-          [column]: buildColumnFilterOptions(baseTableRows, column)
-        }
-      })
-    }
-
     const renderColumnTitle = (column: string): React.ReactNode => {
-      const filterOptions = getColumnFilterOptions(column)
       const checkedValues = columnFilters[column] ?? []
-      const sortIcon = tab.sortState?.column === column
-        ? tab.sortState.direction === 'ascend'
-          ? <SortAscendingOutlined />
-          : <SortDescendingOutlined />
-        : <span className="column-sort-default-icon" aria-hidden="true">⇅</span>
+      const sortDirection = tab.sortState?.column === column ? tab.sortState.direction : undefined
+      const sortIcon = (
+        <span className="column-sort-icon" data-direction={sortDirection ?? 'none'} aria-hidden="true">
+          {sortDirection === 'descend' ? '↓' : sortDirection === 'ascend' ? '↑' : '⇅'}
+        </span>
+      )
 
       return (
         <Dropdown
           trigger={['contextMenu']}
+          transitionName=""
+          overlayClassName="no-motion-overlay"
           menu={{
             items: [{ key: 'copy-column-name', label: '复制列名称' }],
             onClick: ({ key }) => {
@@ -6900,38 +7134,24 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             >
               {column}
             </button>
-            <button type="button" className={`column-sort-button${tab.sortState?.column === column ? ' active' : ''}`} title="切换排序" onClick={(event) => { event.stopPropagation(); toggleColumnSort(column) }}>
+            <button
+              type="button"
+              className={`column-sort-button${tab.sortState?.column === column ? ' active' : ''}`}
+              data-column-key={column}
+              title="切换排序"
+              onClick={(event) => {
+                event.stopPropagation()
+                toggleColumnSort(column)
+              }}
+            >
               {sortIcon}
             </button>
-            <Popover
-              trigger="click"
-              placement="bottomRight"
-              onOpenChange={(open) => {
-                if (open) {
-                  prepareColumnFilterOptions(column)
-                }
-              }}
-              content={(
-                <Space direction="vertical" className="column-filter-popover">
-                  <Typography.Text strong>{column} 筛选</Typography.Text>
-                  <Checkbox.Group value={checkedValues} onChange={(values) => updateColumnFilter(column, values.map(String))}>
-                    <Space direction="vertical" className="column-filter-options">
-                      {filterOptions.length > 0 ? filterOptions.map((option) => (
-                        <Checkbox key={option.value} value={option.value}>{option.label} <Typography.Text type="secondary">({option.count})</Typography.Text></Checkbox>
-                      )) : <Typography.Text type="secondary">点击筛选后加载选项</Typography.Text>}
-                    </Space>
-                  </Checkbox.Group>
-                  <Flex justify="space-between" align="center">
-                    <Button size="small" type="link" onClick={() => updateColumnFilter(column, filterOptions.map((option) => option.value))} disabled={filterOptions.length === 0}>全选</Button>
-                    <Button size="small" type="link" onClick={() => clearColumnFilter(column)}>清空</Button>
-                  </Flex>
-                </Space>
-              )}
-            >
-              <button type="button" className={`column-filter-button${checkedValues.length > 0 ? ' active' : ''}`} title="筛选本页数据" onClick={(event) => event.stopPropagation()}>
-                <FilterOutlined />
-              </button>
-            </Popover>
+            <ColumnFilterTrigger
+              column={column}
+              checkedValues={checkedValues}
+              sourceRows={baseTableRows}
+              onChange={(values) => updateColumnFilter(column, values)}
+            />
           </Flex>
         </Dropdown>
       )
@@ -7055,6 +7275,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           tableScrollX={tableScrollX}
           tableScrollY={tableScrollY}
           setBodyRef={(element) => { tableBodyRefs.current[tab.key] = element }}
+          setHeaderRef={(element) => { tableHeaderRefs.current[tab.key] = element }}
           onScrollCapture={() => scheduleRenderedCellSelectionSync(tab.key)}
           onKeyDown={(event) => {
             if (!supportsCellSelection || isEditableTarget(event.target)) {
@@ -7151,8 +7372,6 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           rowByKey={rowByKey}
           columnInfoMap={tab.columnInfoMap}
           editable={supportsWritableCells && tab.kind === 'preview'}
-          valueDisplayMode={tab.valueDisplayMode ?? 'raw'}
-          onToggleValueDisplay={() => updateWorkspaceTab(tab.key, { valueDisplayMode: (tab.valueDisplayMode ?? 'raw') === 'json' ? 'raw' : 'json' })}
           onUpdateValue={(rowKey, column, rawValue) => updatePreviewCell(tab.key, rowKey, column, editableValue(rawValue))}
         />
         </div>
@@ -7272,6 +7491,9 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       const dbOptions = tab.connectionId ? (allDatabases[tab.connectionId] ?? []) : []
       const schemaKey = tab.connectionId && tab.pgDatabaseName ? `${tab.connectionId}:${tab.pgDatabaseName}` : ''
       const schemaOptions = schemaKey ? (allSchemas[schemaKey] ?? []) : []
+      const connectionSelectWidth = getQuerySelectWidth(connections.map((item) => item.name), '选择连接')
+      const databaseSelectWidth = getQuerySelectWidth(dbOptions, isPg ? '选择 Database' : (isDm || connection?.database_type === 'oracle') ? '选择 Schema' : isMongo ? '选择数据库' : isRedis ? '选择 Redis DB' : isClickHouse ? '选择数据库' : '选择库')
+      const schemaSelectWidth = getQuerySelectWidth(schemaOptions, '选择 Schema')
 
       const resultVisible = Boolean(tab.resultVisible)
       const resultCollapsed = Boolean(tab.resultCollapsed)
@@ -7285,6 +7507,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
               placeholder="选择连接"
               value={tab.connectionId}
               variant="borderless"
+              style={{ width: connectionSelectWidth }}
               onChange={(connectionId) => {
                 const nextConn = getConnection(connectionId)
                 void ensureDatabasesLoaded(connectionId)
@@ -7308,6 +7531,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                 placeholder={isPg ? '选择 Database' : (isDm || connection?.database_type === 'oracle') ? '选择 Schema' : isMongo ? '选择数据库' : isRedis ? '选择 Redis DB' : isClickHouse ? '选择数据库' : '选择库'}
                 value={isPg ? (tab.pgDatabaseName || undefined) : (tab.databaseName || undefined)}
                 variant="borderless"
+                style={{ width: databaseSelectWidth }}
                 onChange={async (value) => {
                   if (isPg) {
                     const schemaNames = await ensureSchemasLoaded(tab.connectionId!, value)
@@ -7334,6 +7558,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                 placeholder="选择 Schema"
                 value={tab.databaseName || undefined}
                 variant="borderless"
+                style={{ width: schemaSelectWidth }}
                 onChange={(value) => updateWorkspaceTab(tab.key, { databaseName: value })}
                 options={schemaOptions.map((name) => ({ label: name, value: name }))}
               />
@@ -7499,13 +7724,15 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     }
   }
 
-  const checkHealth = async (): Promise<void> => {
+  const checkHealth = async (silent = false): Promise<void> => {
     setHealthLoading(true)
 
     try {
       await requestJson<HealthStatus>('/health')
     } catch (err) {
-      showError(err instanceof Error ? err.message : '无法连接后端服务')
+      if (!silent) {
+        showError(err instanceof Error ? err.message : '无法连接后端服务')
+      }
     } finally {
       setHealthLoading(false)
     }
@@ -7691,7 +7918,9 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
 
   const collapseTreeNode = (node: DatabaseTreeNode): void => {
     const key = node.key as React.Key
-    setExpandedKeys((current) => current.filter((item) => item !== key))
+    flushSync(() => {
+      setExpandedKeys((current) => current.filter((item) => item !== key))
+    })
   }
 
   const toggleOrLoadTreeNode = (node: DatabaseTreeNode): void => {
@@ -7715,7 +7944,9 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       return
     }
 
-    setExpandedKeys((current) => current.includes(key) ? current : [...current, key])
+    flushSync(() => {
+      setExpandedKeys((current) => current.includes(key) ? current : [...current, key])
+    })
   }
 
   const openConnectionModal = async (nextDatabaseType: DatabaseType): Promise<void> => {
@@ -8376,18 +8607,38 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
 
   const openSettings = (section: SettingsSection = 'app'): void => {
     setSettingsSection(section)
-    setDriverManagerOpen(true)
-    void window.api.getAppInfo().then(setAppInfo).catch(() => undefined)
+    settingsModalRef.current?.open()
+    setSettingsContentReady(false)
+    window.setTimeout(() => {
+      setSettingsContentReady(true)
+      void window.api.getAppInfo().then(setAppInfo).catch(() => undefined)
 
-    if (section === 'drivers') {
-      resetDriverForm(selectedDriverDatabaseType)
-      void loadDrivers()
-      void loadJavaRuntimes()
-    }
+      if (section === 'drivers') {
+        resetDriverForm(selectedDriverDatabaseType)
+        void loadDrivers()
+        void loadJavaRuntimes()
+      }
+    }, 0)
   }
 
   const openDriverManager = (): void => {
     openSettings('drivers')
+  }
+
+  const openQueryHistoryModal = (): void => {
+    queryHistoryModalRef.current?.open()
+    setQueryHistoryContentReady(false)
+    window.setTimeout(() => {
+      setQueryHistoryContentReady(true)
+    }, 0)
+  }
+
+  const openUpdateModal = (): void => {
+    updateModalRef.current?.open()
+    setUpdateModalContentReady(false)
+    window.setTimeout(() => {
+      setUpdateModalContentReady(true)
+    }, 0)
   }
 
   const switchSettingsSection = (section: SettingsSection): void => {
@@ -10121,12 +10372,15 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     const unsubscribers = [
       window.api.onUpdateAvailable((info) => handleUpdateAvailable(info, true)),
       window.api.onUpdateNotAvailable((info) => setUpdateInfo(info)),
-      window.api.onUpdateDownloadProgress(setUpdateProgress),
+      window.api.onUpdateDownloadProgress((progress) => {
+        setDownloadingUpdate(true)
+        setUpdateProgress(progress)
+      }),
       window.api.onUpdateDownloaded((info) => {
         setDownloadingUpdate(false)
         setUpdateInfo(info)
         setUpdateProgress((current) => ({ percent: 100, transferred: current?.transferred ?? 0, total: current?.total }))
-        setUpdateModalOpen(true)
+        openUpdateModal()
       }),
       window.api.onUpdateError((error) => {
         setCheckingUpdate(false)
@@ -10143,9 +10397,20 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       return
     }
 
-    void checkHealth()
+    void checkHealth(true)
     void loadConnections().catch(() => undefined)
   }, [backendStatus.state, backendStatus.apiBaseUrl])
+
+  useEffect(() => {
+    if (startupUiReady) {
+      return
+    }
+
+    if (backendStatus.state === 'online' && connectionsInitialized) {
+      setStartupUiReady(true)
+      window.api.notifyRendererReady()
+    }
+  }, [backendStatus.state, connectionsInitialized, startupUiReady])
 
   useEffect(() => {
     try {
@@ -10173,6 +10438,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     : `当前版本 ${updateSettings?.currentVersion ?? updateInfo?.currentVersion ?? ''}`
 
   const backendReady = backendStatus.state === 'online'
+  const showBackendStatusTag = startupUiReady || backendStatus.state === 'failed' || backendStatus.state === 'crashed'
   const backendStatusIcon = backendReady ? <CheckCircleOutlined /> : <CloseCircleOutlined />
   const activeTab = workspaceTabs.find((tab) => tab.key === activeTabKey)
   const activeAIConnection = getConnection(aiActiveContext?.connectionId)
@@ -10296,13 +10562,15 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             <Button className="toolbar-query-btn" type="primary" size="small" icon={<FileAddOutlined />} onClick={() => openQueryWorkspace('', '新建查询')} title="新建查询" aria-label="新建查询">
               新建查询
             </Button>
-            <Button type="text" size="small" icon={<HistoryOutlined />} onClick={() => setQueryHistoryOpen(true)} title="历史查询窗口" aria-label="历史查询窗口" />
+            <Button type="text" size="small" icon={<HistoryOutlined />} onClick={openQueryHistoryModal} title="历史查询窗口" aria-label="历史查询窗口" />
             <Button type="text" size="small" icon={<SettingOutlined />} onClick={() => openSettings('app')} title="设置" aria-label="设置" />
-            <Button type={updateInfo?.available || downloadingUpdate ? 'primary' : 'text'} size="small" icon={<CloudDownloadOutlined />} loading={checkingUpdate} onClick={() => { setUpdateModalOpen(true); if (!downloadingUpdate) { void checkForUpdates(true) } }} title="检查更新" aria-label="检查更新" />
+            <Button type={updateInfo?.available || downloadingUpdate ? 'primary' : 'text'} size="small" icon={<CloudDownloadOutlined />} loading={checkingUpdate} onClick={() => { openUpdateModal(); if (!downloadingUpdate) { void checkForUpdates(true) } }} title="检查更新" aria-label="检查更新" />
             <Button type="text" size="small" icon={<ReloadOutlined />} loading={healthLoading} onClick={() => void checkHealth()} title="同步状态" aria-label="同步状态" />
             <Button type={aiPanelOpen ? 'primary' : 'text'} size="small" icon={<MessageOutlined />} onClick={() => setAiPanelOpen((open) => !open)} title={aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'} aria-label={aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'} />
             <Button className="theme-toggle-btn" type="text" size="small" icon={theme === 'dark' ? <SunOutlined /> : <MoonOutlined />} onClick={toggleTheme} title={theme === 'dark' ? '切换到亮色主题' : '切换到暗色主题'} aria-label={theme === 'dark' ? '切换到亮色主题' : '切换到暗色主题'} />
-            <Tag className="service-pill" icon={backendStatusIcon} color={BACKEND_COLORS[backendStatus.state]} title={backendStatus.message}>{BACKEND_LABELS[backendStatus.state]}</Tag>
+            {showBackendStatusTag && (
+              <Tag className="service-pill" icon={backendStatusIcon} color={BACKEND_COLORS[backendStatus.state]} title={backendStatus.message}>{BACKEND_LABELS[backendStatus.state]}</Tag>
+            )}
           </Space>
           <Space className="window-controls titlebar-no-drag" size={0}>
             <Button type="text" icon={<MinusOutlined />} onClick={() => void window.api.minimizeWindow()} title="最小化" aria-label="最小化" />
@@ -10389,7 +10657,12 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                 ref={resourceTreeViewportRef}
                 className={`resource-tree-viewport${enableVirtualTree ? ' virtual' : ' non-virtual'}`}
               >
-                {treeData.length === 0 ? (
+                {!connectionsInitialized || !backendReady ? (
+                  <div className="resource-tree-loading-state">
+                    <div className="resource-tree-loading-spinner"><LoadingOutlined spin /></div>
+                    <Typography.Text type="secondary">正在加载连接与数据库结构...</Typography.Text>
+                  </div>
+                ) : treeData.length === 0 ? (
                   <Alert message="暂无数据库连接或分组" description="先创建一个连接，或者新建分组开始整理。" type="info" showIcon />
                 ) : (
                   <Tree
@@ -10479,6 +10752,15 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                     onExpand={(keys, info) => {
                       const node = info.node as DatabaseTreeNode
                       if (node.key && treeLoadingKeysRef.current.has(node.key as React.Key)) {
+                        return
+                      }
+                      if (isTreeNodeChildrenLoaded(node) || !isLoadableTreeNode(node)) {
+                        flushSync(() => {
+                          setExpandedKeys(keys)
+                        })
+                        if (info.expanded && (node.kind === 'database' || node.kind === 'pg-schema')) {
+                          activateAIContextFromNode(node)
+                        }
                         return
                       }
                       if (!info.expanded) {
@@ -10654,7 +10936,15 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           </div>
         </div>
       </Layout.Content>
-      <Modal title="应用更新" open={updateModalOpen} onCancel={() => setUpdateModalOpen(false)} footer={null} width={680} maskClosable={false}>
+      <ImperativeModalHost
+        ref={updateModalRef}
+        title="应用更新"
+        footer={null}
+        width={680}
+        maskClosable={false}
+        onClosed={() => setUpdateModalContentReady(false)}
+      >
+        {updateModalContentReady ? (
         <Space direction="vertical" className="full-width" size="middle">
           <Alert
             type={updateInfo?.available ? 'info' : 'success'}
@@ -10688,8 +10978,18 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             {updateDownloaded && <Button type="primary" onClick={() => void installUpdate()}>{updateMode === 'installer' ? '重启并安装' : '打开下载位置'}</Button>}
           </Flex>
         </Space>
-      </Modal>
-      <Modal title="历史查询窗口" open={queryHistoryOpen} onCancel={() => setQueryHistoryOpen(false)} footer={null} width={760}>
+        ) : (
+          <div className="deferred-modal-loading"><LoadingOutlined spin /></div>
+        )}
+      </ImperativeModalHost>
+      <ImperativeModalHost
+        ref={queryHistoryModalRef}
+        title="历史查询窗口"
+        footer={null}
+        width={760}
+        onClosed={() => setQueryHistoryContentReady(false)}
+      >
+        {queryHistoryContentReady ? (
         <div className="query-history-modal">
           {Object.entries(
             persistedQueryWorkspaces.reduce<Record<string, PersistedQueryWorkspace[]>>((groups, item) => {
@@ -10712,7 +11012,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                       className="query-history-item"
                       onDoubleClick={() => {
                         openPersistedQueryWorkspace(item)
-                        setQueryHistoryOpen(false)
+                        queryHistoryModalRef.current?.close()
                       }}
                     >
                       <div className="query-history-item-main">
@@ -10738,7 +11038,10 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             </div>
           ))}
         </div>
-      </Modal>
+        ) : (
+          <div className="deferred-modal-loading"><LoadingOutlined spin /></div>
+        )}
+      </ImperativeModalHost>
       <Modal
         title="导入连接"
         open={importConnectionModalOpen}
@@ -10872,7 +11175,15 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           />
         </Space>
       </Modal>
-      <Modal title="设置" open={driverManagerOpen} footer={null} onCancel={() => setDriverManagerOpen(false)} width={1040} maskClosable={false}>
+      <ImperativeModalHost
+        ref={settingsModalRef}
+        title="设置"
+        footer={null}
+        width={1040}
+        maskClosable={false}
+        onClosed={() => setSettingsContentReady(false)}
+      >
+        {settingsContentReady ? (
         <Flex gap={18} align="stretch" className="settings-layout">
           <div className="settings-sidebar">
             <Menu
@@ -11125,7 +11436,10 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             )}
           </div>
         </Flex>
-      </Modal>
+        ) : (
+          <div className="deferred-modal-loading"><LoadingOutlined spin /></div>
+        )}
+      </ImperativeModalHost>
       <Modal title={editingTableName ? `修改表：${editingTableName}` : '修改表'} open={tableEditorOpen} okText="保存" cancelText="取消" confirmLoading={tableEditorLoading} onOk={() => void saveTableEditor()} onCancel={() => setTableEditorOpen(false)} width={980} okButtonProps={{ disabled: !tableDesignerSupportsEdit(getConnection(editingConnectionId)?.database_type) }} maskClosable={false}>
         {renderTableDesigner('edit', editingConnectionId, editingDatabaseName, editingPgDatabaseName, editingTableName ?? '', undefined, editingTableComment, setEditingTableComment, editingColumns, tableEditorLoading)}
       </Modal>

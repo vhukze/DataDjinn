@@ -85,6 +85,7 @@ interface DataDjinnAPI {
   openReleasePage: (url?: string) => Promise<void>
   getAppInfo: () => Promise<AppInfo>
   openProjectHome: () => Promise<void>
+  notifyRendererReady: () => void
   relaunchApp: () => Promise<void>
   onUpdateAvailable: (callback: (info: UpdateInfo) => void) => () => void
   onUpdateNotAvailable: (callback: (info: UpdateInfo) => void) => () => void

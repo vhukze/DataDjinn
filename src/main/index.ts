@@ -1,6 +1,6 @@
 import { app, dialog, shell, BrowserWindow, ipcMain, screen, webContents } from 'electron'
 import { join } from 'path'
-import { createWriteStream } from 'fs'
+import { createWriteStream, existsSync, readFileSync } from 'fs'
 import { mkdir, readFile } from 'fs/promises'
 import { pipeline } from 'stream/promises'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -82,6 +82,43 @@ let latestPortableUpdate: UpdateInfo | null = null
 let installerUpdateDownloaded = false
 let isQuittingForUpdate = false
 let isRelaunching = false
+let lastInstallerUpdateInfo: UpdateInfo | null = null
+let mainWindowRef: BrowserWindow | null = null
+let splashWindowRef: BrowserWindow | null = null
+let splashDismissed = false
+let backendStartupCompleted = false
+let rendererStartupReady = false
+
+const closeSplashWindow = (): void => {
+  if (splashWindowRef && !splashWindowRef.isDestroyed()) {
+    splashDismissed = true
+    splashWindowRef.destroy()
+  }
+}
+
+const showMainWindowIfReady = (): void => {
+  if (!backendStartupCompleted || !rendererStartupReady || !mainWindowRef || mainWindowRef.isDestroyed()) {
+    return
+  }
+
+  if (!mainWindowRef.isVisible()) {
+    mainWindowRef.show()
+  }
+  mainWindowRef.focus()
+  closeSplashWindow()
+}
+
+const showMainWindowForStartupFailure = (): void => {
+  if (!mainWindowRef || mainWindowRef.isDestroyed()) {
+    return
+  }
+
+  if (!mainWindowRef.isVisible()) {
+    mainWindowRef.show()
+  }
+  mainWindowRef.focus()
+  closeSplashWindow()
+}
 
 const normalizeVersion = (version: string): string => version.trim().replace(/^v/i, '')
 
@@ -211,7 +248,7 @@ autoUpdater.autoInstallOnAppQuit = false
 
 autoUpdater.on('update-available', (info) => {
   installerUpdateDownloaded = false
-  sendUpdateEvent('update:available', {
+  lastInstallerUpdateInfo = {
     currentVersion: app.getVersion(),
     latestVersion: info.version,
     available: true,
@@ -220,10 +257,12 @@ autoUpdater.on('update-available', (info) => {
     releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes : undefined,
     releaseUrl: `https://github.com/vhukze/DataDjinn/releases/tag/v${info.version}`,
     installerDownloaded: false
-  } satisfies UpdateInfo)
+  } satisfies UpdateInfo
+  sendUpdateEvent('update:available', lastInstallerUpdateInfo)
 })
 
 autoUpdater.on('update-not-available', (info) => {
+  lastInstallerUpdateInfo = null
   sendUpdateEvent('update:not-available', {
     currentVersion: app.getVersion(),
     latestVersion: info.version,
@@ -243,7 +282,7 @@ autoUpdater.on('download-progress', (progress) => {
 
 autoUpdater.on('update-downloaded', (info) => {
   installerUpdateDownloaded = true
-  sendUpdateEvent('update:downloaded', {
+  lastInstallerUpdateInfo = {
     currentVersion: app.getVersion(),
     latestVersion: info.version,
     available: true,
@@ -252,7 +291,8 @@ autoUpdater.on('update-downloaded', (info) => {
     releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes : undefined,
     releaseUrl: `https://github.com/vhukze/DataDjinn/releases/tag/v${info.version}`,
     installerDownloaded: true
-  } satisfies UpdateInfo)
+  } satisfies UpdateInfo
+  sendUpdateEvent('update:downloaded', lastInstallerUpdateInfo)
 })
 
 autoUpdater.on('error', (error) => {
@@ -278,9 +318,12 @@ function createWindow(): void {
       sandbox: false
     }
   })
+  mainWindowRef = mainWindow
 
-  mainWindow.on('ready-to-show', () => {
-    mainWindow.show()
+  mainWindow.on('closed', () => {
+    if (mainWindowRef === mainWindow) {
+      mainWindowRef = null
+    }
   })
 
   mainWindow.webContents.on('did-finish-load', () => {
@@ -300,6 +343,181 @@ function createWindow(): void {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
 }
+
+function createSplashWindow(): void {
+  if (splashWindowRef && !splashWindowRef.isDestroyed()) {
+    return
+  }
+  splashDismissed = false
+
+  const splashWindow = new BrowserWindow({
+    width: 420,
+    height: 260,
+    show: false,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    closable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    center: true,
+    backgroundColor: '#00000000',
+    icon,
+    webPreferences: {
+      sandbox: false
+    }
+  })
+
+  splashWindowRef = splashWindow
+  splashWindow.on('closed', () => {
+    if (splashWindowRef === splashWindow) {
+      splashWindowRef = null
+    }
+  })
+
+  const splashLogoCandidate = is.dev
+    ? join(process.cwd(), 'resources', 'logo-horizontal.svg')
+    : join(process.resourcesPath, 'logo-horizontal.svg')
+  const fallbackLogoCandidate = is.dev
+    ? join(process.cwd(), 'resources', 'icon.svg')
+    : join(process.resourcesPath, 'icon.svg')
+  const splashLogoMarkup = (() => {
+    const candidate = existsSync(splashLogoCandidate)
+      ? splashLogoCandidate
+      : fallbackLogoCandidate
+    try {
+      const svgContent = readFileSync(candidate, 'utf-8')
+      const svgDataUrl = `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svgContent)}`
+      return `<img src="${svgDataUrl}" alt="DataDjinn" />`
+    } catch {
+      return '<div style="font-size:28px;font-weight:700;color:#111827;">DataDjinn</div>'
+    }
+  })()
+  const splashHtml = `<!doctype html>
+  <html lang="zh-CN">
+    <head>
+      <meta charset="UTF-8" />
+      <title>DataDjinn</title>
+      <style>
+        :root { color-scheme: light dark; }
+        html, body {
+          width: 100%;
+          height: 100%;
+          margin: 0;
+          overflow: hidden;
+          background: transparent;
+          font-family: "Segoe UI", system-ui, sans-serif;
+        }
+        body {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .card {
+          width: 360px;
+          padding: 26px 28px;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 18px;
+          border-radius: 18px;
+          background: rgba(255,255,255,0.95);
+          box-shadow: 0 18px 48px rgba(15, 23, 42, 0.18);
+          border: 1px solid rgba(148, 163, 184, 0.18);
+        }
+        .logo {
+          width: 220px;
+          height: auto;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .logo img,
+        .logo svg {
+          width: 220px;
+          height: auto;
+          display: block;
+        }
+        .status {
+          display: inline-flex;
+          align-items: center;
+          gap: 10px;
+          color: #516070;
+          font-size: 13px;
+        }
+        .spinner {
+          width: 16px;
+          height: 16px;
+          border-radius: 50%;
+          border: 2px solid rgba(47, 124, 246, 0.18);
+          border-top-color: #2f7cf6;
+          animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+        @media (prefers-color-scheme: dark) {
+          .card {
+            background: rgba(48,52,59,0.96);
+            border-color: rgba(210,218,230,0.12);
+            box-shadow: 0 18px 48px rgba(0, 0, 0, 0.34);
+          }
+          .status {
+            color: #c4cad2;
+          }
+        }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <div class="logo">${splashLogoMarkup}</div>
+        <div class="status"><span class="spinner"></span><span>正在启动服务...</span></div>
+      </div>
+    </body>
+  </html>`
+
+  splashWindow.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(splashHtml)}`)
+  splashWindow.once('ready-to-show', () => {
+    if (splashDismissed || (mainWindowRef && !mainWindowRef.isDestroyed() && mainWindowRef.isVisible())) {
+      splashWindow.destroy()
+      return
+    }
+    splashWindow.show()
+  })
+}
+
+async function finishStartupAndShowMainWindow(): Promise<void> {
+  try {
+    await backendManager.start()
+    backendStartupCompleted = true
+    showMainWindowIfReady()
+  } catch {
+    rendererStartupReady = true
+    showMainWindowForStartupFailure()
+  }
+}
+
+async function showMainWindowAfterStartup(): Promise<void> {
+  try {
+    await backendManager.start()
+  } catch {
+    // 主窗口内继续展示启动/错误状态
+  } finally {
+    if (mainWindowRef && !mainWindowRef.isDestroyed()) {
+      mainWindowRef.show()
+      mainWindowRef.focus()
+    }
+    if (splashWindowRef && !splashWindowRef.isDestroyed()) {
+      splashWindowRef.close()
+    }
+  }
+}
+
+void showMainWindowAfterStartup
 
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
@@ -452,6 +670,10 @@ app.whenReady().then(() => {
   ipcMain.handle('app:open-project-home', async () => {
     await shell.openExternal(GITHUB_PROJECT_URL)
   })
+  ipcMain.on('app:renderer-ready', () => {
+    rendererStartupReady = true
+    showMainWindowIfReady()
+  })
   ipcMain.handle('app:relaunch', async () => {
     isRelaunching = true
     await backendManager.stop()
@@ -554,7 +776,7 @@ app.whenReady().then(() => {
     }
 
     const result = await autoUpdater.checkForUpdates()
-    return {
+    const nextInfo = {
       currentVersion: app.getVersion(),
       latestVersion: result?.updateInfo.version,
       available: result ? compareVersion(result.updateInfo.version, app.getVersion()) > 0 : false,
@@ -564,6 +786,8 @@ app.whenReady().then(() => {
       releaseUrl: result?.updateInfo.version ? `https://github.com/vhukze/DataDjinn/releases/tag/v${result.updateInfo.version}` : undefined,
       installerDownloaded: installerUpdateDownloaded
     } satisfies UpdateInfo
+    lastInstallerUpdateInfo = nextInfo.available ? nextInfo : null
+    return nextInfo
   })
 
   ipcMain.handle('update:download', async () => {
@@ -628,8 +852,11 @@ app.whenReady().then(() => {
     }
   })
 
-  void backendManager.start()
+  createSplashWindow()
+  backendStartupCompleted = false
+  rendererStartupReady = false
   createWindow()
+  void finishStartupAndShowMainWindow()
 
   if (!is.dev && (store.get('autoCheckUpdates') ?? true)) {
     setTimeout(() => {

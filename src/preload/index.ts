@@ -64,6 +64,7 @@ const api = {
   openReleasePage: (url?: string) => ipcRenderer.invoke('update:open-release', url),
   getAppInfo: () => ipcRenderer.invoke('app:get-info'),
   openProjectHome: () => ipcRenderer.invoke('app:open-project-home'),
+  notifyRendererReady: () => ipcRenderer.send('app:renderer-ready'),
   relaunchApp: () => ipcRenderer.invoke('app:relaunch'),
   onUpdateAvailable: (callback: (info: unknown) => void) => {
     const listener = (_: Electron.IpcRendererEvent, info: unknown): void => callback(info)
