@@ -14,6 +14,7 @@ type AIConfig = {
   base_url: string
   api_key: string
   model: string
+  max_context_tokens?: number
 }
 
 type AIConfigItem = AIConfig & {
@@ -378,17 +379,22 @@ function createSplashWindow(): void {
     }
   })
 
-  const splashLogoCandidate = is.dev
-    ? join(process.cwd(), 'resources', 'logo-horizontal.svg')
-    : join(process.resourcesPath, 'logo-horizontal.svg')
-  const fallbackLogoCandidate = is.dev
-    ? join(process.cwd(), 'resources', 'icon.svg')
-    : join(process.resourcesPath, 'icon.svg')
+  const appResourcesDir = is.dev ? process.cwd() : app.getAppPath()
+  const splashLogoCandidates = [
+    join(appResourcesDir, 'resources', 'logo-horizontal.svg'),
+    join(process.resourcesPath, 'logo-horizontal.svg')
+  ]
+  const fallbackLogoCandidates = [
+    join(appResourcesDir, 'resources', 'icon.svg'),
+    join(process.resourcesPath, 'icon.svg')
+  ]
   const splashLogoMarkup = (() => {
-    const candidate = existsSync(splashLogoCandidate)
-      ? splashLogoCandidate
-      : fallbackLogoCandidate
+    const candidate = [...splashLogoCandidates, ...fallbackLogoCandidates]
+      .find((item) => existsSync(item))
     try {
+      if (!candidate) {
+        throw new Error('splash logo not found')
+      }
       const svgContent = readFileSync(candidate, 'utf-8')
       const svgDataUrl = `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svgContent)}`
       return `<img src="${svgDataUrl}" alt="DataDjinn" />`
@@ -737,6 +743,10 @@ app.whenReady().then(() => {
           break
         }
         sender?.send('api:stream-chunk', streamId, decoder.decode(value, { stream: true }))
+      }
+      const tail = decoder.decode()
+      if (tail) {
+        sender?.send('api:stream-chunk', streamId, tail)
       }
     } catch (error) {
       recoverBackendAfterRequestError(error)

@@ -19,8 +19,10 @@ export type BackendStatus = {
 }
 
 const HEALTH_TIMEOUT_MS = 15000
+const PACKAGED_HEALTH_TIMEOUT_MS = 60000
 const HEALTH_INTERVAL_MS = 500
 const REQUEST_RECOVERY_HEALTH_TIMEOUT_MS = 8000
+const PACKAGED_REQUEST_RECOVERY_HEALTH_TIMEOUT_MS = 15000
 const MAX_RESTART_ATTEMPTS = 5
 const RESTART_BASE_DELAY_MS = 1000
 const RESTART_MAX_DELAY_MS = 10000
@@ -73,7 +75,10 @@ export class BackendManager {
     }
 
     if (status.state === 'starting' && status.apiBaseUrl && this.process) {
-      const healthy = await this.waitForHealth(status.apiBaseUrl, REQUEST_RECOVERY_HEALTH_TIMEOUT_MS)
+      const healthy = await this.waitForHealth(
+        status.apiBaseUrl,
+        is.dev ? REQUEST_RECOVERY_HEALTH_TIMEOUT_MS : PACKAGED_REQUEST_RECOVERY_HEALTH_TIMEOUT_MS
+      )
       if (healthy && this.process) {
         this.restartAttempts = 0
         this.setStatus({ ...status, state: 'online', pid: this.process.pid, message: '后端已就绪' })
@@ -213,7 +218,7 @@ export class BackendManager {
       this.scheduleRestart(`后端异常退出，退出码：${code ?? 'unknown'}`, apiBaseUrl, logPath, code)
     })
 
-    const healthy = await this.waitForHealth(apiBaseUrl)
+    const healthy = await this.waitForHealth(apiBaseUrl, is.dev ? HEALTH_TIMEOUT_MS : PACKAGED_HEALTH_TIMEOUT_MS)
     if (launchId !== this.launchId || !this.process) {
       return this.getStatus()
     }

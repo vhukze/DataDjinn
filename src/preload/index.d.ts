@@ -16,6 +16,7 @@ type AIConfig = {
   base_url: string
   api_key: string
   model: string
+  max_context_tokens?: number
 }
 
 type AIConfigItem = AIConfig & {

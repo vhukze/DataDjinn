@@ -1209,6 +1209,7 @@ type WorkspaceTab = {
   pageSearchWholeWord?: boolean
   pageSearchFilterRows?: boolean
   pageSearchActiveMatchIndex?: number
+  tableRenderVersion?: number
   persistedAt?: number
 }
 
@@ -2039,6 +2040,7 @@ const ResultTableBodyView = memo(function ResultTableBodyView({
       onMouseLeave={onMouseLeave}
     >
       <Table
+        key={`${tab.key}:${tab.tableRenderVersion ?? 0}`}
         className="result-table"
         rowClassName={(row) => [
           row.__deleted ? 'row-deleted' : row.__state ? `row-${row.__state}` : '',
@@ -2590,8 +2592,14 @@ const isCellValueEqual = (left: unknown, right: unknown): boolean => {
   return String(left) === String(right)
 }
 
+const cloneRowSnapshot = (row: Record<string, unknown>): Record<string, unknown> => ({ ...row })
+
 const buildEditableRows = (rows: Record<string, unknown>[]): EditableRow[] =>
-  rows.map((row, index) => ({ ...row, __rowKey: `row:${index}`, __original: row }))
+  rows.map((row, index) => ({
+    ...cloneRowSnapshot(row),
+    __rowKey: `row:${index}`,
+    __original: cloneRowSnapshot(row)
+  }))
 
 const buildRedisEdits = (rows: Record<string, unknown>[]): Record<string, RedisKeyEdit> =>
   Object.fromEntries(rows.map((row, index) => {
@@ -3056,6 +3064,7 @@ function App(): React.JSX.Element {
   const pendingRenderedCellSelectionFrameRefs = useRef<Record<string, number | undefined>>({})
   const committingEditingCellRefs = useRef<Record<string, boolean | undefined>>({})
   const editingCellRefs = useRef<Record<string, { rowKey: string; column: string } | undefined>>({})
+  const suppressInlineEditorCommitRefs = useRef<Record<string, boolean | undefined>>({})
   const cellClipboardRef = useRef<{ text: string, values: unknown[][] } | null>(null)
   const contextMenuCellSelectionRefs = useRef<Record<string, string[] | undefined>>({})
   const cellInspectorPanelRefs = useRef<Record<string, CellInspectorPanelHandle | null>>({})
@@ -4612,12 +4621,30 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     closeInlineCellEditor(tabKey)
     committingEditingCellRefs.current[tabKey] = undefined
     editingCellRefs.current[tabKey] = undefined
+    suppressInlineEditorCommitRefs.current[tabKey] = undefined
     syncRenderedCellSelection(tabKey)
+  }
+
+  const discardInlineCellEditor = (tabKey: string): void => {
+    const current = inlineCellEditorRefs.current[tabKey]
+    if (!current) {
+      clearInlineCellEditor(tabKey)
+      return
+    }
+    closeEditingCell(tabKey, cellDisplayText(current.originalValue))
+    editingCellRefs.current[tabKey] = undefined
+    suppressInlineEditorCommitRefs.current[tabKey] = undefined
   }
 
   const commitInlineCellEditor = (tabKey: string): void => {
     const current = inlineCellEditorRefs.current[tabKey]
     if (!current || committingEditingCellRefs.current[tabKey]) {
+      return
+    }
+    if (suppressInlineEditorCommitRefs.current[tabKey]) {
+      suppressInlineEditorCommitRefs.current[tabKey] = undefined
+      closeEditingCell(tabKey, cellDisplayText(current.originalValue))
+      editingCellRefs.current[tabKey] = undefined
       return
     }
     committingEditingCellRefs.current[tabKey] = true
@@ -6024,7 +6051,24 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         )}
         {showPreviewActions && (
           <>
-            <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<ReloadOutlined />} title="刷新" aria-label="刷新" loading={tab.loading} onClick={() => void previewTable(tab.connectionId!, tab.tableName!, tab.databaseName, tab.pgDatabaseName, tab.limit, tab.page, tab.where)} />
+            <Button
+              className="table-toolbar-icon-btn"
+              size="small"
+              type="text"
+              icon={<ReloadOutlined />}
+              title="刷新"
+              aria-label="刷新"
+              loading={tab.loading}
+              onMouseDownCapture={() => {
+                suppressInlineEditorCommitRefs.current[tab.key] = true
+              }}
+              onMouseDown={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                discardInlineCellEditor(tab.key)
+              }}
+              onClick={() => void previewTable(tab.connectionId!, tab.tableName!, tab.databaseName, tab.pgDatabaseName, tab.limit, tab.page, tab.where)}
+            />
             <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<PlusOutlined />} title="新增行" aria-label="新增行" onClick={() => addPreviewRow(tab)} />
             <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<MinusOutlined />} title="删除选中行" aria-label="删除选中行" disabled={!tab.selectedRowKeys?.length} onClick={() => markSelectedRowsDeleted(tab)} />
             <Button className="table-toolbar-icon-btn" type="text" size="small" icon={<SaveOutlined />} title="提交" aria-label="提交" disabled={countPendingChanges(tab) === 0} loading={tab.loading} onClick={() => void submitPreviewChanges(tab)} />
@@ -9857,7 +9901,20 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       if (exists) {
         return current.map((tab) => (
           tab.key === tabKey
-            ? { ...tab, limit, page, where: whereCondition, objectType, loading: true, error: undefined }
+            ? {
+              ...tab,
+              limit,
+              page,
+              where: whereCondition,
+              objectType,
+              loading: true,
+              error: undefined,
+              editRows: buildEditableRows(tab.result?.rows ?? []),
+              tableRenderVersion: (tab.tableRenderVersion ?? 0) + 1,
+              selectedRowKeys: [],
+              selectedRowKeyMap: {},
+              columnFilterOptions: undefined
+            }
             : tab
         ))
       }
@@ -9877,7 +9934,8 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           limit,
           page,
           where: whereCondition,
-          loading: true
+          loading: true,
+          tableRenderVersion: 1
         }
       ]
     })
@@ -9892,7 +9950,23 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       ])
       const columnInfoMap = Object.fromEntries(columnsData.columns.map((item) => [item.name, item] as const))
       editingCellRefs.current[tabKey] = undefined
-      updateWorkspaceTab(tabKey, { result, columnInfoMap, editRows: buildEditableRows(result.rows), selectedRowKeys: [], selectedRowKeyMap: {}, columnFilterOptions: undefined, where: whereCondition, loading: false, error: undefined })
+      setWorkspaceTabs((current) => current.map((tab) => (
+        tab.key === tabKey
+          ? {
+            ...tab,
+            result,
+            columnInfoMap,
+            editRows: buildEditableRows(result.rows),
+            selectedRowKeys: [],
+            selectedRowKeyMap: {},
+            columnFilterOptions: undefined,
+            where: whereCondition,
+            loading: false,
+            error: undefined,
+            tableRenderVersion: (tab.tableRenderVersion ?? 0) + 1
+          }
+          : tab
+      )))
       requestAnimationFrame(() => syncRenderedCellSelection(tabKey))
     } catch (err) {
       updateWorkspaceTab(tabKey, { loading: false, error: err instanceof Error ? err.message : '加载表数据失败' })
@@ -10184,7 +10258,12 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     }
 
     const activeTab = workspaceTabs.find((tab) => tab.key === activeTabKey)
-    if (activeTab?.kind === 'query') {
+    const canReuseActiveQuery = activeTab?.kind === 'query' && (
+      activeTab.connectionId === aiActiveContext?.connectionId &&
+      (activeTab.databaseName ?? '') === (aiActiveContext?.databaseName ?? '') &&
+      (activeTab.pgDatabaseName ?? '') === (aiActiveContext?.pgDatabaseName ?? '')
+    )
+    if (canReuseActiveQuery && activeTab?.kind === 'query') {
       const separator = activeTab.sql.trim() ? '\n\n' : ''
       updateWorkspaceTab(activeTab.key, { sql: `${activeTab.sql}${separator}${nextSql}` })
       return

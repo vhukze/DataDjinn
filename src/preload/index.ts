@@ -17,6 +17,28 @@ const api = {
   ): Promise<void> => {
     return new Promise((resolve, reject) => {
       let chunkError: unknown
+      let invokeError: unknown
+      let streamEnded = false
+      let invokeFinished = false
+      let settled = false
+
+      const finalize = (): void => {
+        if (settled || !streamEnded || !invokeFinished) {
+          return
+        }
+        settled = true
+        cleanup()
+        if (chunkError) {
+          reject(chunkError)
+          return
+        }
+        if (invokeError) {
+          reject(invokeError)
+          return
+        }
+        resolve()
+      }
+
       const chunkListener = (_: Electron.IpcRendererEvent, nextStreamId: string, chunk: string): void => {
         if (nextStreamId !== streamId || chunkError) {
           return
@@ -34,12 +56,8 @@ const api = {
         if (nextStreamId !== streamId) {
           return
         }
-        cleanup()
-        if (chunkError) {
-          reject(chunkError)
-          return
-        }
-        resolve()
+        streamEnded = true
+        finalize()
       }
       const cleanup = (): void => {
         ipcRenderer.removeListener('api:stream-chunk', chunkListener)
@@ -48,10 +66,16 @@ const api = {
 
       ipcRenderer.on('api:stream-chunk', chunkListener)
       ipcRenderer.on('api:stream-end', endListener)
-      ipcRenderer.invoke('api:stream', streamId, path, options).catch((error) => {
-        cleanup()
-        reject(error)
-      })
+      ipcRenderer.invoke('api:stream', streamId, path, options)
+        .then(() => {
+          invokeFinished = true
+          finalize()
+        })
+        .catch((error) => {
+          invokeError = error
+          invokeFinished = true
+          finalize()
+        })
     })
   },
   cancelStreamRequest: (streamId: string) => ipcRenderer.invoke('api:stream-cancel', streamId),

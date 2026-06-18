@@ -1,5 +1,5 @@
 import { CheckCircleOutlined, ClockCircleOutlined, CloseCircleOutlined, CloseOutlined, DatabaseOutlined, DeleteOutlined, DownOutlined, ExclamationCircleOutlined, LoadingOutlined, PlusOutlined, RightOutlined, RobotOutlined, SendOutlined, SettingOutlined, StopOutlined, ToolOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, Collapse, Dropdown, Flex, Form, Input, List, Modal, Progress, Select, Space, Steps, Switch, Tag, Typography, message } from 'antd'
+import { Alert, Button, Card, Collapse, Dropdown, Flex, Form, Input, InputNumber, List, Modal, Progress, Select, Space, Steps, Switch, Tag, Typography, message } from 'antd'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -9,6 +9,7 @@ export type AIConfig = {
   base_url: string
   api_key: string
   model: string
+  max_context_tokens?: number
 }
 
 type AIConfigItem = AIConfig & {
@@ -31,6 +32,7 @@ type ChatMessage = {
   id: string
   role: 'user' | 'assistant'
   content: string
+  segments?: ChatMessageSegment[]
   toolCalls?: ToolCallView[]
   plan?: AgentPlanView
   steps?: AgentStepView[]
@@ -42,6 +44,17 @@ type ChatMessage = {
     expanded?: boolean
     done?: boolean
   }
+}
+
+type ChatMessageSegment = {
+  id: string
+  type: 'thinking' | 'content' | 'tool'
+  content: string
+  summary?: string
+  preview?: string
+  expanded?: boolean
+  done?: boolean
+  toolCallId?: string
 }
 
 type AISession = {
@@ -198,12 +211,15 @@ const createAIConfigItem = (config?: Partial<AIConfigItem>): AIConfigItem => ({
   provider: config?.provider ?? 'openai-compatible',
   base_url: config?.base_url ?? '',
   api_key: config?.api_key ?? '',
-  model: config?.model ?? ''
+  model: config?.model ?? '',
+  max_context_tokens: typeof config?.max_context_tokens === 'number' && Number.isFinite(config.max_context_tokens) && config.max_context_tokens > 0
+    ? Math.round(config.max_context_tokens)
+    : undefined
 })
 
 const activeAIConfig = (configs: AIConfigItem[]): AIConfig | null => {
   const active = configs.find((item) => item.enabled)
-  if (!active || !active.base_url || !active.api_key || !active.model) {
+  if (!active || !active.base_url || !active.api_key || !active.model || !active.max_context_tokens) {
     return null
   }
 
@@ -211,12 +227,14 @@ const activeAIConfig = (configs: AIConfigItem[]): AIConfig | null => {
     provider: active.provider ?? 'openai-compatible',
     base_url: active.base_url,
     api_key: active.api_key,
-    model: active.model
+    model: active.model,
+    max_context_tokens: active.max_context_tokens
   }
 }
 
 const AUTO_COMPACT_USAGE_RATIO = 0.8
 const MIN_MESSAGES_TO_COMPACT = 6
+const STREAM_EVENTS_PER_FRAME = 1
 
 const normalizeShortcut = (shortcut?: string): string => shortcut?.replace(/\s+/g, '').toLowerCase() ?? ''
 
@@ -233,30 +251,16 @@ const buildShortcutFromKeyboardEvent = (event: { ctrlKey: boolean; metaKey: bool
 const formatTokenK = (value: number): string => {
   if (value >= 1000) {
     const scaled = value / 1000
+    if (scaled >= 1000) {
+      const mega = scaled / 1000
+      return `${mega >= 100 ? mega.toFixed(0) : mega >= 10 ? mega.toFixed(1) : mega.toFixed(2)}M`
+    }
     return `${scaled >= 100 ? scaled.toFixed(0) : scaled >= 10 ? scaled.toFixed(1) : scaled.toFixed(2)}k`
   }
   return String(value)
 }
 
-const inferModelContextLimit = (config?: AIConfig | null): number => {
-  if (!config?.model) {
-    return 32000
-  }
-  const normalized = `${config.provider ?? ''} ${config.model}`.toLowerCase()
-  if (normalized.includes('200k') || normalized.includes('claude-3-7') || normalized.includes('claude-3.5') || normalized.includes('claude-3.6') || normalized.includes('sonnet-4') || normalized.includes('opus-4')) {
-    return 200000
-  }
-  if (normalized.includes('128k') || normalized.includes('gpt-4.1') || normalized.includes('gpt-4o') || normalized.includes('gpt-4-32k') || normalized.includes('o1') || normalized.includes('o3') || normalized.includes('o4')) {
-    return 128000
-  }
-  if (normalized.includes('32k')) {
-    return 128000
-  }
-  if (normalized.includes('gpt-3.5')) {
-    return 16000
-  }
-  return config.provider === 'anthropic' ? 200000 : 32000
-}
+const isStreamingTextEvent = (event: StreamEvent): boolean => event.type === 'token' || event.type === 'reasoning'
 
 const isDraftSession = (session: AISession): boolean => session.messages.length === 0
 
@@ -386,12 +390,13 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
     }
     return configs.find((item) => item.enabled)
   }, [configs, selectedConfigId])
-  const config = activeConfigItem && activeConfigItem.base_url && activeConfigItem.api_key && activeConfigItem.model
+  const config = activeConfigItem && activeConfigItem.base_url && activeConfigItem.api_key && activeConfigItem.model && activeConfigItem.max_context_tokens
     ? {
         provider: activeConfigItem.provider ?? 'openai-compatible',
         base_url: activeConfigItem.base_url,
         api_key: activeConfigItem.api_key,
-        model: activeConfigItem.model
+        model: activeConfigItem.model,
+        max_context_tokens: activeConfigItem.max_context_tokens
       }
     : null
   const ready = Boolean(config)
@@ -399,6 +404,7 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
   const canChat = ready
   const activeSession = sessions.find((session) => session.id === activeSessionId)
   const messages = activeSession?.messages ?? []
+  const effectiveContextStats = contextStats
 
   const apiMessages = useMemo(
     () => messages.map((item) => ({ role: item.role, content: item.content })),
@@ -417,8 +423,8 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
     }
     return nextMessages
   }
-  const maxContextTokens = contextStats?.max_tokens ?? inferModelContextLimit(config)
-  const contextUsagePercent = maxContextTokens > 0 ? Math.round(((contextStats?.used_tokens ?? 0) / maxContextTokens) * 100) : 0
+  const maxContextTokens = effectiveContextStats?.max_tokens ?? config?.max_context_tokens ?? 0
+  const contextUsagePercent = maxContextTokens > 0 ? Math.round(((effectiveContextStats?.used_tokens ?? 0) / maxContextTokens) * 100) : 0
   const contextProgressPercent = contextUsagePercent > 0 ? Math.max(contextUsagePercent, 4) : 0
   const contextLevel = contextUsagePercent >= 80 ? 'full' : contextUsagePercent >= 60 ? 'warning' : 'ok'
 
@@ -452,6 +458,11 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
 
   useEffect(() => {
     if (!config) {
+      contextStatsRequestKeyRef.current = ''
+      setContextStats(null)
+      return
+    }
+    if (!config.max_context_tokens || config.max_context_tokens <= 0) {
       contextStatsRequestKeyRef.current = ''
       setContextStats(null)
       return
@@ -526,6 +537,33 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
   }
 
   const applyStreamEventToMessage = (item: ChatMessage, event: StreamEvent): ChatMessage => {
+    const finishLastThinkingSegment = (message: ChatMessage): ChatMessage => {
+      const segments = [...(message.segments ?? [])]
+      const last = segments[segments.length - 1]
+      if (!last || last.type !== 'thinking' || last.done) {
+        return message
+      }
+      segments[segments.length - 1] = { ...last, done: true, expanded: false }
+      return { ...message, segments }
+    }
+
+    const appendSegment = (message: ChatMessage, nextSegment: ChatMessageSegment): ChatMessage => {
+      const segments = [...(message.segments ?? [])]
+      const last = segments[segments.length - 1]
+      if (last && last.type === nextSegment.type && !(last.type === 'thinking' && last.done)) {
+        segments[segments.length - 1] = {
+          ...last,
+          content: `${last.content}${nextSegment.content}`,
+          preview: (nextSegment.preview ?? `${last.content}${nextSegment.content}`).replace(/\s+/g, ' ').trim(),
+          expanded: nextSegment.expanded ?? last.expanded,
+          done: nextSegment.done ?? last.done,
+          summary: nextSegment.summary ?? last.summary
+        }
+        return { ...message, segments }
+      }
+      return { ...message, segments: [...segments, nextSegment] }
+    }
+
     const appendThinking = (message: ChatMessage, summary: string, detail?: string, done = false): ChatMessage => {
       const currentContent = message.thinking?.content ?? ''
       const currentPreview = message.thinking?.preview ?? ''
@@ -545,6 +583,9 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
         }
       }
     }
+
+    void finishLastThinkingSegment
+    void appendSegment
 
     if (event.type === 'token') {
       if (item.thinking && !item.thinking.done) {
@@ -587,9 +628,167 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
         `${event.name}：${status === 'waiting_confirm' ? '等待确认' : status === 'completed' ? '已完成' : '已失败'}`
       )
     }
-    if (event.type === 'tool_done' || event.type === 'done') {
+    if (event.type === 'tool_done') {
+      return appendThinking(item, '正在继续处理')
+    }
+    if (event.type === 'done') {
       return appendThinking(item, '思考完成', undefined, true)
     }
+    return item
+  }
+
+  void applyStreamEventToMessage
+
+  const applyStreamEventToMessageV2 = (item: ChatMessage, event: StreamEvent): ChatMessage => {
+    const appendSegment = (message: ChatMessage, nextSegment: ChatMessageSegment): ChatMessage => {
+      const segments = [...(message.segments ?? [])]
+      const last = segments[segments.length - 1]
+
+      if (last && last.type === nextSegment.type && !(last.type === 'thinking' && last.done)) {
+        segments[segments.length - 1] = {
+          ...last,
+          content: `${last.content}${nextSegment.content}`,
+          preview: (nextSegment.preview ?? `${last.content}${nextSegment.content}`).replace(/\s+/g, ' ').trim(),
+          expanded: nextSegment.expanded ?? last.expanded,
+          done: nextSegment.done ?? last.done,
+          summary: nextSegment.summary ?? last.summary
+        }
+        return { ...message, segments }
+      }
+
+      return { ...message, segments: [...segments, nextSegment] }
+    }
+
+    const finishLastThinking = (message: ChatMessage): ChatMessage => {
+      const segments = [...(message.segments ?? [])]
+      const last = segments[segments.length - 1]
+      if (!last || last.type !== 'thinking' || last.done) {
+        return message
+      }
+      segments[segments.length - 1] = { ...last, done: true, expanded: false }
+      return { ...message, segments }
+    }
+
+    if (event.type === 'token') {
+      return appendSegment(
+        finishLastThinking({ ...item, content: `${item.content}${event.content}` }),
+        { id: crypto.randomUUID(), type: 'content', content: event.content }
+      )
+    }
+
+    if (event.type === 'reasoning') {
+      return appendSegment(item, {
+        id: crypto.randomUUID(),
+        type: 'thinking',
+        content: event.content,
+        summary: '思考',
+        preview: event.content.replace(/\s+/g, ' ').trim(),
+        expanded: true,
+        done: false
+      })
+    }
+
+    if (event.type === 'plan') {
+      return { ...item, plan: event.plan, steps: event.plan.steps }
+    }
+
+    if (event.type === 'step_start') {
+      return { ...item, steps: (item.steps ?? []).map((step) => step.id === event.step_id ? { ...step, status: 'running' as const } : step) }
+    }
+
+    if (event.type === 'step_result') {
+      return { ...item, steps: (item.steps ?? []).map((step) => step.id === event.step_id ? { ...step, status: 'completed' as const, result: event.result } : step) }
+    }
+
+    /*
+    if (event.type === 'plan') {
+      return appendSegment({ ...item, plan: event.plan, steps: event.plan.steps }, {
+        id: crypto.randomUUID(),
+        type: 'thinking',
+        content: `计划：${event.plan.summary || event.plan.goal}`,
+        summary: '思考',
+        preview: `计划：${event.plan.summary || event.plan.goal}`,
+        expanded: true,
+        done: false
+      })
+    }
+
+    if (event.type === 'step_start') {
+      const nextItem = { ...item, steps: (item.steps ?? []).map((step) => step.id === event.step_id ? { ...step, status: 'running' as const } : step) }
+      const step = nextItem.steps?.find((candidate) => candidate.id === event.step_id)
+      return appendSegment(nextItem, {
+        id: crypto.randomUUID(),
+        type: 'thinking',
+        content: step ? `步骤：${step.title}` : '开始执行步骤',
+        summary: '思考',
+        preview: step ? `步骤：${step.title}` : '开始执行步骤',
+        expanded: true,
+        done: false
+      })
+    }
+
+    if (event.type === 'step_result') {
+      const nextItem = { ...item, steps: (item.steps ?? []).map((step) => step.id === event.step_id ? { ...step, status: 'completed' as const, result: event.result } : step) }
+      const step = nextItem.steps?.find((candidate) => candidate.id === event.step_id)
+      return appendSegment(nextItem, {
+        id: crypto.randomUUID(),
+        type: 'thinking',
+        content: step ? `完成：${step.title}` : '步骤执行完成',
+        summary: '思考',
+        preview: step ? `完成：${step.title}` : '步骤执行完成',
+        expanded: true,
+        done: false
+      })
+    }
+    */
+
+    if (event.type === 'confirmation_required') {
+      return { ...item, confirmation: event.confirmation }
+    }
+
+    if (event.type === 'tool_start') {
+      return appendSegment(
+        { ...item, toolCalls: [...(item.toolCalls ?? []), { id: event.tool_call_id, name: event.name, status: 'running' as const, arguments: event.arguments }] },
+        {
+          id: crypto.randomUUID(),
+          type: 'tool',
+          content: event.name,
+          summary: event.name,
+          preview: event.name,
+          expanded: true,
+          done: false,
+          toolCallId: event.tool_call_id
+        }
+      )
+    }
+
+    if (event.type === 'tool_result') {
+      const status = toolResultStatus(event.result)
+      const nextMessage = {
+        ...item,
+        toolCalls: (item.toolCalls ?? []).map((tool) => tool.id === event.tool_call_id ? { ...tool, status, result: event.result } : tool)
+      }
+      const nextSegments = (nextMessage.segments ?? []).map((segment) => (
+        segment.type === 'tool' && segment.toolCallId === event.tool_call_id
+          ? {
+              ...segment,
+              expanded: false,
+              done: true,
+              preview: `${event.name} ${status === 'waiting_confirm' ? '等待确认' : status === 'completed' ? '已完成' : '失败'}`
+            }
+          : segment
+      ))
+      return { ...nextMessage, segments: nextSegments }
+    }
+
+    if (event.type === 'tool_done') {
+      return item
+    }
+
+    if (event.type === 'done') {
+      return finishLastThinking(item)
+    }
+
     return item
   }
 
@@ -602,10 +801,37 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
     if (pendingEvents.length === 0) {
       return
     }
-    queuedStreamEventsRef.current = []
+
+    const processedEvents: QueuedStreamUpdate[] = []
+    const remainingEvents: QueuedStreamUpdate[] = []
+    let streamedEventCount = 0
+
+    for (let index = 0; index < pendingEvents.length; index += 1) {
+      const update = pendingEvents[index]
+      const streamingTextEvent = isStreamingTextEvent(update.event)
+
+      if (streamingTextEvent) {
+        if (streamedEventCount >= STREAM_EVENTS_PER_FRAME) {
+          remainingEvents.push(...pendingEvents.slice(index))
+          break
+        }
+        streamedEventCount += 1
+        processedEvents.push(update)
+        continue
+      }
+
+      if (streamedEventCount > 0) {
+        remainingEvents.push(...pendingEvents.slice(index))
+        break
+      }
+
+      processedEvents.push(update)
+    }
+
+    queuedStreamEventsRef.current = remainingEvents
 
     const groupedEvents = new Map<string, StreamEvent[]>()
-    for (const { assistantId, event } of pendingEvents) {
+    for (const { assistantId, event } of processedEvents) {
       const current = groupedEvents.get(assistantId)
       if (current) {
         current.push(event)
@@ -627,6 +853,7 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
       if (session.id !== activeSessionId) {
         return session
       }
+
       return {
         ...session,
         updatedAt: Date.now(),
@@ -635,10 +862,17 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
           if (!itemEvents || itemEvents.length === 0) {
             return item
           }
-          return itemEvents.reduce((message, event) => applyStreamEventToMessage(message, event), item)
+          return itemEvents.reduce((message, event) => applyStreamEventToMessageV2(message, event), item)
         })
       }
     }))
+
+    if (queuedStreamEventsRef.current.length > 0) {
+      streamFlushFrameRef.current = window.requestAnimationFrame(() => {
+        streamFlushFrameRef.current = null
+        flushQueuedStreamEvents()
+      })
+    }
   }
 
   const queueStreamEvent = (assistantId: string, event: StreamEvent): void => {
@@ -812,7 +1046,7 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
     }
 
     let nextApiMessages = buildConversationMessages(activeSession)
-    if ((contextStats?.usage_ratio ?? 0) >= AUTO_COMPACT_USAGE_RATIO && !autoCompactRunningRef.current) {
+    if ((effectiveContextStats?.usage_ratio ?? 0) >= AUTO_COMPACT_USAGE_RATIO && !autoCompactRunningRef.current) {
       autoCompactRunningRef.current = true
       try {
         await compactActiveSession()
@@ -836,7 +1070,6 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
     setInput('')
     setSending(true)
     streamIdRef.current = crypto.randomUUID()
-
     try {
       await streamChat([...nextApiMessages, { role: 'user', content }], assistantId)
     } catch (err) {
@@ -886,6 +1119,19 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
         }
       )
     } finally {
+      const remaining = buffer.trim()
+      if (remaining) {
+        try {
+          const line = remaining
+            .split('\n')
+            .find((item) => item.startsWith('data: '))
+          if (line) {
+            applyStreamEvent(assistantId, JSON.parse(line.slice(6)) as StreamEvent)
+          }
+        } catch {
+          // Ignore trailing partial chunks; completed events are already applied above.
+        }
+      }
       flushQueuedStreamEvents()
       updateActiveSession((session) => ({ ...session, updatedAt: Date.now() }), { persist: true })
     }
@@ -1179,6 +1425,103 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
     )
   }
 
+  const renderThinkingSegment = (item: ChatMessage, segment: ChatMessageSegment): React.JSX.Element => {
+    const expanded = segment.expanded ?? !segment.done
+    const fullContent = (segment.content || segment.summary || '').trim()
+    const firstLine = fullContent
+    const restContent = ''
+
+    return (
+      <div className="ai-thinking-block" key={segment.id}>
+        <div
+          className={`ai-thinking-summary${segment.done ? ' done' : ''}`}
+          onClick={() => {
+            suppressAutoScrollRef.current = true
+            updateActiveSession((session) => ({
+              ...session,
+              messages: session.messages.map((message) => (
+                message.id === item.id && message.segments
+                  ? {
+                      ...message,
+                      segments: message.segments.map((current) => current.id === segment.id
+                        ? { ...current, expanded: !(current.expanded ?? !current.done) }
+                        : current)
+                    }
+                  : message
+              ))
+            }))
+          }}
+        >
+          <span className="ai-thinking-toggle" aria-hidden="true">
+            {expanded ? <DownOutlined /> : <RightOutlined />}
+          </span>
+          {!segment.done && <LoadingOutlined spin />}
+          <span className="ai-thinking-title">思考：</span>
+          <span className={`ai-thinking-summary-text${expanded ? ' expanded' : ''}`}>
+            {firstLine}
+            {restContent ? '…' : ''}
+          </span>
+        </div>
+        {expanded && restContent && (
+          <div className="ai-thinking-body">
+            {restContent}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  const renderAssistantContent = (item: ChatMessage): React.JSX.Element => {
+    if (item.segments && item.segments.length > 0) {
+      return (
+        <>
+          {item.segments.map((segment) => (
+            segment.type === 'thinking'
+              ? renderThinkingSegment(item, segment)
+              : segment.type === 'tool'
+                ? (
+                    <Collapse
+                      key={segment.id}
+                      size="small"
+                      className="ai-tool-calls ai-tool-calls-inline"
+                      items={[{
+                        key: segment.id,
+                        label: (
+                          <Space>
+                            {(() => {
+                              const tool = (item.toolCalls ?? []).find((current) => current.id === segment.toolCallId)
+                              return tool?.status === 'running'
+                                ? <LoadingOutlined spin />
+                                : tool?.status === 'waiting_confirm'
+                                  ? <ClockCircleOutlined style={{ color: '#faad14' }} />
+                                  : tool?.status === 'completed'
+                                    ? <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                                    : <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
+                            })()}
+                            <ToolOutlined />
+                            {segment.preview || `工具：${segment.summary || segment.content}`}
+                          </Space>
+                        ),
+                        children: (
+                          <pre>{JSON.stringify((item.toolCalls ?? []).find((current) => current.id === segment.toolCallId) ?? {}, null, 2)}</pre>
+                        )
+                      }]}
+                    />
+                  )
+                : <div key={segment.id} className="ai-markdown" dangerouslySetInnerHTML={renderMarkdown(segment.content)} />
+          ))}
+        </>
+      )
+    }
+
+    return (
+      <>
+        {renderThinking(item)}
+        <div className="ai-markdown" dangerouslySetInnerHTML={renderMarkdown(item.content)} />
+      </>
+    )
+  }
+
   const renderContextSources = (): React.ReactNode => {
     if (contextSources.length === 0) {
       return null
@@ -1284,28 +1627,10 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
             renderItem={(item) => (
               <List.Item className={`ai-message ai-message-${item.role}`}>
                 <Card size="small" className="full-width" title={item.role === 'user' ? '你' : 'AI'}>
-                  {renderThinking(item)}
+                  {item.role === 'assistant' ? renderAssistantContent(item) : null}
                   {renderAgentPlan(item)}
                   {renderConfirmation(item.confirmation)}
-                  {item.toolCalls && item.toolCalls.length > 0 && (
-                    <Collapse
-                      size="small"
-                      className="ai-tool-calls"
-                      items={item.toolCalls.map((tool) => ({
-                        key: tool.id,
-                        label: (
-                          <Space>
-                            {tool.status === 'running' ? <LoadingOutlined spin /> : tool.status === 'waiting_confirm' ? <ClockCircleOutlined style={{ color: '#faad14' }} /> : tool.status === 'completed' ? <CheckCircleOutlined style={{ color: '#52c41a' }} /> : <CloseCircleOutlined style={{ color: '#ff4d4f' }} />}
-                            <ToolOutlined />
-                            {tool.name}
-                            {tool.status === 'waiting_confirm' && <Tag color="warning">待确认</Tag>}
-                          </Space>
-                        ),
-                        children: <pre>{JSON.stringify({ status: tool.status, arguments: tool.arguments, result: tool.result }, null, 2)}</pre>
-                      }))}
-                    />
-                  )}
-                  <div className="ai-markdown" dangerouslySetInnerHTML={renderMarkdown(item.content)} />
+                  {item.role === 'user' ? <div className="ai-markdown" dangerouslySetInnerHTML={renderMarkdown(item.content)} /> : null}
                 </Card>
               </List.Item>
             )}
@@ -1359,7 +1684,7 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
                 selectable: true,
                 selectedKeys: selectedConfigId ? [selectedConfigId] : [],
                 items: configs
-                  .filter((item) => item.base_url && item.api_key && item.model)
+                  .filter((item) => item.base_url && item.api_key && item.model && item.max_context_tokens)
                   .map((item) => ({
                     key: item.id,
                     label: `${item.name} · ${item.model}`
@@ -1382,7 +1707,13 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
                 strokeColor={contextLevel === 'full' ? '#ff6b6b' : contextLevel === 'warning' ? '#f7c45c' : '#79d7ff'}
               />
               <Typography.Text type="secondary" className="ai-context-meter-text">
-                {contextStats ? `上下文 ${formatTokenK(contextStats.used_tokens)} / ${formatTokenK(maxContextTokens)}` : '上下文统计中…'}
+                {!config?.max_context_tokens || config.max_context_tokens <= 0
+                  ? '未设置上下文'
+                  : effectiveContextStats
+                  ? maxContextTokens > 0
+                    ? `上下文 ${formatTokenK(effectiveContextStats.used_tokens)} / ${formatTokenK(maxContextTokens)}`
+                    : `上下文 ${formatTokenK(effectiveContextStats.used_tokens)} / 未配置`
+                  : '上下文统计中…'}
               </Typography.Text>
             </div>
             {sending ? (
@@ -1431,6 +1762,27 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
                     </Form.Item>
                     <Form.Item label="Model" required>
                       <Input value={item.model} placeholder="例如：claude-sonnet-4-6 或 gpt-4o-mini" onChange={(event) => updateConfig(item.id, { model: event.target.value })} />
+                    </Form.Item>
+                    <Form.Item label="最大上下文" required extra="这里按 k 单位填写真实最大上下文，例如填 200 表示 200k，填 1000 表示 1M。">
+                      <InputNumber
+                        min={1}
+                        step={1}
+                        className="full-width"
+                        value={typeof item.max_context_tokens === 'number' && item.max_context_tokens > 0 ? item.max_context_tokens / 1000 : undefined}
+                        placeholder="例如：200"
+                        formatter={(value) => value === undefined || value === null ? '' : `${value}`}
+                        parser={(value) => {
+                          const normalized = String(value ?? '').replace(/[^\d.]/g, '')
+                          return normalized ? Number(normalized) : 0
+                        }}
+                        onChange={(value) => {
+                          updateConfig(item.id, {
+                            max_context_tokens: typeof value === 'number' && Number.isFinite(value) && value > 0
+                              ? Math.max(1000, Math.round(value) * 1000)
+                              : undefined
+                          })
+                        }}
+                      />
                     </Form.Item>
                   </Form>
                 )

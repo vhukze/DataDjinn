@@ -3553,6 +3553,14 @@ body[data-theme="dark"] .ant-popover-message {
   white-space: nowrap;
 }
 
+.ai-thinking-summary-text.expanded {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
 .ai-thinking-body {
   padding: 0 10px 10px;
   color: var(--dj-text-secondary);

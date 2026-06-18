@@ -27,6 +27,7 @@ class AIConfig(BaseModel):
     base_url: str = Field(min_length=1)
     api_key: str = Field(min_length=1)
     model: str = Field(min_length=1)
+    max_context_tokens: int | None = Field(default=None, ge=1)
 
 
 class AIMessage(BaseModel):
@@ -235,26 +236,9 @@ def estimate_message_tokens(messages: list[dict[str, Any]]) -> int:
     return total + 3
 
 
-def model_context_limit(model: str, provider: str) -> int:
-    normalized = model.lower()
-    if any(token in normalized for token in ("200k", "claude-3-7", "claude-3.5", "claude-3.6", "sonnet-4", "opus-4")):
-        return 200_000
-    if provider == "anthropic":
-        return 200_000
-    if any(token in normalized for token in ("gpt-4.1", "gpt-4o", "o1", "o3", "o4")):
-        return 128_000
-    if any(token in normalized for token in ("128k", "gpt-4-32k", "32k")):
-        return 128_000
-    if "gpt-4" in normalized:
-        return 128_000
-    if "gpt-3.5" in normalized:
-        return 16_000
-    return 32_000
-
-
 def build_context_stats(messages: list[dict[str, Any]], config: AIConfig) -> AIContextStatsResponse:
     used_tokens = estimate_message_tokens(messages)
-    max_tokens = model_context_limit(config.model, config.provider)
+    max_tokens = config.max_context_tokens or 0
     ratio = 0 if max_tokens <= 0 else min(1.0, used_tokens / max_tokens)
     return AIContextStatsResponse(used_tokens=used_tokens, max_tokens=max_tokens, usage_ratio=ratio)
 
@@ -460,6 +444,14 @@ def _truncate_value(value: Any) -> Any:
 
 def sql_hash(sql: str) -> str:
     return hashlib.sha256(sql.strip().encode("utf-8")).hexdigest()
+
+
+def _yield_text_events(event_type: Literal["token", "reasoning"], content: str | None) -> Iterator[dict[str, Any]]:
+    if not content:
+        return
+    chunk_size = 12
+    for index in range(0, len(content), chunk_size):
+        yield {"type": event_type, "content": content[index:index + chunk_size]}
 
 
 def _anthropic_url(base_url: str) -> str:
@@ -750,85 +742,51 @@ class DatabaseAgent:
         conversation = [*messages]
 
         for _ in range(MAX_AGENT_TURNS):
-            stream = self.client.chat.completions.create(
+            response = self.client.chat.completions.create(
                 model=self.model,
                 messages=conversation,
                 tools=self._tools(),
                 tool_choice="auto",
-                stream=True,
             )
-            content_parts: list[str] = []
-            reasoning_parts: list[str] = []
-            tool_calls: dict[int, dict[str, Any]] = {}
-            finish_reason = None
-
-            for chunk in stream:
-                choice = chunk.choices[0] if chunk.choices else None
-                if choice is None:
-                    continue
-
-                delta = choice.delta
-                reasoning_content = _reasoning_value(delta)
-                if reasoning_content:
-                    reasoning_parts.append(str(reasoning_content))
-                    yield {"type": "reasoning", "content": str(reasoning_content)}
-                if delta.content:
-                    content_parts.append(delta.content)
-                    yield {"type": "token", "content": delta.content}
-
-                for tool_call in delta.tool_calls or []:
-                    index = tool_call.index
-                    current = tool_calls.setdefault(index, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
-
-                    if tool_call.id:
-                        current["id"] = tool_call.id
-                    if tool_call.function:
-                        if tool_call.function.name:
-                            current["function"]["name"] += tool_call.function.name
-                        if tool_call.function.arguments:
-                            current["function"]["arguments"] += tool_call.function.arguments
-
-                if choice.finish_reason:
-                    finish_reason = choice.finish_reason
-
-            assistant_message: dict[str, Any] = {"role": "assistant", "content": "".join(content_parts)}
-            reasoning_content = "".join(reasoning_parts)
+            choice = response.choices[0]
+            message = choice.message
+            assistant_message = message.model_dump(exclude_none=True)
+            reasoning_content = _reasoning_value(message)
             if reasoning_content:
-                assistant_message["reasoning_content"] = reasoning_content
+                assistant_message["reasoning_content"] = str(reasoning_content)
 
-            if tool_calls:
-                ordered_tool_calls = [tool_calls[index] for index in sorted(tool_calls)]
-                for index, tool_call in enumerate(ordered_tool_calls):
-                    if not tool_call["id"]:
-                        tool_call["id"] = f"call_{index}"
+            for event in _yield_text_events("reasoning", str(assistant_message.get("reasoning_content") or "")):
+                yield event
+            for event in _yield_text_events("token", str(assistant_message.get("content") or "")):
+                yield event
 
-                assistant_message["tool_calls"] = ordered_tool_calls
-                conversation.append(assistant_message)
+            conversation.append(assistant_message)
 
-                for tool_call in ordered_tool_calls:
-                    name = tool_call["function"]["name"]
-                    arguments_json = tool_call["function"].get("arguments") or "{}"
+            tool_calls = message.tool_calls or []
+            if tool_calls and choice.finish_reason == "tool_calls":
+                for tool_call in tool_calls:
+                    name = tool_call.function.name
+                    arguments_json = tool_call.function.arguments or "{}"
                     try:
                         args = json.loads(arguments_json)
                     except json.JSONDecodeError as exc:
                         args = {}
                         result = {"error": f"工具参数 JSON 解析失败：{exc.msg}", "arguments": arguments_json}
-                        yield {"type": "tool_start", "tool_call_id": tool_call["id"], "name": name, "arguments": args}
-                        yield {"type": "tool_result", "tool_call_id": tool_call["id"], "name": name, "result": result}
+                        yield {"type": "tool_start", "tool_call_id": tool_call.id, "name": name, "arguments": args}
+                        yield {"type": "tool_result", "tool_call_id": tool_call.id, "name": name, "result": result}
                         conversation.append(
                             {
                                 "role": "tool",
-                                "tool_call_id": tool_call["id"],
+                                "tool_call_id": tool_call.id,
                                 "content": json.dumps(result, ensure_ascii=False, default=str),
                             }
                         )
                         continue
-                    tool_call["function"]["arguments"] = arguments_json
-                    step_id = f"step_{tool_call['id']}"
+                    step_id = f"step_{tool_call.id}"
                     yield {"type": "step_start", "step_id": step_id}
-                    yield {"type": "tool_start", "tool_call_id": tool_call["id"], "name": name, "arguments": args}
+                    yield {"type": "tool_start", "tool_call_id": tool_call.id, "name": name, "arguments": args}
                     result = self.call_tool(name, args)
-                    yield {"type": "tool_result", "tool_call_id": tool_call["id"], "name": name, "result": result}
+                    yield {"type": "tool_result", "tool_call_id": tool_call.id, "name": name, "result": result}
                     if result.get("type") == "workspace_action":
                         yield {"type": "workspace_action", "action": result["action"]}
                     if result.get("type") == "plan":
@@ -840,15 +798,14 @@ class DatabaseAgent:
                     conversation.append(
                         {
                             "role": "tool",
-                            "tool_call_id": tool_call["id"],
+                            "tool_call_id": tool_call.id,
                             "content": json.dumps(result, ensure_ascii=False, default=str),
                         }
                     )
                 yield {"type": "tool_done"}
                 continue
 
-            conversation.append(assistant_message)
-            yield {"type": "done", "finish_reason": finish_reason or "stop"}
+            yield {"type": "done", "finish_reason": choice.finish_reason or "stop"}
             return
 
         yield {"type": "error", "message": "Agent 执行轮次超过上限，请缩小任务范围后重试"}
@@ -888,45 +845,12 @@ class DatabaseAgent:
         conversation = [*messages]
 
         for _ in range(MAX_AGENT_TURNS):
-            response: dict[str, Any] | None = None
-            content_parts: list[str] = []
-            thinking_parts: list[str] = []
-            for event in self.client.stream(conversation, tools=self._tools()):
-                event_type = str(event.get("event") or "")
-                payload = event.get("data")
-                if not isinstance(payload, dict):
-                    continue
-                if event_type == "content_block_delta":
-                    delta = payload.get("delta")
-                    if not isinstance(delta, dict):
-                        continue
-                    text = delta.get("text")
-                    if text:
-                        content_parts.append(str(text))
-                        yield {"type": "token", "content": str(text)}
-                    thinking = delta.get("thinking")
-                    if thinking:
-                        thinking_parts.append(str(thinking))
-                        yield {"type": "reasoning", "content": str(thinking)}
-                    partial_json = delta.get("partial_json")
-                    if partial_json:
-                        continue
-                elif event_type == "message_stop":
-                    response = payload
+            response = self.client.create(conversation, tools=self._tools())
 
-            if response is None:
-                raise RuntimeError("Anthropic 流式响应异常：未收到 message_stop 事件")
-
-            if not _anthropic_text(response) and content_parts:
-                response["content"] = [
-                    *response.get("content", []),
-                    {"type": "text", "text": "".join(content_parts)},
-                ]
-            if not _anthropic_thinking(response) and thinking_parts:
-                response["content"] = [
-                    *response.get("content", []),
-                    {"type": "thinking", "thinking": "".join(thinking_parts)},
-                ]
+            for event in _yield_text_events("reasoning", _anthropic_thinking(response)):
+                yield event
+            for event in _yield_text_events("token", _anthropic_text(response)):
+                yield event
 
             conversation.append(_anthropic_assistant_message(response))
             tool_uses = _anthropic_tool_uses(response)
