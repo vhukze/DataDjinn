@@ -423,18 +423,51 @@ function createSplashWindow(): void {
           justify-content: center;
         }
         .card {
-          width: 360px;
-          padding: 26px 28px;
+          position: relative;
+          width: 420px;
+          padding: 34px 34px 28px;
           display: flex;
           flex-direction: column;
           align-items: center;
           gap: 18px;
-          border-radius: 18px;
-          background: rgba(255,255,255,0.95);
-          box-shadow: 0 18px 48px rgba(15, 23, 42, 0.18);
+          overflow: hidden;
+          border-radius: 28px;
+          background:
+            radial-gradient(circle at top right, rgba(80, 163, 255, 0.16), transparent 32%),
+            linear-gradient(180deg, rgba(255,255,255,0.96), rgba(248,250,252,0.94));
+          box-shadow: 0 28px 70px rgba(15, 23, 42, 0.22);
           border: 1px solid rgba(148, 163, 184, 0.18);
+          animation: splashCardFloat 6.8s ease-in-out infinite;
+        }
+        .card::before {
+          content: "";
+          position: absolute;
+          inset: auto -90px -120px auto;
+          width: 240px;
+          height: 240px;
+          border-radius: 50%;
+          background: radial-gradient(circle, rgba(59, 130, 246, 0.16), transparent 68%);
+          pointer-events: none;
+          animation: splashGlowPulse 7.4s ease-in-out infinite;
+        }
+        .eyebrow {
+          position: relative;
+          z-index: 1;
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          padding: 6px 12px;
+          color: #5b6b7c;
+          font-size: 11px;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          border: 1px solid rgba(148, 163, 184, 0.22);
+          border-radius: 999px;
+          background: rgba(255, 255, 255, 0.62);
         }
         .logo {
+          position: relative;
+          z-index: 1;
           width: 220px;
           height: auto;
           display: flex;
@@ -447,7 +480,28 @@ function createSplashWindow(): void {
           height: auto;
           display: block;
         }
+        .headline {
+          position: relative;
+          z-index: 1;
+          color: #111827;
+          font-size: 24px;
+          font-weight: 800;
+          line-height: 1.18;
+          letter-spacing: -0.03em;
+          text-align: center;
+        }
+        .subline {
+          position: relative;
+          z-index: 1;
+          max-width: 320px;
+          color: #5f6f81;
+          font-size: 13px;
+          line-height: 1.7;
+          text-align: center;
+        }
         .status {
+          position: relative;
+          z-index: 1;
           display: inline-flex;
           align-items: center;
           gap: 10px;
@@ -466,11 +520,32 @@ function createSplashWindow(): void {
           from { transform: rotate(0deg); }
           to { transform: rotate(360deg); }
         }
+        @keyframes splashCardFloat {
+          0%, 100% { transform: translateY(0); }
+          50% { transform: translateY(-5px); }
+        }
+        @keyframes splashGlowPulse {
+          0%, 100% { opacity: 0.6; transform: scale(0.94); }
+          50% { opacity: 1; transform: scale(1.06); }
+        }
         @media (prefers-color-scheme: dark) {
           .card {
-            background: rgba(48,52,59,0.96);
+            background:
+              radial-gradient(circle at top right, rgba(80, 163, 255, 0.18), transparent 34%),
+              linear-gradient(180deg, rgba(42,46,54,0.96), rgba(31,35,41,0.96));
             border-color: rgba(210,218,230,0.12);
-            box-shadow: 0 18px 48px rgba(0, 0, 0, 0.34);
+            box-shadow: 0 28px 70px rgba(0, 0, 0, 0.38);
+          }
+          .eyebrow {
+            color: #c8d0da;
+            border-color: rgba(210, 218, 230, 0.14);
+            background: rgba(255,255,255,0.03);
+          }
+          .headline {
+            color: #f3f5f7;
+          }
+          .subline {
+            color: #b5bec8;
           }
           .status {
             color: #c4cad2;

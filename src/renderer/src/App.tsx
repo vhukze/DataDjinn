@@ -12,7 +12,6 @@
   MessageOutlined,
   EditOutlined,
   DeleteOutlined,
-  BorderOutlined,
   AimOutlined,
   DoubleLeftOutlined,
   DoubleRightOutlined,
@@ -80,7 +79,9 @@ import { forwardRef, memo, startTransition, useCallback, useDeferredValue, useEf
 import { useTheme } from './context/ThemeContext'
 import AIPanel from './components/AIPanel'
 import SqlEditor from './components/SqlEditor'
-import type { SqlCompletionColumn, SqlCompletionContext, SqlCompletionTable, SqlDialect } from './components/SqlEditor'
+import ReactBitsDock from './components/ui/ReactBitsDock'
+import ReactBitsSearchInput from './components/ui/ReactBitsSearchInput'
+import type { SqlCompletionColumn, SqlCompletionContext, SqlCompletionTable, SqlDialect, SqlStatementInfo } from './components/SqlEditor'
 import mysqlIcon from './assets/icons/mysql.png'
 import postgresIcon from './assets/icons/postgres.png'
 import sqliteIcon from './assets/icons/sqllite.png'
@@ -124,6 +125,20 @@ const WorkspaceTabsView = memo(function WorkspaceTabsView({
 }: WorkspaceTabsViewProps) {
   const [editingTabKey, setEditingTabKey] = useState<string>()
   const [editingTabTitle, setEditingTabTitle] = useState('')
+  const handleTabMiddleClose = useCallback((target: EventTarget | null) => {
+    if (!(target instanceof HTMLElement)) {
+      return
+    }
+    if (target.closest('input, textarea, .ant-tabs-tab-remove')) {
+      return
+    }
+    const tabNode = target.closest('.ant-tabs-tab')
+    const tabKey = tabNode?.getAttribute('data-node-key')
+      ?? tabNode?.querySelector<HTMLElement>('[data-workspace-tab-key]')?.dataset.workspaceTabKey
+    if (tabKey) {
+      onCloseTab(tabKey)
+    }
+  }, [onCloseTab])
   const items = useMemo(() => (
     workspaceTabs.map((tab) => ({
       key: tab.key,
@@ -159,6 +174,7 @@ const WorkspaceTabsView = memo(function WorkspaceTabsView({
         )
         : (
           <span
+            data-workspace-tab-key={tab.key}
             onDoubleClick={(event) => {
               event.stopPropagation()
               setEditingTabKey(tab.key)
@@ -174,20 +190,39 @@ const WorkspaceTabsView = memo(function WorkspaceTabsView({
   ), [activeTabKey, activeTabSearchState, editingTabKey, editingTabTitle, onRenameTab, renderWorkspaceTab, workspaceTabs])
 
   return (
-    <Tabs
-      className="workspace-tabs"
-      type="editable-card"
-      hideAdd
-      destroyOnHidden
-      activeKey={activeTabKey}
-      onChange={onActiveTabChange}
-      onEdit={(targetKey, action) => {
-        if (action === 'remove' && typeof targetKey === 'string') {
-          onCloseTab(targetKey)
+    <div
+      className="workspace-tabs-host"
+      onMouseDownCapture={(event) => {
+        if (event.button !== 1) {
+          return
         }
+        event.preventDefault()
+        event.stopPropagation()
+        handleTabMiddleClose(event.target)
       }}
-      items={items}
-    />
+      onAuxClickCapture={(event) => {
+        if (event.button !== 1) {
+          return
+        }
+        event.preventDefault()
+        event.stopPropagation()
+      }}
+    >
+      <Tabs
+        className="workspace-tabs"
+        type="editable-card"
+        hideAdd
+        destroyOnHidden
+        activeKey={activeTabKey}
+        onChange={onActiveTabChange}
+        onEdit={(targetKey, action) => {
+          if (action === 'remove' && typeof targetKey === 'string') {
+            onCloseTab(targetKey)
+          }
+        }}
+        items={items}
+      />
+    </div>
   )
 }, (prev, next) => (
   prev.workspaceTabs === next.workspaceTabs &&
@@ -1026,6 +1061,8 @@ type ShortcutSettings = Record<ShortcutAction, string>
 type SqlEditorExecutionContext = {
   selectedSql: string
   currentStatementSql: string
+  statements: SqlStatementInfo[]
+  currentStatementIndex: number
 }
 
 type UpdateMode = 'installer' | 'portable'
@@ -1510,21 +1547,26 @@ const isResultTableScrollbarInteraction = (event: React.MouseEvent<HTMLDivElemen
     return true
   }
 
-  const container = event.currentTarget
-  const rect = container.getBoundingClientRect()
-  const scrollbarWidth = container.offsetWidth - container.clientWidth
-  const scrollbarHeight = container.offsetHeight - container.clientHeight
+  const scrollContainer = target?.closest<HTMLElement>('.ant-table-body, .ant-table-tbody-virtual-holder')
+    ?? event.currentTarget.querySelector<HTMLElement>('.ant-table-body, .ant-table-tbody-virtual-holder')
+  if (!scrollContainer) {
+    return false
+  }
+
+  const rect = scrollContainer.getBoundingClientRect()
+  const scrollbarWidth = scrollContainer.offsetWidth - scrollContainer.clientWidth
+  const scrollbarHeight = scrollContainer.offsetHeight - scrollContainer.clientHeight
   const pointerX = event.clientX - rect.left
   const pointerY = event.clientY - rect.top
 
-  if (scrollbarWidth > 0 && container.scrollHeight > container.clientHeight) {
+  if (scrollbarWidth > 0 && scrollContainer.scrollHeight > scrollContainer.clientHeight) {
     const verticalScrollbarStart = rect.width - scrollbarWidth
     if (pointerX >= verticalScrollbarStart) {
       return true
     }
   }
 
-  if (scrollbarHeight > 0 && container.scrollWidth > container.clientWidth) {
+  if (scrollbarHeight > 0 && scrollContainer.scrollWidth > scrollContainer.clientWidth) {
     const horizontalScrollbarStart = rect.height - scrollbarHeight
     if (pointerY >= horizontalScrollbarStart) {
       return true
@@ -2031,7 +2073,7 @@ const ResultTableBodyView = memo(function ResultTableBodyView({
       style={{ '--result-table-scroll-y': `${tableScrollY}px` } as React.CSSProperties}
       onMouseEnter={(event) => {
         const currentTarget = event.currentTarget
-        setHeaderRef(currentTarget.querySelector<HTMLDivElement>('.ant-table-thead'))
+        setHeaderRef(currentTarget.querySelector<HTMLDivElement>('.ant-table-header'))
       }}
       onScrollCapture={onScrollCapture}
       onKeyDown={onKeyDown}
@@ -2052,7 +2094,6 @@ const ResultTableBodyView = memo(function ResultTableBodyView({
         rowKey="__rowKey"
         pagination={false}
         scroll={{ x: tableScrollX, y: tableScrollY }}
-        tableLayout="fixed"
         locale={{ emptyText: tab.kind === 'query' ? '暂无查询结果' : '暂无表数据' }}
       />
     </div>
@@ -2091,6 +2132,7 @@ const ResultTableHeader = memo(function ResultTableHeader({
   onToggleSearch: () => void
 }) {
   const [activeMatchIndex, setActiveMatchIndex] = useState(0)
+  const hasToolbarContent = Boolean(leftActions || whereInput || rightActions)
 
   useEffect(() => {
     setActiveMatchIndex(0)
@@ -2107,13 +2149,15 @@ const ResultTableHeader = memo(function ResultTableHeader({
 
   return (
     <>
-      <Flex align="center" justify="space-between" gap={8} className="table-data-toolbar">
-        {leftActions}
-        <Flex align="center" justify="end" gap={8} className="table-data-toolbar-right">
-          {whereInput}
-          {rightActions}
+      {hasToolbarContent && (
+        <Flex align="center" justify="space-between" gap={8} className="table-data-toolbar">
+          {leftActions}
+          <Flex align="center" justify="end" gap={8} className="table-data-toolbar-right">
+            {whereInput}
+            {rightActions}
+          </Flex>
         </Flex>
-      </Flex>
+      )}
       {searchVisible && (
         <PageSearchControls
           state={searchState}
@@ -2772,7 +2816,7 @@ function App(): React.JSX.Element {
   const [aiPanelOpen, setAiPanelOpen] = useState(true)
   const [treeSearchOpen, setTreeSearchOpen] = useState(false)
   const [treeSearchText, setTreeSearchText] = useState('')
-  const treeSearchInputRef = useRef<InputRef | null>(null)
+  const treeSearchInputRef = useRef<HTMLInputElement | null>(null)
   const queryHistoryModalRef = useRef<ImperativeModalHandle | null>(null)
   const settingsModalRef = useRef<ImperativeModalHandle | null>(null)
   const updateModalRef = useRef<ImperativeModalHandle | null>(null)
@@ -4700,6 +4744,15 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     })
   }
 
+  const syncTableBodyRef = (tabKey: string, element: HTMLDivElement | null): void => {
+    tableBodyRefs.current[tabKey] = element
+    if (!element) {
+      return
+    }
+    const nextHeight = Math.max(160, element.clientHeight - 39)
+    setTableBodyHeights((current) => current[tabKey] === nextHeight ? current : { ...current, [tabKey]: nextHeight })
+  }
+
   useEffect(() => {
     if (!activeTabKey) {
       return
@@ -4720,7 +4773,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     observer.observe(element)
 
     return () => observer.disconnect()
-  }, [activeTabKey, workspaceTabs.length])
+  }, [activeTabKey, workspaceTabs])
 
   useEffect(() => {
     if (!activeTabKey) {
@@ -4852,6 +4905,18 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       window.removeEventListener('mouseup', handleMouseUp)
     }
   }, [resizingAiPanel])
+
+  useEffect(() => {
+    const handleMouseUp = (): void => {
+      Object.keys(scrollbarDragRefs.current).forEach((key) => {
+        scrollbarDragRefs.current[key] = undefined
+      })
+    }
+    window.addEventListener('mouseup', handleMouseUp)
+    return () => {
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [])
 
   const closeWorkspaceTab = (key: string): void => {
     setWorkspaceTabs((current) => {
@@ -5264,6 +5329,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       <Popover
         trigger="click"
         open={activeSelector === popKey}
+        overlayClassName="tree-selector-popover"
         onOpenChange={(open) => {
           if (open) {
             setDraftSelectedDatabases((current) => ({
@@ -5273,19 +5339,26 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             setActiveSelector(popKey)
           } else {
             const nextSelected = draftSelectedDatabases[connectionId] ?? selected
+            const currentSelected = selectedDatabasesRef.current[connectionId] ?? selected
+            const changed = !stringArrayEquals(
+              [...currentSelected].sort((left, right) => left.localeCompare(right, 'zh-Hans-CN', { numeric: true, sensitivity: 'base' })),
+              [...nextSelected].sort((left, right) => left.localeCompare(right, 'zh-Hans-CN', { numeric: true, sensitivity: 'base' }))
+            )
             setSelectedDatabases((current) => {
               const next = { ...current, [connectionId]: nextSelected }
               selectedDatabasesRef.current = next
               return next
             })
             setActiveSelector(null)
-            refreshConnectionNode(connectionId, nextSelected)
+            if (changed) {
+              refreshConnectionNode(connectionId, nextSelected)
+            }
           }
         }}
         content={
-          <div style={{ maxHeight: 260, overflowY: 'auto', minWidth: 180 }}>
-            <Flex vertical gap={6}>
-              <Button size="small" type="link" onClick={(event) => {
+          <div className="tree-selector-popover-body">
+            <Flex vertical gap={8}>
+              <Button className="tree-selector-toggle-btn" size="small" type="link" onClick={(event) => {
                 event.stopPropagation()
                 setDraftSelectedDatabases((current) => ({
                   ...current,
@@ -5295,6 +5368,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                 {draftSelected.length === dbList.length ? '取消全选' : '全选'}
               </Button>
               <Checkbox.Group
+                className="tree-selector-checkbox-group"
                 value={draftSelected}
                 onChange={(values) => {
                   if (values.length === 0) {
@@ -5307,9 +5381,9 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                   }))
                 }}
               >
-                <Flex vertical gap={4}>
+                <Flex vertical gap={6}>
                   {dbList.map((dbName) => (
-                    <Checkbox key={dbName} value={dbName}>
+                    <Checkbox className="tree-selector-checkbox" key={dbName} value={dbName}>
                       {dbName}
                     </Checkbox>
                   ))}
@@ -5726,6 +5800,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             <Popover
               trigger="click"
               open={activeSelector === selKey}
+              overlayClassName="tree-selector-popover"
               onOpenChange={(open) => {
                 if (open) {
                   setDraftSelectedSchemas((current) => ({
@@ -5735,19 +5810,26 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                   setActiveSelector(selKey)
                 } else {
                   const nextSelected = draftSelectedSchemas[selKey] ?? selectedSchemaList
+                  const currentSelected = selectedSchemasRef.current[selKey] ?? selectedSchemaList
+                  const changed = !stringArrayEquals(
+                    [...currentSelected].sort((left, right) => left.localeCompare(right, 'zh-Hans-CN', { numeric: true, sensitivity: 'base' })),
+                    [...nextSelected].sort((left, right) => left.localeCompare(right, 'zh-Hans-CN', { numeric: true, sensitivity: 'base' }))
+                  )
                   setSelectedSchemas((current) => {
                     const next = { ...current, [selKey]: nextSelected }
                     selectedSchemasRef.current = next
                     return next
                   })
                   setActiveSelector(null)
-                  refreshDatabaseNode(connectionId, databaseName, nextSelected)
+                  if (changed) {
+                    refreshDatabaseNode(connectionId, databaseName, nextSelected)
+                  }
                 }
               }}
               content={
-                <div style={{ maxHeight: 260, overflowY: 'auto', minWidth: 180 }}>
-                  <Flex vertical gap={6}>
-                    <Button size="small" type="link" onClick={(event) => {
+                <div className="tree-selector-popover-body">
+                  <Flex vertical gap={8}>
+                    <Button className="tree-selector-toggle-btn" size="small" type="link" onClick={(event) => {
                       event.stopPropagation()
                       setDraftSelectedSchemas((current) => ({
                         ...current,
@@ -5757,6 +5839,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                       {draftSelectedSchemaList.length === schemas.length ? '取消全选' : '全选'}
                     </Button>
                     <Checkbox.Group
+                      className="tree-selector-checkbox-group"
                       value={draftSelectedSchemaList}
                       onChange={(values) => {
                         if (values.length === 0) {
@@ -5769,9 +5852,9 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                         }))
                       }}
                     >
-                      <Flex vertical gap={4}>
+                      <Flex vertical gap={6}>
                         {schemas.map((schemaName) => (
-                          <Checkbox key={schemaName} value={schemaName}>
+                          <Checkbox className="tree-selector-checkbox" key={schemaName} value={schemaName}>
                             {schemaName}
                           </Checkbox>
                         ))}
@@ -5839,20 +5922,20 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     return (
       <Flex align="center" justify="space-between" gap={8} className="result-status">
         <Space wrap className="result-status-left">
-          <Tag color={tab.kind === 'query' ? 'blue' : tab.kind === 'redis-browser' ? 'red' : tab.kind === 'table-list' ? 'gold' : 'green'}>
+          <Tag className="result-status-pill result-status-kind-pill" color={tab.kind === 'query' ? 'blue' : tab.kind === 'redis-browser' ? 'red' : tab.kind === 'table-list' ? 'gold' : 'green'}>
             {tab.kind === 'query' ? 'SQL 查询' : tab.kind === 'redis-browser' ? 'Redis 浏览' : tab.kind === 'table-list' ? '表列表' : '表预览'}
           </Tag>
-          {connection && <Tag>{connection.name}</Tag>}
-          {tab.kind === 'redis-browser' && tab.databaseName && <Tag>{tab.databaseName}</Tag>}
+          {connection && <Tag className="result-status-pill">{connection.name}</Tag>}
+          {tab.kind === 'redis-browser' && tab.databaseName && <Tag className="result-status-pill">{tab.databaseName}</Tag>}
           {tab.kind === 'table-list' && (tab.databaseName || tab.pgDatabaseName) && (
-            <Tag>{isSchemaScopedType(connection?.database_type) ? [tab.pgDatabaseName, tab.databaseName].filter(Boolean).join('.') : (tab.databaseName || tab.pgDatabaseName)}</Tag>
+            <Tag className="result-status-pill">{isSchemaScopedType(connection?.database_type) ? [tab.pgDatabaseName, tab.databaseName].filter(Boolean).join('.') : (tab.databaseName || tab.pgDatabaseName)}</Tag>
           )}
-          {tab.tableName && tab.kind !== 'redis-browser' && <Tag>{tab.tableName}</Tag>}
-          <Typography.Text type="secondary">{rowText}</Typography.Text>
-          {tab.result?.limited && <Tag color="warning">已截断</Tag>}
-          {pendingChanges > 0 && <Tag color="orange">{pendingChanges} 项未提交</Tag>}
+          {tab.tableName && tab.kind !== 'redis-browser' && <Tag className="result-status-pill">{tab.tableName}</Tag>}
+          <Typography.Text type="secondary" className="result-status-summary">{rowText}</Typography.Text>
+          {tab.result?.limited && <Tag className="result-status-pill result-status-warning-pill" color="warning">已截断</Tag>}
+          {pendingChanges > 0 && <Tag className="result-status-pill result-status-warning-pill" color="orange">{pendingChanges} 项未提交</Tag>}
         </Space>
-        {showPager && <div className="result-status-right">{renderResultPager(tab)}</div>}
+        {showPager && <div className="result-status-right result-status-pager-shell">{renderResultPager(tab)}</div>}
       </Flex>
     )
   }
@@ -5927,6 +6010,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             rowDragAnchorRefs.current[tabKey] = undefined
             cellDragAnchorRefs.current[tabKey] = undefined
             pendingCellDragTargetRefs.current[tabKey] = undefined
+            clearSelectedRowsForTab(tabKey)
             const committedSelection = selectedCellRefs.current[tabKey] ?? []
             if (!committedSelection.includes(cellKey)) {
               runtimeSelectedCellRefs.current[tabKey] = undefined
@@ -5944,6 +6028,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             }
             event.stopPropagation()
             tableBodyRefs.current[tabKey]?.focus()
+            clearSelectedRowsForTab(tabKey)
             cellDragAnchorRefs.current[tabKey] = { rowKey, column }
             applyRuntimeCellSelection(tabKey, rowKey, column)
             clearRuntimeColumnSelection(tabKey)
@@ -6039,87 +6124,90 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     const showRedisRefresh = tab.kind === 'redis-browser' && tab.connectionId && tab.databaseName
     const showPreviewSearch = tab.kind === 'preview' || tab.kind === 'redis-browser'
     const showPreviewDdl = Boolean(tab.kind === 'preview' && tab.connectionId && tab.tableName)
-
-    const leftActions = (
-      <Space size={4} className="table-data-actions">
-        {showRedisRefresh && (
-          <>
-            <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<ReloadOutlined />} title="刷新" aria-label="刷新" loading={tab.loading} onClick={() => void previewRedisDatabase(tab.connectionId!, tab.databaseName!, tab.limit, tab.page, tab.key, tab.where)} />
-            <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<PlusOutlined />} title="新增一行" aria-label="新增一行" onClick={() => addRedisRow(tab)} />
-            <Button className="table-toolbar-icon-btn" type="text" size="small" icon={<SaveOutlined />} title="提交" aria-label="提交" disabled={countRedisPendingChanges(tab) === 0} loading={tab.loading} onClick={() => void submitRedisChanges(tab)} />
-          </>
+    const leftActions = showRedisRefresh || showPreviewActions
+      ? (
+          <Space size={4} className="table-data-actions">
+            {showRedisRefresh && (
+              <>
+                <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<ReloadOutlined />} title="刷新" aria-label="刷新" loading={tab.loading} onClick={() => void previewRedisDatabase(tab.connectionId!, tab.databaseName!, tab.limit, tab.page, tab.key, tab.where)} />
+                <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<PlusOutlined />} title="新增一行" aria-label="新增一行" onClick={() => addRedisRow(tab)} />
+                <Button className="table-toolbar-icon-btn" type="text" size="small" icon={<SaveOutlined />} title="提交" aria-label="提交" disabled={countRedisPendingChanges(tab) === 0} loading={tab.loading} onClick={() => void submitRedisChanges(tab)} />
+              </>
+            )}
+            {showPreviewActions && (
+              <>
+                <Button
+                  className="table-toolbar-icon-btn"
+                  size="small"
+                  type="text"
+                  icon={<ReloadOutlined />}
+                  title="刷新"
+                  aria-label="刷新"
+                  loading={tab.loading}
+                  onMouseDownCapture={() => {
+                    suppressInlineEditorCommitRefs.current[tab.key] = true
+                  }}
+                  onMouseDown={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    discardInlineCellEditor(tab.key)
+                  }}
+                  onClick={() => void previewTable(tab.connectionId!, tab.tableName!, tab.databaseName, tab.pgDatabaseName, tab.limit, tab.page, tab.where)}
+                />
+                <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<PlusOutlined />} title="新增行" aria-label="新增行" onClick={() => addPreviewRow(tab)} />
+                <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<MinusOutlined />} title="删除选中行" aria-label="删除选中行" disabled={!tab.selectedRowKeys?.length} onClick={() => markSelectedRowsDeleted(tab)} />
+                <Button className="table-toolbar-icon-btn" type="text" size="small" icon={<SaveOutlined />} title="提交" aria-label="提交" disabled={countPendingChanges(tab) === 0} loading={tab.loading} onClick={() => void submitPreviewChanges(tab)} />
+              </>
+            )}
+          </Space>
+        )
+      : null
+    const whereInput = renderWhereInput(tab)
+    const rightActions = showPreviewSearch || showPreviewDdl ? (
+      <Space size={4} className="table-toolbar-inline-actions">
+        {showPreviewSearch && (
+          <Button
+            size="small"
+            type="text"
+            icon={<SearchOutlined />}
+            title="页内搜索"
+            aria-label="页内搜索"
+            className={searchState.query.trim() || searchState.visible ? 'table-toolbar-icon-btn table-toolbar-toggle is-active' : 'table-toolbar-icon-btn table-toolbar-toggle'}
+            onClick={() => {
+              if (searchState.query.trim() || searchState.visible) {
+                clearActiveSearchCellHighlight(tab.key)
+                updateTableSearchState(tab, {
+                  visible: false,
+                  query: '',
+                  filterRows: false,
+                  activeMatchIndex: 0
+                })
+                return
+              }
+              updateTableSearchState(tab, { visible: true })
+            }}
+          />
         )}
-        {showPreviewActions && (
-          <>
-            <Button
-              className="table-toolbar-icon-btn"
-              size="small"
-              type="text"
-              icon={<ReloadOutlined />}
-              title="刷新"
-              aria-label="刷新"
-              loading={tab.loading}
-              onMouseDownCapture={() => {
-                suppressInlineEditorCommitRefs.current[tab.key] = true
-              }}
-              onMouseDown={(event) => {
-                event.preventDefault()
-                event.stopPropagation()
-                discardInlineCellEditor(tab.key)
-              }}
-              onClick={() => void previewTable(tab.connectionId!, tab.tableName!, tab.databaseName, tab.pgDatabaseName, tab.limit, tab.page, tab.where)}
-            />
-            <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<PlusOutlined />} title="新增行" aria-label="新增行" onClick={() => addPreviewRow(tab)} />
-            <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<MinusOutlined />} title="删除选中行" aria-label="删除选中行" disabled={!tab.selectedRowKeys?.length} onClick={() => markSelectedRowsDeleted(tab)} />
-            <Button className="table-toolbar-icon-btn" type="text" size="small" icon={<SaveOutlined />} title="提交" aria-label="提交" disabled={countPendingChanges(tab) === 0} loading={tab.loading} onClick={() => void submitPreviewChanges(tab)} />
-          </>
+        {showPreviewDdl && (
+          <Button
+            size="small"
+            type="text"
+            title="查看 DDL"
+            aria-label="查看 DDL"
+            className="table-toolbar-icon-btn table-ddl-button"
+            onClick={() => void showObjectDdl(tab.connectionId!, tab.tableName!, tab.objectType ?? 'table', tab.databaseName, tab.pgDatabaseName)}
+          >
+            DDL
+          </Button>
         )}
       </Space>
-    )
+    ) : null
 
     return (
       <ResultTableHeader
         leftActions={leftActions}
-        whereInput={renderWhereInput(tab)}
-        rightActions={showPreviewSearch || showPreviewDdl ? (
-          <Space size={4} className="table-toolbar-inline-actions">
-            {showPreviewSearch && (
-              <Button
-                size="small"
-                type="text"
-                icon={<SearchOutlined />}
-                title="页内搜索"
-                aria-label="页内搜索"
-                className={searchState.query.trim() || searchState.visible ? 'table-toolbar-icon-btn table-toolbar-toggle is-active' : 'table-toolbar-icon-btn table-toolbar-toggle'}
-                onClick={() => {
-                  if (searchState.query.trim() || searchState.visible) {
-                    clearActiveSearchCellHighlight(tab.key)
-                    updateTableSearchState(tab, {
-                      visible: false,
-                      query: '',
-                      filterRows: false,
-                      activeMatchIndex: 0
-                    })
-                    return
-                  }
-                  updateTableSearchState(tab, { visible: true })
-                }}
-              />
-            )}
-            {showPreviewDdl && (
-              <Button
-                size="small"
-                type="text"
-                title="查看 DDL"
-                aria-label="查看 DDL"
-                className="table-toolbar-icon-btn table-ddl-button"
-                onClick={() => void showObjectDdl(tab.connectionId!, tab.tableName!, tab.objectType ?? 'table', tab.databaseName, tab.pgDatabaseName)}
-              >
-                DDL
-              </Button>
-            )}
-          </Space>
-        ) : null}
+        whereInput={whereInput}
+        rightActions={rightActions}
         searchState={searchState}
         searchMeta={searchMeta}
         onSearchStateChange={(patch) => updateTableSearchState(tab, patch)}
@@ -6263,10 +6351,11 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         {showPageSearch && (
           <Button
             size="small"
+            type="text"
             icon={<SearchOutlined />}
             title="页内搜索"
             aria-label="页内搜索"
-            className={searchState.query.trim() || searchState.visible ? 'table-toolbar-toggle is-active' : 'table-toolbar-toggle'}
+            className={searchState.query.trim() || searchState.visible ? 'table-toolbar-icon-btn table-toolbar-toggle is-active' : 'table-toolbar-icon-btn table-toolbar-toggle'}
             onClick={() => {
               if (searchState.query.trim() || searchState.visible) {
                 clearActiveSearchCellHighlight(tab.key)
@@ -6390,6 +6479,32 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     syncInspectorSelection(tabKey, cellKeys)
   }
 
+  const clearCommittedCellSelection = (tabKey: string): void => {
+    contextMenuCellSelectionRefs.current[tabKey] = undefined
+    setCommittedCellSelection(tabKey, [])
+  }
+
+  const clearAllCellSelection = (tabKey: string): void => {
+    clearRuntimeCellSelection(tabKey)
+    clearCommittedCellSelection(tabKey)
+  }
+
+  const clearSelectedRowsForTab = (tabKey: string): void => {
+    const tabState = workspaceTabs.find((item) => item.key === tabKey)
+    const hasDraftRows = Boolean(rowSelectionDraftRefs.current[tabKey]?.length)
+    const hasCommittedRows = Boolean(tabState?.selectedRowKeys?.length)
+    if (!hasDraftRows && !hasCommittedRows) {
+      return
+    }
+    rowSelectionDraftRefs.current[tabKey] = undefined
+    const currentSelected = tableBodyRefs.current[tabKey]?.querySelectorAll('.row-selected') ?? []
+    currentSelected.forEach((element) => element.classList.remove('row-selected'))
+    updateWorkspaceTab(tabKey, {
+      selectedRowKeys: [],
+      selectedRowKeyMap: {}
+    })
+  }
+
   const scheduleRenderedCellSelectionSync = (tabKey: string): void => {
     if (pendingRenderedCellSelectionFrameRefs.current[tabKey]) {
       return
@@ -6422,7 +6537,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     const rows = tab.result?.rows ?? []
     const edits = tab.redisEdits ?? {}
     return (
-      <div className="result-table-shell">
+      <div className={`result-table-shell${tab.kind === 'query' ? ' query-result-table-shell' : ''}`}>
         {renderResultStatus(tab)}
         {renderTableToolbar(tab, {
           matchCount: 0,
@@ -6686,6 +6801,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         contextMenuCellSelectionRefs.current[tab.key] = currentSelection
         return currentSelection
       }
+      clearSelectedRowsForTab(tab.key)
       clearRuntimeColumnSelection(tab.key)
       rowDragAnchorRefs.current[tab.key] = undefined
       cellDragAnchorRefs.current[tab.key] = undefined
@@ -6955,9 +7071,9 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     const previewSelectedRows = (nextSelectedRowKeys: React.Key[]): void => {
       rowSelectionDraftRefs.current[tab.key] = nextSelectedRowKeys
       const nextSelectedSet = new Set(nextSelectedRowKeys.map(String))
-      const currentSelected = tableBodyRefs.current[tab.key]?.querySelectorAll('.row-selected') ?? []
+      const currentSelected = tableBodyRefs.current[tab.key]?.querySelectorAll('tr.row-selected[data-row-key]') ?? []
       currentSelected.forEach((element) => element.classList.remove('row-selected'))
-      tableBodyRefs.current[tab.key]?.querySelectorAll<HTMLElement>('[data-row-key]').forEach((element) => {
+      tableBodyRefs.current[tab.key]?.querySelectorAll<HTMLElement>('tr[data-row-key]').forEach((element) => {
         if (nextSelectedSet.has(element.dataset.rowKey ?? '')) {
           element.classList.add('row-selected')
         }
@@ -7144,8 +7260,9 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
               draggable
               onClick={(event) => {
                 event.stopPropagation()
+                clearSelectedRowsForTab(tab.key)
                 applyRuntimeColumnSelection(tab.key, column)
-                clearRuntimeCellSelection(tab.key)
+                clearAllCellSelection(tab.key)
                 if (editingCellRefs.current[tab.key]) {
                   editingCellRefs.current[tab.key] = undefined
                 }
@@ -7212,6 +7329,9 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       width: 34,
       fixed: 'left',
       className: 'row-number-cell',
+      onCell: (row: EditableRow) => ({
+        'data-row-key': row.__rowKey,
+      } as React.TdHTMLAttributes<HTMLElement>),
       render: (_value: unknown, row: EditableRow, index: number) => {
         const selected = Boolean(selectedRowKeyMap[row.__rowKey])
         return (
@@ -7222,6 +7342,8 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             onMouseDown={(event) => {
               event.preventDefault()
               event.stopPropagation()
+              clearRuntimeColumnSelection(tab.key)
+              clearAllCellSelection(tab.key)
               if (event.ctrlKey || event.metaKey) {
                 rowDragAnchorRefs.current[tab.key] = undefined
                 const currentSelection = new Set((rowSelectionDraftRefs.current[tab.key] ?? tab.selectedRowKeys ?? []).map(String))
@@ -7275,16 +7397,18 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             : highlightResultText(`${row.__rowKey}:${column}`, cellDisplayText(value), 'table-cell-text')
         )
       })) ?? []
-    const tableColumns: ColumnsType<EditableRow> = supportsCellSelection ? [rowNumberColumn, ...dataColumns] : dataColumns
-    const tableScrollX = Math.max((tab.result?.columns.length ?? 0) * 180 + (supportsCellSelection ? 34 : 0), 720)
-    const tableScrollY = tableBodyHeights[tab.key] ?? 320
-    const searchSignature = `${searchState.query}\u0000${searchState.caseSensitive ? 1 : 0}\u0000${searchState.regex ? 1 : 0}\u0000${searchState.wholeWord ? 1 : 0}\u0000${searchState.filterRows ? 1 : 0}`
-    if (tab.kind === 'redis-browser') {
-      return renderRedisBrowser(tab)
-    }
+      const tableColumns: ColumnsType<EditableRow> = supportsCellSelection ? [rowNumberColumn, ...dataColumns] : dataColumns
+      const tableScrollX = Math.max((tab.result?.columns.length ?? 0) * 180 + (supportsCellSelection ? 34 : 0), 720)
+      const tableScrollY = tableBodyHeights[tab.key] ?? 320
+      const searchSignature = `${searchState.query}\u0000${searchState.caseSensitive ? 1 : 0}\u0000${searchState.regex ? 1 : 0}\u0000${searchState.wholeWord ? 1 : 0}\u0000${searchState.filterRows ? 1 : 0}`
+      if (tab.kind === 'redis-browser') {
+        return renderRedisBrowser(tab)
+      }
 
-    return (
-      <div className="result-table-shell">
+      return (
+        <div
+          className={`result-table-shell${tab.kind === 'query' ? ' query-result-table-shell' : ''}`}
+        >
         {renderResultStatus(tab)}
         {renderTableToolbar(tab, {
           matchCount: searchMatches.length,
@@ -7296,7 +7420,9 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         {tab.resultKind === 'command' || tab.resultKind === 'error'
           ? null
           : (
-        <div className="result-table-content">
+        <div
+          className={`result-table-content${tab.kind === 'query' ? ' query-result-table-content' : ''}`}
+        >
         {tab.loading && (
           <div className="result-table-loading-overlay">
             <Spin size="large" />
@@ -7310,7 +7436,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           tableRows={tableRows}
           tableScrollX={tableScrollX}
           tableScrollY={tableScrollY}
-          setBodyRef={(element) => { tableBodyRefs.current[tab.key] = element }}
+          setBodyRef={(element) => { syncTableBodyRef(tab.key, element) }}
           setHeaderRef={(element) => { tableHeaderRefs.current[tab.key] = element }}
           onScrollCapture={() => scheduleRenderedCellSelectionSync(tab.key)}
           onKeyDown={(event) => {
@@ -7356,7 +7482,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             }
             if (!target.closest('[data-cell-key]')) {
               clearActiveSearchCellHighlight(tab.key)
-              clearRuntimeCellSelection(tab.key)
+              clearAllCellSelection(tab.key)
             }
           }}
           onMouseUp={(event) => {
@@ -7534,80 +7660,167 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       const resultVisible = Boolean(tab.resultVisible)
       const resultCollapsed = Boolean(tab.resultCollapsed)
       const queryEditorHeight = tab.queryEditorHeight ?? 280
+      const executionContext = sqlExecutionContextByTab[tab.key]
+      const statementSource = (executionContext?.statements?.length ?? 0) > 0
+        ? (executionContext?.statements ?? [])
+        : (tab.sql.trim()
+            ? [{
+                text: tab.sql,
+                start: 0,
+                end: tab.sql.length,
+                startLineNumber: 1,
+                startColumn: 1,
+                endLineNumber: tab.sql.split('\n').length,
+                endColumn: (tab.sql.split('\n').at(-1)?.length ?? 0) + 1
+              }]
+            : [])
+      const statementMenuItems: MenuProps['items'] = statementSource.map((statement, index) => {
+        const firstLine = statement.text.split('\n').map((line) => line.trim()).find(Boolean) ?? statement.text.trim()
+        const compactTitle = firstLine.length > 72 ? `${firstLine.slice(0, 72)}...` : firstLine
+        const isActive = executionContext?.currentStatementIndex === index
+        return {
+          key: String(index),
+          label: (
+            <div className={`query-statement-menu-item${isActive ? ' is-active' : ''}`}>
+              <span className="query-statement-menu-title">{compactTitle || `SQL ${index + 1}`}</span>
+              <span className="query-statement-menu-meta">
+                第 {statement.startLineNumber} 行
+                {statement.endLineNumber > statement.startLineNumber ? ` - ${statement.endLineNumber} 行` : ''}
+              </span>
+            </div>
+          )
+        }
+      })
 
       return (
         <div className="query-workspace">
-          <Space className="query-toolbar">
-            <Select
-              className="connection-select"
-              placeholder="选择连接"
-              value={tab.connectionId}
-              variant="borderless"
-              style={{ width: connectionSelectWidth }}
-              onChange={(connectionId) => {
-                const nextConn = getConnection(connectionId)
-                void ensureDatabasesLoaded(connectionId)
-                const nextDb = isDatabaseScopedType(nextConn?.database_type) || nextConn?.database_type === 'dm' || nextConn?.database_type === 'oracle' ? getDefaultDatabaseName(nextConn) : undefined
-                const nextPgDb = isSchemaScopedType(nextConn?.database_type) ? getDefaultPgDatabase(nextConn!) : undefined
-                updateWorkspaceTab(tab.key, {
-                  connectionId,
-                  databaseName: nextDb,
-                  pgDatabaseName: nextPgDb
-                })
-
-                if ((isDatabaseScopedType(nextConn?.database_type) || nextConn?.database_type === 'dm' || nextConn?.database_type === 'oracle') && nextDb) {
-                  void preloadCompletionForDatabase(connectionId, nextDb)
-                }
-              }}
-              options={connections.map((c) => ({ label: c.name, value: c.connection_id }))}
-            />
-            {(isMysql || isPg || isDm || connection?.database_type === 'oracle' || isMongo || isRedis || isClickHouse) && (
-              <Select
-                className="database-select"
-                placeholder={isPg ? '选择 Database' : (isDm || connection?.database_type === 'oracle') ? '选择 Schema' : isMongo ? '选择数据库' : isRedis ? '选择 Redis DB' : isClickHouse ? '选择数据库' : '选择库'}
-                value={isPg ? (tab.pgDatabaseName || undefined) : (tab.databaseName || undefined)}
-                variant="borderless"
-                style={{ width: databaseSelectWidth }}
-                onChange={async (value) => {
-                  if (isPg) {
-                    const schemaNames = await ensureSchemasLoaded(tab.connectionId!, value)
-                    const defaultSchema = getDefaultPgSchema(schemaNames)
-                    updateWorkspaceTab(tab.key, { pgDatabaseName: value, databaseName: defaultSchema })
-                  } else {
-                    updateWorkspaceTab(tab.key, { databaseName: value })
-                    if (!isDm && connection?.database_type !== 'oracle') {
-                      void preloadCompletionForDatabase(tab.connectionId!, value)
+          <div className="query-toolbar">
+            <div className="query-toolbar-main">
+              <div className="query-toolbar-select-shell" style={{ width: connectionSelectWidth }}>
+                <Select
+                  className="connection-select query-toolbar-select"
+                  placeholder="选择连接"
+                  value={tab.connectionId}
+                  variant="borderless"
+                  popupClassName="query-toolbar-select-dropdown"
+                  classNames={{
+                    root: 'query-toolbar-select-root',
+                    popup: {
+                      root: 'query-toolbar-select-dropdown'
                     }
-                  }
-                }}
-                onDropdownVisibleChange={(open) => {
-                  if (open && tab.connectionId) {
-                    void ensureDatabasesLoaded(tab.connectionId)
-                  }
-                }}
-                options={dbOptions.map((name) => ({ label: name, value: name }))}
-              />
-            )}
-            {isPg && tab.pgDatabaseName && (
-              <Select
-                className="schema-select"
-                placeholder="选择 Schema"
-                value={tab.databaseName || undefined}
-                variant="borderless"
-                style={{ width: schemaSelectWidth }}
-                onChange={(value) => updateWorkspaceTab(tab.key, { databaseName: value })}
-                options={schemaOptions.map((name) => ({ label: name, value: name }))}
-              />
-            )}
-            <Button
-              type="primary"
-              icon={<PlayCircleOutlined />}
-              loading={tab.loading}
-              onClick={() => void runQuery(tab, sqlExecutionContextByTab[tab.key]?.selectedSql || sqlExecutionContextByTab[tab.key]?.currentStatementSql || tab.sql)}
-            >
-              执行
-            </Button>
-          </Space>
+                  }}
+                  style={{ width: '100%' }}
+                  onChange={(connectionId) => {
+                    const nextConn = getConnection(connectionId)
+                    void ensureDatabasesLoaded(connectionId)
+                    const nextDb = isDatabaseScopedType(nextConn?.database_type) || nextConn?.database_type === 'dm' || nextConn?.database_type === 'oracle' ? getDefaultDatabaseName(nextConn) : undefined
+                    const nextPgDb = isSchemaScopedType(nextConn?.database_type) ? getDefaultPgDatabase(nextConn!) : undefined
+                    updateWorkspaceTab(tab.key, {
+                      connectionId,
+                      databaseName: nextDb,
+                      pgDatabaseName: nextPgDb
+                    })
+
+                    if ((isDatabaseScopedType(nextConn?.database_type) || nextConn?.database_type === 'dm' || nextConn?.database_type === 'oracle') && nextDb) {
+                      void preloadCompletionForDatabase(connectionId, nextDb)
+                    }
+                  }}
+                  options={connections.map((c) => ({ label: c.name, value: c.connection_id }))}
+                />
+              </div>
+              {(isMysql || isPg || isDm || connection?.database_type === 'oracle' || isMongo || isRedis || isClickHouse) && (
+                <div className="query-toolbar-select-shell" style={{ width: databaseSelectWidth }}>
+                  <Select
+                    className="database-select query-toolbar-select"
+                    placeholder={isPg ? '选择 Database' : (isDm || connection?.database_type === 'oracle') ? '选择 Schema' : isMongo ? '选择数据库' : isRedis ? '选择 Redis DB' : isClickHouse ? '选择数据库' : '选择库'}
+                    value={isPg ? (tab.pgDatabaseName || undefined) : (tab.databaseName || undefined)}
+                    variant="borderless"
+                    popupClassName="query-toolbar-select-dropdown"
+                    classNames={{
+                      root: 'query-toolbar-select-root',
+                      popup: {
+                        root: 'query-toolbar-select-dropdown'
+                      }
+                    }}
+                    style={{ width: '100%' }}
+                    onChange={async (value) => {
+                      if (isPg) {
+                        const schemaNames = await ensureSchemasLoaded(tab.connectionId!, value)
+                        const defaultSchema = getDefaultPgSchema(schemaNames)
+                        updateWorkspaceTab(tab.key, { pgDatabaseName: value, databaseName: defaultSchema })
+                      } else {
+                        updateWorkspaceTab(tab.key, { databaseName: value })
+                        if (!isDm && connection?.database_type !== 'oracle') {
+                          void preloadCompletionForDatabase(tab.connectionId!, value)
+                        }
+                      }
+                    }}
+                    onDropdownVisibleChange={(open) => {
+                      if (open && tab.connectionId) {
+                        void ensureDatabasesLoaded(tab.connectionId)
+                      }
+                    }}
+                    options={dbOptions.map((name) => ({ label: name, value: name }))}
+                  />
+                </div>
+              )}
+              {isPg && tab.pgDatabaseName && (
+                <div className="query-toolbar-select-shell" style={{ width: schemaSelectWidth }}>
+                  <Select
+                    className="schema-select query-toolbar-select"
+                    placeholder="选择 Schema"
+                    value={tab.databaseName || undefined}
+                    variant="borderless"
+                    popupClassName="query-toolbar-select-dropdown"
+                    classNames={{
+                      root: 'query-toolbar-select-root',
+                      popup: {
+                        root: 'query-toolbar-select-dropdown'
+                      }
+                    }}
+                    style={{ width: '100%' }}
+                    onChange={(value) => updateWorkspaceTab(tab.key, { databaseName: value })}
+                    options={schemaOptions.map((name) => ({ label: name, value: name }))}
+                  />
+                </div>
+              )}
+            </div>
+            <div className="query-toolbar-actions">
+              <div className="query-execute-group">
+                <Button
+                  className="query-execute-button"
+                  type="primary"
+                  icon={<PlayCircleOutlined />}
+                  loading={tab.loading}
+                  onClick={() => void runQuery(tab, executionContext?.selectedSql || executionContext?.currentStatementSql || tab.sql)}
+                >
+                  执行
+                </Button>
+                {statementMenuItems.length > 0 && (
+                  <Dropdown
+                    trigger={['click']}
+                    overlayClassName="query-execute-dropdown"
+                    menu={{
+                      items: statementMenuItems,
+                      onClick: ({ key }) => {
+                        const targetStatement = statementSource[Number(key)]
+                        if (targetStatement) {
+                          void runQuery(tab, targetStatement.text)
+                        }
+                      }
+                    }}
+                  >
+                    <Button
+                      className="query-execute-dropdown-button"
+                      type="primary"
+                      icon={<DownOutlined />}
+                      aria-label="选择执行语句"
+                    />
+                  </Dropdown>
+                )}
+              </div>
+            </div>
+          </div>
           {resultVisible && !resultCollapsed ? (
             <div className="query-splitter-wrap">
             <button
@@ -7641,6 +7854,44 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
               }}
             >
               <Splitter.Panel defaultSize={queryEditorHeight} min={160} max="75%" className="sql-editor-panel">
+                <div className="query-surface query-editor-surface">
+                  <div className="sql-editor-container">
+                    <SqlEditor
+                      value={tab.sql}
+                      onChange={(sql) => updateWorkspaceTab(tab.key, { sql })}
+                      onExecute={(payload) => void runQuery(tab, payload.sql)}
+                      onSelectionChange={(payload) => setSqlExecutionContextByTab((current) => ({
+                        ...current,
+                        [tab.key]: {
+                          selectedSql: payload.selectedSql,
+                          currentStatementSql: payload.currentStatementSql,
+                          statements: payload.statements,
+                          currentStatementIndex: payload.currentStatementIndex
+                        }
+                      }))}
+                      theme={theme}
+                      completionContext={buildSqlCompletionContext(tab)}
+                      shortcuts={{
+                        execute: shortcutSettings.sql_execute,
+                        deleteLine: shortcutSettings.sql_delete_line,
+                        duplicateLineDown: shortcutSettings.sql_duplicate_line_down
+                      }}
+                    />
+                  </div>
+                </div>
+              </Splitter.Panel>
+              <Splitter.Panel min={120} className="query-result-splitter-panel">
+                <div className="query-surface query-result-surface">
+                  <div className="query-result-panel">
+                  {renderResultTable(tab)}
+                  </div>
+                </div>
+              </Splitter.Panel>
+            </Splitter>
+            </div>
+          ) : (
+            <div className="query-editor-only">
+              <div className="query-surface query-editor-surface query-editor-surface-full">
                 <div className="sql-editor-container">
                   <SqlEditor
                     value={tab.sql}
@@ -7650,7 +7901,9 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                       ...current,
                       [tab.key]: {
                         selectedSql: payload.selectedSql,
-                        currentStatementSql: payload.currentStatementSql
+                        currentStatementSql: payload.currentStatementSql,
+                        statements: payload.statements,
+                        currentStatementIndex: payload.currentStatementIndex
                       }
                     }))}
                     theme={theme}
@@ -7662,36 +7915,6 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                     }}
                   />
                 </div>
-              </Splitter.Panel>
-              <Splitter.Panel min={120}>
-                <div className="query-result-panel">
-                  {renderResultTable(tab)}
-                </div>
-              </Splitter.Panel>
-            </Splitter>
-            </div>
-          ) : (
-            <div className="query-editor-only">
-              <div className="sql-editor-container">
-                <SqlEditor
-                  value={tab.sql}
-                  onChange={(sql) => updateWorkspaceTab(tab.key, { sql })}
-                  onExecute={(payload) => void runQuery(tab, payload.sql)}
-                  onSelectionChange={(payload) => setSqlExecutionContextByTab((current) => ({
-                    ...current,
-                    [tab.key]: {
-                      selectedSql: payload.selectedSql,
-                      currentStatementSql: payload.currentStatementSql
-                    }
-                  }))}
-                  theme={theme}
-                  completionContext={buildSqlCompletionContext(tab)}
-                  shortcuts={{
-                    execute: shortcutSettings.sql_execute,
-                    deleteLine: shortcutSettings.sql_delete_line,
-                    duplicateLineDown: shortcutSettings.sql_duplicate_line_down
-                  }}
-                />
               </div>
               {resultVisible && resultCollapsed && (
                 <button
@@ -8121,6 +8344,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         key: 'others',
         label: '其他',
         icon: <DatabaseOutlined />,
+        popupClassName: 'resource-create-submenu-popup',
         children: [
           { key: 'dm', label: '达梦', icon: <img src={dmIcon} alt="" style={{ width: 16, height: 16 }} /> },
           { key: 'gaussdb', label: '高斯数据库', icon: <DatabaseOutlined /> }
@@ -10637,20 +10861,26 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             <Button className="toolbar-query-btn" type="primary" size="small" icon={<FileAddOutlined />} onClick={() => openQueryWorkspace('', '新建查询')} title="新建查询" aria-label="新建查询">
               新建查询
             </Button>
-            <Button type="text" size="small" icon={<HistoryOutlined />} onClick={openQueryHistoryModal} title="历史查询窗口" aria-label="历史查询窗口" />
-            <Button type="text" size="small" icon={<SettingOutlined />} onClick={() => openSettings('app')} title="设置" aria-label="设置" />
-            <Button type={updateInfo?.available || downloadingUpdate ? 'primary' : 'text'} size="small" icon={<CloudDownloadOutlined />} loading={checkingUpdate} onClick={() => { openUpdateModal(); if (!downloadingUpdate) { void checkForUpdates(true) } }} title="检查更新" aria-label="检查更新" />
-            <Button type="text" size="small" icon={<ReloadOutlined />} loading={healthLoading} onClick={() => void checkHealth()} title="同步状态" aria-label="同步状态" />
-            <Button type={aiPanelOpen ? 'primary' : 'text'} size="small" icon={<MessageOutlined />} onClick={() => setAiPanelOpen((open) => !open)} title={aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'} aria-label={aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'} />
+            <Button className="toolbar-icon-btn" type="text" size="small" icon={<HistoryOutlined />} onClick={openQueryHistoryModal} title="历史查询窗口" aria-label="历史查询窗口" />
+            <Button className="toolbar-icon-btn" type="text" size="small" icon={<SettingOutlined />} onClick={() => openSettings('app')} title="设置" aria-label="设置" />
+            <Button className={`toolbar-icon-btn${updateInfo?.available || downloadingUpdate ? ' is-highlighted' : ''}`} type={updateInfo?.available || downloadingUpdate ? 'primary' : 'text'} size="small" icon={<CloudDownloadOutlined />} loading={checkingUpdate} onClick={() => { openUpdateModal(); if (!downloadingUpdate) { void checkForUpdates(true) } }} title="检查更新" aria-label="检查更新" />
+            <Button className="toolbar-icon-btn" type="text" size="small" icon={<ReloadOutlined />} loading={healthLoading} onClick={() => void checkHealth()} title="同步状态" aria-label="同步状态" />
+            <Button className={`toolbar-icon-btn${aiPanelOpen ? ' is-highlighted' : ''}`} type={aiPanelOpen ? 'primary' : 'text'} size="small" icon={<MessageOutlined />} onClick={() => setAiPanelOpen((open) => !open)} title={aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'} aria-label={aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'} />
             <Button className="theme-toggle-btn" type="text" size="small" icon={theme === 'dark' ? <SunOutlined /> : <MoonOutlined />} onClick={toggleTheme} title={theme === 'dark' ? '切换到亮色主题' : '切换到暗色主题'} aria-label={theme === 'dark' ? '切换到亮色主题' : '切换到暗色主题'} />
             {showBackendStatusTag && (
               <Tag className="service-pill" icon={backendStatusIcon} color={BACKEND_COLORS[backendStatus.state]} title={backendStatus.message}>{BACKEND_LABELS[backendStatus.state]}</Tag>
             )}
           </Space>
           <Space className="window-controls titlebar-no-drag" size={0}>
-            <Button type="text" icon={<MinusOutlined />} onClick={() => void window.api.minimizeWindow()} title="最小化" aria-label="最小化" />
-            <Button type="text" icon={<BorderOutlined />} onClick={() => void window.api.toggleMaximizeWindow()} title="最大化" aria-label="最大化" />
-            <Button type="text" danger icon={<CloseCircleOutlined />} onClick={() => void window.api.closeWindow()} title="关闭" aria-label="关闭" />
+            <Button className="window-control-btn" type="text" onClick={() => void window.api.minimizeWindow()} title="最小化" aria-label="最小化">
+              <span className="window-glyph window-glyph-minimize" aria-hidden="true" />
+            </Button>
+            <Button className="window-control-btn" type="text" onClick={() => void window.api.toggleMaximizeWindow()} title="最大化" aria-label="最大化">
+              <span className="window-glyph window-glyph-maximize" aria-hidden="true" />
+            </Button>
+            <Button className="window-control-btn window-control-close" type="text" danger onClick={() => void window.api.closeWindow()} title="关闭" aria-label="关闭">
+              <span className="window-glyph window-glyph-close" aria-hidden="true" />
+            </Button>
           </Space>
         </Flex>
       </Layout.Header>
@@ -10658,58 +10888,72 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         <div ref={workspaceShellRef} className="workspace">
           <div ref={resourcePanelRef} className="resource-panel" style={{ width: resourcePanelSize, flex: `0 0 ${resourcePanelSize}px` }}>
             <div className="resource-header">
-              <Space direction="vertical" size={2}>
+              <Space className="resource-header-copy" direction="vertical" size={2}>
                 <Typography.Text className="panel-kicker">DATABASE EXPLORER</Typography.Text>
                 <Typography.Title level={5} className="panel-title">数据资产</Typography.Title>
               </Space>
-              <Space size={8}>
+              <Space className="resource-header-actions" size={8}>
                 <Button className="resource-import" size="small" icon={<LoginOutlined />} onClick={openImportConnectionModal}>导入连接</Button>
-                <Dropdown menu={resourceCreateMenu} trigger={['click']}>
+                <Dropdown menu={resourceCreateMenu} trigger={['click']} overlayClassName="resource-create-dropdown">
                   <Button className="resource-add" type="primary" size="small" icon={<PlusOutlined />}>新建</Button>
                 </Dropdown>
               </Space>
             </div>
             <div className="connection-summary-strip">
-              <span className="summary-pill summary-pill-connections"><strong>{connections.length}</strong> 连接</span>
-              <span className="summary-pill summary-pill-folders"><strong>{connectionFolders.length}</strong> 分组</span>
-              <span className="summary-pill summary-pill-tabs"><strong>{workspaceTabs.length}</strong> 工作页</span>
+              <span className="summary-pill summary-pill-connections">
+                <strong>{connections.length}</strong>
+                <span className="summary-label">连接</span>
+              </span>
+              <span className="summary-pill summary-pill-folders">
+                <strong>{connectionFolders.length}</strong>
+                <span className="summary-label">分组</span>
+              </span>
+              <span className="summary-pill summary-pill-tabs">
+                <strong>{workspaceTabs.length}</strong>
+                <span className="summary-label">工作页</span>
+              </span>
             </div>
             <div className="resource-toolbar">
-              <Space size={4}>
-                <Button
-                  className="resource-toolbar-icon-btn"
-                  size="small"
-                  type={treeSearchOpen ? 'primary' : 'text'}
-                  icon={<SearchOutlined />}
-                  title="搜索当前树"
-                  aria-label="搜索当前树"
-                  onClick={() => {
-                    const nextOpen = !treeSearchOpen
-                    setTreeSearchOpen(nextOpen)
-                    if (!nextOpen) {
-                      setTreeSearchText('')
+              <div className="resource-toolbar-actions">
+                <ReactBitsDock
+                  className="resource-toolbar-dock"
+                  panelHeight={30}
+                  dockHeight={36}
+                  baseItemSize={28}
+                  magnification={31}
+                  distance={40}
+                  items={[
+                    {
+                      key: 'search',
+                      icon: <SearchOutlined />,
+                      label: '搜索当前树',
+                      active: treeSearchOpen,
+                      onClick: () => {
+                        const nextOpen = !treeSearchOpen
+                        setTreeSearchOpen(nextOpen)
+                        if (!nextOpen) {
+                          setTreeSearchText('')
+                        }
+                      }
+                    },
+                    {
+                      key: 'locate',
+                      icon: <AimOutlined />,
+                      label: '定位当前对象',
+                      onClick: () => {
+                        void locateActiveTreeNode()
+                      }
                     }
-                  }}
+                  ]}
                 />
-                <Button
-                  className="resource-toolbar-icon-btn"
-                  size="small"
-                  type="text"
-                  icon={<AimOutlined />}
-                  title="定位当前对象"
-                  aria-label="定位当前对象"
-                  onClick={() => locateActiveTreeNode()}
-                />
-              </Space>
+              </div>
               {treeSearchOpen && (
-                    <Input
-                      ref={treeSearchInputRef}
-                      size="small"
-                      allowClear
-                      className="tree-search-input"
-                      value={treeSearchText}
-                      onChange={(event) => setTreeSearchText(event.target.value)}
-                    />
+                <ReactBitsSearchInput
+                  ref={treeSearchInputRef}
+                  value={treeSearchText}
+                  onChange={setTreeSearchText}
+                  onClear={() => setTreeSearchText('')}
+                />
               )}
             </div>
             <div
@@ -10817,11 +11061,22 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                     height={enableVirtualTree ? resourceTreeHeight : undefined}
                     itemHeight={RESOURCE_TREE_ITEM_HEIGHT}
                     motion={false}
-                    switcherIcon={(nodeProps) => (
-                      nodeProps.eventKey != null && treeLoadingKeysRef.current.has(nodeProps.eventKey)
-                        ? <LoadingOutlined spin className="tree-node-loading-icon" />
-                        : undefined
-                    )}
+                    switcherIcon={(nodeProps) => {
+                      if (nodeProps.eventKey != null && treeLoadingKeysRef.current.has(nodeProps.eventKey)) {
+                        return <LoadingOutlined spin className="tree-node-loading-icon" />
+                      }
+                      if (nodeProps.isLeaf) {
+                        return undefined
+                      }
+                      return (
+                        <span className="tree-switcher-glyph" aria-hidden="true">
+                          <span className={`tree-switcher-orb${nodeProps.expanded ? ' is-expanded' : ''}`}>
+                            <span className="tree-switcher-line tree-switcher-line-horizontal" />
+                            <span className="tree-switcher-line tree-switcher-line-vertical" />
+                          </span>
+                        </span>
+                      )
+                    }}
                     treeData={treeData}
                     expandedKeys={expandedKeys}
                     onExpand={(keys, info) => {
@@ -10923,6 +11178,8 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                           })
                           return
                         }
+                        toggleOrLoadTreeNode(treeNode)
+                        return
                       }
                       toggleOrLoadTreeNode(treeNode)
                     }}
@@ -10954,7 +11211,31 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             <div className={`studio-shell${resizingResourcePanel || resizingAiPanel ? ' studio-shell-suspended' : ''}`}>
               <div className="editor-placeholder">
                 {workspaceTabs.length === 0 ? (
-                  <div className="empty-workspace"><FileAddOutlined /><Typography.Text type="secondary">连接数据库后，可以浏览库表结构、预览数据、编写 SQL，并让 Djinn Agent 辅助分析与执行受控操作。</Typography.Text><Space><Button icon={<LoginOutlined />} onClick={openImportConnectionModal}>导入连接</Button><Dropdown menu={connectionCreateMenu} trigger={['click']}><Button icon={<PlusOutlined />}>创建连接</Button></Dropdown></Space></div>
+                  <div className="empty-workspace">
+                    <div className="empty-workspace-orb" />
+                    <div className="empty-workspace-grid" />
+                    <div className="empty-workspace-panel">
+                      <div className="empty-workspace-badge">
+                        <RobotOutlined />
+                        <span>DataDjinn Workspace</span>
+                      </div>
+                      <div className="empty-workspace-icon">
+                        <FileAddOutlined />
+                      </div>
+                      <div className="empty-workspace-title empty-workspace-title-shimmer">连接数据库，开始查询和 AI 协作</div>
+                      <div className="empty-workspace-pills">
+                        <span className="empty-workspace-pill">连接树</span>
+                        <span className="empty-workspace-pill">SQL 工作页</span>
+                        <span className="empty-workspace-pill">AI 协作</span>
+                      </div>
+                      <Space size={12} className="empty-workspace-actions">
+                        <Button className="empty-workspace-button empty-workspace-button-secondary" icon={<LoginOutlined />} onClick={openImportConnectionModal}>导入连接</Button>
+                        <Dropdown menu={connectionCreateMenu} trigger={['click']}>
+                          <Button className="empty-workspace-button empty-workspace-button-primary" type="primary" icon={<PlusOutlined />}>创建连接</Button>
+                        </Dropdown>
+                      </Space>
+                    </div>
+                  </div>
                 ) : (
                   <WorkspaceTabsView
                     workspaceTabs={workspaceTabs}
@@ -11121,6 +11402,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         title="导入连接"
         open={importConnectionModalOpen}
         width={980}
+        className="import-connection-modal"
         onCancel={closeImportConnectionModal}
         maskClosable={false}
         footer={(
@@ -11138,16 +11420,25 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           </Space>
         )}
       >
-        <Space direction="vertical" className="full-width" size={16}>
-          <Form layout="vertical">
-            <Form.Item label="来源">
+        <Space direction="vertical" className="full-width import-connection-layout" size={18}>
+          <div className="import-connection-hero">
+            <div className="import-connection-hero-badge">Data Source Import</div>
+            <Typography.Title level={4}>粘贴 DataGrip / IDEA 数据源配置，批量导入到 DataDjinn</Typography.Title>
+            <Typography.Text type="secondary">先解析，再确认导入。解析结果会提前展示可导入状态和失败原因。</Typography.Text>
+          </div>
+          <Form layout="vertical" className="import-connection-form">
+            <Form.Item label="来源" className="import-connection-field">
               <Select
                 value={importConnectionSource}
                 options={IMPORT_CONNECTION_SOURCE_OPTIONS}
                 onChange={(value) => setImportConnectionSource(value as ImportConnectionSource)}
               />
             </Form.Item>
-            <Form.Item label="连接配置文本" extra="选中复制DataGrip/IDEA中的数据源并复制粘贴到上方。">
+            <Form.Item
+              label="连接配置文本"
+              className="import-connection-field import-connection-field-textarea"
+              extra="选中复制DataGrip/IDEA中的数据源并复制粘贴到上方。"
+            >
               <Input.TextArea
                 value={importConnectionRawText}
                 autoSize={{ minRows: 10, maxRows: 18 }}
@@ -11157,8 +11448,8 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             </Form.Item>
           </Form>
           {importConnectionCandidates.length > 0 && (
-            <Space direction="vertical" className="full-width" size={10}>
-              <Flex justify="space-between" align="center">
+            <Space direction="vertical" className="full-width import-connection-preview" size={12}>
+              <Flex justify="space-between" align="center" className="import-connection-preview-header">
                 <Typography.Text strong>解析结果</Typography.Text>
                 <Typography.Text type="secondary">
                   共 {importConnectionCandidates.length} 个，{importConnectionCandidates.filter((candidate) => candidate.status !== 'error' && candidate.payload).length} 个可导入
@@ -11180,19 +11471,20 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         title="导入结果"
         open={importConnectionResultOpen}
         width={880}
+        className="import-connection-result-modal"
         onCancel={closeImportConnectionResultModal}
         footer={<Button type="primary" onClick={closeImportConnectionResultModal}>关闭</Button>}
         maskClosable={false}
       >
         {importConnectionResult && (
-          <Space direction="vertical" className="full-width" size={12}>
+          <Space direction="vertical" className="full-width import-connection-result-layout" size={14}>
             <Alert
               type={importConnectionResult.failed.length > 0 ? 'warning' : 'success'}
               showIcon
               message={`成功 ${importConnectionResult.success.length} 个，失败 ${importConnectionResult.failed.length} 个`}
             />
             {importConnectionResult.success.length > 0 && (
-              <Space direction="vertical" className="full-width" size={8}>
+              <Space direction="vertical" className="full-width import-connection-result-section" size={8}>
                 <Typography.Text strong>导入成功</Typography.Text>
                 <Table
                   rowKey={(record) => `${record.name}-${record.database_type ?? 'unknown'}-success`}
@@ -11208,7 +11500,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
               </Space>
             )}
             {importConnectionResult.failed.length > 0 && (
-              <Space direction="vertical" className="full-width" size={8}>
+              <Space direction="vertical" className="full-width import-connection-result-section import-connection-result-section-danger" size={8}>
                 <Typography.Text strong>导入失败</Typography.Text>
                 <Table
                   rowKey={(record) => `${record.name}-${record.database_type ?? 'unknown'}-failed`}
@@ -11518,8 +11810,8 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       <Modal title={editingTableName ? `修改表：${editingTableName}` : '修改表'} open={tableEditorOpen} okText="保存" cancelText="取消" confirmLoading={tableEditorLoading} onOk={() => void saveTableEditor()} onCancel={() => setTableEditorOpen(false)} width={980} okButtonProps={{ disabled: !tableDesignerSupportsEdit(getConnection(editingConnectionId)?.database_type) }} maskClosable={false}>
         {renderTableDesigner('edit', editingConnectionId, editingDatabaseName, editingPgDatabaseName, editingTableName ?? '', undefined, editingTableComment, setEditingTableComment, editingColumns, tableEditorLoading)}
       </Modal>
-      <Modal title={creatingSchemaDatabaseName ? '新建 Schema' : getConnection(creatingDatabaseConnectionId)?.database_type === 'oracle' ? '新建用户' : '新增数据库'} open={databaseCreateModalOpen} okText="创建" cancelText="取消" confirmLoading={databaseCreateLoading} onOk={() => void createDatabase()} onCancel={() => { setDatabaseCreateModalOpen(false); setCreatingSchemaDatabaseName(''); setDatabaseCreatePassword('') }} okButtonProps={{ disabled: !databaseCreateName.trim() || (getConnection(creatingDatabaseConnectionId)?.database_type === 'oracle' && !creatingSchemaDatabaseName && !databaseCreatePassword.trim()) }} maskClosable={false}>
-        <Form layout="vertical">
+      <Modal title={creatingSchemaDatabaseName ? '新建 Schema' : getConnection(creatingDatabaseConnectionId)?.database_type === 'oracle' ? '新建用户' : '新增数据库'} open={databaseCreateModalOpen} className="database-create-modal" okText="创建" cancelText="取消" confirmLoading={databaseCreateLoading} onOk={() => void createDatabase()} onCancel={() => { setDatabaseCreateModalOpen(false); setCreatingSchemaDatabaseName(''); setDatabaseCreatePassword('') }} okButtonProps={{ disabled: !databaseCreateName.trim() || (getConnection(creatingDatabaseConnectionId)?.database_type === 'oracle' && !creatingSchemaDatabaseName && !databaseCreatePassword.trim()) }} maskClosable={false}>
+        <Form layout="vertical" className="database-create-form">
           <Form.Item label={creatingSchemaDatabaseName ? 'Schema 名称' : getConnection(creatingDatabaseConnectionId)?.database_type === 'oracle' ? '用户名' : '数据库名称'} required>
             <Input placeholder={creatingSchemaDatabaseName ? '请输入 Schema 名称' : getConnection(creatingDatabaseConnectionId)?.database_type === 'oracle' ? '请输入用户名' : '请输入数据库名称'} value={databaseCreateName} onChange={(event) => setDatabaseCreateName(event.target.value)} onPressEnter={() => void createDatabase()} />
           </Form.Item>
@@ -11561,6 +11853,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       <Modal
         title={folderEditorMode === 'rename' ? '重命名分组' : '新建分组'}
         open={folderEditorOpen}
+        className="folder-editor-modal"
         okText={folderEditorMode === 'rename' ? '保存' : '创建'}
         cancelText="取消"
         onOk={saveFolder}
@@ -11573,7 +11866,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         centered
         maskClosable={false}
       >
-        <Form layout="vertical">
+        <Form layout="vertical" className="folder-editor-form">
           <Form.Item label="分组名称" required>
             <Input
               value={folderNameDraft}
@@ -11590,8 +11883,8 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       <Modal title={getConnection(createTableConnectionId)?.database_type === 'mongodb' ? '新建集合' : '新建表'} open={createTableModalOpen} okText="创建" cancelText="取消" confirmLoading={createTableLoading} onOk={() => void createTable()} onCancel={() => setCreateTableModalOpen(false)} width={980} okButtonProps={{ disabled: !newTableName.trim() || (getConnection(createTableConnectionId)?.database_type !== 'mongodb' && newTableColumns.filter((c) => c.name.trim()).length === 0) }} maskClosable={false}>
         {renderTableDesigner('create', createTableConnectionId, createTableDatabaseName, createTablePgDatabaseName || undefined, newTableName, setNewTableName, newTableComment, setNewTableComment, newTableColumns, createTableLoading)}
       </Modal>
-      <Modal title={connectionMode === 'edit' ? '编辑数据库连接' : '保存数据库连接'} open={connectionModalOpen} okText={connectionMode === 'edit' ? '保存修改' : '保存连接'} cancelText="取消" confirmLoading={connectionLoading} onOk={() => void saveConnection()} onCancel={() => setConnectionModalOpen(false)} footer={(_, { OkBtn, CancelBtn }) => (<Space><Button loading={testingConnection} onClick={() => void testConnection()}>测试连接</Button><CancelBtn /><OkBtn /></Space>)} maskClosable={false}>
-        <Form form={form} layout="vertical" initialValues={{ database_type: 'sqlite' }}>
+      <Modal title={connectionMode === 'edit' ? '编辑数据库连接' : '保存数据库连接'} open={connectionModalOpen} className="connection-editor-modal" okText={connectionMode === 'edit' ? '保存修改' : '保存连接'} cancelText="取消" confirmLoading={connectionLoading} onOk={() => void saveConnection()} onCancel={() => setConnectionModalOpen(false)} footer={(_, { OkBtn, CancelBtn }) => (<Space className="connection-editor-footer-actions"><Button loading={testingConnection} onClick={() => void testConnection()}>测试连接</Button><CancelBtn /><OkBtn /></Space>)} maskClosable={false}>
+        <Form form={form} layout="vertical" className="connection-editor-form" initialValues={{ database_type: 'sqlite' }}>
           <Form.Item
             name="name"
             label="连接名称"

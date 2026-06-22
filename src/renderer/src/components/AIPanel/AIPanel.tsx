@@ -264,6 +264,99 @@ const isStreamingTextEvent = (event: StreamEvent): boolean => event.type === 'to
 
 const isDraftSession = (session: AISession): boolean => session.messages.length === 0
 
+const sanitizeThinkingForPersistence = (thinking: ChatMessage['thinking']): ChatMessage['thinking'] => {
+  if (!thinking) {
+    return undefined
+  }
+
+  const content = thinking.content ?? ''
+  const preview = (thinking.preview || thinking.summary || content).replace(/\s+/g, ' ').trim()
+
+  return {
+    ...thinking,
+    preview: preview || thinking.summary,
+    expanded: false,
+    done: true
+  }
+}
+
+const sanitizeSegmentForPersistence = (segment: ChatMessageSegment): ChatMessageSegment | null => {
+  if (segment.type === 'content') {
+    return segment.content ? segment : null
+  }
+
+  if (segment.type === 'thinking') {
+    const content = segment.content ?? ''
+    const preview = (segment.preview || segment.summary || content).replace(/\s+/g, ' ').trim()
+    if (!content.trim() && !preview) {
+      return null
+    }
+    return {
+      ...segment,
+      preview: preview || segment.summary,
+      expanded: false,
+      done: true
+    }
+  }
+
+  return {
+    ...segment,
+    expanded: false,
+    done: true,
+    preview: segment.preview || segment.summary || segment.content
+  }
+}
+
+const sanitizeToolCallForPersistence = (tool: ToolCallView): ToolCallView => ({
+  ...tool,
+  status: tool.status === 'running'
+    ? (tool.result !== undefined ? toolResultStatus(tool.result) : 'completed')
+    : tool.status
+})
+
+const sanitizeMessageForPersistence = (message: ChatMessage): ChatMessage | null => {
+  const normalizedContent = message.content.trim()
+  const segments = (message.segments ?? [])
+    .map(sanitizeSegmentForPersistence)
+    .filter((segment): segment is ChatMessageSegment => Boolean(segment))
+  const nonContentSegments = segments.filter((segment) => segment.type !== 'content')
+  if (normalizedContent) {
+    nonContentSegments.push({
+      id: crypto.randomUUID(),
+      type: 'content',
+      content: message.content
+    })
+  }
+  const toolCalls = (message.toolCalls ?? []).map(sanitizeToolCallForPersistence)
+  const thinking = sanitizeThinkingForPersistence(message.thinking)
+  const hasVisibleContent = Boolean(
+    normalizedContent
+    || nonContentSegments.length > 0
+    || toolCalls.length > 0
+    || thinking?.content?.trim()
+    || message.plan
+    || message.confirmation
+  )
+
+  if (message.role === 'assistant' && !hasVisibleContent) {
+    return null
+  }
+
+  return {
+    ...message,
+    segments: nonContentSegments.length > 0 ? nonContentSegments : undefined,
+    toolCalls,
+    thinking
+  }
+}
+
+const sanitizeSessionForPersistence = (session: AISession): AISession => ({
+  ...session,
+  messages: session.messages
+    .map(sanitizeMessageForPersistence)
+    .filter((message): message is ChatMessage => Boolean(message))
+})
+
 const normalizeSessions = (sessions: AISession[]): AISession[] => {
   let hasDraft = false
   return sessions.filter((session) => {
@@ -278,8 +371,11 @@ const normalizeSessions = (sessions: AISession[]): AISession[] => {
   })
 }
 
+const normalizePersistedSessions = (sessions: AISession[]): AISession[] =>
+  normalizeSessions(sessions.map(sanitizeSessionForPersistence))
+
 const persistedSessions = (sessions: AISession[]): AISession[] =>
-  normalizeSessions(sessions).filter((session) => session.messages.length > 0)
+  normalizePersistedSessions(sessions).filter((session) => session.messages.length > 0)
 
 const createSession = (): AISession => {
   const now = Date.now()
@@ -326,6 +422,25 @@ const toolResultStatus = (result: unknown): ToolCallView['status'] => {
 
   const record = result as Record<string, unknown>
   return record.error || record.success === false ? 'failed' : 'completed'
+}
+
+const applySendButtonMagnet = (button: HTMLButtonElement | null, clientX: number, clientY: number): void => {
+  if (!button) {
+    return
+  }
+  const rect = button.getBoundingClientRect()
+  const offsetX = clientX - rect.left - rect.width / 2
+  const offsetY = clientY - rect.top - rect.height / 2
+  button.style.setProperty('--dj-send-offset-x', `${Math.max(-6, Math.min(6, offsetX * 0.16))}px`)
+  button.style.setProperty('--dj-send-offset-y', `${Math.max(-6, Math.min(6, offsetY * 0.16))}px`)
+}
+
+const resetSendButtonMagnet = (button: HTMLButtonElement | null): void => {
+  if (!button) {
+    return
+  }
+  button.style.setProperty('--dj-send-offset-x', '0px')
+  button.style.setProperty('--dj-send-offset-y', '0px')
 }
 
 const isMutatingToolResult = (name: string | undefined, result: unknown): boolean => {
@@ -376,6 +491,7 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
   const [selectedConfigId, setSelectedConfigId] = useState<string>('')
   const [contextStats, setContextStats] = useState<AIContextStats | null>(null)
   const streamIdRef = useRef<string | null>(null)
+  const sendButtonRef = useRef<HTMLButtonElement | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const persistTimerRef = useRef<number | null>(null)
   const queuedStreamEventsRef = useRef<QueuedStreamUpdate[]>([])
@@ -443,7 +559,7 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
       setSelectedConfigId(initialActive?.id ?? '')
     })
     void window.api.getAISessions().then((stored) => {
-      const restoredSessions = normalizeSessions(stored as AISession[])
+      const restoredSessions = normalizePersistedSessions(stored as AISession[])
       const restored = restoredSessions.length > 0 ? restoredSessions : [createSession()]
       setSessions(restored)
       setActiveSessionId(restored[0].id)
@@ -551,10 +667,11 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
       const segments = [...(message.segments ?? [])]
       const last = segments[segments.length - 1]
       if (last && last.type === nextSegment.type && !(last.type === 'thinking' && last.done)) {
+        const mergedContent = `${last.content}${nextSegment.content}`
         segments[segments.length - 1] = {
           ...last,
-          content: `${last.content}${nextSegment.content}`,
-          preview: (nextSegment.preview ?? `${last.content}${nextSegment.content}`).replace(/\s+/g, ' ').trim(),
+          content: mergedContent,
+          preview: mergedContent.replace(/\s+/g, ' ').trim(),
           expanded: nextSegment.expanded ?? last.expanded,
           done: nextSegment.done ?? last.done,
           summary: nextSegment.summary ?? last.summary
@@ -645,10 +762,11 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
       const last = segments[segments.length - 1]
 
       if (last && last.type === nextSegment.type && !(last.type === 'thinking' && last.done)) {
+        const mergedContent = `${last.content}${nextSegment.content}`
         segments[segments.length - 1] = {
           ...last,
-          content: `${last.content}${nextSegment.content}`,
-          preview: (nextSegment.preview ?? `${last.content}${nextSegment.content}`).replace(/\s+/g, ' ').trim(),
+          content: mergedContent,
+          preview: mergedContent.replace(/\s+/g, ' ').trim(),
           expanded: nextSegment.expanded ?? last.expanded,
           done: nextSegment.done ?? last.done,
           summary: nextSegment.summary ?? last.summary
@@ -1300,7 +1418,9 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
     }
   }
 
-  const renderMarkdown = (content: string): { __html: string } => ({ __html: DOMPurify.sanitize(marked.parse(content || '...') as string) })
+  const renderMarkdown = (content: string): { __html: string } => ({
+    __html: DOMPurify.sanitize(marked.parse(content || '...', { gfm: true, breaks: true }) as string)
+  })
 
   const riskColor = (risk?: string): 'success' | 'warning' | 'error' | 'default' => {
     if (risk === 'dangerous') {
@@ -1332,7 +1452,6 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
     if (!item.plan) {
       return null
     }
-
     return (
       <Card size="small" className="ai-agent-card" title={<Space><ClockCircleOutlined />Agent 计划<Tag color={riskColor(item.plan.risk_level)}>{item.plan.risk_level ?? 'safe'}</Tag></Space>}>
         <Space direction="vertical" className="full-width" size={8}>
@@ -1385,10 +1504,15 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
     }
 
     const expanded = item.thinking.expanded ?? !item.thinking.done
-    const preview = (item.thinking.preview || item.thinking.summary || item.thinking.content)
-      .replace(/\s+/g, ' ')
+    const thinkingLabel = '\u601D\u8003\uff1A'
+    const expandedText = (item.thinking.content || item.thinking.preview || item.thinking.summary || '')
+      .replace(/\r\n/g, '\n')
       .trim()
-      .slice(0, 120)
+    const collapsedText = expandedText.replace(/\s+/g, ' ').trim() || (item.thinking.summary || '').replace(/\s+/g, ' ').trim()
+
+    if (!collapsedText) {
+      return null
+    }
 
     return (
       <div className="ai-thinking-block">
@@ -1409,27 +1533,27 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
           <span className="ai-thinking-toggle" aria-hidden="true">
             {expanded ? <DownOutlined /> : <RightOutlined />}
           </span>
-          {!item.thinking.done && <LoadingOutlined spin />}
-          <span className="ai-thinking-title">思考：</span>
-          <span className="ai-thinking-summary-text">
-            {preview || item.thinking.summary}
-            {item.thinking.done && item.thinking.content && item.thinking.content.trim().length > preview.length ? '…' : ''}
+          {!item.thinking.done && <LoadingOutlined spin className="ai-thinking-loading" />}
+          <span className={`ai-thinking-content${expanded ? ' expanded' : ''}`}>
+            <span className="ai-thinking-inline-title">{thinkingLabel}</span>
+            <span className={`ai-thinking-summary-text${expanded ? ' expanded' : ''}`}>
+              {expanded ? expandedText : collapsedText}
+            </span>
           </span>
         </div>
-        {expanded && item.thinking.content && (
-          <div className="ai-thinking-body">
-            {item.thinking.content}
-          </div>
-        )}
       </div>
     )
   }
 
-  const renderThinkingSegment = (item: ChatMessage, segment: ChatMessageSegment): React.JSX.Element => {
+  const renderThinkingSegment = (item: ChatMessage, segment: ChatMessageSegment): React.JSX.Element | null => {
     const expanded = segment.expanded ?? !segment.done
-    const fullContent = (segment.content || segment.summary || '').trim()
-    const firstLine = fullContent
-    const restContent = ''
+    const thinkingLabel = '\u601D\u8003\uff1A'
+    const fullContent = (segment.content || segment.preview || segment.summary || '').replace(/\r\n/g, '\n').trim()
+    const compactContent = fullContent.replace(/\s+/g, ' ').trim() || (segment.summary || '').replace(/\s+/g, ' ').trim()
+
+    if (!compactContent) {
+      return null
+    }
 
     return (
       <div className="ai-thinking-block" key={segment.id}>
@@ -1455,26 +1579,25 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
           <span className="ai-thinking-toggle" aria-hidden="true">
             {expanded ? <DownOutlined /> : <RightOutlined />}
           </span>
-          {!segment.done && <LoadingOutlined spin />}
-          <span className="ai-thinking-title">思考：</span>
-          <span className={`ai-thinking-summary-text${expanded ? ' expanded' : ''}`}>
-            {firstLine}
-            {restContent ? '…' : ''}
+          {!segment.done && <LoadingOutlined spin className="ai-thinking-loading" />}
+          <span className={`ai-thinking-content${expanded ? ' expanded' : ''}`}>
+            <span className="ai-thinking-inline-title">{thinkingLabel}</span>
+            <span className={`ai-thinking-summary-text${expanded ? ' expanded' : ''}`}>
+              {expanded ? fullContent : compactContent}
+            </span>
           </span>
         </div>
-        {expanded && restContent && (
-          <div className="ai-thinking-body">
-            {restContent}
-          </div>
-        )}
       </div>
     )
   }
 
   const renderAssistantContent = (item: ChatMessage): React.JSX.Element => {
     if (item.segments && item.segments.length > 0) {
+      const hasThinkingSegment = item.segments.some((segment) => segment.type === 'thinking')
+      const hasContentSegment = item.segments.some((segment) => segment.type === 'content' && segment.content.trim())
       return (
         <>
+          {!hasThinkingSegment && renderThinking(item)}
           {item.segments.map((segment) => (
             segment.type === 'thinking'
               ? renderThinkingSegment(item, segment)
@@ -1510,6 +1633,9 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
                   )
                 : <div key={segment.id} className="ai-markdown" dangerouslySetInnerHTML={renderMarkdown(segment.content)} />
           ))}
+          {!hasContentSegment && item.content.trim() && (
+            <div className="ai-markdown" dangerouslySetInnerHTML={renderMarkdown(item.content)} />
+          )}
         </>
       )
     }
@@ -1637,6 +1763,11 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
           />
         </div>
         <div className="ai-input-shell">
+          <div className="ai-input-shell-glow" />
+          <div className="ai-input-shell-badge">
+            <RobotOutlined />
+            <span>Djinn Agent</span>
+          </div>
           <Input.TextArea
             value={input}
             className="ai-input-box"
@@ -1717,9 +1848,28 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
               </Typography.Text>
             </div>
             {sending ? (
-              <Button danger className="ai-send-button" icon={<StopOutlined />} onClick={stopMessage} />
+              <Button
+                ref={sendButtonRef}
+                danger
+                className="ai-send-button"
+                icon={<StopOutlined />}
+                onClick={stopMessage}
+                onPointerMove={(event) => applySendButtonMagnet(sendButtonRef.current, event.clientX, event.clientY)}
+                onPointerLeave={() => resetSendButtonMagnet(sendButtonRef.current)}
+                onBlur={() => resetSendButtonMagnet(sendButtonRef.current)}
+              />
             ) : (
-              <Button type="primary" className="ai-send-button" icon={<SendOutlined />} disabled={!ready || !input.trim() || !activeSessionId} onClick={() => void sendMessage()} />
+              <Button
+                ref={sendButtonRef}
+                type="primary"
+                className="ai-send-button"
+                icon={<SendOutlined />}
+                disabled={!ready || !input.trim() || !activeSessionId}
+                onClick={() => void sendMessage()}
+                onPointerMove={(event) => applySendButtonMagnet(sendButtonRef.current, event.clientX, event.clientY)}
+                onPointerLeave={() => resetSendButtonMagnet(sendButtonRef.current)}
+                onBlur={() => resetSendButtonMagnet(sendButtonRef.current)}
+              />
             )}
           </div>
         </div>

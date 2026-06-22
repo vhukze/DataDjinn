@@ -1,0 +1,113 @@
+.rb-dock-outer {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  overflow: visible;
+}
+
+.rb-dock-panel {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  overflow: visible;
+}
+
+.rb-dock-item {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  padding: 0;
+  border-radius: 10px;
+  background: transparent;
+  cursor: pointer;
+  outline: none;
+  transform-origin: center;
+  will-change: transform;
+}
+
+.rb-dock-item:focus-visible {
+  outline: none;
+}
+
+.rb-dock-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  border-radius: 10px;
+  color: var(--dj-text-secondary);
+  border: 0;
+  background:
+    radial-gradient(circle at 24% 20%, var(--dj-liquid-glow-a) 0%, transparent 46%),
+    radial-gradient(circle at 76% 28%, var(--dj-liquid-glow-c) 0%, transparent 40%),
+    radial-gradient(circle at 30% 18%, rgba(255, 255, 255, 0.32) 0%, transparent 46%),
+    linear-gradient(180deg, color-mix(in srgb, white 20%, var(--dj-bg-panel)) 0%, color-mix(in srgb, var(--dj-bg-glass) 92%, transparent) 58%, color-mix(in srgb, var(--dj-bg-panel) 94%, transparent) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.08),
+    0 2px 4px rgba(15, 23, 42, 0.06),
+    0 10px 20px color-mix(in srgb, var(--dj-liquid-glow-b) 18%, transparent),
+    0 14px 28px color-mix(in srgb, black 10%, transparent);
+  transition: color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+}
+
+.rb-dock-item:hover .rb-dock-icon,
+.rb-dock-item:focus-visible .rb-dock-icon {
+  color: var(--dj-text-primary);
+  background:
+    radial-gradient(circle at 24% 20%, var(--dj-liquid-glow-a) 0%, transparent 50%),
+    radial-gradient(circle at 76% 28%, var(--dj-liquid-glow-b) 0%, transparent 44%),
+    radial-gradient(circle at 30% 18%, rgba(255, 255, 255, 0.38) 0%, transparent 46%),
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-accent-soft) 24%, white) 0%, color-mix(in srgb, var(--dj-bg-glass) 92%, white 6%) 58%, color-mix(in srgb, var(--dj-bg-panel) 96%, transparent) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.38),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.1),
+    0 4px 8px rgba(15, 23, 42, 0.06),
+    0 14px 26px color-mix(in srgb, var(--dj-accent-soft) 26%, transparent),
+    0 18px 34px color-mix(in srgb, black 12%, transparent);
+}
+
+.rb-dock-item:hover .rb-dock-icon {
+  transform: translateY(-2px);
+}
+
+.rb-dock-icon.is-active {
+  color: var(--dj-accent);
+  background:
+    radial-gradient(circle at 24% 20%, rgba(255, 255, 255, 0.24) 0%, transparent 40%),
+    radial-gradient(circle at 76% 28%, color-mix(in srgb, var(--dj-liquid-glow-c) 84%, transparent) 0%, transparent 38%),
+    radial-gradient(circle at 30% 18%, rgba(255, 255, 255, 0.32) 0%, transparent 44%),
+    linear-gradient(180deg, color-mix(in srgb, #8ec9ff 56%, white) 0%, color-mix(in srgb, var(--dj-accent-soft) 42%, white) 54%, color-mix(in srgb, var(--dj-accent-soft) 18%, var(--dj-bg-glass)) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.32),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.08),
+    0 4px 8px rgba(30, 64, 175, 0.1),
+    0 14px 28px color-mix(in srgb, var(--dj-accent-soft) 44%, transparent),
+    0 18px 34px color-mix(in srgb, black 14%, transparent);
+}
+
+.rb-dock-icon .anticon {
+  font-size: 13px;
+}
+
+.rb-dock-label {
+  position: absolute;
+  top: -24px;
+  left: 50%;
+  width: max-content;
+  max-width: 160px;
+  padding: 3px 8px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--dj-border-subtle) 78%, transparent);
+  background: color-mix(in srgb, var(--dj-bg-elevated) 96%, transparent);
+  color: var(--dj-text-primary);
+  font-size: 11px;
+  line-height: 1.2;
+  pointer-events: none;
+  box-shadow: var(--dj-shadow-card);
+  white-space: nowrap;
+}

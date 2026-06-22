@@ -5,6 +5,48 @@ import { useEffect, useRef } from 'react'
 
 loader.config({ monaco })
 
+monaco.editor.defineTheme('datadjinn-light', {
+  base: 'vs',
+  inherit: true,
+  rules: [],
+  colors: {
+    'editor.background': '#00000000',
+    'editor.lineHighlightBackground': '#00000000',
+    'editor.lineHighlightBorder': '#00000000',
+    'editor.selectionHighlightBackground': '#00000000',
+    'editor.selectionHighlightBorder': '#00000000',
+    'editor.hoverHighlightBackground': '#00000000',
+    'editor.rangeHighlightBackground': '#00000000',
+    'editor.rangeHighlightBorder': '#00000000',
+    'editor.wordHighlightBackground': '#00000000',
+    'editor.wordHighlightBorder': '#00000000',
+    'editor.wordHighlightStrongBackground': '#00000000',
+    'editor.wordHighlightStrongBorder': '#00000000',
+    'editorOverviewRuler.border': '#00000000'
+  }
+})
+
+monaco.editor.defineTheme('datadjinn-dark', {
+  base: 'vs-dark',
+  inherit: true,
+  rules: [],
+  colors: {
+    'editor.background': '#00000000',
+    'editor.lineHighlightBackground': '#00000000',
+    'editor.lineHighlightBorder': '#00000000',
+    'editor.selectionHighlightBackground': '#00000000',
+    'editor.selectionHighlightBorder': '#00000000',
+    'editor.hoverHighlightBackground': '#00000000',
+    'editor.rangeHighlightBackground': '#00000000',
+    'editor.rangeHighlightBorder': '#00000000',
+    'editor.wordHighlightBackground': '#00000000',
+    'editor.wordHighlightBorder': '#00000000',
+    'editor.wordHighlightStrongBackground': '#00000000',
+    'editor.wordHighlightStrongBorder': '#00000000',
+    'editorOverviewRuler.border': '#00000000'
+  }
+})
+
 export type SqlDialect = 'sqlite' | 'mysql' | 'postgresql' | 'dm' | 'gaussdb' | 'oracle' | 'mongodb' | 'redis' | 'clickhouse'
 
 export interface SqlCompletionColumn {
@@ -36,11 +78,28 @@ export interface SqlCompletionContext {
   columns?: SqlCompletionColumn[]
 }
 
+export interface SqlStatementInfo {
+  text: string
+  start: number
+  end: number
+  startLineNumber: number
+  startColumn: number
+  endLineNumber: number
+  endColumn: number
+}
+
+export interface SqlEditorSelectionPayload {
+  selectedSql: string
+  currentStatementSql: string
+  statements: SqlStatementInfo[]
+  currentStatementIndex: number
+}
+
 interface SqlEditorProps {
   value: string
   onChange: (value: string) => void
-  onExecute?: (payload: { sql?: string; selectedSql: string; currentStatementSql: string }) => void
-  onSelectionChange?: (payload: { selectedSql: string; currentStatementSql: string }) => void
+  onExecute?: (payload: SqlEditorSelectionPayload & { sql?: string }) => void
+  onSelectionChange?: (payload: SqlEditorSelectionPayload) => void
   theme: 'dark' | 'light'
   completionContext?: SqlCompletionContext
   readOnly?: boolean
@@ -289,6 +348,22 @@ const splitSqlStatements = (sql: string): { text: string; start: number; end: nu
   return statements
 }
 
+const buildStatementInfos = (model: Monaco.editor.ITextModel): SqlStatementInfo[] => {
+  const fullSql = model.getValue()
+  return splitSqlStatements(fullSql).map((statement) => {
+    const startPosition = model.getPositionAt(statement.start)
+    const normalizedEnd = Math.max(statement.start + 1, statement.end)
+    const endPosition = model.getPositionAt(normalizedEnd)
+    return {
+      ...statement,
+      startLineNumber: startPosition.lineNumber,
+      startColumn: startPosition.column,
+      endLineNumber: endPosition.lineNumber,
+      endColumn: endPosition.column
+    }
+  })
+}
+
 const normalizeShortcut = (shortcut?: string): string => shortcut?.replace(/\s+/g, '').toLowerCase() ?? ''
 
 const parseKeybinding = (shortcut?: string): number | null => {
@@ -341,8 +416,9 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, theme, compl
   const monacoRef = useRef<typeof Monaco | null>(null)
   const completionDisposableRef = useRef<Monaco.IDisposable | null>(null)
   const contextRef = useRef<SqlCompletionContext | undefined>(completionContext)
-  const executeRef = useRef<((payload: { sql?: string; selectedSql: string; currentStatementSql: string }) => void) | undefined>(onExecute)
-  const selectionChangeRef = useRef<((payload: { selectedSql: string; currentStatementSql: string }) => void) | undefined>(onSelectionChange)
+  const executeRef = useRef<((payload: SqlEditorSelectionPayload & { sql?: string }) => void) | undefined>(onExecute)
+  const selectionChangeRef = useRef<((payload: SqlEditorSelectionPayload) => void) | undefined>(onSelectionChange)
+  const statementDecorationIdsRef = useRef<string[]>([])
 
   useEffect(() => {
     contextRef.current = completionContext
@@ -436,34 +512,107 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, theme, compl
     return model.getValueInRange(selection).trim()
   }
 
-  const getCurrentStatementSql = (editor: Monaco.editor.IStandaloneCodeEditor): string => {
+  const getCurrentStatementInfo = (editor: Monaco.editor.IStandaloneCodeEditor): SqlStatementInfo | null => {
     const model = editor.getModel()
     const position = editor.getPosition()
     if (!model || !position) {
-      return ''
+      return null
     }
 
-    const fullSql = model.getValue()
-    const statements = splitSqlStatements(fullSql)
-    if (statements.length <= 1) {
-      return model.getLineContent(position.lineNumber).trim() || fullSql.trim()
+    const statements = buildStatementInfos(model)
+    if (statements.length === 0) {
+      const lineContent = model.getLineContent(position.lineNumber)
+      const trimmed = lineContent.trim()
+      if (!trimmed) {
+        return null
+      }
+      const rawStart = lineContent.search(/\S/)
+      const rawEnd = lineContent.length - lineContent.trimEnd().length
+      const startColumn = Math.max(1, rawStart + 1)
+      const endColumn = Math.max(startColumn + 1, lineContent.length - rawEnd + 1)
+      const start = model.getOffsetAt({ lineNumber: position.lineNumber, column: startColumn })
+      const end = model.getOffsetAt({ lineNumber: position.lineNumber, column: endColumn })
+      return {
+        text: trimmed,
+        start,
+        end,
+        startLineNumber: position.lineNumber,
+        startColumn,
+        endLineNumber: position.lineNumber,
+        endColumn
+      }
     }
 
     const offset = model.getOffsetAt(position)
     for (const statement of statements) {
       if (offset >= statement.start && offset <= statement.end) {
-        return statement.text
+        return statement
       }
     }
 
-    return model.getLineContent(position.lineNumber).trim() || fullSql.trim()
+    return statements[0] ?? null
+  }
+
+  const buildSelectionPayload = (editor: Monaco.editor.IStandaloneCodeEditor): SqlEditorSelectionPayload => {
+    const model = editor.getModel()
+    const statements = model ? buildStatementInfos(model) : []
+    const currentStatement = getCurrentStatementInfo(editor)
+    const currentStatementIndex = currentStatement
+      ? statements.findIndex((statement) => statement.start === currentStatement.start && statement.end === currentStatement.end)
+      : -1
+
+    return {
+      selectedSql: getSelectedSql(editor),
+      currentStatementSql: currentStatement?.text ?? '',
+      statements,
+      currentStatementIndex
+    }
+  }
+
+  const updateStatementDecorations = (editor: Monaco.editor.IStandaloneCodeEditor): void => {
+    const monacoInstance = monacoRef.current
+    const model = editor.getModel()
+    if (!monacoInstance || !model) {
+      return
+    }
+
+    const currentStatement = getCurrentStatementInfo(editor)
+    if (!currentStatement) {
+      statementDecorationIdsRef.current = editor.deltaDecorations(statementDecorationIdsRef.current, [])
+      return
+    }
+
+    const nextDecorations: Monaco.editor.IModelDeltaDecoration[] = []
+    for (let lineNumber = currentStatement.startLineNumber; lineNumber <= currentStatement.endLineNumber; lineNumber += 1) {
+      const isFirstLine = lineNumber === currentStatement.startLineNumber
+      const isLastLine = lineNumber === currentStatement.endLineNumber
+      const lineClassName = isFirstLine && isLastLine
+        ? 'sql-editor-active-statement-inline sql-editor-active-statement-inline-single'
+        : isFirstLine
+          ? 'sql-editor-active-statement-inline sql-editor-active-statement-inline-start'
+          : isLastLine
+            ? 'sql-editor-active-statement-inline sql-editor-active-statement-inline-end'
+            : 'sql-editor-active-statement-inline sql-editor-active-statement-inline-middle'
+      const startColumn = isFirstLine ? currentStatement.startColumn : 1
+      const endColumn = isLastLine ? currentStatement.endColumn : model.getLineMaxColumn(lineNumber)
+      if (endColumn <= startColumn) {
+        continue
+      }
+      nextDecorations.push({
+        range: new monacoInstance.Range(lineNumber, startColumn, lineNumber, endColumn),
+        options: {
+          className: lineClassName,
+          shouldFillLineOnLineBreak: true,
+          stickiness: monacoInstance.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges
+        }
+      })
+    }
+
+    statementDecorationIdsRef.current = editor.deltaDecorations(statementDecorationIdsRef.current, nextDecorations)
   }
 
   const emitSelectionState = (editor: Monaco.editor.IStandaloneCodeEditor): void => {
-    selectionChangeRef.current?.({
-      selectedSql: getSelectedSql(editor),
-      currentStatementSql: getCurrentStatementSql(editor)
-    })
+    selectionChangeRef.current?.(buildSelectionPayload(editor))
   }
 
   const handleMount: OnMount = (editor, monaco) => {
@@ -474,6 +623,12 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, theme, compl
     }
 
     editor.onDidChangeCursorSelection(() => {
+      updateStatementDecorations(editor)
+      emitSelectionState(editor)
+    })
+
+    editor.onDidChangeModelContent(() => {
+      updateStatementDecorations(editor)
       emitSelectionState(editor)
     })
 
@@ -486,12 +641,10 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, theme, compl
         label: 'Execute Query',
         keybindings: [executeKeybinding],
         run: () => {
-          const selectedSql = getSelectedSql(editor)
-          const currentStatementSql = getCurrentStatementSql(editor)
+          const payload = buildSelectionPayload(editor)
           executeRef.current?.({
-            sql: selectedSql || currentStatementSql || undefined,
-            selectedSql,
-            currentStatementSql
+            ...payload,
+            sql: payload.selectedSql || payload.currentStatementSql || undefined
           })
         }
       })
@@ -509,6 +662,7 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, theme, compl
       })
     }
 
+    updateStatementDecorations(editor)
     emitSelectionState(editor)
   }
 
@@ -516,7 +670,7 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, theme, compl
     <Editor
       height={height}
       language="sql"
-      theme={theme === 'dark' ? 'vs-dark' : 'vs'}
+      theme={theme === 'dark' ? 'datadjinn-dark' : 'datadjinn-light'}
       value={value}
       onChange={(v) => onChange(v ?? '')}
       onMount={handleMount}
@@ -525,13 +679,20 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, theme, compl
         minimap: { enabled: false },
         fontSize: 13,
         lineNumbers: 'on',
+        cursorBlinking: 'blink',
+        cursorSmoothCaretAnimation: 'off',
         wordWrap: 'on',
         scrollBeyondLastLine: false,
-        renderLineHighlight: 'line',
+        renderLineHighlight: 'none',
+        selectionHighlight: false,
+        occurrencesHighlight: 'off',
         folding: true,
         bracketPairColorization: { enabled: true },
+        guides: { highlightActiveBracketPair: false },
         automaticLayout: true,
         padding: { top: 6 },
+        lineNumbersMinChars: 2,
+        lineDecorationsWidth: 8,
         suggest: { showKeywords: !readOnly, showSnippets: !readOnly, showFields: !readOnly, showStructs: !readOnly, preview: !readOnly },
         tabCompletion: readOnly ? 'off' : 'on',
         quickSuggestions: readOnly ? false : { other: true, comments: false, strings: false },
