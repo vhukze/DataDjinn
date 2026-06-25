@@ -70,6 +70,7 @@ type AppInfo = {
 
 interface DataDjinnAPI {
   selectSqlFile: () => Promise<SqlFileResult>
+  selectSqliteFile: () => Promise<string | null>
   selectImportFile: () => Promise<string | null>
   selectExportPath: (format: 'sql' | 'csv' | 'json', defaultName?: string) => Promise<string | null>
   selectDriverFile: () => Promise<string | null>

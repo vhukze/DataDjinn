@@ -70,12 +70,12 @@ import {
 } from 'antd'
 import { ApartmentOutlined } from '@ant-design/icons'
 import type { InputRef, MenuProps } from 'antd'
-import type { ColumnsType } from 'antd/es/table'
+import type { ColumnsType, TableRef } from 'antd/es/table'
 import type { DataNode } from 'antd/es/tree'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { createPortal, flushSync } from 'react-dom'
-import { forwardRef, memo, startTransition, useCallback, useDeferredValue, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import { forwardRef, memo, startTransition, useCallback, useDeferredValue, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTheme } from './context/ThemeContext'
 import AIPanel from './components/AIPanel'
 import SqlEditor from './components/SqlEditor'
@@ -123,15 +123,26 @@ const getQueryHistoryPreviewText = (sql?: string): string => {
 
 const getResultTableScrollHeight = (element: HTMLDivElement): number => {
   const headerHeight = element.querySelector<HTMLElement>('.ant-table-header')?.offsetHeight ?? 0
-  return Math.max(160, element.clientHeight - headerHeight)
+  const shell = element.closest<HTMLElement>('.result-table-content')
+  const availableHeight = shell?.clientHeight ?? element.clientHeight
+  return Math.max(160, availableHeight - headerHeight)
 }
 
+const DEFAULT_RESULT_COLUMN_WIDTH = 180
+const MIN_RESULT_COLUMN_WIDTH = 88
+const MAX_RESULT_COLUMN_WIDTH = 640
+
+const clampResultColumnWidth = (width: number): number => Math.min(MAX_RESULT_COLUMN_WIDTH, Math.max(MIN_RESULT_COLUMN_WIDTH, Math.round(width)))
+
 const normalizeCellSelectionKeys = (cellKeys: string[]): string[] => Array.from(new Set(cellKeys)).sort((left, right) => left.localeCompare(right))
+
+type HorizontalScrollTableRef = TableRef & {
+  scrollTo?: (config: { left?: number }) => void
+}
 
 type WorkspaceTabsViewProps = {
   workspaceTabs: WorkspaceTab[]
   activeTabKey?: string
-  activeTabSearchState?: TableSearchUiState
   onActiveTabChange: (key: string) => void
   onCloseTab: (key: string) => void
   onRenameTab: (key: string, title: string) => void
@@ -151,7 +162,6 @@ const WorkspaceTabContent = memo(function WorkspaceTabContent({
 const WorkspaceTabsView = memo(function WorkspaceTabsView({
   workspaceTabs,
   activeTabKey,
-  activeTabSearchState,
   onActiveTabChange,
   onCloseTab,
   onRenameTab,
@@ -159,27 +169,15 @@ const WorkspaceTabsView = memo(function WorkspaceTabsView({
 }: WorkspaceTabsViewProps) {
   const [editingTabKey, setEditingTabKey] = useState<string>()
   const [editingTabTitle, setEditingTabTitle] = useState('')
-  const [localActiveTabKey, setLocalActiveTabKey] = useState(activeTabKey)
-  const [mountedTabKeys, setMountedTabKeys] = useState<string[]>([])
   const renderWorkspaceTabRef = useRef(renderWorkspaceTab)
+  const onActiveTabChangeRef = useRef(onActiveTabChange)
+  const onCloseTabRef = useRef(onCloseTab)
+  const onRenameTabRef = useRef(onRenameTab)
 
   renderWorkspaceTabRef.current = renderWorkspaceTab
-
-  useEffect(() => {
-    setLocalActiveTabKey(activeTabKey)
-  }, [activeTabKey])
-
-  useEffect(() => {
-    if (!localActiveTabKey) {
-      return
-    }
-    setMountedTabKeys((current) => current.includes(localActiveTabKey) ? current : [...current, localActiveTabKey])
-  }, [localActiveTabKey])
-
-  useEffect(() => {
-    const existingKeys = new Set(workspaceTabs.map((tab) => tab.key))
-    setMountedTabKeys((current) => current.filter((key) => existingKeys.has(key)))
-  }, [workspaceTabs])
+  onActiveTabChangeRef.current = onActiveTabChange
+  onCloseTabRef.current = onCloseTab
+  onRenameTabRef.current = onRenameTab
 
   const handleTabMiddleClose = useCallback((target: EventTarget | null) => {
     if (!(target instanceof HTMLElement)) {
@@ -192,9 +190,17 @@ const WorkspaceTabsView = memo(function WorkspaceTabsView({
     const tabKey = tabNode?.getAttribute('data-node-key')
       ?? tabNode?.querySelector<HTMLElement>('[data-workspace-tab-key]')?.dataset.workspaceTabKey
     if (tabKey) {
-      onCloseTab(tabKey)
+      onCloseTabRef.current(tabKey)
     }
-  }, [onCloseTab])
+  }, [])
+
+  const commitTabRename = useCallback((tabKey: string, title: string) => {
+    const nextTitle = title.trim()
+    if (nextTitle) {
+      onRenameTabRef.current(tabKey, nextTitle)
+    }
+    setEditingTabKey(undefined)
+  }, [])
   const items = useMemo(() => (
     workspaceTabs.map((tab) => ({
       key: tab.key,
@@ -205,20 +211,8 @@ const WorkspaceTabsView = memo(function WorkspaceTabsView({
             value={editingTabTitle}
             autoFocus
             onChange={(event) => setEditingTabTitle(event.currentTarget.value)}
-            onBlur={() => {
-              const nextTitle = editingTabTitle.trim()
-              if (nextTitle) {
-                onRenameTab(tab.key, nextTitle)
-              }
-              setEditingTabKey(undefined)
-            }}
-            onPressEnter={() => {
-              const nextTitle = editingTabTitle.trim()
-              if (nextTitle) {
-                onRenameTab(tab.key, nextTitle)
-              }
-              setEditingTabKey(undefined)
-            }}
+            onBlur={() => commitTabRename(tab.key, editingTabTitle)}
+            onPressEnter={() => commitTabRename(tab.key, editingTabTitle)}
             onKeyDown={(event) => {
               event.stopPropagation()
               if (event.key === 'Escape') {
@@ -241,11 +235,11 @@ const WorkspaceTabsView = memo(function WorkspaceTabsView({
           </span>
       ),
       closable: true,
-      children: (tab.key === localActiveTabKey || mountedTabKeys.includes(tab.key))
+      children: tab.key === activeTabKey
         ? <WorkspaceTabContent tab={tab} renderWorkspaceTabRef={renderWorkspaceTabRef} />
         : null
     }))
-  ), [activeTabSearchState, editingTabKey, editingTabTitle, localActiveTabKey, mountedTabKeys, onRenameTab, workspaceTabs])
+  ), [activeTabKey, commitTabRename, editingTabKey, editingTabTitle, workspaceTabs])
 
   return (
     <div
@@ -270,17 +264,14 @@ const WorkspaceTabsView = memo(function WorkspaceTabsView({
         className="workspace-tabs"
         type="editable-card"
         hideAdd
-        destroyOnHidden={false}
-        activeKey={localActiveTabKey}
+        destroyOnHidden
+        activeKey={activeTabKey}
         onChange={(key) => {
-          setLocalActiveTabKey(key)
-          startTransition(() => {
-            onActiveTabChange(key)
-          })
+          onActiveTabChangeRef.current(key)
         }}
         onEdit={(targetKey, action) => {
           if (action === 'remove' && typeof targetKey === 'string') {
-            onCloseTab(targetKey)
+            onCloseTabRef.current(targetKey)
           }
         }}
         items={items}
@@ -289,12 +280,7 @@ const WorkspaceTabsView = memo(function WorkspaceTabsView({
   )
 }, (prev, next) => (
   prev.workspaceTabs === next.workspaceTabs &&
-  prev.activeTabKey === next.activeTabKey &&
-  prev.activeTabSearchState === next.activeTabSearchState &&
-  prev.renderWorkspaceTab === next.renderWorkspaceTab &&
-  prev.onCloseTab === next.onCloseTab &&
-  prev.onActiveTabChange === next.onActiveTabChange &&
-  prev.onRenameTab === next.onRenameTab
+  prev.activeTabKey === next.activeTabKey
 ))
 
 type WhereClauseInputProps = {
@@ -1310,6 +1296,7 @@ type WorkspaceTab = {
   pageSearchFilterRows?: boolean
   pageSearchActiveMatchIndex?: number
   tableRenderVersion?: number
+  columnWidths?: Record<string, number>
   persistedAt?: number
 }
 
@@ -1603,41 +1590,6 @@ const SearchHighlightedText = memo(function SearchHighlightedText({
   }
   return <span className={className} dangerouslySetInnerHTML={{ __html: highlightedHtml }} />
 })
-
-const isResultTableScrollbarInteraction = (event: React.MouseEvent<HTMLDivElement>): boolean => {
-  const target = event.target as HTMLElement | null
-  if (target?.closest('.ant-table-tbody-virtual-scrollbar, .rc-virtual-list-scrollbar')) {
-    return true
-  }
-
-  const scrollContainer = target?.closest<HTMLElement>('.ant-table-body, .ant-table-tbody-virtual-holder')
-    ?? event.currentTarget.querySelector<HTMLElement>('.ant-table-body, .ant-table-tbody-virtual-holder')
-  if (!scrollContainer) {
-    return false
-  }
-
-  const rect = scrollContainer.getBoundingClientRect()
-  const scrollbarWidth = scrollContainer.offsetWidth - scrollContainer.clientWidth
-  const scrollbarHeight = scrollContainer.offsetHeight - scrollContainer.clientHeight
-  const pointerX = event.clientX - rect.left
-  const pointerY = event.clientY - rect.top
-
-  if (scrollbarWidth > 0 && scrollContainer.scrollHeight > scrollContainer.clientHeight) {
-    const verticalScrollbarStart = rect.width - scrollbarWidth
-    if (pointerX >= verticalScrollbarStart) {
-      return true
-    }
-  }
-
-  if (scrollbarHeight > 0 && scrollContainer.scrollWidth > scrollContainer.clientWidth) {
-    const horizontalScrollbarStart = rect.height - scrollbarHeight
-    if (pointerY >= horizontalScrollbarStart) {
-      return true
-    }
-  }
-
-  return false
-}
 
 const scheduleSelectionRenderSync = (callback: () => void): void => {
   window.requestAnimationFrame(() => {
@@ -2100,12 +2052,15 @@ const ColumnFilterTrigger = memo(function ColumnFilterTrigger({
 
 const ResultTableBodyView = memo(function ResultTableBodyView({
   tab,
+  activationVersion,
   searchSignature,
   selectedRowKeyMap,
   tableColumns,
   tableRows,
   tableScrollX,
   tableScrollY,
+  virtual,
+  setTableRef,
   setBodyRef,
   setHeaderRef,
   onScrollCapture,
@@ -2115,12 +2070,15 @@ const ResultTableBodyView = memo(function ResultTableBodyView({
   onMouseLeave
 }: {
   tab: WorkspaceTab
+  activationVersion: number
   searchSignature: string
   selectedRowKeyMap: Record<string, true>
   tableColumns: ColumnsType<EditableRow>
   tableRows: EditableRow[]
   tableScrollX: number
   tableScrollY: number
+  virtual: boolean
+  setTableRef: (instance: TableRef | null) => void
   setBodyRef: (element: HTMLDivElement | null) => void
   setHeaderRef: (element: HTMLDivElement | null) => void
   onScrollCapture: () => void
@@ -2148,7 +2106,8 @@ const ResultTableBodyView = memo(function ResultTableBodyView({
       onMouseLeave={onMouseLeave}
     >
       <Table
-        key={`${tab.key}:${tab.tableRenderVersion ?? 0}`}
+        ref={setTableRef}
+        key={`${tab.key}:${tab.tableRenderVersion ?? 0}:${activationVersion}`}
         className="result-table"
         rowClassName={(row) => [
           row.__deleted ? 'row-deleted' : row.__state ? `row-${row.__state}` : '',
@@ -2159,6 +2118,7 @@ const ResultTableBodyView = memo(function ResultTableBodyView({
         dataSource={tableRows}
         rowKey="__rowKey"
         pagination={false}
+        virtual={virtual}
         scroll={{ x: tableScrollX, y: tableScrollY }}
         locale={{ emptyText: tab.kind === 'query' ? '暂无查询结果' : '暂无表数据' }}
       />
@@ -2166,6 +2126,7 @@ const ResultTableBodyView = memo(function ResultTableBodyView({
   )
 }, (prev, next) => (
   prev.tab === next.tab
+  && prev.activationVersion === next.activationVersion
   && prev.searchSignature === next.searchSignature
   && prev.selectedRowKeyMap === next.selectedRowKeyMap
   && prev.tableScrollX === next.tableScrollX
@@ -3151,6 +3112,8 @@ function App(): React.JSX.Element {
   const [draftSelectedSchemas, setDraftSelectedSchemas] = useState<Record<string, string[]>>({})
   const [completionTables, setCompletionTables] = useState<Record<string, string[]>>({})
   const [tableBodyHeights, setTableBodyHeights] = useState<Record<string, number>>({})
+  const [tableActivationVersions, setTableActivationVersions] = useState<Record<string, number>>({})
+  const previousActiveWorkspaceTabKeyRef = useRef<string | undefined>(undefined)
   const [resourceTreeHeight, setResourceTreeHeight] = useState(360)
   const [dragOverFolderTarget, setDragOverFolderTarget] = useState<{ folderId: string; zone: 'before' | 'after' }>()
   const [dragOverConnectionTarget, setDragOverConnectionTarget] = useState<{ connectionId: string; folderId?: string; zone: 'before' | 'after' }>()
@@ -3158,8 +3121,12 @@ function App(): React.JSX.Element {
   const treeDataRef = useRef<DatabaseTreeNode[]>([])
   const expandedKeysRef = useRef<React.Key[]>([])
   const resourceTreeRef = useRef<unknown>(null)
+  const tableComponentRefs = useRef<Record<string, HorizontalScrollTableRef | null>>({})
   const tableBodyRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const tableHeaderRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const tableNativeHorizontalScrollbarRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const tableNativeHorizontalScrollbarCleanupRefs = useRef<Record<string, (() => void) | undefined>>({})
+  const tableNativeHorizontalScrollbarFrameRefs = useRef<Record<string, number | undefined>>({})
   const resourceTreeContainerRef = useRef<HTMLDivElement | null>(null)
   const resourceTreeViewportRef = useRef<HTMLDivElement | null>(null)
   const stickyParentButtonRef = useRef<HTMLButtonElement | null>(null)
@@ -3168,6 +3135,8 @@ function App(): React.JSX.Element {
   const stickyParentMetaRef = useRef<HTMLSpanElement | null>(null)
   const stickyParentNodeKeyRef = useRef<string | undefined>(undefined)
   const stickyParentTreeNodeFrameRef = useRef<number | undefined>(undefined)
+  const stickyParentLastScrollTopRef = useRef<number>(0)
+  const stickyParentLastNodeKeyRef = useRef<string | undefined>(undefined)
   const allDatabasesRef = useRef(allDatabases)
   const workspaceShellRef = useRef<HTMLDivElement | null>(null)
   const resourcePanelRef = useRef<HTMLDivElement | null>(null)
@@ -3175,11 +3144,15 @@ function App(): React.JSX.Element {
   const aiDockPanelRef = useRef<HTMLDivElement | null>(null)
   const selectedColumnRefs = useRef<Record<string, string | undefined>>({})
   const selectedCellRefs = useRef<Record<string, string[] | undefined>>({})
+  const renderedSelectedCellRefs = useRef<Record<string, string[] | undefined>>({})
+  const renderedSelectedRowRefs = useRef<Record<string, string[] | undefined>>({})
   const runtimeSelectedCellRefs = useRef<Record<string, string[] | undefined>>({})
   const cellDragAnchorRefs = useRef<Record<string, { rowKey: string; column: string } | undefined>>({})
   const scrollbarDragRefs = useRef<Record<string, boolean | undefined>>({})
   const pendingCellDragTargetRefs = useRef<Record<string, { rowKey: string; column: string } | undefined>>({})
   const pendingCellDragFrameRefs = useRef<Record<string, number | undefined>>({})
+  const pendingRowDragTargetRefs = useRef<Record<string, string | undefined>>({})
+  const pendingRowDragFrameRefs = useRef<Record<string, number | undefined>>({})
   const pendingRenderedCellSelectionFrameRefs = useRef<Record<string, number | undefined>>({})
   const committingEditingCellRefs = useRef<Record<string, boolean | undefined>>({})
   const editingCellRefs = useRef<Record<string, { rowKey: string; column: string } | undefined>>({})
@@ -3209,11 +3182,24 @@ function App(): React.JSX.Element {
   const resourcePanelResizeRef = useRef<{ startX: number; startSize: number; lastSize?: number } | null>(null)
   const draggingConnectionFolderIdRef = useRef<string | undefined>(undefined)
   const ddlPreviewModalRef = useRef<DdlPreviewModalHandle | null>(null)
+  const columnResizeRefs = useRef<Record<string, {
+    tabKey: string
+    column: string
+    columnIndex: number
+    pointerId: number
+    startX: number
+    startWidth: number
+    lastWidth: number
+    headerCells: HTMLElement[]
+    headerColElements: HTMLTableColElement[]
+    bodyColElements: HTMLTableColElement[]
+    virtual: boolean
+    virtualCells?: HTMLElement[]
+    pendingWidth?: number
+    frameId?: number
+  } | undefined>>({})
 
   const { theme, toggleTheme } = useTheme()
-  const activeTabSearchState = activeTabKey
-    ? tableSearchUiState[activeTabKey]
-    : undefined
 
   const refreshUpdateSettings = async (): Promise<void> => {
     const settings = await window.api.getUpdateSettings()
@@ -4355,6 +4341,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     const treeElement = resourceTreeViewportRef.current
     const buttonElement = stickyParentButtonRef.current
     const hideStickyParent = (): void => {
+      stickyParentLastNodeKeyRef.current = undefined
       stickyParentNodeKeyRef.current = undefined
       if (!buttonElement) {
         return
@@ -4376,24 +4363,39 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       return
     }
 
-    const viewportRect = treeElement.getBoundingClientRect()
-    const hitX = Math.min(viewportRect.right - 8, viewportRect.left + 96)
-    let currentTopNodeKey: string | undefined
-    for (let hitY = viewportRect.top + 4; hitY < Math.min(viewportRect.top + 80, viewportRect.bottom - 4); hitY += 8) {
-      const hitElement = document.elementFromPoint(hitX, hitY) as HTMLElement | null
-      const titleElement = hitElement?.closest<HTMLElement>('.resource-tree-node-title[data-tree-node-key]')
-        ?? hitElement?.closest<HTMLElement>('.ant-tree-treenode')?.querySelector<HTMLElement>('.resource-tree-node-title[data-tree-node-key]')
-      const nodeKey = titleElement?.dataset.treeNodeKey
-      if (nodeKey) {
-        currentTopNodeKey = nodeKey
-        break
-      }
+    if (treeElement.scrollTop <= 8) {
+      hideStickyParent()
+      return
     }
+
+    const viewportRect = treeElement.getBoundingClientRect()
+    const visibleTitleElements = Array.from(
+      treeElement.querySelectorAll<HTMLElement>('.resource-tree-node-title[data-tree-node-key]')
+    )
+      .map((element) => ({
+        element,
+        key: element.dataset.treeNodeKey,
+        rect: element.getBoundingClientRect()
+      }))
+      .filter((item): item is { element: HTMLElement; key: string; rect: DOMRect } => (
+        Boolean(item.key)
+        && item.rect.height > 0
+        && item.rect.bottom > viewportRect.top + 2
+        && item.rect.top < viewportRect.top + 72
+      ))
+      .sort((left, right) => left.rect.top - right.rect.top)
+
+    const currentTopNodeKey = visibleTitleElements[0]?.key
 
     if (!currentTopNodeKey) {
       hideStickyParent()
       return
     }
+
+    if (stickyParentLastNodeKeyRef.current === currentTopNodeKey && stickyParentNodeKeyRef.current === currentTopNodeKey) {
+      return
+    }
+    stickyParentLastNodeKeyRef.current = currentTopNodeKey
 
     const parentKey = treeParentKeyMap.get(currentTopNodeKey)
     if (!parentKey) {
@@ -4735,6 +4737,68 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     setWorkspaceTabs((current) => current.map((tab) => (tab.key === key ? { ...tab, ...patch } : tab)))
   }
 
+  const updateWorkspaceTabColumnWidth = (tabKey: string, column: string, width: number): void => {
+    const nextWidth = clampResultColumnWidth(width)
+    setWorkspaceTabs((current) => current.map((tab) => {
+      if (tab.key !== tabKey) {
+        return tab
+      }
+      const currentWidth = tab.columnWidths?.[column]
+      if (currentWidth === nextWidth) {
+        return tab
+      }
+      return {
+        ...tab,
+        columnWidths: {
+          ...(tab.columnWidths ?? {}),
+          [column]: nextWidth
+        }
+      }
+    }))
+  }
+
+  const applyLiveColumnWidth = (
+    width: number,
+    columnIndex: number,
+    headerCells: HTMLElement[],
+    headerColElements: HTMLTableColElement[],
+    bodyColElements: HTMLTableColElement[]
+  ): void => {
+    const nextWidth = `${clampResultColumnWidth(width)}px`
+    const applyColWidth = (col: HTMLTableColElement | undefined): void => {
+      if (!col) {
+        return
+      }
+      col.style.width = nextWidth
+      col.style.minWidth = nextWidth
+      col.style.maxWidth = nextWidth
+    }
+    applyColWidth(headerColElements[columnIndex])
+    applyColWidth(bodyColElements[columnIndex])
+    headerCells.forEach((th) => {
+      th.style.width = nextWidth
+      th.style.minWidth = nextWidth
+      th.style.maxWidth = nextWidth
+    })
+  }
+
+  const applyLiveVirtualColumnWidth = (
+    width: number,
+    columnIndex: number,
+    headerCells: HTMLElement[],
+    headerColElements: HTMLTableColElement[],
+    virtualCells: HTMLElement[]
+  ): void => {
+    applyLiveColumnWidth(width, columnIndex, headerCells, headerColElements, [])
+    const nextWidth = `${clampResultColumnWidth(width)}px`
+    virtualCells.forEach((element) => {
+      element.style.flex = `0 0 ${nextWidth}`
+      element.style.width = nextWidth
+      element.style.minWidth = nextWidth
+      element.style.maxWidth = nextWidth
+    })
+  }
+
   const renameWorkspaceTab = (key: string, title: string): void => {
     updateWorkspaceTab(key, { title })
   }
@@ -4744,7 +4808,6 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       return
     }
     const sql = tab.sql ?? ''
-    const persistedAt = Date.now()
     const connection = getConnection(tab.connectionId)
     const nextItem: PersistedQueryWorkspace = {
       key: tab.key,
@@ -4756,9 +4819,23 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       sql,
       limit: tab.limit,
       queryEditorHeight: tab.queryEditorHeight,
-      persistedAt
+      persistedAt: tab.persistedAt ?? Date.now()
     }
     setPersistedQueryWorkspaces((current) => {
+      const currentItem = current.find((item) => item.key === tab.key)
+      if (
+        currentItem
+        && currentItem.title === nextItem.title
+        && currentItem.connectionId === nextItem.connectionId
+        && currentItem.connectionName === nextItem.connectionName
+        && currentItem.databaseName === nextItem.databaseName
+        && currentItem.pgDatabaseName === nextItem.pgDatabaseName
+        && currentItem.sql === nextItem.sql
+        && currentItem.limit === nextItem.limit
+        && currentItem.queryEditorHeight === nextItem.queryEditorHeight
+      ) {
+        return current
+      }
       const next = [nextItem, ...current.filter((item) => item.key !== tab.key)]
       return next.slice(0, 200)
     })
@@ -4968,14 +5045,95 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     })
   }
 
-  const syncTableBodyRef = (tabKey: string, element: HTMLDivElement | null): void => {
-    tableBodyRefs.current[tabKey] = element
-    if (!element) {
+  const getResultTableVirtualInner = (tabKey: string): HTMLDivElement | null => (
+    tableBodyRefs.current[tabKey]?.querySelector<HTMLDivElement>('.ant-table-tbody-virtual-holder-inner') ?? null
+  )
+
+  const getResultTableVirtualScrollLeft = (tabKey: string): number => {
+    const virtualInner = getResultTableVirtualInner(tabKey)
+    if (!virtualInner) {
+      return 0
+    }
+    const marginLeft = Number.parseFloat(virtualInner.style.marginLeft || window.getComputedStyle(virtualInner).marginLeft || '0')
+    return Number.isFinite(marginLeft) ? Math.max(0, -marginLeft) : 0
+  }
+
+  const detachNativeHorizontalScrollbarSync = (tabKey: string): void => {
+    tableNativeHorizontalScrollbarCleanupRefs.current[tabKey]?.()
+    delete tableNativeHorizontalScrollbarCleanupRefs.current[tabKey]
+    if (tableNativeHorizontalScrollbarFrameRefs.current[tabKey]) {
+      window.cancelAnimationFrame(tableNativeHorizontalScrollbarFrameRefs.current[tabKey]!)
+      delete tableNativeHorizontalScrollbarFrameRefs.current[tabKey]
+    }
+  }
+
+  const attachNativeHorizontalScrollbarSync = (tabKey: string): void => {
+    detachNativeHorizontalScrollbarSync(tabKey)
+    const scrollbar = tableNativeHorizontalScrollbarRefs.current[tabKey]
+    const virtualInner = getResultTableVirtualInner(tabKey)
+    if (!scrollbar || !virtualInner) {
       return
     }
-    const nextHeight = getResultTableScrollHeight(element)
-    setTableBodyHeights((current) => current[tabKey] === nextHeight ? current : { ...current, [tabKey]: nextHeight })
+
+    let syncingFromNative = false
+    let syncingFromVirtual = false
+    let mutationObserver: MutationObserver | undefined
+
+    const syncNativeFromVirtual = (): void => {
+      if (syncingFromNative) {
+        return
+      }
+      const nextScrollLeft = getResultTableVirtualScrollLeft(tabKey)
+      if (Math.abs(scrollbar.scrollLeft - nextScrollLeft) <= 1) {
+        return
+      }
+      syncingFromVirtual = true
+      scrollbar.scrollLeft = nextScrollLeft
+      syncingFromVirtual = false
+    }
+
+    const syncVirtualFromNative = (): void => {
+      if (syncingFromVirtual) {
+        return
+      }
+      syncingFromNative = true
+      tableComponentRefs.current[tabKey]?.scrollTo?.({ left: scrollbar.scrollLeft })
+      requestAnimationFrame(() => {
+        syncingFromNative = false
+        syncNativeFromVirtual()
+      })
+    }
+
+    scrollbar.addEventListener('scroll', syncVirtualFromNative, { passive: true })
+
+    if (typeof MutationObserver !== 'undefined') {
+      mutationObserver = new MutationObserver(syncNativeFromVirtual)
+      mutationObserver.observe(virtualInner, { attributes: true, attributeFilter: ['style'] })
+    }
+
+    syncNativeFromVirtual()
+
+    tableNativeHorizontalScrollbarCleanupRefs.current[tabKey] = () => {
+      scrollbar.removeEventListener('scroll', syncVirtualFromNative)
+      mutationObserver?.disconnect()
+    }
   }
+
+  const scheduleNativeHorizontalScrollbarSync = (tabKey: string): void => {
+    if (tableNativeHorizontalScrollbarFrameRefs.current[tabKey]) {
+      window.cancelAnimationFrame(tableNativeHorizontalScrollbarFrameRefs.current[tabKey]!)
+    }
+    tableNativeHorizontalScrollbarFrameRefs.current[tabKey] = window.requestAnimationFrame(() => {
+      tableNativeHorizontalScrollbarFrameRefs.current[tabKey] = undefined
+      attachNativeHorizontalScrollbarSync(tabKey)
+    })
+  }
+
+  useEffect(() => () => {
+    Object.keys(tableNativeHorizontalScrollbarCleanupRefs.current).forEach((key) => {
+      detachNativeHorizontalScrollbarSync(key)
+    })
+  }, [])
 
   const activeTableLayoutSignature = useMemo(() => {
     if (!activeTabKey) {
@@ -4997,7 +5155,12 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     ].join(':')
   }, [activeTabKey, workspaceTabs])
 
-  useEffect(() => {
+  const activeWorkspaceTab = useMemo(
+    () => (activeTabKey ? workspaceTabs.find((tab) => tab.key === activeTabKey) : undefined),
+    [activeTabKey, workspaceTabs]
+  )
+
+  useLayoutEffect(() => {
     if (!activeTabKey) {
       return
     }
@@ -5023,14 +5186,65 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     if (!activeTabKey) {
       return
     }
-    const activeTab = workspaceTabs.find((tab) => tab.key === activeTabKey)
+    const activeTab = activeWorkspaceTab
     if (!activeTab || activeTab.loading) {
       return
     }
     requestAnimationFrame(() => {
       syncRenderedCellSelection(activeTabKey)
     })
-  }, [activeTabKey, activeTableLayoutSignature])
+  }, [activeTabKey, activeTableLayoutSignature, activeWorkspaceTab])
+
+  useEffect(() => {
+    if (!activeTabKey) {
+      previousActiveWorkspaceTabKeyRef.current = undefined
+      return
+    }
+    let cancelled = false
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (cancelled) {
+          return
+        }
+        const element = tableBodyRefs.current[activeTabKey]
+        if (!element) {
+          return
+        }
+        const nextHeight = getResultTableScrollHeight(element)
+        setTableBodyHeights((current) => current[activeTabKey] === nextHeight ? current : { ...current, [activeTabKey]: nextHeight })
+        syncRenderedCellSelection(activeTabKey)
+      })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [activeTabKey])
+
+  useEffect(() => {
+    if (!activeTabKey) {
+      previousActiveWorkspaceTabKeyRef.current = undefined
+      return
+    }
+    if (previousActiveWorkspaceTabKeyRef.current === activeTabKey) {
+      return
+    }
+    previousActiveWorkspaceTabKeyRef.current = activeTabKey
+    const hasRenderableResultTable = (
+      !!activeWorkspaceTab
+      && (activeWorkspaceTab.kind === 'preview' || activeWorkspaceTab.kind === 'query' || activeWorkspaceTab.kind === 'table-list' || activeWorkspaceTab.kind === 'redis-browser')
+      && activeWorkspaceTab.resultKind !== 'command'
+      && activeWorkspaceTab.resultKind !== 'error'
+      && !!activeWorkspaceTab.result
+      && Array.isArray(activeWorkspaceTab.result.columns)
+    )
+    if (!hasRenderableResultTable) {
+      return
+    }
+    setTableActivationVersions((current) => ({
+      ...current,
+      [activeTabKey]: (current[activeTabKey] ?? 0) + 1
+    }))
+  }, [activeTabKey, activeWorkspaceTab])
 
   useEffect(() => {
     const element = resourceTreeViewportRef.current
@@ -5057,6 +5271,11 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     }
 
     const scheduleStickyParentUpdate = (): void => {
+      const scrollTop = element.scrollTop
+      if (Math.abs(scrollTop - stickyParentLastScrollTopRef.current) < 6) {
+        return
+      }
+      stickyParentLastScrollTopRef.current = scrollTop
       if (stickyParentTreeNodeFrameRef.current) {
         window.cancelAnimationFrame(stickyParentTreeNodeFrameRef.current)
       }
@@ -5090,6 +5309,110 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
 
     scheduleStickyParentUpdate()
   }, [treeData, resourceTreeHeight])
+
+  useEffect(() => {
+    const finishColumnResize = (pointerId?: number): void => {
+      const resizeEntries = Object.entries(columnResizeRefs.current).filter((entry): entry is [string, NonNullable<(typeof columnResizeRefs.current)[string]>] => Boolean(entry[1]))
+      if (resizeEntries.length === 0) {
+        document.body.classList.remove('column-resizing')
+        return
+      }
+
+      const matchedEntries = resizeEntries.filter(([, resizeState]) => (
+        typeof pointerId !== 'number' || resizeState.pointerId === pointerId
+      ))
+
+      if (matchedEntries.length === 0) {
+        return
+      }
+
+      matchedEntries.forEach(([, resizeState]) => {
+        if (typeof resizeState.frameId === 'number') {
+          window.cancelAnimationFrame(resizeState.frameId)
+          resizeState.frameId = undefined
+        }
+        const finalWidth = resizeState.pendingWidth ?? resizeState.lastWidth
+        resizeState.lastWidth = finalWidth
+        if (!resizeState.virtual) {
+          applyLiveColumnWidth(finalWidth, resizeState.columnIndex, resizeState.headerCells, resizeState.headerColElements, resizeState.bodyColElements)
+        }
+      })
+
+      flushSync(() => {
+        matchedEntries.forEach(([, resizeState]) => {
+          updateWorkspaceTabColumnWidth(resizeState.tabKey, resizeState.column, resizeState.lastWidth)
+        })
+      })
+
+      matchedEntries.forEach(([key]) => {
+        delete columnResizeRefs.current[key]
+      })
+
+      if (Object.keys(columnResizeRefs.current).length === 0) {
+        document.body.classList.remove('column-resizing')
+      }
+    }
+
+    const handlePointerMove = (event: PointerEvent): void => {
+      const resizeState = Object.values(columnResizeRefs.current).find((item) => item?.pointerId === event.pointerId)
+      if (!resizeState) {
+        return
+      }
+      event.preventDefault()
+      const nextWidth = clampResultColumnWidth(resizeState.startWidth + (event.clientX - resizeState.startX))
+      if (nextWidth === resizeState.pendingWidth || nextWidth === resizeState.lastWidth) {
+        return
+      }
+      resizeState.pendingWidth = nextWidth
+      if (typeof resizeState.frameId === 'number') {
+        return
+      }
+      resizeState.frameId = window.requestAnimationFrame(() => {
+        resizeState.frameId = undefined
+        const pendingWidth = resizeState.pendingWidth
+        if (typeof pendingWidth !== 'number') {
+          return
+        }
+        resizeState.lastWidth = pendingWidth
+        if (resizeState.virtual) {
+          applyLiveVirtualColumnWidth(
+            pendingWidth,
+            resizeState.columnIndex,
+            resizeState.headerCells,
+            resizeState.headerColElements,
+            resizeState.virtualCells ?? []
+          )
+          return
+        }
+        applyLiveColumnWidth(pendingWidth, resizeState.columnIndex, resizeState.headerCells, resizeState.headerColElements, resizeState.bodyColElements)
+      })
+    }
+
+    const handlePointerUp = (event: PointerEvent): void => {
+      finishColumnResize(event.pointerId)
+    }
+
+    const handleWindowBlur = (): void => {
+      finishColumnResize()
+    }
+
+    const handlePointerCancel = (event: PointerEvent): void => {
+      finishColumnResize(event.pointerId)
+    }
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', handlePointerUp)
+    window.addEventListener('pointercancel', handlePointerCancel)
+    window.addEventListener('blur', handleWindowBlur)
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
+      window.removeEventListener('pointercancel', handlePointerCancel)
+      window.removeEventListener('blur', handleWindowBlur)
+      finishColumnResize()
+    }
+  }, [])
 
   useEffect(() => {
     if (!treeContextMenu) {
@@ -5223,14 +5546,33 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       return next
     })
     delete selectedCellRefs.current[key]
+    delete renderedSelectedCellRefs.current[key]
+    delete renderedSelectedRowRefs.current[key]
     delete runtimeSelectedCellRefs.current[key]
     delete scrollbarDragRefs.current[key]
     delete contextMenuCellSelectionRefs.current[key]
     delete contextMenuCellSelectionSnapshotRefs.current[key]
+    delete rowSelectionDraftRefs.current[key]
+    delete pendingRowDragTargetRefs.current[key]
+    delete pendingRowDragFrameRefs.current[key]
+    delete pendingCellDragTargetRefs.current[key]
+    delete pendingCellDragFrameRefs.current[key]
+    detachNativeHorizontalScrollbarSync(key)
+    delete tableComponentRefs.current[key]
+    delete tableNativeHorizontalScrollbarRefs.current[key]
     cellInspectorPanelRefs.current[key]?.close()
     delete cellInspectorPanelRefs.current[key]
     delete selectedColumnRefs.current[key]
     delete tableBodyRefs.current[key]
+    delete tableHeaderRefs.current[key]
+    setTableBodyHeights((current) => {
+      if (!(key in current)) {
+        return current
+      }
+      const next = { ...current }
+      delete next[key]
+      return next
+    })
     delete sqlExecutionContextRef.current[key]
     delete sqlEditorHandleRefs.current[key]
     setSqlExecutionContextByTab((current) => {
@@ -5266,8 +5608,9 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
   const getConnection = useCallback((connectionId?: string): ConnectionInfo | undefined => (
     connectionId ? connectionMap.get(connectionId) : undefined
   ), [connectionMap])
-  const treeNodeMap = useMemo(() => collectTreeNodesByKey(treeData), [treeData])
-  const treeParentKeyMap = useMemo(() => collectTreeParentKeysByChildKey(treeData), [treeData])
+  const deferredTreeData = useDeferredValue(treeData)
+  const treeNodeMap = useMemo(() => collectTreeNodesByKey(deferredTreeData), [deferredTreeData])
+  const treeParentKeyMap = useMemo(() => collectTreeParentKeysByChildKey(deferredTreeData), [deferredTreeData])
   const queryHistoryGroups = useMemo(() => {
     const groups = persistedQueryWorkspaces.reduce<Record<string, PersistedQueryWorkspace[]>>((current, item) => {
       const connectionName = getConnection(item.connectionId)?.name ?? item.connectionName ?? '未绑定连接'
@@ -5289,7 +5632,6 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       })
       .sort((left, right) => right.latestPersistedAt - left.latestPersistedAt)
   }, [getConnection, persistedQueryWorkspaces])
-  const deferredTreeData = useDeferredValue(treeData)
   useEffect(() => {
     treeDataRef.current = treeData
   }, [treeData])
@@ -5311,9 +5653,9 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         }
       }
     }
-    walk(treeData)
+    walk(deferredTreeData)
     return count
-  }, [treeData])
+  }, [deferredTreeData])
 
   const enableVirtualTree = resourceTreeNodeCount > 240
   const loadedCompletionIndex = useMemo(() => {
@@ -5776,9 +6118,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       void closeConnectionById(connection.connection_id)
     }
     if (key === 'new-database') {
-      if (connection.database_type === 'sqlite') {
-        void openConnectionModal('sqlite')
-      } else {
+      if (connection.database_type !== 'sqlite') {
         setCreatingDatabaseConnectionId(connection.connection_id)
         setCreatingSchemaDatabaseName('')
         setDatabaseCreateName('')
@@ -5979,9 +6319,9 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       ...(connection.is_open
         ? [{ key: 'close', label: '关闭连接', icon: <CloseCircleOutlined />, disabled: loading }]
         : [{ key: 'open', label: '打开连接', icon: <PlayCircleOutlined />, disabled: loading }]),
-      ...(connection.database_type === 'redis' ? [] : [{
+      ...(connection.database_type === 'redis' || connection.database_type === 'sqlite' ? [] : [{
         key: 'new-database',
-        label: connection.database_type === 'sqlite' ? '新增 SQLite 数据库文件' : connection.database_type === 'oracle' ? '新建用户' : '新建库',
+        label: connection.database_type === 'oracle' ? '新建用户' : '新建库',
         icon: <PlusOutlined />
       }]),
       ...(connection.database_type !== 'mongodb' && connection.database_type !== 'redis'
@@ -6359,8 +6699,6 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
             rowDragAnchorRefs.current[tabKey] = undefined
             cellDragAnchorRefs.current[tabKey] = undefined
             pendingCellDragTargetRefs.current[tabKey] = undefined
-            clearSelectedRowsForTab(tabKey)
-            clearRuntimeColumnSelection(tabKey)
             const contextSelection = normalizeCellSelectionKeys(onContextSelection(cellKey))
             contextMenuCellSelectionRefs.current[tabKey] = [...contextSelection]
             contextMenuCellSelectionSnapshotRefs.current[tabKey] = {
@@ -6725,13 +7063,17 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
   }
 
   const clearRuntimeColumnSelection = (tabKey: string): void => {
+    const selectedColumn = selectedColumnRefs.current[tabKey]
+    if (!selectedColumn) {
+      return
+    }
     selectedColumnRefs.current[tabKey] = undefined
     const container = tableBodyRefs.current[tabKey]
     if (!container) {
       return
     }
-    container.querySelectorAll('.column-selected-runtime').forEach((element) => element.classList.remove('column-selected-runtime'))
-    container.querySelectorAll('.column-select-button-runtime-selected').forEach((element) => element.classList.remove('column-select-button-runtime-selected'))
+    container.querySelectorAll(`[data-column-key="${CSS.escape(selectedColumn)}"]`).forEach((element) => element.classList.remove('column-selected-runtime'))
+    container.querySelectorAll(`[data-column-button="${CSS.escape(selectedColumn)}"]`).forEach((element) => element.classList.remove('column-select-button-runtime-selected'))
   }
 
   const clearRenderedCellSelection = (tabKey: string): void => {
@@ -6739,7 +7081,12 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     if (!container) {
       return
     }
-    container.querySelectorAll('.cell-selected-runtime').forEach((element) => element.classList.remove('cell-selected-runtime'))
+    const selectedCells = container.querySelectorAll<HTMLElement>('.editable-cell.cell-selected-runtime[data-cell-key]')
+    if (selectedCells.length === 0) {
+      return
+    }
+    selectedCells.forEach((element) => element.classList.remove('cell-selected-runtime'))
+    renderedSelectedCellRefs.current[tabKey] = undefined
   }
 
   const clearActiveSearchCellHighlight = (tabKey: string): void => {
@@ -6756,17 +7103,19 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       return
     }
     const nextCellKeySet = new Set(cellKeys)
-    container.querySelectorAll<HTMLElement>('.cell-selected-runtime').forEach((element) => {
-      const renderedCellKey = element.dataset.cellKey ?? ''
-      if (!nextCellKeySet.has(renderedCellKey)) {
-        element.classList.remove('cell-selected-runtime')
+    const nextRenderedKeys: string[] = []
+    container.querySelectorAll<HTMLElement>('.editable-cell[data-cell-key]').forEach((element) => {
+      const cellKey = element.dataset.cellKey
+      if (!cellKey) {
+        return
+      }
+      const shouldSelect = nextCellKeySet.has(cellKey)
+      element.classList.toggle('cell-selected-runtime', shouldSelect)
+      if (shouldSelect) {
+        nextRenderedKeys.push(cellKey)
       }
     })
-    for (const cellKey of cellKeys) {
-      container
-        .querySelector<HTMLElement>(`.editable-cell[data-cell-key="${CSS.escape(cellKey)}"]`)
-        ?.classList.add('cell-selected-runtime')
-    }
+    renderedSelectedCellRefs.current[tabKey] = nextRenderedKeys.length > 0 ? nextRenderedKeys : undefined
   }
 
   const applyRuntimeColumnSelection = (tabKey: string, column: string): void => {
@@ -6829,8 +7178,17 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
   }
 
   const clearCommittedCellSelection = (tabKey: string): void => {
+    const hasCommittedSelection = Boolean(selectedCellRefs.current[tabKey]?.length)
+    if (!hasCommittedSelection && !contextMenuCellSelectionRefs.current[tabKey]) {
+      return
+    }
     contextMenuCellSelectionRefs.current[tabKey] = undefined
-    setCommittedCellSelection(tabKey, [])
+    committedSelectedCellRangeRefs.current[tabKey] = undefined
+    updateSelectedCells(tabKey, [])
+    clearRenderedCellSelection(tabKey)
+    startTransition(() => {
+      syncInspectorSelection(tabKey, [])
+    })
   }
 
   const clearAllCellSelection = (tabKey: string): void => {
@@ -6840,17 +7198,24 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
 
   const clearSelectedRowsForTab = (tabKey: string): void => {
     const tabState = workspaceTabs.find((item) => item.key === tabKey)
-    const hasDraftRows = Boolean(rowSelectionDraftRefs.current[tabKey]?.length)
-    const hasCommittedRows = Boolean(tabState?.selectedRowKeys?.length)
-    if (!hasDraftRows && !hasCommittedRows) {
+    const selectedRowKeys = (rowSelectionDraftRefs.current[tabKey] ?? tabState?.selectedRowKeys ?? []).map((key) => String(key))
+    if (selectedRowKeys.length === 0) {
       return
     }
     rowSelectionDraftRefs.current[tabKey] = undefined
-    const currentSelected = tableBodyRefs.current[tabKey]?.querySelectorAll('.row-selected') ?? []
-    currentSelected.forEach((element) => element.classList.remove('row-selected'))
-    updateWorkspaceTab(tabKey, {
-      selectedRowKeys: [],
-      selectedRowKeyMap: {}
+    const container = tableBodyRefs.current[tabKey]
+    if (container) {
+      const renderedRowKeys = renderedSelectedRowRefs.current[tabKey] ?? []
+      for (const rowKey of renderedRowKeys) {
+        container.querySelector<HTMLElement>(`tr[data-row-key="${CSS.escape(rowKey)}"], .ant-table-row[data-row-key="${CSS.escape(rowKey)}"]`)?.classList.remove('row-selected')
+      }
+    }
+    renderedSelectedRowRefs.current[tabKey] = undefined
+    startTransition(() => {
+      updateWorkspaceTab(tabKey, {
+        selectedRowKeys: [],
+        selectedRowKeyMap: {}
+      })
     })
   }
 
@@ -6948,8 +7313,10 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     const supportsWritableCells = tab.kind === 'preview'
     const baseTableRows: EditableRow[] = tab.kind === 'preview' ? (tab.editRows ?? []) : (tab.result?.rows.map((row, index) => ({ ...row, __rowKey: `query:${index}` })) ?? [])
     const selectedRowKeyMap = tab.selectedRowKeyMap ?? Object.fromEntries((tab.selectedRowKeys ?? []).map((key) => [String(key), true]))
+    const selectedRowKeysSet = new Set((tab.selectedRowKeys ?? []).map(String))
     const resultColumns = tab.result?.columns ?? []
     const orderedColumns = [...(tab.columnOrder ?? []).filter((column) => resultColumns.includes(column)), ...resultColumns.filter((column) => !(tab.columnOrder ?? []).includes(column))]
+    const columnWidths = tab.columnWidths ?? {}
     const columnFilters = tab.columnFilters ?? {}
     const filterColumns = Object.keys(columnFilters)
     const filteredRows = filterColumns.length > 0
@@ -6994,6 +7361,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       : sortedRows
     const rowNumberOffset = ((tab.page ?? 1) - 1) * (tab.limit ?? (tab.kind === 'preview' ? PREVIEW_DEFAULT_LIMIT : QUERY_DEFAULT_LIMIT))
     const orderedRowKeys = tableRows.map((row) => row.__rowKey)
+    const orderedRowIndexMap = Object.fromEntries(orderedRowKeys.map((rowKey, index) => [rowKey, index] as const))
     const orderedColumnIndexMap = Object.fromEntries(orderedColumns.map((column, index) => [column, index]))
     const orderedRowKeysByLength = [...orderedRowKeys].sort((left, right) => right.length - left.length)
     const rowByKey = new Map(tableRows.map((row) => [row.__rowKey, row]))
@@ -7093,6 +7461,30 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       return selectedCellRefs.current[tab.key] ?? []
     }
 
+    const getSelectedRowKeysForClipboard = (): string[] => {
+      const renderedRows = renderedSelectedRowRefs.current[tab.key]
+      if (renderedRows && renderedRows.length > 0) {
+        return renderedRows.filter((rowKey) => orderedRowKeys.includes(rowKey))
+      }
+      const draftRows = rowSelectionDraftRefs.current[tab.key]
+      if (draftRows && draftRows.length > 0) {
+        return draftRows.map(String).filter((rowKey) => orderedRowKeys.includes(rowKey))
+      }
+      return (tab.selectedRowKeys ?? []).map(String).filter((rowKey) => orderedRowKeys.includes(rowKey))
+    }
+
+    const getClipboardSelectionCellKeys = (): string[] => {
+      const selectedRows = getSelectedRowKeysForClipboard()
+      if (selectedRows.length > 0) {
+        return selectedRows.flatMap((rowKey) => orderedColumns.map((column) => `${rowKey}:${column}`))
+      }
+      const selectedColumn = selectedColumnRefs.current[tab.key]
+      if (selectedColumn && orderedColumns.includes(selectedColumn)) {
+        return orderedRowKeys.map((rowKey) => `${rowKey}:${selectedColumn}`)
+      }
+      return getCommittedCellSelection()
+    }
+
     const getSelectionBounds = (cellKeys = getCommittedCellSelection()): {
       rowStart: number
       rowEnd: number
@@ -7187,6 +7579,20 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     }
 
     const ensureContextSelection = (cellKey: string): string[] => {
+      const parsedCell = parseCellKey(cellKey)
+      if (parsedCell) {
+        if (selectedRowKeysSet.has(parsedCell.rowKey)) {
+          const activeRowKeys = (rowSelectionDraftRefs.current[tab.key] ?? tab.selectedRowKeys ?? [])
+            .map((key) => String(key))
+            .filter((rowKey) => orderedRowKeys.includes(rowKey))
+          const rowKeys = activeRowKeys.length > 0 ? activeRowKeys : [parsedCell.rowKey]
+          return rowKeys.flatMap((rowKey) => orderedColumns.map((column) => `${rowKey}:${column}`))
+        }
+        const selectedColumn = selectedColumnRefs.current[tab.key]
+        if (selectedColumn && selectedColumn === parsedCell.column) {
+          return orderedRowKeys.map((rowKey) => `${rowKey}:${parsedCell.column}`)
+        }
+      }
       const currentSelection = getBestAvailableSelection(cellKey)
       if (currentSelection.includes(cellKey)) {
         contextMenuCellSelectionRefs.current[tab.key] = currentSelection
@@ -7249,7 +7655,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       }
     }
 
-    const copySelectedCells = async (cellKeys = getCommittedCellSelection()): Promise<void> => {
+    const copySelectedCells = async (cellKeys = getClipboardSelectionCellKeys()): Promise<void> => {
       const values = getCellSelectionMatrix(cellKeys)
       if (values.length === 0) {
         return
@@ -7471,22 +7877,38 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       if (currentSelected === nextSelected) {
         return
       }
-      updateWorkspaceTab(tab.key, {
-        selectedRowKeys: nextSelectedRowKeys,
-        selectedRowKeyMap: nextSelectedRowKeyMap
+      startTransition(() => {
+        updateWorkspaceTab(tab.key, {
+          selectedRowKeys: nextSelectedRowKeys,
+          selectedRowKeyMap: nextSelectedRowKeyMap
+        })
       })
+    }
+
+    const updateRenderedSelectedRows = (nextSelectedRowKeys: React.Key[]): void => {
+      const container = tableBodyRefs.current[tab.key]
+      if (!container) {
+        return
+      }
+      const nextRowKeys = nextSelectedRowKeys.map(String)
+      const nextRowKeySet = new Set(nextRowKeys)
+      const previousRowKeys = renderedSelectedRowRefs.current[tab.key] ?? []
+      for (const rowKey of previousRowKeys) {
+        if (!nextRowKeySet.has(rowKey)) {
+          container.querySelector<HTMLElement>(`tr[data-row-key="${CSS.escape(rowKey)}"], .ant-table-row[data-row-key="${CSS.escape(rowKey)}"]`)?.classList.remove('row-selected')
+        }
+      }
+      for (const rowKey of nextRowKeys) {
+        if (!previousRowKeys.includes(rowKey)) {
+          container.querySelector<HTMLElement>(`tr[data-row-key="${CSS.escape(rowKey)}"], .ant-table-row[data-row-key="${CSS.escape(rowKey)}"]`)?.classList.add('row-selected')
+        }
+      }
+      renderedSelectedRowRefs.current[tab.key] = nextRowKeys.length > 0 ? nextRowKeys : undefined
     }
 
     const previewSelectedRows = (nextSelectedRowKeys: React.Key[]): void => {
       rowSelectionDraftRefs.current[tab.key] = nextSelectedRowKeys
-      const nextSelectedSet = new Set(nextSelectedRowKeys.map(String))
-      const currentSelected = tableBodyRefs.current[tab.key]?.querySelectorAll('tr.row-selected[data-row-key]') ?? []
-      currentSelected.forEach((element) => element.classList.remove('row-selected'))
-      tableBodyRefs.current[tab.key]?.querySelectorAll<HTMLElement>('tr[data-row-key]').forEach((element) => {
-        if (nextSelectedSet.has(element.dataset.rowKey ?? '')) {
-          element.classList.add('row-selected')
-        }
-      })
+      updateRenderedSelectedRows(nextSelectedRowKeys)
     }
 
     const commitPreviewSelectedRows = (): void => {
@@ -7495,7 +7917,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         return
       }
       rowSelectionDraftRefs.current[tab.key] = undefined
-      setTimeout(() => applySelectedRows(draft), 0)
+      applySelectedRows(draft)
     }
 
     const clearSelectedRows = (): void => {
@@ -7504,7 +7926,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       }
       previewSelectedRows([])
       rowSelectionDraftRefs.current[tab.key] = undefined
-      setTimeout(() => applySelectedRows([]), 0)
+      applySelectedRows([])
     }
 
     const toggleColumnSort = (column: string): void => {
@@ -7520,9 +7942,6 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       if (tab.kind === 'preview' && tab.connectionId && tab.tableName) {
         const previewObjectType = tab.objectType === 'view' ? 'view' : 'table'
         window.setTimeout(() => {
-          startTransition(() => {
-            updateWorkspaceTab(tab.key, { loading: true })
-          })
           void previewTable(
             tab.connectionId!,
             tab.tableName!,
@@ -7553,17 +7972,34 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       if (!anchor) {
         return
       }
-      const start = tableRows.findIndex((row) => row.__rowKey === anchor)
-      const end = tableRows.findIndex((row) => row.__rowKey === rowKey)
-      if (start < 0 || end < 0) {
+      const pendingTarget = pendingRowDragTargetRefs.current[tab.key]
+      if (pendingTarget === rowKey) {
         return
       }
-      const nextSelected = tableRows.slice(Math.min(start, end), Math.max(start, end) + 1).map((row) => row.__rowKey)
-      const currentDraft = rowSelectionDraftRefs.current[tab.key]
-      if (currentDraft && currentDraft.length === nextSelected.length && currentDraft.every((key, index) => String(key) === String(nextSelected[index]))) {
+      pendingRowDragTargetRefs.current[tab.key] = rowKey
+      if (pendingRowDragFrameRefs.current[tab.key]) {
         return
       }
-      previewSelectedRows(nextSelected)
+      pendingRowDragFrameRefs.current[tab.key] = window.requestAnimationFrame(() => {
+        pendingRowDragFrameRefs.current[tab.key] = undefined
+        const latestAnchor = rowDragAnchorRefs.current[tab.key]
+        const latestTarget = pendingRowDragTargetRefs.current[tab.key]
+        if (!latestAnchor || !latestTarget) {
+          return
+        }
+        pendingRowDragTargetRefs.current[tab.key] = undefined
+        const start = orderedRowIndexMap[latestAnchor]
+        const end = orderedRowIndexMap[latestTarget]
+        if (start === undefined || end === undefined) {
+          return
+        }
+        const nextSelected = orderedRowKeys.slice(Math.min(start, end), Math.max(start, end) + 1)
+        const currentDraft = rowSelectionDraftRefs.current[tab.key]
+        if (currentDraft && currentDraft.length === nextSelected.length && currentDraft.every((key, index) => String(key) === String(nextSelected[index]))) {
+          return
+        }
+        previewSelectedRows(nextSelected)
+      })
     }
 
     const updateDragCellSelection = (rowKey: string, column: string): void => {
@@ -7711,6 +8147,50 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
               sourceRows={baseTableRows}
               onChange={(values) => updateColumnFilter(column, values)}
             />
+            <span
+              className="column-resize-handle"
+              onPointerDown={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                const currentWidth = columnWidths[column] ?? DEFAULT_RESULT_COLUMN_WIDTH
+                const columnIndex = orderedColumns.indexOf(column) + (supportsCellSelection ? 1 : 0)
+                const header = tableHeaderRefs.current[tab.key]
+                const body = tableBodyRefs.current[tab.key]
+                const headerCells = header
+                  ? Array.from(header.querySelectorAll<HTMLElement>(`[data-column-button="${CSS.escape(column)}"]`))
+                    .map((button) => button.closest('th') as HTMLElement | null)
+                    .filter((cell): cell is HTMLElement => Boolean(cell))
+                  : []
+                const headerColElements = header
+                  ? Array.from(header.querySelectorAll<HTMLTableColElement>('table > colgroup > col'))
+                  : []
+                const bodyColElements = body
+                  ? Array.from(body.querySelectorAll<HTMLTableColElement>('.ant-table-body > table > colgroup > col, .ant-table-tbody-virtual table > colgroup > col, .ant-table-tbody-virtual-holder table > colgroup > col'))
+                  : []
+                const virtualCells = enableVirtualTable && body
+                  ? Array.from(body.querySelectorAll<HTMLElement>(`.ant-table-tbody-virtual [data-column-key="${CSS.escape(column)}"]`))
+                  : []
+                columnResizeRefs.current[`${tab.key}:${column}`] = {
+                  tabKey: tab.key,
+                  column,
+                  columnIndex,
+                  pointerId: event.pointerId,
+                  startX: event.clientX,
+                  startWidth: currentWidth,
+                  lastWidth: currentWidth,
+                  headerCells,
+                  headerColElements,
+                  bodyColElements,
+                  virtual: enableVirtualTable,
+                  virtualCells
+                }
+                if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                  event.currentTarget.releasePointerCapture(event.pointerId)
+                }
+                event.currentTarget.setPointerCapture(event.pointerId)
+                document.body.classList.add('column-resizing')
+              }}
+            />
           </Flex>
         </Dropdown>
       )
@@ -7763,7 +8243,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                 }
                 const nextSelected = orderedRowKeys.filter((key) => currentSelection.has(key))
                 previewSelectedRows(nextSelected)
-                setTimeout(() => applySelectedRows(nextSelected), 0)
+                applySelectedRows(nextSelected)
                 return
               }
               rowDragAnchorRefs.current[tab.key] = row.__rowKey
@@ -7782,7 +8262,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         title: renderColumnTitle(column),
         dataIndex: column,
         key: column,
-        width: 180,
+        width: columnWidths[column] ?? DEFAULT_RESULT_COLUMN_WIDTH,
         ellipsis: true,
         onCell: (row: EditableRow) => ({
           'data-column-key': column,
@@ -7807,8 +8287,12 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         )
       })) ?? []
       const tableColumns: ColumnsType<EditableRow> = supportsCellSelection ? [rowNumberColumn, ...dataColumns] : dataColumns
-      const tableScrollX = Math.max((tab.result?.columns.length ?? 0) * 180 + (supportsCellSelection ? 34 : 0), 720)
+      const tableScrollX = Math.max(
+        orderedColumns.reduce((total, column) => total + (columnWidths[column] ?? DEFAULT_RESULT_COLUMN_WIDTH), supportsCellSelection ? 34 : 0),
+        720
+      )
       const tableScrollY = tableBodyHeights[tab.key] ?? 320
+      const enableVirtualTable = tableRows.length >= 120
       const searchSignature = `${searchState.query}\u0000${searchState.caseSensitive ? 1 : 0}\u0000${searchState.regex ? 1 : 0}\u0000${searchState.wholeWord ? 1 : 0}\u0000${searchState.filterRows ? 1 : 0}`
       if (tab.kind === 'redis-browser') {
         return renderRedisBrowser(tab)
@@ -7829,123 +8313,155 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
         {tab.resultKind === 'command' || tab.resultKind === 'error'
           ? null
           : (
-        <div
-          className={`result-table-content${tab.kind === 'query' ? ' query-result-table-content' : ''}`}
-        >
-        {tab.loading && (
-          <div className="result-table-loading-overlay">
-            <Spin size="large" />
-          </div>
-        )}
-        <ResultTableBodyView
-          tab={tab}
-          searchSignature={searchSignature}
-          selectedRowKeyMap={selectedRowKeyMap}
-          tableColumns={tableColumns}
-          tableRows={tableRows}
-          tableScrollX={tableScrollX}
-          tableScrollY={tableScrollY}
-          setBodyRef={(element) => { syncTableBodyRef(tab.key, element) }}
-          setHeaderRef={(element) => { tableHeaderRefs.current[tab.key] = element }}
-          onScrollCapture={() => scheduleRenderedCellSelectionSync(tab.key)}
-          onKeyDown={(event) => {
-            if (!supportsCellSelection || isEditableTarget(event.target)) {
-              return
-            }
-            if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'c') {
-              const selection = getCommittedCellSelection()
-              if (selection.length === 0) {
-                return
-              }
-              event.preventDefault()
-              void copySelectedCells(selection)
-            }
-            if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'v') {
-              if (!supportsWritableCells) {
-                return
-              }
-              const selection = getCommittedCellSelection()
-              if (selection.length === 0) {
-                return
-              }
-              event.preventDefault()
-              void pasteIntoSelectedCells()
-            }
-          }}
-          onMouseDown={(event) => {
-            const target = event.target as HTMLElement
-            const activeInlineEditor = inlineCellEditorRefs.current[tab.key]
-            if (activeInlineEditor && !target.closest('.editable-cell-dom-input')) {
-              commitInlineCellEditor(tab.key)
-            }
-            if (isResultTableScrollbarInteraction(event)) {
-              scrollbarDragRefs.current[tab.key] = true
-              return
-            }
-            scrollbarDragRefs.current[tab.key] = undefined
-            if (!target.closest('.row-number-button')) {
-              clearSelectedRows()
-            }
-            if (!target.closest('.column-header-content')) {
-              clearRuntimeColumnSelection(tab.key)
-            }
-            if (!target.closest('[data-cell-key]')) {
-              clearActiveSearchCellHighlight(tab.key)
-              clearAllCellSelection(tab.key)
-            }
-          }}
-          onMouseUp={(event) => {
-            if (event.button !== 0) {
-              return
-            }
-            if (scrollbarDragRefs.current[tab.key]) {
-              scrollbarDragRefs.current[tab.key] = undefined
-              return
-            }
-            if (editingCellRefs.current[tab.key]) {
-              rowDragAnchorRefs.current[tab.key] = undefined
-              cellDragAnchorRefs.current[tab.key] = undefined
-              pendingCellDragTargetRefs.current[tab.key] = undefined
-              return
-            }
-            rowDragAnchorRefs.current[tab.key] = undefined
-            cellDragAnchorRefs.current[tab.key] = undefined
-            if (pendingCellDragFrameRefs.current[tab.key]) {
-              window.cancelAnimationFrame(pendingCellDragFrameRefs.current[tab.key]!)
-              pendingCellDragFrameRefs.current[tab.key] = undefined
-            }
-            pendingCellDragTargetRefs.current[tab.key] = undefined
-            commitRuntimeCellSelection(tab.key, runtimeSelectedCellRefs.current[tab.key] ?? [])
-            commitPreviewSelectedRows()
-          }}
-          onMouseLeave={() => {
-            if (scrollbarDragRefs.current[tab.key]) {
-              return
-            }
-            if (!cellDragAnchorRefs.current[tab.key] && !rowDragAnchorRefs.current[tab.key]) {
-              return
-            }
-            rowDragAnchorRefs.current[tab.key] = undefined
-            cellDragAnchorRefs.current[tab.key] = undefined
-            if (pendingCellDragFrameRefs.current[tab.key]) {
-              window.cancelAnimationFrame(pendingCellDragFrameRefs.current[tab.key]!)
-              pendingCellDragFrameRefs.current[tab.key] = undefined
-            }
-            pendingCellDragTargetRefs.current[tab.key] = undefined
-            commitRuntimeCellSelection(tab.key, runtimeSelectedCellRefs.current[tab.key] ?? [])
-            commitPreviewSelectedRows()
-          }}
-        />
-        <CellInspectorPanel
-          ref={(instance) => { cellInspectorPanelRefs.current[tab.key] = instance }}
-          tabKey={tab.key}
-          orderedColumns={orderedColumns}
-          rowByKey={rowByKey}
-          columnInfoMap={tab.columnInfoMap}
-          editable={supportsWritableCells && tab.kind === 'preview'}
-          onUpdateValue={(rowKey, column, rawValue) => updatePreviewCell(tab.key, rowKey, column, editableValue(rawValue))}
-        />
-        </div>
+            <>
+              <div
+                className={`result-table-content${tab.kind === 'query' ? ' query-result-table-content' : ''}`}
+              >
+                {tab.loading && (
+                  <div className="result-table-loading-overlay">
+                    <Spin size="large" />
+                  </div>
+                )}
+                <ResultTableBodyView
+                  tab={tab}
+                  activationVersion={tableActivationVersions[tab.key] ?? 0}
+                  searchSignature={searchSignature}
+                  selectedRowKeyMap={selectedRowKeyMap}
+                  tableColumns={tableColumns}
+                  tableRows={tableRows}
+                  tableScrollX={tableScrollX}
+                  tableScrollY={tableScrollY}
+                  virtual={enableVirtualTable}
+                  setTableRef={(instance) => {
+                    tableComponentRefs.current[tab.key] = instance
+                    scheduleNativeHorizontalScrollbarSync(tab.key)
+                  }}
+                  setBodyRef={(element) => {
+                    tableBodyRefs.current[tab.key] = element
+                    scheduleNativeHorizontalScrollbarSync(tab.key)
+                  }}
+                  setHeaderRef={(element) => { tableHeaderRefs.current[tab.key] = element }}
+                  onScrollCapture={() => scheduleRenderedCellSelectionSync(tab.key)}
+                  onKeyDown={(event) => {
+                    if (!supportsCellSelection || isEditableTarget(event.target)) {
+                      return
+                    }
+                    if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'c') {
+                      const selection = getClipboardSelectionCellKeys()
+                      if (selection.length === 0) {
+                        return
+                      }
+                      event.preventDefault()
+                      void copySelectedCells(selection)
+                    }
+                    if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'v') {
+                      if (!supportsWritableCells) {
+                        return
+                      }
+                      const selection = getCommittedCellSelection()
+                      if (selection.length === 0) {
+                        return
+                      }
+                      event.preventDefault()
+                      void pasteIntoSelectedCells()
+                    }
+                  }}
+                  onMouseDown={(event) => {
+                    if (event.button !== 0) {
+                      return
+                    }
+                    const target = event.target as HTMLElement
+                    const activeInlineEditor = inlineCellEditorRefs.current[tab.key]
+                    if (activeInlineEditor && !target.closest('.editable-cell-dom-input')) {
+                      commitInlineCellEditor(tab.key)
+                    }
+                    scrollbarDragRefs.current[tab.key] = undefined
+                    if (!target.closest('.row-number-button') && (tab.selectedRowKeys?.length || rowSelectionDraftRefs.current[tab.key]?.length)) {
+                      clearSelectedRows()
+                    }
+                    if (!target.closest('.column-header-content') && selectedColumnRefs.current[tab.key]) {
+                      clearRuntimeColumnSelection(tab.key)
+                    }
+                    if (!target.closest('[data-cell-key]') && (selectedCellRefs.current[tab.key]?.length || runtimeSelectedCellRefs.current[tab.key]?.length)) {
+                      clearActiveSearchCellHighlight(tab.key)
+                      clearAllCellSelection(tab.key)
+                    }
+                  }}
+                  onMouseUp={(event) => {
+                    if (event.button !== 0) {
+                      return
+                    }
+                    if (scrollbarDragRefs.current[tab.key]) {
+                      scrollbarDragRefs.current[tab.key] = undefined
+                      return
+                    }
+                    if (editingCellRefs.current[tab.key]) {
+                      rowDragAnchorRefs.current[tab.key] = undefined
+                      cellDragAnchorRefs.current[tab.key] = undefined
+                      pendingCellDragTargetRefs.current[tab.key] = undefined
+                      pendingRowDragTargetRefs.current[tab.key] = undefined
+                      return
+                    }
+                    rowDragAnchorRefs.current[tab.key] = undefined
+                    cellDragAnchorRefs.current[tab.key] = undefined
+                    pendingRowDragTargetRefs.current[tab.key] = undefined
+                    if (pendingCellDragFrameRefs.current[tab.key]) {
+                      window.cancelAnimationFrame(pendingCellDragFrameRefs.current[tab.key]!)
+                      pendingCellDragFrameRefs.current[tab.key] = undefined
+                    }
+                    if (pendingRowDragFrameRefs.current[tab.key]) {
+                      window.cancelAnimationFrame(pendingRowDragFrameRefs.current[tab.key]!)
+                      pendingRowDragFrameRefs.current[tab.key] = undefined
+                    }
+                    pendingCellDragTargetRefs.current[tab.key] = undefined
+                    commitRuntimeCellSelection(tab.key, runtimeSelectedCellRefs.current[tab.key] ?? [])
+                    commitPreviewSelectedRows()
+                  }}
+                  onMouseLeave={() => {
+                    if (scrollbarDragRefs.current[tab.key]) {
+                      return
+                    }
+                    if (!cellDragAnchorRefs.current[tab.key] && !rowDragAnchorRefs.current[tab.key]) {
+                      return
+                    }
+                    rowDragAnchorRefs.current[tab.key] = undefined
+                    cellDragAnchorRefs.current[tab.key] = undefined
+                    pendingRowDragTargetRefs.current[tab.key] = undefined
+                    if (pendingCellDragFrameRefs.current[tab.key]) {
+                      window.cancelAnimationFrame(pendingCellDragFrameRefs.current[tab.key]!)
+                      pendingCellDragFrameRefs.current[tab.key] = undefined
+                    }
+                    if (pendingRowDragFrameRefs.current[tab.key]) {
+                      window.cancelAnimationFrame(pendingRowDragFrameRefs.current[tab.key]!)
+                      pendingRowDragFrameRefs.current[tab.key] = undefined
+                    }
+                    pendingCellDragTargetRefs.current[tab.key] = undefined
+                    commitRuntimeCellSelection(tab.key, runtimeSelectedCellRefs.current[tab.key] ?? [])
+                    commitPreviewSelectedRows()
+                  }}
+                />
+                <CellInspectorPanel
+                  ref={(instance) => { cellInspectorPanelRefs.current[tab.key] = instance }}
+                  tabKey={tab.key}
+                  orderedColumns={orderedColumns}
+                  rowByKey={rowByKey}
+                  columnInfoMap={tab.columnInfoMap}
+                  editable={supportsWritableCells && tab.kind === 'preview'}
+                  onUpdateValue={(rowKey, column, rawValue) => updatePreviewCell(tab.key, rowKey, column, editableValue(rawValue))}
+                />
+                {enableVirtualTable && (
+                  <div
+                    ref={(element) => {
+                      tableNativeHorizontalScrollbarRefs.current[tab.key] = element
+                      scheduleNativeHorizontalScrollbarSync(tab.key)
+                    }}
+                    className="result-table-native-horizontal-scrollbar"
+                  >
+                    <div style={{ width: tableScrollX, height: 10 }} />
+                  </div>
+                )}
+              </div>
+            </>
             )}
       </div>
     )
@@ -8638,9 +9154,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
   const collapseTreeNode = (node: DatabaseTreeNode): void => {
     const key = node.key as React.Key
     expandedKeysRef.current = expandedKeysRef.current.filter((item) => item !== key)
-    flushSync(() => {
-      setExpandedKeys(expandedKeysRef.current)
-    })
+    setExpandedKeys(expandedKeysRef.current)
   }
 
   const toggleOrLoadTreeNode = (node: DatabaseTreeNode): void => {
@@ -8665,9 +9179,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
     }
 
     expandedKeysRef.current = expandedKeysRef.current.includes(key) ? expandedKeysRef.current : [...expandedKeysRef.current, key]
-    flushSync(() => {
-      setExpandedKeys(expandedKeysRef.current)
-    })
+    setExpandedKeys(expandedKeysRef.current)
   }
 
   const openConnectionModal = async (nextDatabaseType: DatabaseType): Promise<void> => {
@@ -9096,6 +9608,23 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       return []
     } finally {
       setDriversLoading(false)
+    }
+  }
+
+  const selectSqliteFile = async (): Promise<void> => {
+    const filePath = await window.api.selectSqliteFile()
+
+    if (filePath) {
+      form.setFieldValue('sqlite_path', filePath)
+      if (connectionMode !== 'edit') {
+        const fileName = filePath.split(/[\\/]/).pop()?.replace(/\.(db|sqlite|sqlite3)$/i, '')
+        if (fileName) {
+          const currentName = form.getFieldValue('name')
+          if (!currentName || currentName === '本地 SQLite') {
+            form.setFieldValue('name', fileName)
+          }
+        }
+      }
     }
   }
 
@@ -10599,8 +11128,6 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
               objectType,
               loading: true,
               error: undefined,
-              editRows: buildEditableRows(tab.result?.rows ?? []),
-              tableRenderVersion: (tab.tableRenderVersion ?? 0) + 1,
               selectedRowKeys: [],
               selectedRowKeyMap: {},
               columnFilterOptions: undefined
@@ -10640,23 +11167,25 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
       ])
       const columnInfoMap = Object.fromEntries(columnsData.columns.map((item) => [item.name, item] as const))
       editingCellRefs.current[tabKey] = undefined
-      setWorkspaceTabs((current) => current.map((tab) => (
-        tab.key === tabKey
-          ? {
-            ...tab,
-            result,
-            columnInfoMap,
-            editRows: buildEditableRows(result.rows),
-            selectedRowKeys: [],
-            selectedRowKeyMap: {},
-            columnFilterOptions: undefined,
-            where: whereCondition,
-            loading: false,
-            error: undefined,
-            tableRenderVersion: (tab.tableRenderVersion ?? 0) + 1
-          }
-          : tab
-      )))
+      startTransition(() => {
+        setWorkspaceTabs((current) => current.map((tab) => (
+          tab.key === tabKey
+            ? {
+              ...tab,
+              result,
+              columnInfoMap,
+              editRows: buildEditableRows(result.rows),
+              selectedRowKeys: [],
+              selectedRowKeyMap: {},
+              columnFilterOptions: undefined,
+              where: whereCondition,
+              loading: false,
+              error: undefined,
+              tableRenderVersion: (tab.tableRenderVersion ?? 0) + 1
+            }
+            : tab
+        )))
+      })
       requestAnimationFrame(() => syncRenderedCellSelection(tabKey))
     } catch (err) {
       updateWorkspaceTab(tabKey, { loading: false, error: err instanceof Error ? err.message : '加载表数据失败' })
@@ -11582,9 +12111,7 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                         return
                       }
                       if (isTreeNodeChildrenLoaded(node) || !isLoadableTreeNode(node)) {
-                        flushSync(() => {
-                          setExpandedKeys(keys)
-                        })
+                        setExpandedKeys(keys)
                         if (info.expanded && (node.kind === 'database' || node.kind === 'pg-schema')) {
                           activateAIContextFromNode(node)
                         }
@@ -11636,12 +12163,6 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                     onDrop={handleTreeDrop}
                     onDoubleClick={(_, node) => {
                       const treeNode = node as DatabaseTreeNode
-                      startTransition(() => {
-                        setFocusedTreeNode(treeNode)
-                        if (treeNode.connectionId) {
-                          setSelectedConnectionId(treeNode.connectionId)
-                        }
-                      })
                       if (treeNode.kind === 'database' || treeNode.kind === 'pg-schema') {
                         activateAIContextFromNode(treeNode)
                       }
@@ -11737,7 +12258,6 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
                   <WorkspaceTabsView
                     workspaceTabs={workspaceTabs}
                     activeTabKey={activeTabKey}
-                    activeTabSearchState={activeTabSearchState}
                     onActiveTabChange={setActiveTabKey}
                     onCloseTab={closeWorkspaceTab}
                     onRenameTab={renameWorkspaceTab}
@@ -12405,7 +12925,16 @@ const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, s
           </Form.Item>
           <Form.Item name="database_type" style={{ display: 'none' }}><Input /></Form.Item>
           {databaseType === 'sqlite' ? (
-            <Form.Item name="sqlite_path" label="SQLite 文件路径" rules={[{ required: true, message: '请输入 SQLite 文件路径' }]}><Input placeholder="data/datadjinn.sqlite" /></Form.Item>
+            <Form.Item label="SQLite 文件路径" required>
+              <div className="connection-file-picker">
+                <Form.Item name="sqlite_path" noStyle rules={[{ required: true, message: '请输入 SQLite 文件路径' }]}>
+                  <Input placeholder="请选择 SQLite 数据库文件" />
+                </Form.Item>
+                <Button className="connection-file-picker-action" type="text" onClick={() => void selectSqliteFile()}>
+                  选择文件
+                </Button>
+              </div>
+            </Form.Item>
           ) : (
             <>
               <Form.Item name="host" label="主机" rules={[{ required: true, message: '请输入主机' }]}><Input placeholder="127.0.0.1" /></Form.Item>

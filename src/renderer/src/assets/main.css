@@ -4052,6 +4052,78 @@ body[data-theme="dark"] .import-connection-hero {
   color: var(--dj-text-tertiary) !important;
 }
 
+.connection-file-picker {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.connection-file-picker .ant-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.connection-file-picker-action.ant-btn {
+  flex: 0 0 auto;
+  min-width: 104px;
+  height: 42px;
+  padding: 0 16px;
+  color: var(--dj-text-primary) !important;
+  border: 1px solid color-mix(in srgb, var(--dj-border-subtle) 78%, transparent) !important;
+  border-radius: 16px !important;
+  background:
+    radial-gradient(circle at 20% 22%, color-mix(in srgb, var(--dj-liquid-glow-a) 42%, transparent) 0%, transparent 24%),
+    radial-gradient(circle at 82% 18%, color-mix(in srgb, var(--dj-liquid-glow-c) 34%, transparent) 0%, transparent 26%),
+    linear-gradient(180deg, color-mix(in srgb, white 12%, var(--dj-bg-panel)) 0%, color-mix(in srgb, var(--dj-bg-glass) 96%, transparent) 100%) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 10px 24px color-mix(in srgb, black 8%, transparent) !important;
+  transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease !important;
+}
+
+.connection-file-picker-action.ant-btn:hover,
+.connection-file-picker-action.ant-btn:focus,
+.connection-file-picker-action.ant-btn:active {
+  color: var(--dj-accent) !important;
+  border-color: color-mix(in srgb, var(--dj-accent) 36%, var(--dj-border-subtle)) !important;
+  background:
+    radial-gradient(circle at 20% 22%, color-mix(in srgb, var(--dj-liquid-glow-a) 52%, transparent) 0%, transparent 26%),
+    radial-gradient(circle at 82% 18%, color-mix(in srgb, var(--dj-liquid-glow-c) 40%, transparent) 0%, transparent 28%),
+    linear-gradient(180deg, color-mix(in srgb, white 14%, var(--dj-bg-panel)) 0%, color-mix(in srgb, var(--dj-bg-glass) 96%, transparent) 100%) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 0 0 3px color-mix(in srgb, var(--dj-accent-soft) 18%, transparent),
+    0 12px 26px color-mix(in srgb, var(--dj-accent) 10%, transparent) !important;
+  transform: translateY(-1px);
+}
+
+.connection-file-picker-action.ant-btn::before,
+.connection-file-picker-action.ant-btn::after {
+  display: none !important;
+}
+
+body:not([data-theme="dark"]) .connection-file-picker-action.ant-btn {
+  border-color: rgba(126, 181, 255, 0.24) !important;
+  background:
+    radial-gradient(circle at 20% 22%, rgba(112, 186, 255, 0.22) 0%, transparent 24%),
+    radial-gradient(circle at 82% 18%, rgba(103, 232, 214, 0.14) 0%, transparent 26%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(243, 248, 255, 0.92) 100%) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    0 12px 26px rgba(93, 165, 255, 0.08) !important;
+}
+
+body:not([data-theme="dark"]) .connection-file-picker-action.ant-btn:hover,
+body:not([data-theme="dark"]) .connection-file-picker-action.ant-btn:focus,
+body:not([data-theme="dark"]) .connection-file-picker-action.ant-btn:active {
+  color: #2d5db3 !important;
+  border-color: rgba(107, 166, 255, 0.3) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.84),
+    0 0 0 3px rgba(107, 166, 255, 0.14),
+    0 14px 30px rgba(93, 165, 255, 0.1) !important;
+}
+
 .connection-editor-footer-actions {
   gap: 10px !important;
 }
@@ -4486,6 +4558,8 @@ body:not([data-theme="dark"]) .workspace-tabs .ant-tabs-tab-active {
   visibility: hidden;
   pointer-events: none;
   z-index: 0;
+  content-visibility: hidden;
+  contain: layout style paint;
 }
 
 .query-workspace {
@@ -4684,45 +4758,6 @@ body:not([data-theme="dark"]) .workspace-tabs .ant-tabs-tab-active {
   pointer-events: none;
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--dj-grid-header-bg) 96%, transparent) 0 34px, color-mix(in srgb, var(--dj-bg-panel) 58%, transparent) 34px 100%);
-}
-
-.result-table-horizontal-scrollbar-shell {
-  flex: 0 0 auto;
-  padding: 0 8px 0;
-  background: transparent;
-}
-
-.query-result-table-shell .result-table-horizontal-scrollbar-shell {
-  margin-top: auto;
-}
-
-.result-table-horizontal-scrollbar {
-  overflow-x: auto;
-  overflow-y: hidden;
-  height: 10px;
-  scrollbar-color: var(--dj-scrollbar-thumb) color-mix(in srgb, var(--dj-scrollbar-track) 88%, transparent);
-  scrollbar-width: thin;
-}
-
-.result-table-horizontal-scrollbar::-webkit-scrollbar {
-  height: 10px;
-}
-
-.result-table-horizontal-scrollbar::-webkit-scrollbar-track {
-  background: color-mix(in srgb, var(--dj-scrollbar-track) 78%, transparent);
-  border-radius: 999px;
-}
-
-.result-table-horizontal-scrollbar::-webkit-scrollbar-thumb {
-  background:
-    linear-gradient(180deg, color-mix(in srgb, white 12%, var(--dj-scrollbar-thumb)), var(--dj-scrollbar-thumb));
-  border: 2px solid transparent;
-  border-radius: 999px;
-  background-clip: padding-box;
-}
-
-.result-table-horizontal-scrollbar-inner {
-  height: 1px;
 }
 
 .result-table {
@@ -5076,15 +5111,17 @@ body:not([data-theme="dark"]) .workspace-tabs .ant-tabs-tab-active {
 }
 
 .result-table .ant-table-header > table,
-.result-table .ant-table-body > table {
+.result-table .ant-table-body > table,
+.result-table .ant-table-tbody-virtual > table,
+.result-table .ant-table-tbody-virtual-holder > table {
   width: max-content !important;
   min-width: 100%;
+  table-layout: fixed !important;
 }
 
 .result-table .ant-table-body,
 .result-table .ant-table-tbody-virtual,
 .result-table .ant-table-tbody-virtual-holder {
-  overflow: auto !important;
   scrollbar-color: var(--dj-scrollbar-thumb) color-mix(in srgb, var(--dj-scrollbar-track) 88%, transparent);
   scrollbar-width: thin;
 }
@@ -5094,23 +5131,44 @@ body:not([data-theme="dark"]) .workspace-tabs .ant-tabs-tab-active {
   overflow-y: auto !important;
 }
 
+.result-table .ant-table-tbody-virtual {
+  overflow: hidden !important;
+}
+
+.result-table .ant-table-tbody-virtual-holder {
+  overflow: auto !important;
+}
+
 .result-table .ant-table-body::-webkit-scrollbar,
 .result-table .ant-table-tbody-virtual::-webkit-scrollbar,
-.result-table .ant-table-tbody-virtual-holder::-webkit-scrollbar {
+.result-table .ant-table-tbody-virtual-holder::-webkit-scrollbar,
+.result-table-native-horizontal-scrollbar::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 
+.result-table .ant-table-body::-webkit-scrollbar:horizontal,
+.result-table-native-horizontal-scrollbar::-webkit-scrollbar:horizontal {
+  height: 10px !important;
+}
+
+.result-table .ant-table-tbody-virtual::-webkit-scrollbar:horizontal,
+.result-table .ant-table-tbody-virtual-holder::-webkit-scrollbar:horizontal {
+  height: 0 !important;
+}
+
 .result-table .ant-table-body::-webkit-scrollbar-track,
 .result-table .ant-table-tbody-virtual::-webkit-scrollbar-track,
-.result-table .ant-table-tbody-virtual-holder::-webkit-scrollbar-track {
+.result-table .ant-table-tbody-virtual-holder::-webkit-scrollbar-track,
+.result-table-native-horizontal-scrollbar::-webkit-scrollbar-track {
   background: color-mix(in srgb, var(--dj-scrollbar-track) 78%, transparent);
   border-radius: 999px;
 }
 
 .result-table .ant-table-body::-webkit-scrollbar-thumb,
 .result-table .ant-table-tbody-virtual::-webkit-scrollbar-thumb,
-.result-table .ant-table-tbody-virtual-holder::-webkit-scrollbar-thumb {
+.result-table .ant-table-tbody-virtual-holder::-webkit-scrollbar-thumb,
+.result-table-native-horizontal-scrollbar::-webkit-scrollbar-thumb {
   background:
     linear-gradient(180deg, color-mix(in srgb, white 12%, var(--dj-scrollbar-thumb)), var(--dj-scrollbar-thumb));
   border: 2px solid transparent;
@@ -5120,7 +5178,8 @@ body:not([data-theme="dark"]) .workspace-tabs .ant-tabs-tab-active {
 
 .result-table .ant-table-body::-webkit-scrollbar-thumb:hover,
 .result-table .ant-table-tbody-virtual::-webkit-scrollbar-thumb:hover,
-.result-table .ant-table-tbody-virtual-holder::-webkit-scrollbar-thumb:hover {
+.result-table .ant-table-tbody-virtual-holder::-webkit-scrollbar-thumb:hover,
+.result-table-native-horizontal-scrollbar::-webkit-scrollbar-thumb:hover {
   background:
     linear-gradient(180deg, color-mix(in srgb, white 18%, var(--dj-scrollbar-thumb)), color-mix(in srgb, black 8%, var(--dj-scrollbar-thumb)));
   background-clip: padding-box;
@@ -5128,34 +5187,33 @@ body:not([data-theme="dark"]) .workspace-tabs .ant-tabs-tab-active {
 
 .result-table .ant-table-body::-webkit-scrollbar-corner,
 .result-table .ant-table-tbody-virtual::-webkit-scrollbar-corner,
-.result-table .ant-table-tbody-virtual-holder::-webkit-scrollbar-corner {
+.result-table .ant-table-tbody-virtual-holder::-webkit-scrollbar-corner,
+.result-table-native-horizontal-scrollbar::-webkit-scrollbar-corner {
   background: transparent;
 }
 
 .result-table .ant-table-tbody-virtual-scrollbar,
 .result-table .rc-virtual-list-scrollbar {
-  background: var(--dj-scrollbar-track) !important;
+  display: none !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
 }
 
-.result-table .ant-table-tbody-virtual-scrollbar-thumb,
-.result-table .rc-virtual-list-scrollbar-thumb {
-  background: var(--dj-scrollbar-thumb) !important;
-  border-radius: 4px !important;
-}
-
-.result-table .ant-table-tbody-virtual-scrollbar-vertical,
-.result-table .rc-virtual-list-scrollbar-vertical {
-  width: 8px !important;
-}
-
-.result-table .ant-table-tbody-virtual-scrollbar-horizontal,
-.result-table .rc-virtual-list-scrollbar-horizontal {
-  height: 8px !important;
-}
-
-.result-table .ant-table-tbody-virtual-scrollbar-visible,
-.result-table .rc-virtual-list-scrollbar-visible {
-  visibility: visible !important;
+.result-table-native-horizontal-scrollbar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 4;
+  height: 10px !important;
+  min-height: 10px;
+  display: block;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-color: var(--dj-scrollbar-thumb) color-mix(in srgb, var(--dj-scrollbar-track) 88%, transparent);
+  scrollbar-width: thin;
+  background: transparent;
 }
 
 .result-table .ant-table-tbody-virtual-holder > div {
@@ -5572,6 +5630,7 @@ body[data-theme="dark"] .redis-key-card {
 .column-header-content {
   width: 100%;
   min-width: 0;
+  position: relative;
 }
 
 .column-select-button {
@@ -5620,6 +5679,51 @@ body[data-theme="dark"] .redis-key-card {
   cursor: pointer;
   transition: color 0.16s ease, opacity 0.16s ease;
   opacity: 0.72;
+}
+
+.column-resize-handle {
+  position: absolute;
+  top: -4px;
+  right: -6px;
+  bottom: -4px;
+  width: 12px;
+  cursor: col-resize;
+  z-index: 2;
+}
+
+.column-resize-handle::before {
+  content: '';
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  left: 50%;
+  width: 2px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--dj-accent) 30%, transparent);
+  transform: translateX(-50%);
+  opacity: 0;
+  transition: opacity 0.14s ease, background 0.14s ease;
+}
+
+.column-header-content:hover .column-resize-handle::before,
+body.column-resizing .column-resize-handle::before {
+  opacity: 1;
+}
+
+body.column-resizing,
+body.column-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+body.column-resizing .result-table .ant-table-tbody > tr,
+body.column-resizing .result-table .ant-table-tbody > tr > td,
+body.column-resizing .result-table .ant-table-thead > tr > th,
+body.column-resizing .result-table .ant-table-tbody-virtual-holder .ant-table-row,
+body.column-resizing .result-table .ant-table-tbody-virtual-holder .ant-table-cell {
+  transition: none !important;
+  animation: none !important;
+  box-shadow: none !important;
 }
 
 .column-sort-button:hover,

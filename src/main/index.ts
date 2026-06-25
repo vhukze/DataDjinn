@@ -642,6 +642,29 @@ app.whenReady().then(() => {
     return { name, content }
   })
 
+  ipcMain.handle('select-sqlite-file', async (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getFocusedWindow() ?? mainWindowRef
+
+    if (!window) {
+      return null
+    }
+
+    const result = await dialog.showOpenDialog(window, {
+      title: '选择 SQLite 数据库文件',
+      filters: [
+        { name: 'SQLite 数据库', extensions: ['db', 'sqlite', 'sqlite3'] },
+        { name: '所有文件', extensions: ['*'] }
+      ],
+      properties: ['openFile']
+    })
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return null
+    }
+
+    return result.filePaths[0]
+  })
+
   ipcMain.handle('select-driver-file', async () => {
     const window = BrowserWindow.getFocusedWindow()
 

@@ -4,6 +4,7 @@ import { electronAPI } from '@electron-toolkit/preload'
 // Custom APIs for renderer
 const api = {
   selectSqlFile: (): Promise<{ name: string; content: string } | null> => ipcRenderer.invoke('select-sql-file'),
+  selectSqliteFile: (): Promise<string | null> => ipcRenderer.invoke('select-sqlite-file'),
   selectImportFile: (): Promise<string | null> => ipcRenderer.invoke('select-import-file'),
   selectExportPath: (format: 'sql' | 'csv' | 'json', defaultName?: string): Promise<string | null> => ipcRenderer.invoke('select-export-path', format, defaultName),
   selectDriverFile: (): Promise<string | null> => ipcRenderer.invoke('select-driver-file'),
