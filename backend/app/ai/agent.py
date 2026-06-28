@@ -432,6 +432,84 @@ def _reasoning_value(value: Any) -> Any:
     return None
 
 
+def _text_from_stream_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        fragments: list[str] = []
+        for item in value:
+            fragments.append(_text_from_stream_value(item))
+        return "".join(fragment for fragment in fragments if fragment)
+    if isinstance(value, dict):
+        for key in ("text", "content", "reasoning", "thinking"):
+            next_value = value.get(key)
+            if next_value:
+                return _text_from_stream_value(next_value)
+        return ""
+    return str(value)
+
+
+def _append_stream_text(target: dict[str, Any], key: str, fragment: str) -> None:
+    if not fragment:
+        return
+    target[key] = f"{target.get(key, '')}{fragment}"
+
+
+def _merge_openai_tool_call_delta(current_value: str, fragment: str) -> str:
+    if not fragment:
+        return current_value
+    if not current_value:
+        return fragment
+    if current_value.endswith(fragment):
+        return current_value
+    return f"{current_value}{fragment}"
+
+
+def _update_openai_tool_call_state(states: dict[int, dict[str, Any]], tool_call: Any) -> None:
+    index = _extra_value(tool_call, "index")
+    if not isinstance(index, int):
+        index = len(states)
+    state = states.setdefault(
+        index,
+        {
+            "id": "",
+            "type": "function",
+            "function": {"name": "", "arguments": ""},
+        },
+    )
+    tool_call_id = str(_extra_value(tool_call, "id") or "")
+    if tool_call_id:
+        state["id"] = tool_call_id
+    tool_type = str(_extra_value(tool_call, "type") or "")
+    if tool_type:
+        state["type"] = tool_type
+    function_value = _extra_value(tool_call, "function")
+    if not function_value:
+        return
+    function_name = str(_extra_value(function_value, "name") or "")
+    if function_name:
+        state["function"]["name"] = _merge_openai_tool_call_delta(state["function"]["name"], function_name)
+    function_arguments = str(_extra_value(function_value, "arguments") or "")
+    if function_arguments:
+        state["function"]["arguments"] = f"{state['function']['arguments']}{function_arguments}"
+
+
+def _finalize_openai_tool_calls(states: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": state["id"] or f"tool_call_{index}",
+            "type": state.get("type") or "function",
+            "function": {
+                "name": state["function"].get("name") or "",
+                "arguments": state["function"].get("arguments") or "{}",
+            },
+        }
+        for index, state in sorted(states.items(), key=lambda item: item[0])
+    ]
+
+
 def _truncate_value(value: Any) -> Any:
     if isinstance(value, str) and len(value) > MAX_CELL_CHARS_IN_TOOL_RESULT:
         return f"{value[:MAX_CELL_CHARS_IN_TOOL_RESULT]}... [已截断，原长度 {len(value)}]"
@@ -444,14 +522,6 @@ def _truncate_value(value: Any) -> Any:
 
 def sql_hash(sql: str) -> str:
     return hashlib.sha256(sql.strip().encode("utf-8")).hexdigest()
-
-
-def _yield_text_events(event_type: Literal["token", "reasoning"], content: str | None) -> Iterator[dict[str, Any]]:
-    if not content:
-        return
-    chunk_size = 12
-    for index in range(0, len(content), chunk_size):
-        yield {"type": event_type, "content": content[index:index + chunk_size]}
 
 
 def _anthropic_url(base_url: str) -> str:
@@ -742,51 +812,36 @@ class DatabaseAgent:
         conversation = [*messages]
 
         for _ in range(MAX_AGENT_TURNS):
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=conversation,
-                tools=self._tools(),
-                tool_choice="auto",
-            )
-            choice = response.choices[0]
-            message = choice.message
-            assistant_message = message.model_dump(exclude_none=True)
-            reasoning_content = _reasoning_value(message)
-            if reasoning_content:
-                assistant_message["reasoning_content"] = str(reasoning_content)
-
-            for event in _yield_text_events("reasoning", str(assistant_message.get("reasoning_content") or "")):
-                yield event
-            for event in _yield_text_events("token", str(assistant_message.get("content") or "")):
-                yield event
-
+            assistant_message, finish_reason = yield from self._stream_openai_turn(conversation)
             conversation.append(assistant_message)
 
-            tool_calls = message.tool_calls or []
-            if tool_calls and choice.finish_reason == "tool_calls":
+            tool_calls = assistant_message.get("tool_calls") or []
+            if tool_calls and finish_reason == "tool_calls":
                 for tool_call in tool_calls:
-                    name = tool_call.function.name
-                    arguments_json = tool_call.function.arguments or "{}"
+                    tool_call_id = str(tool_call.get("id") or f"tool_call_{uuid4().hex}")
+                    function_payload = tool_call.get("function") or {}
+                    name = str(function_payload.get("name") or "")
+                    arguments_json = str(function_payload.get("arguments") or "{}")
                     try:
                         args = json.loads(arguments_json)
                     except json.JSONDecodeError as exc:
                         args = {}
                         result = {"error": f"工具参数 JSON 解析失败：{exc.msg}", "arguments": arguments_json}
-                        yield {"type": "tool_start", "tool_call_id": tool_call.id, "name": name, "arguments": args}
-                        yield {"type": "tool_result", "tool_call_id": tool_call.id, "name": name, "result": result}
+                        yield {"type": "tool_start", "tool_call_id": tool_call_id, "name": name, "arguments": args}
+                        yield {"type": "tool_result", "tool_call_id": tool_call_id, "name": name, "result": result}
                         conversation.append(
                             {
                                 "role": "tool",
-                                "tool_call_id": tool_call.id,
+                                "tool_call_id": tool_call_id,
                                 "content": json.dumps(result, ensure_ascii=False, default=str),
                             }
                         )
                         continue
-                    step_id = f"step_{tool_call.id}"
+                    step_id = f"step_{tool_call_id}"
                     yield {"type": "step_start", "step_id": step_id}
-                    yield {"type": "tool_start", "tool_call_id": tool_call.id, "name": name, "arguments": args}
+                    yield {"type": "tool_start", "tool_call_id": tool_call_id, "name": name, "arguments": args}
                     result = self.call_tool(name, args)
-                    yield {"type": "tool_result", "tool_call_id": tool_call.id, "name": name, "result": result}
+                    yield {"type": "tool_result", "tool_call_id": tool_call_id, "name": name, "result": result}
                     if result.get("type") == "workspace_action":
                         yield {"type": "workspace_action", "action": result["action"]}
                     if result.get("type") == "plan":
@@ -798,14 +853,14 @@ class DatabaseAgent:
                     conversation.append(
                         {
                             "role": "tool",
-                            "tool_call_id": tool_call.id,
+                            "tool_call_id": tool_call_id,
                             "content": json.dumps(result, ensure_ascii=False, default=str),
                         }
                     )
                 yield {"type": "tool_done"}
                 continue
 
-            yield {"type": "done", "finish_reason": choice.finish_reason or "stop"}
+            yield {"type": "done", "finish_reason": finish_reason or "stop"}
             return
 
         yield {"type": "error", "message": "Agent 执行轮次超过上限，请缩小任务范围后重试"}
@@ -845,17 +900,10 @@ class DatabaseAgent:
         conversation = [*messages]
 
         for _ in range(MAX_AGENT_TURNS):
-            response = self.client.create(conversation, tools=self._tools())
-
-            for event in _yield_text_events("reasoning", _anthropic_thinking(response)):
-                yield event
-            for event in _yield_text_events("token", _anthropic_text(response)):
-                yield event
-
-            conversation.append(_anthropic_assistant_message(response))
-            tool_uses = _anthropic_tool_uses(response)
+            assistant_message, tool_uses, finish_reason = yield from self._stream_anthropic_turn(conversation)
+            conversation.append(assistant_message)
             if not tool_uses:
-                yield {"type": "done", "finish_reason": response.get("stop_reason") or "stop"}
+                yield {"type": "done", "finish_reason": finish_reason}
                 return
 
             for tool_use in tool_uses:
@@ -885,6 +933,150 @@ class DatabaseAgent:
             yield {"type": "tool_done"}
 
         yield {"type": "error", "message": "Agent 执行轮次超过上限，请缩小任务范围后重试"}
+
+    def _stream_openai_turn(self, conversation: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+        stream = self.client.chat.completions.create(
+            model=self.model,
+            messages=conversation,
+            tools=self._tools(),
+            tool_choice="auto",
+            stream=True,
+        )
+        assistant_message: dict[str, Any] = {"role": "assistant", "content": ""}
+        tool_call_states: dict[int, dict[str, Any]] = {}
+        finish_reason = "stop"
+
+        for chunk in stream:
+            for choice in getattr(chunk, "choices", []) or []:
+                delta = getattr(choice, "delta", None)
+                if delta is not None:
+                    reasoning_fragment = _text_from_stream_value(_reasoning_value(delta))
+                    if reasoning_fragment:
+                        _append_stream_text(assistant_message, "reasoning_content", reasoning_fragment)
+                        yield {"type": "reasoning", "content": reasoning_fragment}
+
+                    content_fragment = _text_from_stream_value(_extra_value(delta, "content"))
+                    if content_fragment:
+                        _append_stream_text(assistant_message, "content", content_fragment)
+                        yield {"type": "token", "content": content_fragment}
+
+                    for tool_call in _extra_value(delta, "tool_calls") or []:
+                        _update_openai_tool_call_state(tool_call_states, tool_call)
+
+                if getattr(choice, "finish_reason", None):
+                    finish_reason = str(choice.finish_reason)
+
+        if tool_call_states:
+            assistant_message["tool_calls"] = _finalize_openai_tool_calls(tool_call_states)
+        if not assistant_message.get("content"):
+            assistant_message["content"] = ""
+        return assistant_message, finish_reason
+
+    def _stream_anthropic_turn(self, conversation: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+        content_blocks: dict[int, dict[str, Any]] = {}
+        finish_reason = "stop"
+
+        for payload in self.client.stream(conversation, tools=self._tools()):
+            event_name = str(payload.get("event") or "")
+            data = payload.get("data") or {}
+
+            if event_name == "message_delta":
+                delta = data.get("delta") or {}
+                finish_reason = str(delta.get("stop_reason") or finish_reason)
+                continue
+
+            if event_name == "content_block_start":
+                index = int(data.get("index") or 0)
+                block = data.get("content_block") or {}
+                block_type = str(block.get("type") or "")
+                if block_type == "thinking":
+                    content_blocks[index] = {
+                        "type": "thinking",
+                        "thinking": str(block.get("thinking") or ""),
+                        "signature": str(block.get("signature") or ""),
+                    }
+                    if content_blocks[index]["thinking"]:
+                        yield {"type": "reasoning", "content": content_blocks[index]["thinking"]}
+                elif block_type == "tool_use":
+                    content_blocks[index] = {
+                        "type": "tool_use",
+                        "id": str(block.get("id") or ""),
+                        "name": str(block.get("name") or ""),
+                        "input": block.get("input") if isinstance(block.get("input"), dict) else {},
+                        "input_json": "",
+                    }
+                else:
+                    content_blocks[index] = {
+                        "type": "text",
+                        "text": str(block.get("text") or ""),
+                    }
+                    if content_blocks[index]["text"]:
+                        yield {"type": "token", "content": content_blocks[index]["text"]}
+                continue
+
+            if event_name == "content_block_delta":
+                index = int(data.get("index") or 0)
+                block = content_blocks.setdefault(index, {"type": "text", "text": ""})
+                delta = data.get("delta") or {}
+                delta_type = str(delta.get("type") or "")
+                if delta_type == "thinking_delta":
+                    fragment = str(delta.get("thinking") or "")
+                    block["thinking"] = f"{block.get('thinking', '')}{fragment}"
+                    if fragment:
+                        yield {"type": "reasoning", "content": fragment}
+                    continue
+                if delta_type == "text_delta":
+                    fragment = str(delta.get("text") or "")
+                    block["text"] = f"{block.get('text', '')}{fragment}"
+                    if fragment:
+                        yield {"type": "token", "content": fragment}
+                    continue
+                if delta_type == "input_json_delta":
+                    block["input_json"] = f"{block.get('input_json', '')}{str(delta.get('partial_json') or '')}"
+                    continue
+                if delta_type == "signature_delta":
+                    block["signature"] = str(delta.get("signature") or "")
+                continue
+
+            if event_name == "content_block_stop":
+                index = int(data.get("index") or 0)
+                block = content_blocks.get(index)
+                if block and block.get("type") == "tool_use":
+                    raw_input = str(block.get("input_json") or "").strip()
+                    if raw_input:
+                        try:
+                            block["input"] = json.loads(raw_input)
+                        except json.JSONDecodeError:
+                            block["input"] = {}
+                continue
+
+            if event_name == "message_stop":
+                break
+
+        assistant_content: list[dict[str, Any]] = []
+        tool_uses: list[dict[str, Any]] = []
+        for _, block in sorted(content_blocks.items(), key=lambda item: item[0]):
+            block_type = str(block.get("type") or "")
+            if block_type == "thinking":
+                thinking_block = {"type": "thinking", "thinking": str(block.get("thinking") or "")}
+                signature = str(block.get("signature") or "")
+                if signature:
+                    thinking_block["signature"] = signature
+                assistant_content.append(thinking_block)
+                continue
+            if block_type == "tool_use":
+                tool_use = {
+                    "type": "tool_use",
+                    "id": str(block.get("id") or ""),
+                    "name": str(block.get("name") or ""),
+                    "input": block.get("input") if isinstance(block.get("input"), dict) else {},
+                }
+                assistant_content.append(tool_use)
+                tool_uses.append(tool_use)
+                continue
+            assistant_content.append({"type": "text", "text": str(block.get("text") or "")})
+
+        return {"role": "assistant", "content": assistant_content}, tool_uses, finish_reason
 
     def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         try:

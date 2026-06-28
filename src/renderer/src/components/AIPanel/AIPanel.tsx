@@ -1,4 +1,4 @@
-import { CheckCircleOutlined, ClockCircleOutlined, CloseCircleOutlined, CloseOutlined, DatabaseOutlined, DeleteOutlined, DownOutlined, ExclamationCircleOutlined, LoadingOutlined, PlusOutlined, RightOutlined, RobotOutlined, SendOutlined, SettingOutlined, StopOutlined, ToolOutlined } from '@ant-design/icons'
+import { CheckCircleOutlined, ClockCircleOutlined, CloseCircleOutlined, CloseOutlined, DatabaseOutlined, DeleteOutlined, DownOutlined, ExclamationCircleOutlined, LoadingOutlined, PlusOutlined, RightOutlined, SendOutlined, SettingOutlined, StopOutlined, ToolOutlined } from '@ant-design/icons'
 import { Alert, Button, Card, Collapse, Dropdown, Flex, Form, Input, InputNumber, List, Modal, Progress, Select, Space, Steps, Switch, Tag, Typography, message } from 'antd'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
@@ -1530,10 +1530,9 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
             }))
           }}
         >
-          <span className="ai-thinking-toggle" aria-hidden="true">
-            {expanded ? <DownOutlined /> : <RightOutlined />}
+          <span className={`ai-thinking-toggle${item.thinking.done ? '' : ' is-loading'}`} aria-hidden="true">
+            {item.thinking.done ? (expanded ? <DownOutlined /> : <RightOutlined />) : <LoadingOutlined spin />}
           </span>
-          {!item.thinking.done && <LoadingOutlined spin className="ai-thinking-loading" />}
           <span className={`ai-thinking-content${expanded ? ' expanded' : ''}`}>
             <span className="ai-thinking-inline-title">{thinkingLabel}</span>
             <span className={`ai-thinking-summary-text${expanded ? ' expanded' : ''}`}>
@@ -1576,10 +1575,9 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
             }))
           }}
         >
-          <span className="ai-thinking-toggle" aria-hidden="true">
-            {expanded ? <DownOutlined /> : <RightOutlined />}
+          <span className={`ai-thinking-toggle${segment.done ? '' : ' is-loading'}`} aria-hidden="true">
+            {segment.done ? (expanded ? <DownOutlined /> : <RightOutlined />) : <LoadingOutlined spin />}
           </span>
-          {!segment.done && <LoadingOutlined spin className="ai-thinking-loading" />}
           <span className={`ai-thinking-content${expanded ? ' expanded' : ''}`}>
             <span className="ai-thinking-inline-title">{thinkingLabel}</span>
             <span className={`ai-thinking-summary-text${expanded ? ' expanded' : ''}`}>
@@ -1698,48 +1696,50 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
     <div className="ai-panel-inline">
       {contextHolder}
       <Flex align="center" className="ai-panel-header">
-        <Space className="ai-panel-title">
-          <div className="ai-orb"><RobotOutlined /></div>
-          <Typography.Title level={5}>Djinn Agent</Typography.Title>
-        </Space>
         <Space className="ai-panel-actions">
-          <Select
-            size="small"
-            value={activeSessionId || undefined}
-            placeholder="选择会话"
-            className="ai-session-select"
-            onChange={setActiveSessionId}
-            popupMatchSelectWidth={false}
-            options={sessions.map((session) => ({ label: session.title, value: session.id, title: session.title }))}
-            optionRender={(option) => {
-              const session = sessions.find((item) => item.id === option.value)
-              if (!session) {
-                return option.label
-              }
-              return (
-                <Flex align="center" justify="space-between" gap={8} className="full-width">
-                  <Typography.Text ellipsis title={session.title}>{session.title}</Typography.Text>
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<CloseOutlined />}
-                    aria-label={`删除会话 ${session.title}`}
-                    onMouseDown={(event) => {
-                      event.preventDefault()
-                      event.stopPropagation()
-                    }}
-                    onClick={(event) => {
-                      event.preventDefault()
-                      event.stopPropagation()
-                      deleteSession(session.id)
-                    }}
-                  />
-                </Flex>
-              )
-            }}
-          />
-          <Button size="small" icon={<PlusOutlined />} onClick={newSession}>新建</Button>
-          <Button size="small" icon={<SettingOutlined />} onClick={() => setSettingsOpen(true)}>设置</Button>
+          <div className="ai-panel-session-shell">
+            <Select
+              size="small"
+              value={activeSessionId || undefined}
+              placeholder="选择会话"
+              className="ai-session-select"
+              popupClassName="ai-session-select-popup"
+              onChange={setActiveSessionId}
+              popupMatchSelectWidth={false}
+              options={sessions.map((session) => ({ label: session.title, value: session.id, title: session.title }))}
+              optionRender={(option) => {
+                const session = sessions.find((item) => item.id === option.value)
+                if (!session) {
+                  return option.label
+                }
+                return (
+                  <Flex align="center" justify="space-between" gap={8} className="full-width">
+                    <Typography.Text ellipsis title={session.title}>{session.title}</Typography.Text>
+                    <Button
+                      type="text"
+                      size="small"
+                      className="ai-session-delete-btn"
+                      icon={<CloseOutlined />}
+                      aria-label={`删除会话 ${session.title}`}
+                      onMouseDown={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                      }}
+                      onClick={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        deleteSession(session.id)
+                      }}
+                    />
+                  </Flex>
+                )
+              }}
+            />
+          </div>
+          <div className="ai-panel-action-buttons">
+            <Button size="small" className="ai-panel-ghost-btn" icon={<PlusOutlined />} onClick={newSession}>新建</Button>
+            <Button size="small" className="ai-panel-ghost-btn" icon={<SettingOutlined />} onClick={() => setSettingsOpen(true)}>设置</Button>
+          </div>
         </Space>
       </Flex>
       <Space direction="vertical" className="full-width ai-panel" size="middle">
@@ -1752,7 +1752,7 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
             locale={{ emptyText: '可以问我：列出当前库的表、分析某张表结构、生成查询 SQL。' }}
             renderItem={(item) => (
               <List.Item className={`ai-message ai-message-${item.role}`}>
-                <Card size="small" className="full-width" title={item.role === 'user' ? '你' : 'AI'}>
+                <Card size="small" className={`full-width ai-message-card ai-message-card-${item.role}`} title={item.role === 'user' ? '你' : 'AI'}>
                   {item.role === 'assistant' ? renderAssistantContent(item) : null}
                   {renderAgentPlan(item)}
                   {renderConfirmation(item.confirmation)}
@@ -1764,10 +1764,6 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
         </div>
         <div className="ai-input-shell">
           <div className="ai-input-shell-glow" />
-          <div className="ai-input-shell-badge">
-            <RobotOutlined />
-            <span>Djinn Agent</span>
-          </div>
           <Input.TextArea
             value={input}
             className="ai-input-box"
@@ -1874,11 +1870,26 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
           </div>
         </div>
       </Space>
-      <Modal title="AI 设置" open={settingsOpen} onCancel={() => setSettingsOpen(false)} footer={null} width={640}>
-        <Space direction="vertical" className="full-width" size="middle">
-          <Flex justify="space-between" align="center">
+      <Modal
+        title={(
+          <Space className="ai-settings-title" size={10}>
+            <span className="ai-settings-title-orb"><SettingOutlined /></span>
+            <span className="ai-settings-title-copy">
+              <Typography.Text strong>AI 设置</Typography.Text>
+              <Typography.Text type="secondary">配置模型、上下文与连接测试</Typography.Text>
+            </span>
+          </Space>
+        )}
+        open={settingsOpen}
+        onCancel={() => setSettingsOpen(false)}
+        footer={null}
+        width={640}
+        className="ai-settings-modal"
+      >
+        <Space direction="vertical" className="full-width ai-settings-body" size="middle">
+          <Flex justify="space-between" align="center" className="ai-settings-toolbar">
             <Typography.Text type="secondary">可添加多个 OpenAI 兼容接口配置；同一时间最多启用一个，也可以全部关闭。</Typography.Text>
-            <Button icon={<PlusOutlined />} onClick={addConfig}>添加配置</Button>
+            <Button className="ai-panel-ghost-btn ai-settings-add-btn" icon={<PlusOutlined />} onClick={addConfig}>添加配置</Button>
           </Flex>
           {configs.length === 0 ? (
             <Alert type="info" showIcon message="暂无 AI 配置" description="添加配置并启用后，Djinn Agent 才会连接 AI。" />
@@ -1897,12 +1908,12 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
                   </Space>
                 ),
                 children: (
-                  <Form layout="vertical">
+                  <Form layout="vertical" className="ai-settings-form">
                     <Form.Item label="配置名称">
                       <Input value={item.name} placeholder="例如：Claude 中转" onChange={(event) => updateConfig(item.id, { name: event.target.value })} />
                     </Form.Item>
                     <Form.Item label="接口类型">
-                      <Select value={item.provider ?? 'openai-compatible'} options={[{ label: 'OpenAI 兼容接口', value: 'openai-compatible' }, { label: 'Anthropic 兼容接口', value: 'anthropic' }]} onChange={(value) => updateConfig(item.id, { provider: value })} />
+                      <Select popupClassName="ai-settings-select-popup" value={item.provider ?? 'openai-compatible'} options={[{ label: 'OpenAI 兼容接口', value: 'openai-compatible' }, { label: 'Anthropic 兼容接口', value: 'anthropic' }]} onChange={(value) => updateConfig(item.id, { provider: value })} />
                     </Form.Item>
                     <Form.Item label="Base URL" required>
                       <Input value={item.base_url} placeholder="例如：https://api.openai.com/v1" onChange={(event) => updateConfig(item.id, { base_url: event.target.value })} />
@@ -1940,9 +1951,9 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
             />
           )}
           {testResult && <Alert type={testResult.success ? 'success' : 'error'} showIcon message={testResult.message} />}
-          <Space>
-            <Button type="primary" onClick={() => void saveConfigs().then(() => setSettingsOpen(false))}>保存</Button>
-            <Button loading={testing} onClick={() => void testAI()}>测试连接</Button>
+          <Space className="ai-settings-actions">
+            <Button type="primary" className="ai-settings-primary-btn" onClick={() => void saveConfigs().then(() => setSettingsOpen(false))}>保存</Button>
+            <Button className="ai-panel-ghost-btn" loading={testing} onClick={() => void testAI()}>测试连接</Button>
           </Space>
         </Space>
       </Modal>

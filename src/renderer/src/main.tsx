@@ -5,6 +5,9 @@ import { createRoot } from 'react-dom/client'
 import { ThemeProvider } from './context/ThemeContext'
 import App from './App'
 import ErrorBoundary from './ErrorBoundary'
+import { configureMonacoWorkers } from './monaco-workers'
+
+configureMonacoWorkers()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

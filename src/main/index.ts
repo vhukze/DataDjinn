@@ -89,6 +89,8 @@ let splashWindowRef: BrowserWindow | null = null
 let splashDismissed = false
 let backendStartupCompleted = false
 let rendererStartupReady = false
+const testUserDataDir = process.env.DATADJINN_TEST_USER_DATA_DIR
+const skipSplashWindow = process.env.DATADJINN_SKIP_SPLASH === '1'
 
 const closeSplashWindow = (): void => {
   if (splashWindowRef && !splashWindowRef.isDestroyed()) {
@@ -604,6 +606,10 @@ void showMainWindowAfterStartup
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(() => {
+  if (testUserDataDir) {
+    app.setPath('userData', testUserDataDir)
+  }
+
   // Set app user model id for windows
   app.setName('DataDjinn')
   electronApp.setAppUserModelId('com.datadjinn.app')
@@ -960,7 +966,9 @@ app.whenReady().then(() => {
     }
   })
 
-  createSplashWindow()
+  if (!skipSplashWindow) {
+    createSplashWindow()
+  }
   backendStartupCompleted = false
   rendererStartupReady = false
   createWindow()

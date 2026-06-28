@@ -105,7 +105,7 @@ export interface SqlEditorHandle {
 
 interface SqlEditorProps {
   value: string
-  onChange: (value: string) => void
+  onChange?: (value: string) => void
   onExecute?: (payload: SqlEditorSelectionPayload & { sql?: string }) => void
   onSelectionChange?: (payload: SqlEditorSelectionPayload) => void
   onReady?: (handle: SqlEditorHandle | null) => void
@@ -276,6 +276,10 @@ const getDotQualifier = (text: string): string | undefined => {
   return match?.[1]?.replace(/^`|`$/g, '').replace(/^"|"$/g, '')
 }
 
+const toEditorTheme = (theme: 'dark' | 'light'): 'datadjinn-dark' | 'datadjinn-light' => (
+  theme === 'dark' ? 'datadjinn-dark' : 'datadjinn-light'
+)
+
 const splitSqlStatements = (sql: string): { text: string; start: number; end: number }[] => {
   const statements: { text: string; start: number; end: number }[] = []
   let quote: "'" | '"' | '`' | null = null
@@ -374,6 +378,7 @@ const buildStatementInfos = (model: Monaco.editor.ITextModel): SqlStatementInfo[
 }
 
 const normalizeShortcut = (shortcut?: string): string => shortcut?.replace(/\s+/g, '').toLowerCase() ?? ''
+const CONTENT_SYNC_DEBOUNCE_MS = 120
 
 const parseKeybinding = (shortcut?: string): number | null => {
   const normalized = normalizeShortcut(shortcut)
@@ -429,8 +434,9 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, onReady, the
   const selectionChangeRef = useRef<((payload: SqlEditorSelectionPayload) => void) | undefined>(onSelectionChange)
   const readyRef = useRef<((handle: SqlEditorHandle | null) => void) | undefined>(onReady)
   const statementDecorationIdsRef = useRef<string[]>([])
-  const editorStateSyncFrameRef = useRef<number | undefined>(undefined)
-  const editorStateSyncModeRef = useRef<'content' | 'selection'>('content')
+  const editorSelectionSyncFrameRef = useRef<number | undefined>(undefined)
+  const editorContentSyncTimeoutRef = useRef<number | undefined>(undefined)
+  const latestValueRef = useRef(value)
   const cachedStatementsRef = useRef<{
     model: Monaco.editor.ITextModel | null
     versionId: number
@@ -459,16 +465,51 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, onReady, the
   }, [onReady])
 
   useEffect(() => {
+    const monacoInstance = monacoRef.current
+    if (!monacoInstance || !editorRef.current) {
+      return
+    }
+    monacoInstance.editor.setTheme(toEditorTheme(theme))
+  }, [theme])
+
+  useEffect(() => {
     return () => {
-      if (editorStateSyncFrameRef.current) {
-        window.cancelAnimationFrame(editorStateSyncFrameRef.current)
-        editorStateSyncFrameRef.current = undefined
+      if (editorSelectionSyncFrameRef.current) {
+        window.cancelAnimationFrame(editorSelectionSyncFrameRef.current)
+        editorSelectionSyncFrameRef.current = undefined
+      }
+      if (editorContentSyncTimeoutRef.current) {
+        window.clearTimeout(editorContentSyncTimeoutRef.current)
+        editorContentSyncTimeoutRef.current = undefined
       }
       readyRef.current?.(null)
       completionDisposableRef.current?.dispose()
       completionDisposableRef.current = null
     }
   }, [])
+
+  useEffect(() => {
+    const editor = editorRef.current
+    const model = editor?.getModel()
+    if (!editor || !model) {
+      return
+    }
+    const currentValue = model.getValue()
+    if (currentValue === value) {
+      return
+    }
+    latestValueRef.current = value
+    const selection = editor.getSelection()
+    model.pushEditOperations(
+      selection ? [selection] : [],
+      [{
+        range: model.getFullModelRange(),
+        text: value
+      }],
+      () => selection ? [selection] : null
+    )
+    scheduleEditorContentSync(editor)
+  }, [value])
 
   const registerCompletionProvider = (monaco: typeof Monaco): void => {
     completionDisposableRef.current?.dispose()
@@ -694,6 +735,13 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, onReady, the
 
   const syncEditorSelectionState = (editor: Monaco.editor.IStandaloneCodeEditor): void => {
     const model = editor.getModel()
+    if (
+      model
+      && editorContentSyncTimeoutRef.current != null
+      && cachedStatementsRef.current.versionId !== model.getVersionId()
+    ) {
+      return
+    }
     const statements = getCachedStatements(model)
     const currentStatement = getCurrentStatementInfo(editor, statements)
     const nextStatementKey = getStatementIdentity(currentStatement)
@@ -704,23 +752,24 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, onReady, the
     selectionChangeRef.current?.(buildSelectionPayload(editor, statements, currentStatement, false))
   }
 
-  const scheduleEditorStateSync = (editor: Monaco.editor.IStandaloneCodeEditor, mode: 'content' | 'selection'): void => {
-    if (mode === 'content' || editorStateSyncModeRef.current !== 'content') {
-      editorStateSyncModeRef.current = mode
-    }
-    if (editorStateSyncFrameRef.current) {
+  const scheduleEditorSelectionSync = (editor: Monaco.editor.IStandaloneCodeEditor): void => {
+    if (editorSelectionSyncFrameRef.current) {
       return
     }
-    editorStateSyncFrameRef.current = window.requestAnimationFrame(() => {
-      editorStateSyncFrameRef.current = undefined
-      const nextMode = editorStateSyncModeRef.current
-      editorStateSyncModeRef.current = 'selection'
-      if (nextMode === 'content') {
-        syncEditorState(editor)
-        return
-      }
+    editorSelectionSyncFrameRef.current = window.requestAnimationFrame(() => {
+      editorSelectionSyncFrameRef.current = undefined
       syncEditorSelectionState(editor)
     })
+  }
+
+  const scheduleEditorContentSync = (editor: Monaco.editor.IStandaloneCodeEditor): void => {
+    if (editorContentSyncTimeoutRef.current) {
+      window.clearTimeout(editorContentSyncTimeoutRef.current)
+    }
+    editorContentSyncTimeoutRef.current = window.setTimeout(() => {
+      editorContentSyncTimeoutRef.current = undefined
+      syncEditorState(editor)
+    }, CONTENT_SYNC_DEBOUNCE_MS)
   }
 
   const handleMount: OnMount = (editor, monaco) => {
@@ -738,9 +787,9 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, onReady, the
       }
     })
 
-    editor.onDidChangeCursorSelection(() => scheduleEditorStateSync(editor, 'selection'))
+    editor.onDidChangeCursorSelection(() => scheduleEditorSelectionSync(editor))
 
-    editor.onDidChangeModelContent(() => scheduleEditorStateSync(editor, 'content'))
+    editor.onDidChangeModelContent(() => scheduleEditorContentSync(editor))
 
     if (!readOnly) {
       const executeKeybinding = parseKeybinding(shortcuts?.execute) ?? (monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter)
@@ -781,7 +830,14 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, onReady, the
       language="sql"
       theme={theme === 'dark' ? 'datadjinn-dark' : 'datadjinn-light'}
       value={value}
-      onChange={(v) => onChange(v ?? '')}
+      onChange={(nextValue) => {
+        const normalizedValue = nextValue ?? ''
+        latestValueRef.current = normalizedValue
+        if (!onChange) {
+          return
+        }
+        onChange(normalizedValue)
+      }}
       onMount={handleMount}
       options={{
         fixedOverflowWidgets: true,

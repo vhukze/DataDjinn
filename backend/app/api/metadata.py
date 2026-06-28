@@ -4,10 +4,10 @@ from app.db.connection_manager import connection_manager
 from app.db.error_utils import friendly_error
 from app.db.mongo_utils import is_mongo_client
 from app.db.redis_utils import is_redis_client
-from app.db.metadata import apply_redis_data_changes, apply_table_data_changes, create_database, create_oracle_user, create_schema, create_table, drop_database, drop_db_object, get_object_ddl, get_table_comment, list_columns, list_databases, list_db_objects, list_schemas, list_tables, update_table_columns
+from app.db.metadata import apply_redis_data_changes, apply_table_data_changes, create_database, create_oracle_user, create_schema, create_table, drop_database, drop_db_object, get_object_ddl, get_sequence_detail, get_table_comment, list_columns, list_databases, list_db_objects, list_schemas, list_tables, update_table_columns
 from app.db.readonly_query import preview_table
 from app.db.sql_executor import execute_sql_file
-from app.schemas.metadata import ColumnsResponse, DatabaseCreateRequest, DatabaseCreateResponse, DatabasesResponse, DbObjectsResponse, ObjectDdlResponse, RedisDataChangeRequest, TableCreateRequest, TableCreateResponse, TableDataChangeRequest, TableUpdateRequest, TablesResponse
+from app.schemas.metadata import ColumnsResponse, DatabaseCreateRequest, DatabaseCreateResponse, DatabasesResponse, DbObjectsResponse, ObjectDdlResponse, RedisDataChangeRequest, SequenceDetailResponse, TableCreateRequest, TableCreateResponse, TableDataChangeRequest, TableUpdateRequest, TablesResponse
 from app.schemas.query import QueryResponse, SqlFileRunRequest, SqlFileRunResponse
 
 router = APIRouter(prefix="/connections", tags=["metadata"])
@@ -154,6 +154,21 @@ def get_object_ddl_endpoint(connection_id: str, object_name: str, type: str, dat
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到对象 DDL")
 
     return ObjectDdlResponse(ddl=ddl)
+
+
+@router.get("/{connection_id}/objects/{object_name}/sequence-detail", response_model=SequenceDetailResponse)
+def get_sequence_detail_endpoint(connection_id: str, object_name: str, database: str | None = None, pg_database: str | None = None) -> SequenceDetailResponse:
+    engine = connection_manager.get_engine(connection_id)
+
+    if engine is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="杩炴帴宸插叧闂紝璇峰厛鎵撳紑杩炴帴")
+
+    try:
+        return get_sequence_detail(engine, object_name, database, pg_database)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=friendly_error(exc)) from exc
 
 
 @router.delete("/{connection_id}/objects/{object_name}")

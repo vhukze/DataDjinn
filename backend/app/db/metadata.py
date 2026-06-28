@@ -8,7 +8,7 @@ from sqlalchemy import Engine, inspect, text
 
 from app.db.mongo_utils import is_mongo_client, mongo_default_database, mongo_value_type
 from app.db.redis_utils import is_redis_client, parse_redis_database_name, redis_client_for_database, redis_current_database, redis_database_name, redis_key_length, redis_key_type, redis_memory_usage, redis_scan_keys, redis_text, serialize_redis_value
-from app.schemas.metadata import ColumnInfo, DatabaseInfo, DbObjectInfo, RedisDataChangeRequest, RedisKeyUpdate, TableDataChangeRequest, TableInfo, TableUpdateColumn
+from app.schemas.metadata import ColumnInfo, DatabaseInfo, DbObjectInfo, RedisDataChangeRequest, RedisKeyUpdate, SequenceDetailResponse, TableDataChangeRequest, TableInfo, TableUpdateColumn
 
 COLUMN_TYPE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_ (),]*$")
 NUMERIC_LITERAL_PATTERN = re.compile(r"^-?\d+(?:\.\d+)?$")
@@ -848,9 +848,12 @@ def list_db_objects(engine: Engine, database_name: str | None = None, pg_databas
                 objects.extend(DbObjectInfo(name=str(row[0]), type="index") for row in rows)
         return objects
 
-    inspector = inspect(engine)
     if object_type in {None, "view"}:
-        objects.extend(DbObjectInfo(name=name, type="view") for name in inspector.get_view_names(schema=schema_name))
+        with engine.connect() as connection:
+            rows = connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type = 'view' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+            ).fetchall()
+            objects.extend(DbObjectInfo(name=str(row[0]), type="view") for row in rows)
     if object_type in {None, "trigger"}:
         with engine.connect() as connection:
             rows = connection.execute(text("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")).fetchall()
@@ -1461,6 +1464,92 @@ def list_columns(engine: Engine, table_name: str, database_name: str | None = No
         )
         for column in inspector.get_columns(table_name, schema=database_name)
     ]
+
+
+def get_sequence_detail(engine: Engine, sequence_name: str, database_name: str | None = None, pg_database: str | None = None) -> SequenceDetailResponse:
+    if pg_database and engine.dialect.name in {"postgresql", "gaussdb"}:
+        db_engine = _pg_engine(engine, pg_database)
+        try:
+            return get_sequence_detail(db_engine, sequence_name, database_name, None)
+        finally:
+            if db_engine is not engine:
+                db_engine.dispose()
+
+    if _is_schema_scoped_engine(engine):
+        schema_name = database_name or "public"
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT sequencename, schemaname, start_value, min_value, max_value, increment_by, cache_size, cycle, last_value "
+                    "FROM pg_sequences "
+                    "WHERE schemaname = :schema_name AND sequencename = :sequence_name"
+                ),
+                {"schema_name": schema_name, "sequence_name": sequence_name},
+            ).mappings().first()
+        if not row:
+            raise ValueError("未找到序列详情")
+        return SequenceDetailResponse(
+            name=str(row["sequencename"]),
+            schema=str(row["schemaname"]),
+            start_value=None if row["start_value"] is None else str(row["start_value"]),
+            minimum_value=None if row["min_value"] is None else str(row["min_value"]),
+            maximum_value=None if row["max_value"] is None else str(row["max_value"]),
+            increment_by=None if row["increment_by"] is None else str(row["increment_by"]),
+            cache_size=None if row["cache_size"] is None else str(row["cache_size"]),
+            cycle=bool(row["cycle"]) if row["cycle"] is not None else None,
+            current_value=None if row["last_value"] is None else str(row["last_value"]),
+            last_number=None if row["last_value"] is None else str(row["last_value"]),
+        )
+
+    if _is_oracle_engine(engine):
+        schema_name = (database_name or engine.url.username or "").upper()
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT SEQUENCE_NAME, SEQUENCE_OWNER, MIN_VALUE, MAX_VALUE, INCREMENT_BY, CACHE_SIZE, CYCLE_FLAG, LAST_NUMBER "
+                    "FROM ALL_SEQUENCES WHERE SEQUENCE_OWNER = :schema_name AND SEQUENCE_NAME = :sequence_name"
+                ),
+                {"schema_name": schema_name, "sequence_name": sequence_name.upper()},
+            ).mappings().first()
+        if not row:
+            raise ValueError("未找到序列详情")
+        return SequenceDetailResponse(
+            name=str(row["SEQUENCE_NAME"]),
+            schema=str(row["SEQUENCE_OWNER"]),
+            minimum_value=None if row["MIN_VALUE"] is None else str(row["MIN_VALUE"]),
+            maximum_value=None if row["MAX_VALUE"] is None else str(row["MAX_VALUE"]),
+            increment_by=None if row["INCREMENT_BY"] is None else str(row["INCREMENT_BY"]),
+            cache_size=None if row["CACHE_SIZE"] is None else str(row["CACHE_SIZE"]),
+            cycle=str(row["CYCLE_FLAG"]).upper() == "Y" if row["CYCLE_FLAG"] is not None else None,
+            last_number=None if row["LAST_NUMBER"] is None else str(row["LAST_NUMBER"]),
+            current_value=None if row["LAST_NUMBER"] is None else str(row["LAST_NUMBER"]),
+        )
+
+    if engine.dialect.name in {"dm", "dmPython"}:
+        schema_name = (database_name or engine.url.username or "SYSDBA").upper()
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT SEQUENCE_NAME, SEQUENCE_OWNER, MIN_VALUE, MAX_VALUE, INCREMENT_BY, CACHE_SIZE, CYCLE_FLAG, LAST_NUMBER "
+                    "FROM ALL_SEQUENCES WHERE SEQUENCE_OWNER = :schema_name AND SEQUENCE_NAME = :sequence_name"
+                ),
+                {"schema_name": schema_name, "sequence_name": sequence_name.upper()},
+            ).mappings().first()
+        if not row:
+            raise ValueError("未找到序列详情")
+        return SequenceDetailResponse(
+            name=str(row["SEQUENCE_NAME"]),
+            schema=str(row["SEQUENCE_OWNER"]),
+            minimum_value=None if row["MIN_VALUE"] is None else str(row["MIN_VALUE"]),
+            maximum_value=None if row["MAX_VALUE"] is None else str(row["MAX_VALUE"]),
+            increment_by=None if row["INCREMENT_BY"] is None else str(row["INCREMENT_BY"]),
+            cache_size=None if row["CACHE_SIZE"] is None else str(row["CACHE_SIZE"]),
+            cycle=str(row["CYCLE_FLAG"]).upper() == "Y" if row["CYCLE_FLAG"] is not None else None,
+            last_number=None if row["LAST_NUMBER"] is None else str(row["LAST_NUMBER"]),
+            current_value=None if row["LAST_NUMBER"] is None else str(row["LAST_NUMBER"]),
+        )
+
+    raise ValueError("当前数据库暂不支持查看序列详情")
 
 
 def get_object_ddl(engine: Engine, object_name: str, object_type: str, database_name: str | None = None, pg_database: str | None = None) -> str:

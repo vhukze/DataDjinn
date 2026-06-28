@@ -539,6 +539,8 @@ def _preview_table_impl(
     sort_column: str | None = None,
     sort_direction: str | None = None,
 ) -> QueryResponse:
+    from app.db.metadata import list_columns
+
     preparer = engine.dialect.identifier_preparer
     quoted_table = preparer.quote(quoted_name(table_name, quote=True))
 
@@ -548,22 +550,50 @@ def _preview_table_impl(
     where_sql = _validate_preview_where(where)
     if where_sql and engine.dialect.name == "oracle":
         where_sql = _normalize_oracle_where_clause(engine, table_name, database_name, where_sql)
-    order_sql = _build_preview_order_sql(engine, sort_column, sort_direction)
+    resolved_sort_column = sort_column
+    resolved_sort_direction = sort_direction
+    primary_key_columns: list[str] = []
+    if not resolved_sort_column:
+        try:
+            primary_key_columns = [column.name for column in list_columns(engine, table_name, database_name) if column.primary_key]
+        except Exception:
+            primary_key_columns = []
+    order_sql = _build_preview_order_sql(engine, resolved_sort_column, resolved_sort_direction, primary_key_columns)
     query = f"SELECT * FROM {quoted_table}{f' WHERE {where_sql}' if where_sql else ''}{order_sql}"
     result = _execute_limited_query(engine, query, limit, offset)
-    result.total_count = _count_preview_rows(engine, quoted_table, where_sql)
-    result.sort_column = sort_column
-    result.sort_direction = sort_direction
+    result.total_count = _resolve_preview_total_count(result, limit, offset, engine, quoted_table, where_sql)
+    result.sort_column = resolved_sort_column or (primary_key_columns[0] if len(primary_key_columns) == 1 else None)
+    result.sort_direction = resolved_sort_direction or ("ascend" if primary_key_columns else None)
     return result
 
 
-def _build_preview_order_sql(engine: Engine, sort_column: str | None, sort_direction: str | None) -> str:
-    if not sort_column:
+def _build_preview_order_sql(engine: Engine, sort_column: str | None, sort_direction: str | None, primary_key_columns: list[str] | None = None) -> str:
+    if sort_column:
+        direction = "DESC" if str(sort_direction).lower() == "descend" else "ASC"
+        quoted_column = engine.dialect.identifier_preparer.quote(quoted_name(sort_column, quote=True))
+        return f" ORDER BY {quoted_column} {direction}"
+
+    if not primary_key_columns:
         return ""
 
-    direction = "DESC" if str(sort_direction).lower() == "descend" else "ASC"
-    quoted_column = engine.dialect.identifier_preparer.quote(quoted_name(sort_column, quote=True))
-    return f" ORDER BY {quoted_column} {direction}"
+    quoted_columns = [
+        f"{engine.dialect.identifier_preparer.quote(quoted_name(column, quote=True))} ASC"
+        for column in primary_key_columns
+    ]
+    return f" ORDER BY {', '.join(quoted_columns)}"
+
+
+def _resolve_preview_total_count(result: QueryResponse, limit: int | None, offset: int, engine: Engine, quoted_table: str, where_sql: str) -> int | None:
+    if limit is None:
+        return result.row_count
+
+    if not result.limited:
+        return offset + result.row_count
+
+    if offset == 0 and result.row_count < max(limit, 1):
+        return result.row_count
+
+    return _count_preview_rows(engine, quoted_table, where_sql)
 
 
 def _validate_preview_where(where: str | None) -> str:

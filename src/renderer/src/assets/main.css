@@ -271,14 +271,179 @@ body[data-theme="dark"] {
   background: var(--dj-bg-sunken);
 }
 
+.update-window-modal.ant-modal,
+.settings-window-modal.ant-modal {
+  top: 44px;
+}
+
+.update-window-modal .ant-modal-content,
+.settings-window-modal .ant-modal-content {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--dj-border-subtle) 78%, transparent) !important;
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at 10% 8%, color-mix(in srgb, var(--dj-liquid-glow-a) 82%, transparent) 0%, transparent 22%),
+    radial-gradient(circle at 92% 0%, color-mix(in srgb, var(--dj-liquid-glow-c) 62%, transparent) 0%, transparent 18%),
+    linear-gradient(180deg, color-mix(in srgb, white 14%, var(--dj-bg-elevated)) 0%, color-mix(in srgb, white 4%, var(--dj-bg-panel)) 40%, color-mix(in srgb, var(--dj-bg-glass) 96%, transparent) 100%) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.06),
+    0 24px 54px rgba(15, 23, 42, 0.16),
+    0 12px 28px color-mix(in srgb, var(--dj-liquid-glow-b) 14%, transparent) !important;
+  backdrop-filter: blur(20px) saturate(132%);
+  -webkit-backdrop-filter: blur(20px) saturate(132%);
+}
+
+.update-window-modal .ant-modal-content::before,
+.settings-window-modal .ant-modal-content::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.12) 0%, transparent 28%, transparent 100%);
+  opacity: 0.82;
+}
+
+.update-window-modal .ant-modal-header,
+.settings-window-modal .ant-modal-header {
+  position: relative;
+  z-index: 1;
+  padding: 18px 24px 12px !important;
+  border-bottom: 1px solid color-mix(in srgb, var(--dj-border-subtle) 72%, transparent) !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.update-window-modal .ant-modal-title,
+.settings-window-modal .ant-modal-title {
+  position: relative;
+  z-index: 1;
+  font-size: 17px !important;
+  letter-spacing: 0.01em;
+}
+
+.update-window-modal .ant-modal-body,
+.settings-window-modal .ant-modal-body {
+  position: relative;
+  z-index: 1;
+  padding-top: 16px !important;
+  background: transparent !important;
+  overflow: hidden;
+}
+
+.update-window-modal .ant-modal-close,
+.settings-window-modal .ant-modal-close {
+  z-index: 2;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.update-window-modal .ant-modal-close:hover,
+.settings-window-modal .ant-modal-close:hover {
+  transform: translateY(-1px) scale(1.03);
+}
+
+.update-modal-layout,
+.settings-layout {
+  position: relative;
+  z-index: 1;
+}
+
+.update-modal-layout {
+  gap: 14px !important;
+}
+
+.settings-section-stack {
+  gap: 16px !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  padding: 0 !important;
+  overflow: visible !important;
+}
+
+.settings-section-stack::before {
+  display: none !important;
+}
+
+.update-status-alert.ant-alert,
+.update-meta-strip,
+.update-toggle-card,
+.update-release-notes,
+.settings-about-card,
+.settings-sidebar,
+.settings-section-card,
+.settings-content > .ant-space,
+.settings-content > div,
+.driver-manager-shell {
+  position: relative;
+  isolation: isolate;
+  border: 1px solid color-mix(in srgb, var(--dj-border-subtle) 84%, transparent);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-surface) 88%, transparent), color-mix(in srgb, var(--dj-bg-panel) 96%, transparent)),
+    radial-gradient(circle at top left, color-mix(in srgb, var(--dj-liquid-glow-b) 16%, transparent), transparent 48%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 16%, transparent),
+    0 12px 24px rgba(15, 23, 42, 0.06);
+  backdrop-filter: blur(16px) saturate(128%);
+  -webkit-backdrop-filter: blur(16px) saturate(128%);
+}
+
+.update-status-alert.ant-alert::before,
+.update-meta-strip::before,
+.update-toggle-card::before,
+.update-release-notes::before,
+.settings-about-card::before,
+.settings-sidebar::before,
+.settings-section-card::before,
+.settings-content > .ant-space::before,
+.settings-content > div::before,
+.driver-manager-shell::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.12) 0%, transparent 28%, transparent 100%);
+  opacity: 0.76;
+}
+
+.update-status-alert.ant-alert > *,
+.update-meta-strip > *,
+.update-toggle-card > *,
+.update-release-notes > *,
+.settings-about-card > *,
+.settings-sidebar > *,
+.settings-section-card > *,
+.settings-content > .ant-space > *,
+.settings-content > div > *,
+.driver-manager-shell > * {
+  position: relative;
+  z-index: 1;
+}
+
+.settings-section-card {
+  padding: 18px;
+}
+
 .settings-layout {
   min-height: 520px;
+  gap: 18px !important;
 }
 
 .settings-sidebar {
   flex: 0 0 160px;
-  padding-right: 14px;
-  border-right: 1px solid var(--dj-border-subtle);
+  padding: 12px;
+  border-right: 0;
 }
 
 .settings-sidebar .ant-menu {
@@ -289,12 +454,24 @@ body[data-theme="dark"] {
 .settings-sidebar .ant-menu-item {
   height: 36px;
   margin-inline: 0;
-  border-radius: 9px;
+  margin-block: 2px;
+  border-radius: 12px;
+  transition: transform 0.16s ease, background 0.16s ease, color 0.16s ease;
+}
+
+.settings-sidebar .ant-menu-item:hover {
+  transform: translateY(-1px);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 10%, var(--dj-accent-soft)), color-mix(in srgb, var(--dj-accent-soft) 70%, transparent)) !important;
 }
 
 .settings-sidebar .ant-menu-item-selected {
   color: var(--dj-accent) !important;
-  background: var(--dj-accent-soft) !important;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 14%, var(--dj-accent-soft)), color-mix(in srgb, var(--dj-accent-soft) 82%, transparent)) !important;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 22%, transparent),
+    0 10px 18px color-mix(in srgb, var(--dj-accent) 12%, transparent);
 }
 
 .settings-content {
@@ -302,6 +479,20 @@ body[data-theme="dark"] {
   min-width: 0;
   max-height: 620px;
   overflow: auto;
+  padding-right: 4px;
+}
+
+.settings-content .ant-typography,
+.update-window-modal .ant-typography,
+.settings-window-modal .ant-form-item-label > label {
+  color: var(--dj-text-primary);
+}
+
+.settings-content .ant-typography.ant-typography-secondary,
+.update-window-modal .ant-typography.ant-typography-secondary,
+.settings-window-modal .ant-form-item-extra,
+.settings-window-modal .ant-form-item-explain {
+  color: var(--dj-text-secondary) !important;
 }
 
 .deferred-modal-loading {
@@ -326,15 +517,445 @@ body[data-theme="dark"] {
   gap: 12px;
   align-items: flex-start;
   padding: 24px;
-  border: 1px solid var(--dj-border-subtle);
-  border-radius: var(--dj-radius-md);
-  background: var(--dj-bg-surface);
 }
 
 .settings-about-logo {
   display: block;
   width: min(360px, 100%);
   height: auto;
+}
+
+.settings-glass-action.ant-btn,
+.update-modal-actions .ant-btn,
+.settings-window-modal .ant-btn {
+  min-height: 36px;
+  padding-inline: 16px;
+  border: 0 !important;
+  border-radius: 999px !important;
+  color: var(--dj-text-primary) !important;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 28%, transparent),
+    0 10px 20px color-mix(in srgb, var(--dj-accent) 10%, transparent) !important;
+}
+
+.settings-glass-action.ant-btn:not(.ant-btn-primary),
+.update-modal-actions .ant-btn:not(.ant-btn-primary),
+.settings-window-modal .ant-btn:not(.ant-btn-primary),
+.update-window-modal .ant-btn:not(.ant-btn-primary) {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 14%, var(--dj-bg-surface)), color-mix(in srgb, var(--dj-bg-panel) 88%, transparent)) !important;
+}
+
+.settings-glass-action.ant-btn:hover,
+.settings-glass-action.ant-btn:focus-visible,
+.settings-window-modal .ant-btn:hover,
+.settings-window-modal .ant-btn:focus-visible,
+.update-window-modal .ant-btn:hover,
+.update-window-modal .ant-btn:focus-visible,
+.update-modal-actions .ant-btn:hover,
+.update-modal-actions .ant-btn:focus-visible {
+  transform: translateY(-1px);
+}
+
+.update-modal-actions .ant-btn-primary,
+.settings-glass-action.ant-btn-primary,
+.settings-window-modal .ant-btn-primary,
+.update-window-modal .ant-btn-primary {
+  color: #f8fbff !important;
+  background:
+    linear-gradient(180deg, #87dcff, #68a7ff 52%, #4f7dff 100%) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    inset 0 -1px 0 rgba(48, 84, 196, 0.3),
+    0 14px 26px rgba(77, 124, 255, 0.24) !important;
+}
+
+.settings-window-modal .ant-btn-dangerous,
+.update-window-modal .ant-btn-dangerous {
+  color: #ef4444 !important;
+}
+
+.settings-window-modal .ant-btn-link {
+  color: var(--dj-accent) !important;
+  border: 1px solid color-mix(in srgb, var(--dj-border-subtle) 82%, transparent) !important;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 12%, var(--dj-bg-surface)), color-mix(in srgb, var(--dj-bg-panel) 92%, transparent)) !important;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 18%, transparent),
+    0 8px 18px color-mix(in srgb, var(--dj-accent) 6%, transparent) !important;
+}
+
+.settings-window-modal .ant-input,
+.settings-window-modal .ant-input-affix-wrapper,
+.settings-window-modal .ant-input-outlined,
+.settings-window-modal .ant-input-number,
+.settings-window-modal .ant-select-selector,
+.settings-window-modal textarea.ant-input,
+.update-window-modal .ant-input,
+.update-window-modal .ant-input-affix-wrapper,
+.update-window-modal .ant-input-outlined,
+.update-window-modal .ant-input-number,
+.update-window-modal .ant-select-selector,
+.update-window-modal textarea.ant-input {
+  min-height: 38px;
+  border: 1px solid color-mix(in srgb, var(--dj-border-subtle) 82%, transparent) !important;
+  border-radius: 14px !important;
+  color: var(--dj-text-primary) !important;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 12%, var(--dj-bg-surface)), color-mix(in srgb, var(--dj-bg-panel) 92%, transparent)) !important;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 18%, transparent),
+    0 8px 18px color-mix(in srgb, var(--dj-accent) 6%, transparent) !important;
+}
+
+.settings-window-modal .ant-input:hover,
+.settings-window-modal .ant-input-affix-wrapper:hover,
+.settings-window-modal .ant-input-outlined:hover,
+.settings-window-modal .ant-input-number:hover,
+.settings-window-modal .ant-select-selector:hover,
+.settings-window-modal textarea.ant-input:hover,
+.update-window-modal .ant-input:hover,
+.update-window-modal .ant-input-affix-wrapper:hover,
+.update-window-modal .ant-input-outlined:hover,
+.update-window-modal .ant-input-number:hover,
+.update-window-modal .ant-select-selector:hover,
+.update-window-modal textarea.ant-input:hover {
+  border-color: color-mix(in srgb, var(--dj-accent) 58%, transparent) !important;
+}
+
+.settings-window-modal .ant-input:focus,
+.settings-window-modal .ant-input-affix-wrapper-focused,
+.settings-window-modal .ant-input-outlined:focus,
+.settings-window-modal .ant-input-outlined:focus-within,
+.settings-window-modal .ant-select-focused .ant-select-selector,
+.settings-window-modal textarea.ant-input:focus,
+.update-window-modal .ant-input:focus,
+.update-window-modal .ant-input-affix-wrapper-focused,
+.update-window-modal .ant-input-outlined:focus,
+.update-window-modal .ant-input-outlined:focus-within,
+.update-window-modal .ant-select-focused .ant-select-selector,
+.update-window-modal textarea.ant-input:focus {
+  border-color: color-mix(in srgb, var(--dj-accent) 72%, transparent) !important;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 18%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--dj-accent) 14%, transparent),
+    0 10px 22px color-mix(in srgb, var(--dj-accent) 12%, transparent) !important;
+}
+
+.settings-window-modal .ant-input::placeholder,
+.settings-window-modal textarea.ant-input::placeholder,
+.settings-window-modal .ant-select-selection-placeholder,
+.update-window-modal .ant-input::placeholder,
+.update-window-modal textarea.ant-input::placeholder,
+.update-window-modal .ant-select-selection-placeholder {
+  color: var(--dj-text-tertiary) !important;
+}
+
+.settings-window-modal .ant-input-affix-wrapper .ant-input,
+.settings-window-modal .ant-input-affix-wrapper .ant-input:hover,
+.settings-window-modal .ant-input-affix-wrapper .ant-input:focus,
+.settings-window-modal .ant-input-affix-wrapper .ant-input:focus-visible,
+.update-window-modal .ant-input-affix-wrapper .ant-input,
+.update-window-modal .ant-input-affix-wrapper .ant-input:hover,
+.update-window-modal .ant-input-affix-wrapper .ant-input:focus,
+.update-window-modal .ant-input-affix-wrapper .ant-input:focus-visible {
+  min-height: auto;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.settings-window-modal .ant-input-group-addon,
+.update-window-modal .ant-input-group-addon {
+  border: 0 !important;
+  background: transparent !important;
+}
+
+.settings-window-modal .ant-form,
+.settings-window-modal .ant-form-item,
+.settings-window-modal .ant-form-item-row,
+.settings-window-modal .ant-row,
+.settings-window-modal .ant-col,
+.settings-window-modal .ant-form-item-control,
+.settings-window-modal .ant-form-item-control-input,
+.settings-window-modal .ant-form-item-control-input-content,
+.settings-window-modal .ant-input-group,
+.settings-window-modal .ant-input-group-wrapper,
+.settings-window-modal .ant-input-group-wrapper-outlined {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.settings-window-modal .ant-space-compact > *,
+.update-window-modal .ant-space-compact > * {
+  border-radius: 14px !important;
+}
+
+.settings-window-modal .ant-switch,
+.update-window-modal .ant-switch {
+  background: color-mix(in srgb, var(--dj-border-subtle) 78%, transparent) !important;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 12%, transparent);
+}
+
+.settings-window-modal .ant-switch-checked,
+.update-window-modal .ant-switch-checked {
+  background:
+    linear-gradient(180deg, #87dcff, #68a7ff 52%, #4f7dff 100%) !important;
+}
+
+.settings-window-modal .ant-tag,
+.update-window-modal .ant-tag {
+  border: 1px solid color-mix(in srgb, var(--dj-accent) 22%, var(--dj-border-subtle));
+  border-radius: 999px;
+  color: var(--dj-accent);
+  background:
+    radial-gradient(circle at 24% 24%, color-mix(in srgb, white 32%, transparent), transparent 44%),
+    linear-gradient(180deg, color-mix(in srgb, white 8%, var(--dj-accent-soft)), color-mix(in srgb, var(--dj-accent-soft) 74%, transparent));
+}
+
+.settings-window-modal .ant-table,
+.settings-window-modal .ant-table-container,
+.settings-window-modal .ant-table-wrapper {
+  background: transparent !important;
+}
+
+.settings-window-modal .ant-table-thead > tr > th {
+  border-bottom-color: color-mix(in srgb, var(--dj-border-subtle) 72%, transparent) !important;
+  background: color-mix(in srgb, var(--dj-bg-surface) 76%, transparent) !important;
+}
+
+.settings-window-modal .ant-table-tbody > tr > td {
+  border-bottom-color: color-mix(in srgb, var(--dj-border-subtle) 54%, transparent) !important;
+  background: color-mix(in srgb, var(--dj-bg-panel) 42%, transparent) !important;
+}
+
+.settings-window-modal .ant-table-tbody > tr:hover > td {
+  background: color-mix(in srgb, var(--dj-accent-soft) 38%, transparent) !important;
+}
+
+.update-meta-strip,
+.update-toggle-card {
+  padding: 14px 16px;
+}
+
+.update-version-line {
+  padding-inline: 4px;
+}
+
+.update-release-notes {
+  padding: 14px 16px;
+}
+
+body:not([data-theme="dark"]) .update-window-modal .ant-modal-content,
+body:not([data-theme="dark"]) .settings-window-modal .ant-modal-content {
+  border-color: rgba(130, 174, 255, 0.24) !important;
+  background:
+    radial-gradient(circle at 8% 10%, rgba(112, 186, 255, 0.18) 0%, transparent 24%),
+    radial-gradient(circle at 92% 4%, rgba(103, 232, 214, 0.16) 0%, transparent 22%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(245, 249, 255, 0.94) 42%, rgba(240, 246, 255, 0.9) 100%) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    0 24px 56px rgba(93, 165, 255, 0.12),
+    0 12px 28px rgba(93, 165, 255, 0.1) !important;
+}
+
+body:not([data-theme="dark"]) .update-status-alert.ant-alert,
+body:not([data-theme="dark"]) .update-meta-strip,
+body:not([data-theme="dark"]) .update-toggle-card,
+body:not([data-theme="dark"]) .update-release-notes,
+body:not([data-theme="dark"]) .settings-about-card,
+body:not([data-theme="dark"]) .settings-sidebar,
+body:not([data-theme="dark"]) .settings-section-card,
+body:not([data-theme="dark"]) .driver-manager-shell,
+body:not([data-theme="dark"]) .driver-manager-nav-panel,
+body:not([data-theme="dark"]) .driver-manager-nav-item,
+body:not([data-theme="dark"]) .driver-manager-summary-card,
+body:not([data-theme="dark"]) .driver-manager-section-card,
+body:not([data-theme="dark"]) .shortcut-setting-item {
+  border-color: rgba(126, 181, 255, 0.22);
+  background:
+    radial-gradient(circle at 16% 14%, rgba(112, 186, 255, 0.16) 0%, transparent 22%),
+    radial-gradient(circle at 88% 12%, rgba(103, 232, 214, 0.12) 0%, transparent 24%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(244, 248, 255, 0.9) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.74),
+    0 14px 28px rgba(93, 165, 255, 0.08);
+}
+
+body:not([data-theme="dark"]) .settings-window-modal .ant-input,
+body:not([data-theme="dark"]) .settings-window-modal .ant-input-affix-wrapper,
+body:not([data-theme="dark"]) .settings-window-modal .ant-input-outlined,
+body:not([data-theme="dark"]) .settings-window-modal .ant-input-number,
+body:not([data-theme="dark"]) .settings-window-modal .ant-select-selector,
+body:not([data-theme="dark"]) .settings-window-modal textarea.ant-input,
+body:not([data-theme="dark"]) .update-window-modal .ant-input,
+body:not([data-theme="dark"]) .update-window-modal .ant-input-affix-wrapper,
+body:not([data-theme="dark"]) .update-window-modal .ant-input-outlined,
+body:not([data-theme="dark"]) .update-window-modal .ant-input-number,
+body:not([data-theme="dark"]) .update-window-modal .ant-select-selector,
+body:not([data-theme="dark"]) .update-window-modal textarea.ant-input,
+body:not([data-theme="dark"]) .shortcut-capture-button {
+  border-color: rgba(126, 181, 255, 0.24) !important;
+  background:
+    radial-gradient(circle at 22% 18%, rgba(255, 255, 255, 0.44) 0%, transparent 42%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(239, 246, 255, 0.92) 100%) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.84),
+    0 10px 20px rgba(93, 165, 255, 0.08) !important;
+}
+
+body:not([data-theme="dark"]) .settings-window-modal .ant-btn:not(.ant-btn-primary),
+body:not([data-theme="dark"]) .update-window-modal .ant-btn:not(.ant-btn-primary) {
+  border: 1px solid rgba(126, 181, 255, 0.24) !important;
+  background:
+    radial-gradient(circle at 24% 20%, rgba(255, 255, 255, 0.58) 0%, transparent 42%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(239, 246, 255, 0.9) 100%) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.88),
+    0 10px 20px rgba(93, 165, 255, 0.08) !important;
+}
+
+body:not([data-theme="dark"]) .settings-window-modal .ant-btn-link {
+  color: #2d5db3 !important;
+}
+
+body:not([data-theme="dark"]) .settings-window-modal .ant-btn-primary,
+body:not([data-theme="dark"]) .update-window-modal .ant-btn-primary {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.46),
+    inset 0 -1px 0 rgba(48, 84, 196, 0.24),
+    0 16px 28px rgba(77, 124, 255, 0.24),
+    0 0 0 1px rgba(126, 186, 255, 0.18) !important;
+}
+
+body[data-theme="dark"] .update-window-modal .ant-modal-content,
+body[data-theme="dark"] .settings-window-modal .ant-modal-content {
+  border-color: rgba(143, 180, 255, 0.16) !important;
+  background:
+    radial-gradient(circle at 10% 8%, rgba(79, 140, 255, 0.18) 0%, transparent 22%),
+    radial-gradient(circle at 92% 0%, rgba(73, 219, 195, 0.1) 0%, transparent 18%),
+    linear-gradient(180deg, rgba(57, 65, 77, 0.96) 0%, rgba(50, 58, 69, 0.94) 42%, rgba(48, 56, 66, 0.92) 100%) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.04),
+    0 26px 56px rgba(0, 0, 0, 0.28),
+    0 14px 30px rgba(79, 140, 255, 0.08) !important;
+}
+
+body[data-theme="dark"] .update-status-alert.ant-alert,
+body[data-theme="dark"] .update-meta-strip,
+body[data-theme="dark"] .update-toggle-card,
+body[data-theme="dark"] .update-release-notes,
+body[data-theme="dark"] .settings-about-card,
+body[data-theme="dark"] .settings-sidebar,
+body[data-theme="dark"] .settings-section-card,
+body[data-theme="dark"] .driver-manager-shell,
+body[data-theme="dark"] .driver-manager-nav-panel,
+body[data-theme="dark"] .driver-manager-nav-item,
+body[data-theme="dark"] .driver-manager-summary-card,
+body[data-theme="dark"] .driver-manager-section-card,
+body[data-theme="dark"] .shortcut-setting-item {
+  border-color: rgba(143, 180, 255, 0.14);
+  background:
+    radial-gradient(circle at 16% 14%, rgba(79, 140, 255, 0.16) 0%, transparent 24%),
+    radial-gradient(circle at 88% 12%, rgba(73, 219, 195, 0.08) 0%, transparent 24%),
+    linear-gradient(180deg, rgba(58, 66, 77, 0.96) 0%, rgba(48, 56, 67, 0.94) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.04),
+    0 8px 18px rgba(79, 140, 255, 0.06);
+}
+
+body[data-theme="dark"] .settings-window-modal .ant-input,
+body[data-theme="dark"] .settings-window-modal .ant-input-affix-wrapper,
+body[data-theme="dark"] .settings-window-modal .ant-input-outlined,
+body[data-theme="dark"] .settings-window-modal .ant-input-number,
+body[data-theme="dark"] .settings-window-modal .ant-select-selector,
+body[data-theme="dark"] .settings-window-modal textarea.ant-input,
+body[data-theme="dark"] .update-window-modal .ant-input,
+body[data-theme="dark"] .update-window-modal .ant-input-affix-wrapper,
+body[data-theme="dark"] .update-window-modal .ant-input-outlined,
+body[data-theme="dark"] .update-window-modal .ant-input-number,
+body[data-theme="dark"] .update-window-modal .ant-select-selector,
+body[data-theme="dark"] .update-window-modal textarea.ant-input,
+body[data-theme="dark"] .shortcut-capture-button {
+  border-color: rgba(143, 180, 255, 0.16) !important;
+  background:
+    radial-gradient(circle at 22% 18%, rgba(255, 255, 255, 0.08) 0%, transparent 42%),
+    linear-gradient(180deg, rgba(63, 71, 83, 0.98) 0%, rgba(51, 59, 69, 0.94) 100%) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 10px 20px rgba(79, 140, 255, 0.06) !important;
+}
+
+body[data-theme="dark"] .settings-window-modal .ant-form,
+body[data-theme="dark"] .settings-window-modal .ant-form-item,
+body[data-theme="dark"] .settings-window-modal .ant-form-item-row,
+body[data-theme="dark"] .settings-window-modal .ant-row,
+body[data-theme="dark"] .settings-window-modal .ant-col,
+body[data-theme="dark"] .settings-window-modal .ant-form-item-control,
+body[data-theme="dark"] .settings-window-modal .ant-form-item-control-input,
+body[data-theme="dark"] .settings-window-modal .ant-form-item-control-input-content,
+body[data-theme="dark"] .settings-window-modal .ant-input-group,
+body[data-theme="dark"] .settings-window-modal .ant-input-group-wrapper,
+body[data-theme="dark"] .settings-window-modal .ant-input-group-wrapper-outlined {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+body[data-theme="dark"] .settings-window-modal .ant-btn-link {
+  color: #8bc0ff !important;
+}
+
+.settings-glass-select-dropdown.ant-select-dropdown {
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--dj-border-subtle) 74%, transparent);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-elevated) 94%, transparent), color-mix(in srgb, var(--dj-bg-panel) 92%, transparent)),
+    radial-gradient(circle at top left, color-mix(in srgb, var(--dj-liquid-glow-a) 48%, transparent), transparent 34%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 18%, transparent),
+    0 18px 34px rgba(15, 23, 42, 0.14);
+  backdrop-filter: blur(18px) saturate(136%);
+  -webkit-backdrop-filter: blur(18px) saturate(136%);
+}
+
+.settings-glass-select-dropdown .ant-select-item {
+  min-height: 32px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  color: var(--dj-text-primary);
+}
+
+.settings-glass-select-dropdown .ant-select-item-option-active:not(.ant-select-item-option-disabled),
+.settings-glass-select-dropdown .ant-select-item-option-selected:not(.ant-select-item-option-disabled) {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 12%, var(--dj-accent-soft)), color-mix(in srgb, var(--dj-accent-soft) 76%, transparent)) !important;
+  color: var(--dj-accent) !important;
+}
+
+body:not([data-theme="dark"]) .settings-glass-select-dropdown.ant-select-dropdown {
+  border-color: rgba(126, 181, 255, 0.24);
+  background:
+    radial-gradient(circle at 16% 14%, rgba(112, 186, 255, 0.16) 0%, transparent 22%),
+    radial-gradient(circle at 88% 12%, rgba(103, 232, 214, 0.12) 0%, transparent 24%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(244, 248, 255, 0.92) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.84),
+    0 14px 28px rgba(93, 165, 255, 0.08);
+}
+
+body[data-theme="dark"] .settings-glass-select-dropdown.ant-select-dropdown {
+  border-color: rgba(143, 180, 255, 0.14);
+  background:
+    radial-gradient(circle at 16% 14%, rgba(79, 140, 255, 0.16) 0%, transparent 24%),
+    radial-gradient(circle at 88% 12%, rgba(73, 219, 195, 0.08) 0%, transparent 24%),
+    linear-gradient(180deg, rgba(58, 66, 77, 0.98) 0%, rgba(48, 56, 67, 0.96) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.04),
+    0 14px 28px rgba(79, 140, 255, 0.08);
 }
 
 .driver-manager-shell {
@@ -354,10 +975,14 @@ body[data-theme="dark"] {
   flex-direction: column;
   gap: 6px;
   padding: 14px 14px 12px;
-  border: 1px solid var(--dj-border-subtle);
-  border-radius: var(--dj-radius-md);
-  background: linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-surface) 82%, var(--dj-accent-soft)) 0%, var(--dj-bg-surface) 100%);
-  box-shadow: var(--dj-shadow-card);
+  border: 1px solid color-mix(in srgb, var(--dj-border-subtle) 84%, transparent);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 16% 14%, color-mix(in srgb, var(--dj-liquid-glow-a) 18%, transparent) 0%, transparent 24%),
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-surface) 88%, transparent), color-mix(in srgb, var(--dj-bg-panel) 96%, transparent));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 16%, transparent),
+    0 12px 24px rgba(15, 23, 42, 0.06);
 }
 
 .driver-manager-nav-panel .ant-typography:last-child {
@@ -366,28 +991,77 @@ body[data-theme="dark"] {
 }
 
 .driver-manager-nav-item {
+  position: relative;
+  isolation: isolate;
   display: flex;
   align-items: flex-start;
   gap: 10px;
   width: 100%;
   padding: 12px;
   text-align: left;
-  border: 1px solid var(--dj-border-subtle);
-  border-radius: var(--dj-radius-md);
-  background: var(--dj-bg-surface);
+  border: 1px solid color-mix(in srgb, var(--dj-border-subtle) 84%, transparent);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-surface) 88%, transparent), color-mix(in srgb, var(--dj-bg-panel) 96%, transparent)),
+    radial-gradient(circle at top left, color-mix(in srgb, var(--dj-liquid-glow-b) 14%, transparent), transparent 48%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 14%, transparent),
+    0 10px 20px rgba(15, 23, 42, 0.05);
   cursor: pointer;
-  transition: border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+  transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+}
+
+.driver-manager-nav-item::before {
+  content: '';
+  position: absolute;
+  left: 10px;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 999px;
+  background: transparent;
+  transition: background 0.16s ease, box-shadow 0.16s ease;
 }
 
 .driver-manager-nav-item:hover {
+  transform: translateY(-1px);
   border-color: var(--dj-accent);
-  background: color-mix(in srgb, var(--dj-bg-surface) 82%, var(--dj-accent-soft));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-surface) 80%, var(--dj-accent-soft)), color-mix(in srgb, var(--dj-bg-panel) 96%, transparent)),
+    radial-gradient(circle at top left, color-mix(in srgb, var(--dj-liquid-glow-a) 22%, transparent), transparent 46%);
 }
 
 .driver-manager-nav-item.active {
   border-color: var(--dj-accent);
-  background: color-mix(in srgb, var(--dj-bg-surface) 74%, var(--dj-accent-soft));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dj-accent) 35%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-surface) 74%, var(--dj-accent-soft)), color-mix(in srgb, var(--dj-bg-panel) 96%, transparent)),
+    radial-gradient(circle at top left, color-mix(in srgb, var(--dj-liquid-glow-a) 26%, transparent), transparent 44%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 18%, transparent),
+    0 12px 24px color-mix(in srgb, var(--dj-accent) 10%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--dj-accent) 24%, transparent);
+}
+
+.driver-manager-nav-item.active::before {
+  background: linear-gradient(180deg, #8be0ff, #5d8fff);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--dj-accent) 36%, transparent);
+}
+
+.driver-manager-nav-item.active .driver-manager-nav-icon,
+.driver-manager-nav-item.active .driver-manager-nav-copy .ant-typography,
+.driver-manager-nav-item.active .driver-manager-nav-copy .ant-typography strong {
+  color: var(--dj-accent) !important;
+}
+
+.driver-manager-nav-item.active .driver-manager-nav-meta .ant-tag {
+  border-color: color-mix(in srgb, var(--dj-accent) 36%, transparent);
+  color: var(--dj-accent) !important;
+  background:
+    radial-gradient(circle at 24% 24%, color-mix(in srgb, white 30%, transparent), transparent 44%),
+    linear-gradient(180deg, color-mix(in srgb, white 10%, var(--dj-accent-soft)), color-mix(in srgb, var(--dj-accent-soft) 82%, transparent)) !important;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 18%, transparent),
+    0 8px 16px color-mix(in srgb, var(--dj-accent) 12%, transparent);
 }
 
 .driver-manager-nav-icon {
@@ -435,13 +1109,20 @@ body[data-theme="dark"] {
 }
 
 .driver-manager-summary-card {
+  position: relative;
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   gap: 4px;
   padding: 14px 16px;
-  border: 1px solid var(--dj-border-subtle);
-  border-radius: var(--dj-radius-md);
-  background: var(--dj-bg-surface);
+  border: 1px solid color-mix(in srgb, var(--dj-border-subtle) 84%, transparent);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-surface) 88%, transparent), color-mix(in srgb, var(--dj-bg-panel) 96%, transparent)),
+    radial-gradient(circle at top left, color-mix(in srgb, var(--dj-liquid-glow-b) 14%, transparent), transparent 50%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 14%, transparent),
+    0 10px 20px rgba(15, 23, 42, 0.05);
 }
 
 .driver-manager-summary-card span {
@@ -457,7 +1138,9 @@ body[data-theme="dark"] {
 }
 
 .driver-manager-summary-card.accent {
-  background: color-mix(in srgb, var(--dj-bg-surface) 76%, var(--dj-accent-soft));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-surface) 76%, var(--dj-accent-soft)), color-mix(in srgb, var(--dj-bg-panel) 96%, transparent)),
+    radial-gradient(circle at top left, color-mix(in srgb, var(--dj-liquid-glow-a) 22%, transparent), transparent 46%);
   border-color: color-mix(in srgb, var(--dj-accent) 25%, var(--dj-border-subtle));
 }
 
@@ -466,10 +1149,14 @@ body[data-theme="dark"] {
   flex-direction: column;
   gap: 12px;
   padding: 16px;
-  border: 1px solid var(--dj-border-subtle);
-  border-radius: var(--dj-radius-md);
-  background: var(--dj-bg-surface);
-  box-shadow: var(--dj-shadow-card);
+  border: 1px solid color-mix(in srgb, var(--dj-border-subtle) 84%, transparent);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-surface) 88%, transparent), color-mix(in srgb, var(--dj-bg-panel) 96%, transparent)),
+    radial-gradient(circle at top left, color-mix(in srgb, var(--dj-liquid-glow-b) 14%, transparent), transparent 50%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 14%, transparent),
+    0 12px 24px rgba(15, 23, 42, 0.06);
 }
 
 .ant-modal-content {
@@ -1588,6 +2275,10 @@ body[data-theme="dark"] .ant-popover-message {
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
+  contain: layout paint style;
+  isolation: isolate;
+  transform: translateZ(0);
+  will-change: transform;
   box-sizing: border-box;
 }
 
@@ -1897,6 +2588,9 @@ body[data-theme="dark"] .ant-popover-message {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  contain: layout paint style;
+  isolation: isolate;
+  transform: translateZ(0);
   border: 0;
   border-radius: 18px;
   background:
@@ -1925,116 +2619,6 @@ body[data-theme="dark"] .ant-popover-message {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-}
-
-.resource-tree-sticky-parent {
-  position: sticky;
-  top: 0;
-  z-index: 4;
-  display: none;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  margin-bottom: 8px;
-  padding: 8px 12px;
-  border: 1px solid color-mix(in srgb, var(--dj-accent) 18%, var(--dj-border-subtle));
-  border-radius: 16px;
-  color: var(--dj-text-primary);
-  background:
-    radial-gradient(circle at 12% 18%, var(--dj-liquid-glow-a) 0%, transparent 26%),
-    radial-gradient(circle at 88% 14%, var(--dj-liquid-glow-c) 0%, transparent 22%),
-    linear-gradient(180deg, color-mix(in srgb, white 12%, var(--dj-bg-panel)) 0%, color-mix(in srgb, var(--dj-bg-glass) 94%, transparent) 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.18),
-    0 12px 24px color-mix(in srgb, var(--dj-liquid-glow-b) 12%, transparent);
-  backdrop-filter: blur(18px) saturate(130%);
-  -webkit-backdrop-filter: blur(18px) saturate(130%);
-  cursor: pointer;
-  transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
-}
-
-.resource-tree-sticky-parent.is-visible {
-  display: flex;
-}
-
-.resource-tree-sticky-parent:hover {
-  transform: translateY(-1px);
-  border-color: color-mix(in srgb, var(--dj-accent) 28%, var(--dj-border-subtle));
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.2),
-    0 16px 30px color-mix(in srgb, var(--dj-liquid-glow-b) 14%, transparent);
-}
-
-.resource-tree-sticky-parent-dot {
-  flex: 0 0 auto;
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: var(--dj-text-tertiary);
-  opacity: 0.56;
-}
-
-.resource-tree-sticky-parent-dot.is-open {
-  background: var(--dj-success);
-  opacity: 1;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--dj-success) 14%, transparent);
-}
-
-.resource-tree-sticky-parent-main {
-  display: flex;
-  flex: 1 1 auto;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.resource-tree-sticky-parent-title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.resource-tree-sticky-parent-meta {
-  overflow: hidden;
-  max-width: 42%;
-  color: var(--dj-text-secondary);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 10px;
-}
-
-.resource-tree-sticky-parent-action {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  flex: 0 0 auto;
-  color: var(--dj-accent);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-body:not([data-theme="dark"]) .resource-tree-sticky-parent {
-  border-color: rgba(126, 181, 255, 0.24);
-  background:
-    radial-gradient(circle at 12% 18%, rgba(112, 186, 255, 0.2) 0%, transparent 26%),
-    radial-gradient(circle at 88% 14%, rgba(103, 232, 214, 0.12) 0%, transparent 22%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.94) 0%, rgba(244, 248, 255, 0.9) 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.8),
-    0 14px 28px rgba(93, 165, 255, 0.1);
-}
-
-body[data-theme="dark"] .resource-tree-sticky-parent {
-  border-color: rgba(143, 180, 255, 0.16);
-  background:
-    radial-gradient(circle at 12% 18%, rgba(79, 140, 255, 0.16) 0%, transparent 26%),
-    radial-gradient(circle at 88% 14%, rgba(73, 219, 195, 0.08) 0%, transparent 22%),
-    linear-gradient(180deg, rgba(56, 64, 76, 0.92) 0%, rgba(42, 48, 57, 0.9) 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    0 16px 30px rgba(0, 0, 0, 0.24);
 }
 
 .resource-tree-loading-state {
@@ -2925,6 +3509,7 @@ body:not([data-theme="dark"]) .tree-selector-toggle-btn.ant-btn.ant-btn-link {
   flex-direction: column;
   height: 100%;
   min-height: 0;
+  isolation: isolate;
   background:
     radial-gradient(circle at 12% 8%, var(--dj-liquid-glow-a) 0%, transparent 18%),
     radial-gradient(circle at 90% 0%, var(--dj-liquid-glow-c) 0%, transparent 16%),
@@ -2990,6 +3575,7 @@ body:not([data-theme="dark"]) .tree-selector-toggle-btn.ant-btn.ant-btn-link {
   min-height: 0;
   padding: 0;
   overflow: hidden;
+  isolation: isolate;
   background: color-mix(in srgb, var(--dj-bg-surface) 96%, var(--dj-bg-panel));
 }
 
@@ -4336,20 +4922,20 @@ body:not([data-theme="dark"]) .folder-editor-modal .ant-modal-footer .ant-btn-de
 
 /* ===== Tab Bar ===== */
 .workspace-tabs-host {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   display: flex;
   flex-direction: column;
-  height: 100%;
+  width: 100%;
   min-height: 0;
   overflow: hidden;
 }
 
 .workspace-tabs {
-  flex: 1 1 0;
-  height: 100%;
+  flex: 0 0 auto;
+  width: 100%;
   display: flex;
   flex-direction: column;
-  min-height: 0;
+  min-height: auto;
   background: transparent;
 }
 
@@ -4515,51 +5101,48 @@ body:not([data-theme="dark"]) .workspace-tabs .ant-tabs-tab-active {
 }
 
 .workspace-tabs .ant-tabs-content-holder {
-  position: relative;
+  display: none !important;
+  flex: 0 0 auto !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+.workspace-tabs .ant-tabs-content {
+  display: none !important;
+  overflow: hidden !important;
+}
+
+.workspace-tabs .ant-tabs-tabpane-active {
+  display: none !important;
+}
+
+.workspace-tabs .ant-tabs-tabpane-hidden {
+  display: none !important;
+}
+
+.workspace-tab-panels {
   flex: 1 1 0;
-  height: 100%;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  overflow: hidden;
+}
+
+.workspace-active-content {
+  flex: 1 1 0;
+  width: 100%;
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
 }
 
-.workspace-tabs .ant-tabs-content,
-.workspace-tabs .ant-tabs-tabpane {
-  flex: 1 1 0;
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
-}
-
-.workspace-tabs .ant-tabs-content {
-  position: relative;
-}
-
-.workspace-tabs .ant-tabs-tabpane {
+.workspace-inactive-content {
   position: absolute;
   inset: 0;
-  visibility: visible;
-  pointer-events: auto;
-}
-
-.workspace-tabs .ant-tabs-tabpane-active {
-  position: relative;
-  z-index: 1;
-}
-
-.workspace-tabs .ant-tabs-tabpane-hidden {
-  display: flex !important;
-  visibility: hidden;
+  display: none;
+  overflow: hidden;
   pointer-events: none;
-  z-index: 0;
-  content-visibility: hidden;
-  contain: layout style paint;
 }
 
 .query-workspace {
@@ -6465,7 +7048,7 @@ body[data-theme="dark"] .sql-editor-container .monaco-editor .selectionHighlight
 /* ===== AI Dock ===== */
 .ai-dock-panel {
   flex: 0 0 auto;
-  min-width: 260px;
+  min-width: 380px;
   max-width: 720px;
   height: 100%;
   background:
@@ -6510,13 +7093,30 @@ body[data-theme="dark"] .sql-editor-container .monaco-editor .selectionHighlight
 
 .ai-panel-actions.ant-space {
   flex: 1 1 auto;
+  width: 100%;
   min-width: 0;
-  margin-left: auto;
+  margin-left: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px !important;
 }
 
 .ai-panel-actions > .ant-space-item:first-child {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+.ai-panel-session-shell {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.ai-panel-action-buttons {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
 }
 
 .ai-session-select {
@@ -6664,23 +7264,6 @@ body[data-theme="dark"] .sql-editor-container .monaco-editor .selectionHighlight
   background: radial-gradient(circle, color-mix(in srgb, var(--dj-accent) 24%, transparent), transparent 68%);
   pointer-events: none;
   animation: aiInputGlowPulse 7.2s ease-in-out infinite;
-}
-
-.ai-input-shell-badge {
-  position: relative;
-  z-index: 1;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-  padding: 6px 12px;
-  color: var(--dj-text-secondary);
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  border: 1px solid color-mix(in srgb, var(--dj-border-subtle) 78%, var(--dj-accent-soft));
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--dj-bg-elevated) 74%, transparent);
 }
 
 .ai-input-box.ant-input {
@@ -6929,6 +7512,735 @@ body[data-theme="dark"] .sql-editor-container .monaco-editor .selectionHighlight
 
 .ai-markdown code {
   font-family: Consolas, 'Courier New', monospace;
+}
+
+.ai-panel-inline {
+  gap: 10px;
+}
+
+.ai-panel-header {
+  position: relative;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--dj-border-subtle) 82%, transparent);
+  border-radius: 22px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-elevated) 84%, transparent), color-mix(in srgb, var(--dj-bg-panel) 92%, transparent)),
+    radial-gradient(circle at 12% 16%, color-mix(in srgb, var(--dj-liquid-glow-a) 74%, transparent), transparent 32%),
+    radial-gradient(circle at 88% 18%, color-mix(in srgb, var(--dj-liquid-glow-c) 52%, transparent), transparent 28%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 18%, transparent),
+    0 14px 30px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(22px) saturate(140%);
+  -webkit-backdrop-filter: blur(22px) saturate(140%);
+}
+
+.ai-panel-ghost-btn.ant-btn {
+  height: 34px;
+  padding-inline: 14px;
+  border: 1px solid color-mix(in srgb, var(--dj-border-subtle) 80%, transparent);
+  border-radius: 999px !important;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 12%, var(--dj-bg-elevated)), color-mix(in srgb, var(--dj-bg-panel) 92%, transparent));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 18%, transparent),
+    0 8px 18px color-mix(in srgb, var(--dj-accent) 8%, transparent);
+  color: var(--dj-text-secondary);
+}
+
+.ai-panel-ghost-btn.ant-btn:hover,
+.ai-panel-ghost-btn.ant-btn:focus,
+.ai-panel-ghost-btn.ant-btn:active {
+  color: var(--dj-text-primary) !important;
+  border-color: color-mix(in srgb, var(--dj-accent) 36%, transparent) !important;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 24%, var(--dj-bg-elevated)), color-mix(in srgb, var(--dj-bg-panel) 96%, transparent)) !important;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 20%, transparent),
+    0 12px 24px color-mix(in srgb, var(--dj-accent) 12%, transparent) !important;
+}
+
+.ai-session-select .ant-select-selector,
+.ai-session-select.ant-select-focused .ant-select-selector,
+.ai-session-select:hover .ant-select-selector {
+  min-height: 34px !important;
+  padding-inline: 12px !important;
+  border: 1px solid color-mix(in srgb, var(--dj-border-subtle) 76%, transparent) !important;
+  border-radius: 999px !important;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-elevated) 86%, transparent), color-mix(in srgb, var(--dj-bg-panel) 94%, transparent)) !important;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 18%, transparent),
+    0 10px 22px rgba(15, 23, 42, 0.06) !important;
+}
+
+.ai-session-select .ant-select-selection-wrap {
+  min-width: 0;
+}
+
+.ai-session-select .ant-select-selection-placeholder,
+.ai-session-select .ant-select-selection-item {
+  color: var(--dj-text-primary) !important;
+  line-height: 32px !important;
+}
+
+.ai-session-select .ant-select-arrow {
+  color: var(--dj-text-tertiary);
+}
+
+.ai-session-delete-btn.ant-btn,
+.ai-session-delete-btn.ant-btn:hover,
+.ai-session-delete-btn.ant-btn:focus,
+.ai-session-delete-btn.ant-btn:active {
+  width: 18px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0;
+  color: var(--dj-text-tertiary);
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.ai-session-delete-btn.ant-btn:hover,
+.ai-session-delete-btn.ant-btn:focus,
+.ai-session-delete-btn.ant-btn:active {
+  color: var(--dj-text-primary);
+}
+
+@media (max-width: 640px) {
+  .ai-panel-actions.ant-space {
+    gap: 8px !important;
+  }
+
+  .ai-panel-ghost-btn.ant-btn {
+    padding-inline: 12px;
+  }
+}
+
+@media (max-width: 420px) {
+  .ai-panel-header {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .ai-panel-actions.ant-space {
+    width: 100%;
+    margin-left: 0;
+    justify-content: space-between;
+  }
+
+  .ai-panel-actions > .ant-space-item:first-child {
+    flex: 1 1 170px;
+    min-width: 150px;
+  }
+
+  .ai-panel-session-shell {
+    min-width: 0;
+  }
+
+  .ai-panel-action-buttons {
+    gap: 6px;
+  }
+}
+
+.ai-context-sources,
+.ai-input-shell,
+.ai-message-card.ant-card,
+.ai-tool-calls .ant-collapse,
+.ai-agent-card.ant-card,
+.ai-confirmation-card.ant-alert {
+  border-color: color-mix(in srgb, var(--dj-border-subtle) 84%, transparent) !important;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 18%, transparent),
+    0 14px 30px rgba(15, 23, 42, 0.08) !important;
+  backdrop-filter: blur(24px) saturate(138%);
+  -webkit-backdrop-filter: blur(24px) saturate(138%);
+}
+
+.ai-context-sources {
+  padding: 10px;
+  border-radius: 20px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-elevated) 84%, transparent), color-mix(in srgb, var(--dj-bg-panel) 92%, transparent)),
+    radial-gradient(circle at 8% 12%, color-mix(in srgb, var(--dj-liquid-glow-a) 52%, transparent), transparent 28%);
+}
+
+.ai-context-sources-header {
+  margin-bottom: 8px;
+}
+
+.ai-context-source-item {
+  padding: 7px 8px;
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-surface) 88%, transparent), color-mix(in srgb, var(--dj-bg-panel) 94%, transparent));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 14%, transparent);
+}
+
+.ai-message-list {
+  padding-right: 2px;
+  mask-image: linear-gradient(180deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+}
+
+.ai-message .ant-list-item {
+  padding: 6px 0;
+}
+
+.ai-message-card.ant-card {
+  overflow: hidden;
+  border-radius: 22px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-elevated) 82%, transparent), color-mix(in srgb, var(--dj-bg-panel) 94%, transparent)),
+    radial-gradient(circle at 12% 14%, color-mix(in srgb, var(--dj-liquid-glow-a) 42%, transparent), transparent 28%);
+}
+
+.ai-message-card.ant-card .ant-card-head {
+  min-height: 38px;
+  padding: 0 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--dj-border-subtle) 72%, transparent);
+  background: linear-gradient(180deg, color-mix(in srgb, white 10%, transparent), transparent);
+}
+
+.ai-message-card.ant-card .ant-card-head-title {
+  padding: 10px 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--dj-text-tertiary);
+}
+
+.ai-message-card.ant-card .ant-card-body {
+  padding: 14px;
+}
+
+.ai-message-card-user.ant-card {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-accent-soft) 84%, transparent), color-mix(in srgb, var(--dj-bg-panel) 92%, transparent)),
+    radial-gradient(circle at 84% 16%, color-mix(in srgb, var(--dj-accent) 16%, transparent), transparent 24%);
+}
+
+.ai-message-card-assistant.ant-card {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-elevated) 84%, transparent), color-mix(in srgb, var(--dj-bg-panel) 94%, transparent)),
+    radial-gradient(circle at 14% 18%, color-mix(in srgb, var(--dj-liquid-glow-b) 34%, transparent), transparent 26%);
+}
+
+.ai-input-shell {
+  border-radius: 24px;
+  padding-top: 14px;
+  background:
+    radial-gradient(circle at top right, color-mix(in srgb, var(--dj-accent-soft) 70%, transparent), transparent 32%),
+    radial-gradient(circle at bottom left, color-mix(in srgb, var(--dj-liquid-glow-c) 42%, transparent), transparent 28%),
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-elevated) 88%, transparent), color-mix(in srgb, var(--dj-bg-panel) 96%, transparent));
+}
+
+.ai-input-box.ant-input::placeholder {
+  color: var(--dj-text-tertiary);
+}
+
+.ai-model-trigger {
+  padding: 6px 10px;
+  border: 1px solid color-mix(in srgb, var(--dj-border-subtle) 72%, transparent);
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-elevated) 80%, transparent), color-mix(in srgb, var(--dj-bg-panel) 92%, transparent));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 14%, transparent);
+}
+
+.ai-model-trigger:hover {
+  border-color: color-mix(in srgb, var(--dj-accent) 34%, transparent);
+}
+
+.ai-context-meter {
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--dj-border-subtle) 68%, transparent);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-elevated) 76%, transparent), color-mix(in srgb, var(--dj-bg-panel) 92%, transparent));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 12%, transparent);
+}
+
+.ai-send-button.ant-btn {
+  border: 1px solid color-mix(in srgb, rgba(255, 255, 255, 0.32) 62%, transparent);
+}
+
+.ai-tool-calls .ant-collapse,
+.ai-agent-card.ant-card,
+.ai-confirmation-card.ant-alert {
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-elevated) 82%, transparent), color-mix(in srgb, var(--dj-bg-panel) 94%, transparent)) !important;
+}
+
+.ai-tool-calls .ant-collapse-header,
+.ai-tool-calls .ant-collapse-content-box {
+  padding-inline: 12px !important;
+}
+
+.ai-markdown {
+  color: var(--dj-text-primary);
+  font-size: 13px;
+  line-height: 1.72;
+}
+
+.ai-markdown > :first-child {
+  margin-top: 0;
+}
+
+.ai-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.ai-markdown h1,
+.ai-markdown h2,
+.ai-markdown h3,
+.ai-markdown h4,
+.ai-markdown h5,
+.ai-markdown h6 {
+  margin: 1.1em 0 0.55em;
+  line-height: 1.3;
+  color: var(--dj-text-primary);
+}
+
+.ai-markdown h1 { font-size: 20px; }
+.ai-markdown h2 { font-size: 18px; }
+.ai-markdown h3 { font-size: 16px; }
+.ai-markdown h4 { font-size: 15px; }
+.ai-markdown h5,
+.ai-markdown h6 { font-size: 14px; }
+
+.ai-markdown p,
+.ai-markdown ul,
+.ai-markdown ol,
+.ai-markdown blockquote,
+.ai-markdown table,
+.ai-markdown pre {
+  margin: 0 0 12px;
+}
+
+.ai-markdown ul,
+.ai-markdown ol {
+  padding-left: 20px;
+}
+
+.ai-markdown li + li {
+  margin-top: 4px;
+}
+
+.ai-markdown a {
+  color: var(--dj-accent);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+}
+
+.ai-markdown a:hover {
+  color: var(--dj-accent-hover);
+  border-bottom-color: color-mix(in srgb, currentColor 56%, transparent);
+}
+
+.ai-markdown strong {
+  color: var(--dj-text-primary);
+  font-weight: 700;
+}
+
+.ai-markdown hr {
+  height: 1px;
+  margin: 14px 0;
+  border: 0;
+  background: color-mix(in srgb, var(--dj-border-subtle) 80%, transparent);
+}
+
+.ai-markdown blockquote {
+  padding: 10px 12px;
+  border-left: 3px solid color-mix(in srgb, var(--dj-accent) 54%, transparent);
+  border-radius: 0 14px 14px 0;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-elevated) 68%, transparent), color-mix(in srgb, var(--dj-bg-panel) 88%, transparent));
+  color: var(--dj-text-secondary);
+}
+
+.ai-markdown code {
+  padding: 0.16em 0.42em;
+  border: 1px solid color-mix(in srgb, var(--dj-border-subtle) 74%, transparent);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-elevated) 74%, transparent), color-mix(in srgb, var(--dj-bg-panel) 90%, transparent));
+  font-size: 0.92em;
+}
+
+.ai-markdown pre {
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--dj-border-subtle) 80%, transparent);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-editor-bg) 92%, transparent), color-mix(in srgb, var(--dj-bg-panel) 88%, transparent)),
+    radial-gradient(circle at top right, color-mix(in srgb, var(--dj-liquid-glow-a) 22%, transparent), transparent 32%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 8%, transparent),
+    0 12px 24px rgba(15, 23, 42, 0.08);
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+.ai-markdown pre code {
+  display: block;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  white-space: pre-wrap;
+}
+
+.ai-markdown table {
+  display: table;
+  width: max-content;
+  min-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--dj-border-subtle) 78%, transparent);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-elevated) 80%, transparent), color-mix(in srgb, var(--dj-bg-panel) 92%, transparent));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 14%, transparent),
+    0 12px 22px rgba(15, 23, 42, 0.06);
+  table-layout: auto;
+}
+
+.ai-markdown thead,
+.ai-markdown tbody,
+.ai-markdown tr {
+  width: 100%;
+}
+
+.ai-markdown thead {
+  background: color-mix(in srgb, var(--dj-accent) 10%, transparent);
+}
+
+.ai-markdown thead th:first-child {
+  border-top-left-radius: 18px;
+}
+
+.ai-markdown thead th:last-child {
+  border-top-right-radius: 18px;
+}
+
+.ai-markdown th {
+  font-weight: 700;
+}
+
+.ai-markdown th,
+.ai-markdown td {
+  padding: 9px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--dj-border-subtle) 70%, transparent);
+  border-right: 1px solid color-mix(in srgb, var(--dj-border-subtle) 56%, transparent);
+  text-align: left;
+  vertical-align: top;
+  white-space: normal;
+}
+
+.ai-markdown th:last-child,
+.ai-markdown td:last-child {
+  border-right: 0;
+}
+
+.ai-markdown tr:last-child td {
+  border-bottom: 0;
+}
+
+.ai-settings-modal .ant-modal-content {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--dj-border-subtle) 82%, transparent);
+  border-radius: 26px;
+  background:
+    radial-gradient(circle at 10% 8%, color-mix(in srgb, var(--dj-liquid-glow-a) 82%, transparent) 0%, transparent 22%),
+    radial-gradient(circle at 92% 0%, color-mix(in srgb, var(--dj-liquid-glow-c) 62%, transparent) 0%, transparent 18%),
+    linear-gradient(180deg, color-mix(in srgb, white 14%, var(--dj-bg-elevated)) 0%, color-mix(in srgb, white 4%, var(--dj-bg-panel)) 40%, color-mix(in srgb, var(--dj-bg-glass) 96%, transparent) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.06),
+    0 24px 54px rgba(15, 23, 42, 0.16),
+    0 12px 28px color-mix(in srgb, var(--dj-liquid-glow-b) 14%, transparent);
+  backdrop-filter: blur(20px) saturate(132%);
+  -webkit-backdrop-filter: blur(20px) saturate(132%);
+}
+
+.ai-settings-modal .ant-modal-content::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.34) 0%, rgba(255, 255, 255, 0.08) 16%, transparent 36%),
+    radial-gradient(circle at 22% 14%, rgba(255, 255, 255, 0.2), transparent 22%);
+  pointer-events: none;
+}
+
+.ai-settings-modal .ant-modal-header {
+  position: relative;
+  z-index: 1;
+  margin-bottom: 0;
+  padding: 18px 20px 8px;
+  background: transparent;
+  border-bottom: 0;
+}
+
+.ai-settings-modal .ant-modal-body {
+  position: relative;
+  z-index: 1;
+  padding: 12px 20px 20px;
+}
+
+.ai-settings-modal .ant-modal-close {
+  top: 14px;
+  right: 14px;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-elevated) 82%, transparent), color-mix(in srgb, var(--dj-bg-panel) 92%, transparent));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 18%, transparent);
+}
+
+.ai-settings-modal .ant-modal-close:hover {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 20%, var(--dj-bg-elevated)), color-mix(in srgb, var(--dj-bg-panel) 96%, transparent));
+}
+
+.ai-settings-title {
+  align-items: center;
+}
+
+.ai-settings-title-orb {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  color: #fff;
+  background: linear-gradient(145deg, #7cd9ff, #5a92ff 58%, #6371ff);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.38),
+    0 12px 24px rgba(86, 140, 255, 0.24);
+}
+
+.ai-settings-title-copy {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ai-settings-title-copy .ant-typography + .ant-typography {
+  font-size: 11px;
+}
+
+.ai-settings-toolbar,
+.ai-settings-body .ant-alert,
+.ai-config-collapse .ant-collapse-item {
+  position: relative;
+  border: 1px solid color-mix(in srgb, var(--dj-border-subtle) 80%, transparent);
+  border-radius: 20px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-elevated) 82%, transparent), color-mix(in srgb, var(--dj-bg-panel) 94%, transparent));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 16%, transparent),
+    0 12px 24px rgba(15, 23, 42, 0.06);
+}
+
+.ai-settings-toolbar {
+  padding: 10px 12px;
+}
+
+.ai-settings-body .ant-alert {
+  overflow: hidden;
+}
+
+.ai-config-collapse {
+  background: transparent;
+  border: 0;
+}
+
+.ai-config-collapse .ant-collapse-item {
+  margin-bottom: 12px;
+  overflow: hidden;
+  border-radius: 20px !important;
+}
+
+.ai-config-collapse .ant-collapse-item:last-child {
+  margin-bottom: 0;
+}
+
+.ai-config-collapse > .ant-collapse-item:first-child,
+.ai-config-collapse > .ant-collapse-item:last-child,
+.ai-config-collapse > .ant-collapse-item:first-child:last-child {
+  border-radius: 20px !important;
+}
+
+.ai-config-collapse .ant-collapse-header {
+  align-items: center !important;
+  padding: 12px 14px !important;
+  border-radius: 20px 20px 0 0 !important;
+  background: linear-gradient(180deg, color-mix(in srgb, white 8%, transparent), transparent);
+}
+
+.ai-config-collapse .ant-collapse-item.ant-collapse-item-collapsed .ant-collapse-header {
+  border-radius: 20px !important;
+}
+
+.ai-config-collapse .ant-collapse-content {
+  background: transparent;
+  border-top: 1px solid color-mix(in srgb, var(--dj-border-subtle) 70%, transparent);
+  border-radius: 0 0 20px 20px !important;
+}
+
+.ai-config-collapse .ant-collapse-content-box {
+  padding: 14px !important;
+}
+
+.ai-settings-form .ant-form-item {
+  margin-bottom: 14px;
+}
+
+.ai-settings-form .ant-form-item-label > label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--dj-text-secondary);
+}
+
+.ai-settings-modal .ant-input,
+.ai-settings-modal .ant-input-affix-wrapper,
+.ai-settings-modal .ant-input-number,
+.ai-settings-modal .ant-input-number-input-wrap,
+.ai-settings-modal .ant-select-selector {
+  border: 1px solid color-mix(in srgb, var(--dj-border-subtle) 78%, transparent) !important;
+  border-radius: 16px !important;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-elevated) 82%, transparent), color-mix(in srgb, var(--dj-bg-panel) 94%, transparent)) !important;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 14%, transparent),
+    0 8px 18px rgba(15, 23, 42, 0.05) !important;
+}
+
+.ai-settings-modal .ant-input-number {
+  width: 100%;
+}
+
+.ai-settings-modal .ant-input,
+.ai-settings-modal .ant-input-affix-wrapper,
+.ai-settings-modal .ant-input-number-input,
+.ai-settings-modal .ant-select-selection-item,
+.ai-settings-modal .ant-select-selection-placeholder {
+  color: var(--dj-text-primary) !important;
+}
+
+.ai-settings-modal .ant-input:hover,
+.ai-settings-modal .ant-input:focus,
+.ai-settings-modal .ant-input-affix-wrapper:hover,
+.ai-settings-modal .ant-input-affix-wrapper:focus,
+.ai-settings-modal .ant-input-affix-wrapper-focused,
+.ai-settings-modal .ant-input-number:hover,
+.ai-settings-modal .ant-input-number-focused,
+.ai-settings-modal .ant-select-focused .ant-select-selector,
+.ai-settings-modal .ant-select:hover .ant-select-selector {
+  border-color: color-mix(in srgb, var(--dj-accent) 40%, transparent) !important;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 18%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--dj-accent) 10%, transparent),
+    0 10px 22px color-mix(in srgb, var(--dj-accent) 10%, transparent) !important;
+}
+
+.ai-settings-actions {
+  width: 100%;
+  justify-content: flex-end;
+}
+
+.ai-settings-primary-btn.ant-btn {
+  border-radius: 999px !important;
+  background: linear-gradient(180deg, #7ad8ff, #5a9cff 58%, #4d7cff) !important;
+  border-color: transparent !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    0 12px 24px rgba(90, 156, 255, 0.22) !important;
+}
+
+.ai-settings-modal .ant-tag {
+  border: 0;
+  border-radius: 999px;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 14%, transparent);
+}
+
+.ai-settings-modal .ant-switch {
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.16);
+}
+
+.ai-settings-modal .ant-btn-icon-only {
+  border-radius: 12px !important;
+}
+
+.ai-session-select-popup.ant-select-dropdown,
+.ai-settings-select-popup.ant-select-dropdown {
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--dj-border-subtle) 78%, transparent);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-elevated) 90%, transparent), color-mix(in srgb, var(--dj-bg-panel) 96%, transparent)),
+    radial-gradient(circle at top, color-mix(in srgb, var(--dj-liquid-glow-a) 30%, transparent), transparent 34%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 16%, transparent),
+    0 16px 34px rgba(15, 23, 42, 0.14);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+}
+
+.ai-session-select-popup .ant-select-item,
+.ai-settings-select-popup .ant-select-item {
+  min-height: 36px;
+  padding: 8px 10px;
+  border-radius: 12px;
+}
+
+.ai-session-select-popup .ant-select-item-option-selected:not(.ant-select-item-option-disabled),
+.ai-settings-select-popup .ant-select-item-option-selected:not(.ant-select-item-option-disabled) {
+  background: color-mix(in srgb, var(--dj-accent) 12%, transparent);
+}
+
+.ai-session-select-popup .ant-select-item-option-active:not(.ant-select-item-option-disabled),
+.ai-settings-select-popup .ant-select-item-option-active:not(.ant-select-item-option-disabled) {
+  background: color-mix(in srgb, var(--dj-accent) 8%, transparent);
+}
+
+[data-theme="dark"] .ai-panel-header,
+[data-theme="dark"] .ai-context-sources,
+[data-theme="dark"] .ai-message-card.ant-card,
+[data-theme="dark"] .ai-input-shell,
+[data-theme="dark"] .ai-settings-modal .ant-modal-content,
+[data-theme="dark"] .ai-settings-toolbar,
+[data-theme="dark"] .ai-settings-body .ant-alert,
+[data-theme="dark"] .ai-config-collapse .ant-collapse-item,
+[data-theme="dark"] .ai-settings-footer {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 18px 34px rgba(0, 0, 0, 0.24) !important;
+}
+
+[data-theme="dark"] .ai-message-card.ant-card .ant-card-head {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent);
+}
+
+[data-theme="dark"] .ai-markdown blockquote,
+[data-theme="dark"] .ai-markdown pre,
+[data-theme="dark"] .ai-markdown table,
+[data-theme="dark"] .ai-markdown code {
+  box-shadow: none;
 }
 
 .query-history-modal {
@@ -7685,8 +8997,8 @@ body[data-theme="dark"] .query-history-item-delete.ant-btn {
   color: var(--dj-text-tertiary);
 }
 
-.ai-thinking-loading {
-  margin-right: 6px;
+.ai-thinking-toggle.is-loading {
+  color: var(--dj-accent);
 }
 
 .ai-thinking-content {
@@ -7824,6 +9136,26 @@ body[data-theme="dark"] .query-history-item-delete.ant-btn {
   border: 0;
   background: transparent;
   box-shadow: none;
+}
+
+.table-toolbar-icon-btn.is-pending-save.ant-btn,
+.table-toolbar-icon-btn.is-pending-save.ant-btn:hover,
+.table-toolbar-icon-btn.is-pending-save.ant-btn:focus,
+.table-toolbar-icon-btn.is-pending-save.ant-btn:active {
+  color: var(--dj-accent-text);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 10%, var(--dj-accent)) 0%, var(--dj-accent) 48%, var(--dj-accent-hover) 100%),
+    radial-gradient(circle at 24% 18%, color-mix(in srgb, white 36%, transparent), transparent 44%);
+  border: 0;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 34%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--dj-accent) 58%, transparent),
+    0 10px 22px color-mix(in srgb, var(--dj-accent) 26%, transparent);
+}
+
+.table-toolbar-icon-btn.is-pending-save.ant-btn .anticon {
+  color: inherit;
+  transform: translateY(-0.5px) scale(1.05);
 }
 
 .table-toolbar-icon-btn.ant-btn-color-primary,
@@ -8275,10 +9607,17 @@ body:not([data-theme="dark"]) .table-toolbar-inline-actions::before,
 }
 
 .shortcut-setting-item {
+  position: relative;
+  isolation: isolate;
   padding: 12px 14px;
-  border: 1px solid var(--dj-border-subtle);
-  border-radius: var(--dj-radius-md);
-  background: var(--dj-bg-glass);
+  border: 1px solid color-mix(in srgb, var(--dj-border-subtle) 84%, transparent);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dj-bg-surface) 88%, transparent), color-mix(in srgb, var(--dj-bg-panel) 96%, transparent)),
+    radial-gradient(circle at top left, color-mix(in srgb, var(--dj-liquid-glow-b) 14%, transparent), transparent 48%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 14%, transparent),
+    0 10px 20px rgba(15, 23, 42, 0.05);
 }
 
 .shortcut-setting-meta {
@@ -8287,18 +9626,32 @@ body:not([data-theme="dark"]) .table-toolbar-inline-actions::before,
 
 .shortcut-capture-button {
   min-width: 180px;
-  padding: 6px 12px;
-  border: 1px solid var(--dj-border-default);
-  border-radius: var(--dj-radius-sm);
-  background: var(--dj-bg-surface);
+  min-height: 36px;
+  padding: 8px 14px;
+  border: 1px solid color-mix(in srgb, var(--dj-border-subtle) 82%, transparent);
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 12%, var(--dj-bg-surface)), color-mix(in srgb, var(--dj-bg-panel) 92%, transparent));
   color: var(--dj-text-primary);
   text-align: left;
   cursor: pointer;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 18%, transparent),
+    0 8px 18px color-mix(in srgb, var(--dj-accent) 6%, transparent);
+  transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.shortcut-capture-button:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--dj-accent) 56%, transparent);
 }
 
 .shortcut-capture-button.is-recording {
-  border-color: var(--dj-accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--dj-accent) 18%, transparent);
+  border-color: color-mix(in srgb, var(--dj-accent) 72%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 18%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--dj-accent) 14%, transparent),
+    0 10px 22px color-mix(in srgb, var(--dj-accent) 12%, transparent);
   color: var(--dj-accent);
 }
 

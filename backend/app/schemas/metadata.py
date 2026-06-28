@@ -128,6 +128,19 @@ class ObjectDdlResponse(BaseModel):
     ddl: str
 
 
+class SequenceDetailResponse(BaseModel):
+    name: str
+    schema: str | None = None
+    start_value: str | None = None
+    minimum_value: str | None = None
+    maximum_value: str | None = None
+    increment_by: str | None = None
+    cache_size: str | None = None
+    cycle: bool | None = None
+    current_value: str | None = None
+    last_number: str | None = None
+
+
 class ColumnsResponse(BaseModel):
     columns: list[ColumnInfo]
     table_comment: str | None = None
