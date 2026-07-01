@@ -17,7 +17,6 @@ import {
 import {
   Alert,
   Button,
-  Dropdown,
   Flex,
   Input,
   InputNumber,
@@ -26,9 +25,9 @@ import {
   Tag,
   Typography
 } from 'antd'
-import type { MenuProps } from 'antd'
 import type React from 'react'
-import { ResultTableHeader, scheduleSelectionRenderSync, WhereClauseInput } from './table-region'
+import { useLayoutEffect, useRef } from 'react'
+import { ResultTableHeader, WhereClauseInput } from './table-region'
 import type { ConnectionInfo } from './connection-model'
 import type { TableSearchUiState, WorkspaceTab, RedisKeyEdit } from './workspace-model'
 
@@ -45,13 +44,10 @@ type EditableCellProps = {
   value: unknown
   editable: boolean
   onCellDragEnter: () => void
-  contextMenuItems: MenuProps['items']
-  onContextMenuAction: (key: string, cellKey: string) => void
-  onSyncRenderedSelection: (tabKey: string) => void
-  onPrepareContextSelection: (tabKey: string, cellKey: string) => void
+  onPrepareContextSelection: (tabKey: string, cellKey: string) => string[]
+  onOpenContextMenu: (tabKey: string, cellKey: string, clientX: number, clientY: number, selection: string[]) => void
   onStartCellSelection: (tabKey: string, rowKey: string, column: string) => void
   onOpenEditor: (tabKey: string, rowKey: string, column: string, host: HTMLElement, value: unknown) => void
-  onFinishCellSelection: (tabKey: string) => void
   displayContent?: React.ReactNode
 }
 
@@ -62,69 +58,77 @@ export function ResultEditableCell({
   value,
   editable,
   onCellDragEnter,
-  contextMenuItems,
-  onContextMenuAction,
-  onSyncRenderedSelection,
   onPrepareContextSelection,
+  onOpenContextMenu,
   onStartCellSelection,
   onOpenEditor,
-  onFinishCellSelection,
   displayContent
 }: EditableCellProps): React.ReactNode {
   const cellKey = `${rowKey}:${column}`
+  const cellRef = useRef<HTMLSpanElement | null>(null)
+  const clearNativeSelection = (): void => {
+    window.getSelection()?.removeAllRanges()
+  }
+  useLayoutEffect(() => {
+    const cell = cellRef.current
+    if (!cell) {
+      return
+    }
+    const host = cell.closest<HTMLElement>('td, .ant-table-cell')
+    const shouldKeepSelected = host?.classList.contains('cell-selected-runtime-host') ?? false
+    cell.classList.toggle('cell-selected-runtime', shouldKeepSelected)
+  })
   return (
-    <Dropdown
-      trigger={['contextMenu']}
-      onOpenChange={(open) => {
-        if (!open) {
-          scheduleSelectionRenderSync(() => onSyncRenderedSelection(tabKey))
-        }
+    <span
+      ref={cellRef}
+      className={`editable-cell${value === null || value === undefined ? ' editable-cell-null' : ''}`}
+      data-cell-column-key={column}
+      data-row-key={rowKey}
+      data-cell-key={cellKey}
+      draggable={false}
+      onContextMenu={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        const selection = onPrepareContextSelection(tabKey, cellKey)
+        onOpenContextMenu(tabKey, cellKey, event.clientX, event.clientY, selection)
       }}
-      menu={{
-        items: contextMenuItems,
-        onClick: ({ key }) => {
-          onContextMenuAction(String(key), cellKey)
+      onMouseDown={(event) => {
+        if (event.button !== 0) {
+          return
         }
+        if ((event.target as HTMLElement | null)?.closest('.editable-cell-dom-input')) {
+          return
+        }
+        clearNativeSelection()
+        event.stopPropagation()
+        onStartCellSelection(tabKey, rowKey, column)
+      }}
+      onDoubleClick={(event) => {
+        if (!editable) {
+          return
+        }
+        event.preventDefault()
+        event.stopPropagation()
+        onOpenEditor(tabKey, rowKey, column, event.currentTarget, value)
+      }}
+      onMouseEnter={(event) => {
+        if ((event.buttons & 1) !== 1) {
+          return
+        }
+        onCellDragEnter()
+      }}
+      onMouseUp={(event) => {
+        if (event.button !== 0) {
+          return
+        }
+        if ((event.target as HTMLElement | null)?.closest('.editable-cell-dom-input')) {
+          return
+        }
+        clearNativeSelection()
       }}
     >
-      <span
-        className={`editable-cell${value === null || value === undefined ? ' editable-cell-null' : ''}`}
-        data-column-key={column}
-        data-row-key={rowKey}
-        data-cell-key={cellKey}
-        onContextMenu={(event) => {
-          event.stopPropagation()
-          onPrepareContextSelection(tabKey, cellKey)
-          onSyncRenderedSelection(tabKey)
-          scheduleSelectionRenderSync(() => onSyncRenderedSelection(tabKey))
-        }}
-        onMouseDown={(event) => {
-          if (event.button !== 0) {
-            return
-          }
-          event.stopPropagation()
-          onStartCellSelection(tabKey, rowKey, column)
-        }}
-        onDoubleClick={(event) => {
-          if (!editable) {
-            return
-          }
-          event.preventDefault()
-          event.stopPropagation()
-          onOpenEditor(tabKey, rowKey, column, event.currentTarget, value)
-        }}
-        onMouseEnter={onCellDragEnter}
-        onMouseUp={(event) => {
-          event.stopPropagation()
-          if (event.button !== 0) {
-            return
-          }
-          onFinishCellSelection(tabKey)
-        }}
-      >
-        {displayContent}
-      </span>
-    </Dropdown>
+      {displayContent}
+    </span>
   )
 }
 
@@ -134,6 +138,7 @@ type ResultStatusProps = {
   pendingChanges: number
   pager?: React.ReactNode
   isSchemaScopedType: (databaseType?: ConnectionInfo['database_type']) => boolean
+  onPointerClearSelection?: () => void
 }
 
 export function ResultStatusBar({
@@ -141,7 +146,8 @@ export function ResultStatusBar({
   connection,
   pendingChanges,
   pager,
-  isSchemaScopedType
+  isSchemaScopedType,
+  onPointerClearSelection
 }: ResultStatusProps): React.ReactNode {
   const totalRows = tab.result?.total_count ?? tab.result?.row_count
   const showPager = tab.kind !== 'table-list' && tab.resultKind !== 'command' && tab.resultKind !== 'error'
@@ -156,7 +162,16 @@ export function ResultStatusBar({
     : '暂无结果'
 
   return (
-    <Flex align="center" justify="space-between" gap={8} className="result-status">
+    <div
+      className="result-status"
+      data-result-status="true"
+      onMouseDown={(event) => {
+        if (event.button !== 0) {
+          return
+        }
+        onPointerClearSelection?.()
+      }}
+    >
       <Space wrap className="result-status-left">
         <Tag className="result-status-pill result-status-kind-pill" color={tab.kind === 'query' ? 'blue' : tab.kind === 'redis-browser' ? 'red' : tab.kind === 'table-list' ? 'gold' : 'green'}>
           {tab.kind === 'query' ? 'SQL 查询' : tab.kind === 'redis-browser' ? 'Redis 浏览' : tab.kind === 'table-list' ? '表列表' : '表预览'}
@@ -172,7 +187,7 @@ export function ResultStatusBar({
         {pendingChanges > 0 && <Tag className="result-status-pill result-status-warning-pill" color="orange">{pendingChanges} 项未提交</Tag>}
       </Space>
       {showPager && pager ? <div className="result-status-right result-status-pager-shell">{pager}</div> : null}
-    </Flex>
+    </div>
   )
 }
 
@@ -267,6 +282,7 @@ type ResultPagerProps = {
   previewDefaultLimit: number
   queryDefaultLimit: number
   searchState: TableSearchUiState
+  searchVisible: boolean
   onChangePage: (page: number) => void
   onChangeLimit: (limit: number) => void
   onToggleSearch: () => void
@@ -277,6 +293,7 @@ export function ResultPager({
   previewDefaultLimit,
   queryDefaultLimit,
   searchState,
+  searchVisible,
   onChangePage,
   onChangeLimit,
   onToggleSearch
@@ -308,7 +325,6 @@ export function ResultPager({
     event.stopPropagation()
     onToggleSearch()
   }
-
   return (
     <Space size={4} className="result-pager">
       <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<DoubleLeftOutlined />} title="首页" aria-label="首页" disabled={tab.loading || page <= 1} onClick={() => onChangePage(1)} />
@@ -346,7 +362,7 @@ export function ResultPager({
           icon={<SearchOutlined />}
           title="页内搜索"
           aria-label="页内搜索"
-          className={searchState.query.trim() || searchState.visible ? 'table-toolbar-icon-btn table-toolbar-toggle is-active' : 'table-toolbar-icon-btn table-toolbar-toggle'}
+          className={searchState.query.trim() || searchVisible ? 'table-toolbar-icon-btn table-toolbar-toggle is-active' : 'table-toolbar-icon-btn table-toolbar-toggle'}
           onMouseDown={handleSearchMouseDown}
           onClick={handleSearchClick}
         />
@@ -358,9 +374,11 @@ export function ResultPager({
 type TableToolbarProps = {
   tab: WorkspaceTab
   connection?: ConnectionInfo
+  hasSelectedRows: boolean
   pendingChanges: number
   redisPendingChanges: number
   searchState: TableSearchUiState
+  searchVisible: boolean
   searchMeta: SearchMeta
   whereInput: React.ReactNode
   onToggleSearch: () => void
@@ -381,9 +399,11 @@ type TableToolbarProps = {
 export function ResultTableToolbar({
   tab,
   connection,
+  hasSelectedRows,
   pendingChanges,
   redisPendingChanges,
   searchState,
+  searchVisible,
   searchMeta,
   whereInput,
   onToggleSearch,
@@ -417,14 +437,17 @@ export function ResultTableToolbar({
     event.stopPropagation()
     onToggleSearch()
   }
+  const handleToolbarButtonMouseDown = (event: React.MouseEvent<HTMLElement>): void => {
+    event.stopPropagation()
+  }
   const leftActions = showRedisRefresh || showPreviewActions
     ? (
         <Space size={4} className="table-data-actions">
           {showRedisRefresh && (
             <>
-              <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<ReloadOutlined />} title="刷新" aria-label="刷新" loading={tab.loading} onClick={() => onPreviewRedisRefresh(tab)} />
-              <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<PlusOutlined />} title="新增一行" aria-label="新增一行" onClick={() => onAddRedisRow(tab)} />
-              <Button className="table-toolbar-icon-btn" type="text" size="small" icon={<SaveOutlined />} title="提交" aria-label="提交" disabled={redisPendingChanges === 0} loading={tab.loading} onClick={() => onSubmitRedisChanges(tab)} />
+              <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<ReloadOutlined />} title="刷新" aria-label="刷新" loading={tab.loading} onMouseDown={handleToolbarButtonMouseDown} onClick={() => onPreviewRedisRefresh(tab)} />
+              <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<PlusOutlined />} title="新增一行" aria-label="新增一行" onMouseDown={handleToolbarButtonMouseDown} onClick={() => onAddRedisRow(tab)} />
+              <Button className={`table-toolbar-icon-btn${redisPendingChanges > 0 ? ' is-pending-save' : ''}`} type="text" size="small" icon={<SaveOutlined />} title="提交" aria-label="提交" disabled={redisPendingChanges === 0} loading={tab.loading} onMouseDown={handleToolbarButtonMouseDown} onClick={() => onSubmitRedisChanges(tab)} />
             </>
           )}
           {showPreviewActions && (
@@ -441,15 +464,14 @@ export function ResultTableToolbar({
                   onBeforePreviewRefresh(tab.key)
                 }}
                 onMouseDown={(event) => {
-                  event.preventDefault()
                   event.stopPropagation()
                   onDiscardInlineEditor(tab.key)
                 }}
                 onClick={() => onPreviewTableRefresh(tab)}
               />
-              <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<PlusOutlined />} title="新增行" aria-label="新增行" onClick={() => onAddPreviewRow(tab)} />
-              <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<MinusOutlined />} title="删除选中行" aria-label="删除选中行" disabled={!tab.selectedRowKeys?.length} onClick={() => onMarkSelectedRowsDeleted(tab)} />
-              <Button className="table-toolbar-icon-btn" type="text" size="small" icon={<SaveOutlined />} title="提交" aria-label="提交" disabled={pendingChanges === 0} loading={tab.loading} onClick={() => onSubmitPreviewChanges(tab)} />
+              <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<PlusOutlined />} title="新增行" aria-label="新增行" onMouseDown={handleToolbarButtonMouseDown} onClick={() => onAddPreviewRow(tab)} />
+              <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<MinusOutlined />} title="删除选中行" aria-label="删除选中行" disabled={!hasSelectedRows} onMouseDown={handleToolbarButtonMouseDown} onClick={() => onMarkSelectedRowsDeleted(tab)} />
+              <Button className={`table-toolbar-icon-btn${pendingChanges > 0 ? ' is-pending-save' : ''}`} type="text" size="small" icon={<SaveOutlined />} title="提交" aria-label="提交" disabled={pendingChanges === 0} loading={tab.loading} onMouseDown={handleToolbarButtonMouseDown} onClick={() => onSubmitPreviewChanges(tab)} />
             </>
           )}
         </Space>
@@ -465,7 +487,7 @@ export function ResultTableToolbar({
           icon={<SearchOutlined />}
           title="页内搜索"
           aria-label="页内搜索"
-          className={searchState.query.trim() || searchState.visible ? 'table-toolbar-icon-btn table-toolbar-toggle is-active' : 'table-toolbar-icon-btn table-toolbar-toggle'}
+          className={searchState.query.trim() || searchVisible ? 'table-toolbar-icon-btn table-toolbar-toggle is-active' : 'table-toolbar-icon-btn table-toolbar-toggle'}
           onMouseDown={handleSearchMouseDown}
           onClick={handleSearchClick}
         />
@@ -494,8 +516,7 @@ export function ResultTableToolbar({
       searchMeta={searchMeta}
       onSearchStateChange={onSearchStateChange}
       onClearActiveHighlight={onClearActiveHighlight}
-      searchVisible={Boolean(searchState.query.trim() || searchState.visible)}
-      onToggleSearch={onToggleSearch}
+      searchVisible={Boolean(searchState.query.trim() || searchVisible)}
     />
   )
 }

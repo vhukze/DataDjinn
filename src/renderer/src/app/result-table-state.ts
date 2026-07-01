@@ -29,8 +29,6 @@ const buildBaseTableRows = (tab: WorkspaceTab): EditableRow[] => (
 
 export type ResultTableDerivedState = {
   baseTableRows: EditableRow[]
-  selectedRowKeyMap: Record<string, true>
-  selectedRowKeysSet: Set<string>
   orderedColumns: string[]
   columnWidths: Record<string, number>
   columnFilters: Record<string, string[]>
@@ -60,8 +58,6 @@ export const buildResultTableDerivedState = ({
   formatCellText: (value: unknown) => string
 }): ResultTableDerivedState => {
   const baseTableRows = buildBaseTableRows(tab)
-  const selectedRowKeyMap = tab.selectedRowKeyMap ?? Object.fromEntries((tab.selectedRowKeys ?? []).map((key) => [String(key), true]))
-  const selectedRowKeysSet = new Set((tab.selectedRowKeys ?? []).map(String))
   const resultColumns = tab.result?.columns ?? []
   const orderedColumns = [
     ...(tab.columnOrder ?? []).filter((column) => resultColumns.includes(column)),
@@ -73,7 +69,7 @@ export const buildResultTableDerivedState = ({
   const filteredRows = filterColumns.length > 0
     ? baseTableRows.filter((row) => filterColumns.every((column) => columnFilters[column]?.includes(tableFilterValueKey(row[column]))))
     : baseTableRows
-  const pageSearchText = searchState.query.trim()
+  const pageSearchText = (searchState.visible || searchState.query.trim()) ? searchState.query.trim() : ''
   const searchMatcher = createSearchMatcher(pageSearchText, {
     regex: searchState.regex,
     wholeWord: searchState.wholeWord,
@@ -115,8 +111,6 @@ export const buildResultTableDerivedState = ({
 
   return {
     baseTableRows,
-    selectedRowKeyMap,
-    selectedRowKeysSet,
     orderedColumns,
     columnWidths,
     columnFilters,

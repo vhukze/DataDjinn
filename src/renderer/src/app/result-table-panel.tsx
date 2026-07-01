@@ -1,9 +1,10 @@
 import { UnorderedListOutlined } from '@ant-design/icons'
-import { Alert, Dropdown, Flex, Spin, Typography } from 'antd'
+import { Alert, Dropdown, Flex, Menu, Spin, Typography } from 'antd'
 import type { MenuProps } from 'antd'
 import type { MessageInstance } from 'antd/es/message/interface'
 import type { ColumnsType, TableRef } from 'antd/es/table'
-import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ComponentProps, Key, MutableRefObject, ReactNode, TdHTMLAttributes } from 'react'
 import type { ConnectionInfo } from './connection-model'
 import {
@@ -74,13 +75,25 @@ type ColumnResizeState = {
   frameId?: number
 }
 
+type CellContextMenuState = {
+  cellKey: string
+  x: number
+  y: number
+  selection: string[]
+}
+
+const RESULT_CELL_CONTEXT_MENU_SELECTOR = '.result-cell-context-menu-panel, .result-cell-context-menu-backdrop'
+
 export type ResultTablePanelRefs = {
   tableComponentRefs: MutableRefObject<Record<string, HorizontalScrollTableRef | null>>
   tableBodyRefs: MutableRefObject<Record<string, HTMLDivElement | null>>
   tableHeaderRefs: MutableRefObject<Record<string, HTMLDivElement | null>>
   tableNativeHorizontalScrollbarRefs: MutableRefObject<Record<string, HTMLDivElement | null>>
+  pendingPreviewRowScrollRefs: MutableRefObject<Record<string, string | undefined>>
+  tableScrollTopRefs: MutableRefObject<Record<string, number | undefined>>
   selectedColumnRefs: MutableRefObject<Record<string, string | undefined>>
   selectedCellRefs: MutableRefObject<Record<string, string[] | undefined>>
+  selectedRowRefs: MutableRefObject<Record<string, string[] | undefined>>
   renderedSelectedRowRefs: MutableRefObject<Record<string, string[] | undefined>>
   runtimeSelectedCellRefs: MutableRefObject<Record<string, string[] | undefined>>
   cellDragAnchorRefs: MutableRefObject<Record<string, { rowKey: string; column: string } | undefined>>
@@ -89,6 +102,9 @@ export type ResultTablePanelRefs = {
   pendingCellDragFrameRefs: MutableRefObject<Record<string, number | undefined>>
   pendingRowDragTargetRefs: MutableRefObject<Record<string, string | undefined>>
   pendingRowDragFrameRefs: MutableRefObject<Record<string, number | undefined>>
+  suppressNextShellClickClearRefs: MutableRefObject<Record<string, boolean | undefined>>
+  suppressNextCellMouseDownRefs: MutableRefObject<Record<string, string | undefined>>
+  contextMenuSelectionLockRefs: MutableRefObject<Record<string, boolean | undefined>>
   committingEditingCellRefs: MutableRefObject<Record<string, boolean | undefined>>
   editingCellRefs: MutableRefObject<Record<string, { rowKey: string; column: string } | undefined>>
   suppressInlineEditorCommitRefs: MutableRefObject<Record<string, boolean | undefined>>
@@ -126,7 +142,7 @@ type ResultTablePanelProps = {
   previewRedisDatabase: (connectionId: string, databaseName: string, limit?: number, page?: number, tabKey?: string, where?: string) => Promise<void>
   showObjectDdl: (connectionId: string, name: string, type: DbObjectType, databaseName?: string, pgDatabaseName?: string) => Promise<void>
   addPreviewRow: (tab: WorkspaceTab) => void
-  markSelectedRowsDeleted: (tab: WorkspaceTab) => void
+  markSelectedRowsDeleted: (tab: WorkspaceTab, selectedRowKeysOverride?: string[]) => void
   submitPreviewChanges: (tab: WorkspaceTab) => Promise<void>
   addRedisRow: (tab: WorkspaceTab) => void
   submitRedisChanges: (tab: WorkspaceTab) => Promise<void>
@@ -159,7 +175,7 @@ type ResultTablePanelProps = {
 }
 
 const shouldUseVirtualTable = (tab: WorkspaceTab, rowCount: number): boolean => (
-  tab.kind === 'query' && rowCount >= RESULT_TABLE_VIRTUAL_THRESHOLD
+  (tab.kind === 'query' || tab.kind === 'preview') && rowCount >= RESULT_TABLE_VIRTUAL_THRESHOLD
 )
 
 const ResultTablePanel = memo(function ResultTablePanel({
@@ -209,12 +225,111 @@ const ResultTablePanel = memo(function ResultTablePanel({
   const active = useWorkspaceStore((state) => state.activeTabKey === tab.key)
   const tableBodyHostRef = useRef<HTMLDivElement | null>(null)
   const [tableScrollY, setTableScrollY] = useState(320)
+  const searchState = getImmediateTableSearchState(tab)
+  const [searchVisibleLocal, setSearchVisibleLocal] = useState(Boolean(searchState.query.trim() || searchState.visible))
+  const [cellContextMenu, setCellContextMenu] = useState<CellContextMenuState | null>(null)
+
+  useEffect(() => {
+    if (searchState.query.trim() || searchState.visible) {
+      setSearchVisibleLocal(true)
+    }
+  }, [searchState.query, searchState.visible])
+
+  useLayoutEffect(() => {
+    if (!cellContextMenu) {
+      return
+    }
+    syncRenderedCellSelection(tab.key)
+  }, [cellContextMenu, syncRenderedCellSelection, tab.key])
+
+  useEffect(() => {
+    if (!cellContextMenu) {
+      return
+    }
+
+    const forceCloseContextMenu = (): void => {
+      setCellContextMenu(null)
+      refs.suppressNextCellMouseDownRefs.current[tab.key] = undefined
+      scheduleContextMenuSelectionUnlock(0)
+    }
+
+    const closeContextMenu = (target: EventTarget | null): void => {
+      const element = target as HTMLElement | null
+      if (element?.closest(`.ant-dropdown, ${RESULT_CELL_CONTEXT_MENU_SELECTOR}`)) {
+        return
+      }
+      forceCloseContextMenu()
+    }
+
+    const handlePointerDown = (event: PointerEvent): void => {
+      closeContextMenu(event.target)
+    }
+
+    const handleMouseDown = (event: MouseEvent): void => {
+      closeContextMenu(event.target)
+    }
+
+    const handleContextMenu = (event: MouseEvent): void => {
+      const element = event.target as HTMLElement | null
+      if (element?.closest(`.ant-dropdown, ${RESULT_CELL_CONTEXT_MENU_SELECTOR}, [data-cell-key]`)) {
+        return
+      }
+      closeContextMenu(event.target)
+    }
+
+    window.addEventListener('pointerdown', handlePointerDown, true)
+    window.addEventListener('mousedown', handleMouseDown, true)
+    window.addEventListener('contextmenu', handleContextMenu, true)
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown, true)
+      window.removeEventListener('mousedown', handleMouseDown, true)
+      window.removeEventListener('contextmenu', handleContextMenu, true)
+    }
+  }, [cellContextMenu, refs, tab.key])
 
   const handleBodyRef = useCallback((element: HTMLDivElement | null) => {
     tableBodyHostRef.current = element
     refs.tableBodyRefs.current[tab.key] = element
     refs.tableHeaderRefs.current[tab.key] = element?.querySelector<HTMLDivElement>('.ant-table-header') ?? null
   }, [refs, tab.key])
+
+  useEffect(() => {
+    const container = tableBodyHostRef.current
+    if (!container) {
+      return
+    }
+    const holder = container.querySelector<HTMLElement>('.ant-table-tbody-virtual-holder, .ant-table-body')
+    if (!holder) {
+      return
+    }
+    const savedScrollTop = refs.tableScrollTopRefs.current[tab.key]
+    if (savedScrollTop === undefined || Math.abs(holder.scrollTop - savedScrollTop) <= 1) {
+      return
+    }
+    holder.scrollTop = savedScrollTop
+  }, [refs, tab.key, tab.tableRenderVersion])
+
+  useEffect(() => {
+    const container = tableBodyHostRef.current
+    if (!container) {
+      return
+    }
+
+    const observer = new MutationObserver(() => {
+      const hasCellSelection = Boolean(refs.selectedCellRefs.current[tab.key]?.length || refs.runtimeSelectedCellRefs.current[tab.key]?.length)
+      if (!hasCellSelection) {
+        return
+      }
+      syncRenderedCellSelection(tab.key)
+    })
+
+    observer.observe(container, {
+      childList: true,
+      subtree: true
+    })
+
+    return () => observer.disconnect()
+  }, [refs, syncRenderedCellSelection, tab.key, tab.tableRenderVersion])
 
   useEffect(() => {
     if (!active) {
@@ -231,7 +346,6 @@ const ResultTablePanel = memo(function ResultTablePanel({
       return
     }
 
-    const frameIds = new Set<number>()
     const measure = (): void => {
       const nextHeight = getResultTableScrollHeight(element)
       if (nextHeight > 0) {
@@ -239,23 +353,10 @@ const ResultTablePanel = memo(function ResultTablePanel({
       }
     }
 
-    const scheduleMeasure = (depth = 1): void => {
-      const frameId = window.requestAnimationFrame(() => {
-        frameIds.delete(frameId)
-        measure()
-        if (depth > 0) {
-          scheduleMeasure(depth - 1)
-        }
-      })
-      frameIds.add(frameId)
-    }
-
     measure()
-    scheduleMeasure(2)
 
     const observer = new ResizeObserver(() => {
       measure()
-      scheduleMeasure(1)
     })
     observer.observe(element)
     const shell = element.closest<HTMLElement>('.result-table-content')
@@ -265,7 +366,6 @@ const ResultTablePanel = memo(function ResultTablePanel({
 
     return () => {
       observer.disconnect()
-      frameIds.forEach((frameId) => window.cancelAnimationFrame(frameId))
     }
   }, [
     active,
@@ -278,6 +378,54 @@ const ResultTablePanel = memo(function ResultTablePanel({
     tab.result?.rows.length,
     tab.result?.columns.length
   ])
+
+  useEffect(() => {
+    if (tab.kind !== 'preview' || !active) {
+      return
+    }
+    const pendingRowKey = refs.pendingPreviewRowScrollRefs.current[tab.key]
+    if (!pendingRowKey) {
+      return
+    }
+
+    const scrollToPendingRow = (): boolean => {
+      const container = refs.tableBodyRefs.current[tab.key]
+      if (!container) {
+        return false
+      }
+      const targetRow = container.querySelector<HTMLElement>(`tr[data-row-key="${CSS.escape(pendingRowKey)}"], .ant-table-row[data-row-key="${CSS.escape(pendingRowKey)}"]`)
+      if (targetRow) {
+        targetRow.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+        refs.pendingPreviewRowScrollRefs.current[tab.key] = undefined
+        return true
+      }
+      const holder = container.querySelector<HTMLElement>('.ant-table-tbody-virtual-holder, .ant-table-body')
+      if (!holder) {
+        return false
+      }
+      holder.scrollTop = holder.scrollHeight
+      const scrolledTargetRow = container.querySelector<HTMLElement>(`tr[data-row-key="${CSS.escape(pendingRowKey)}"], .ant-table-row[data-row-key="${CSS.escape(pendingRowKey)}"]`)
+      if (!scrolledTargetRow) {
+        return false
+      }
+      scrolledTargetRow.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+      refs.pendingPreviewRowScrollRefs.current[tab.key] = undefined
+      return true
+    }
+
+    let frameId = window.requestAnimationFrame(() => {
+      if (scrollToPendingRow()) {
+        return
+      }
+      frameId = window.requestAnimationFrame(() => {
+        scrollToPendingRow()
+      })
+    })
+
+    return () => {
+      window.cancelAnimationFrame(frameId)
+    }
+  }, [active, refs, tab.editRows, tab.key, tab.kind])
 
   const countPendingChanges = (currentTab: WorkspaceTab): number => {
     if (currentTab.kind === 'redis-browser') {
@@ -292,28 +440,33 @@ const ResultTablePanel = memo(function ResultTablePanel({
   }
 
   const renderResultPager = (currentTab: WorkspaceTab): ReactNode => {
-    const searchState = getImmediateTableSearchState(currentTab)
+    const effectiveSearchState = currentTab.key === tab.key
+      ? { ...searchState, visible: searchVisibleLocal }
+      : getImmediateTableSearchState(currentTab)
 
     return (
       <ResultPager
         tab={currentTab}
         previewDefaultLimit={PREVIEW_DEFAULT_LIMIT}
         queryDefaultLimit={QUERY_DEFAULT_LIMIT}
-        searchState={searchState}
+        searchState={effectiveSearchState}
+        searchVisible={currentTab.key === tab.key ? searchVisibleLocal : Boolean(effectiveSearchState.query.trim() || effectiveSearchState.visible)}
         onChangePage={(page) => void changeTabPage(currentTab, page)}
         onChangeLimit={(limit) => void changeTabLimit(currentTab, limit)}
         onToggleSearch={() => {
-          if (searchState.query.trim() || searchState.visible) {
+          if (searchState.query.trim() || searchVisibleLocal) {
             clearActiveSearchCellHighlight(currentTab.key)
-            updateTableSearchState(currentTab, {
-              visible: false,
-              query: '',
-              filterRows: false,
-              activeMatchIndex: 0
-            })
+            setSearchVisibleLocal(false)
+            if (searchState.query.trim() || searchState.filterRows || searchState.activeMatchIndex !== 0) {
+              updateTableSearchState(currentTab, {
+                query: '',
+                filterRows: false,
+                activeMatchIndex: 0
+              })
+            }
             return
           }
-          updateTableSearchState(currentTab, { visible: true })
+          setSearchVisibleLocal(true)
         }}
       />
     )
@@ -326,6 +479,12 @@ const ResultTablePanel = memo(function ResultTablePanel({
       pendingChanges={countPendingChanges(currentTab)}
       pager={renderResultPager(currentTab)}
       isSchemaScopedType={isSchemaScopedType}
+      onPointerClearSelection={() => {
+        clearActiveSearchCellHighlight(currentTab.key)
+        clearRuntimeColumnSelection(currentTab.key)
+        clearSelectedRowsForTab(currentTab.key)
+        clearAllCellSelection(currentTab.key)
+      }}
     />
   )
 
@@ -358,37 +517,54 @@ const ResultTablePanel = memo(function ResultTablePanel({
       focusSearchMatch: (matchIndex: number) => void
     }
   ): ReactNode => {
-    const searchState = getImmediateTableSearchState(currentTab)
+    const effectiveSearchState = currentTab.key === tab.key
+      ? { ...searchState, visible: searchVisibleLocal }
+      : getImmediateTableSearchState(currentTab)
 
     return (
       <ResultTableToolbar
         tab={currentTab}
         connection={getConnection(currentTab.connectionId)}
+        hasSelectedRows={getCurrentSelectedRowKeys().length > 0}
         pendingChanges={countPendingChanges(currentTab)}
         redisPendingChanges={countRedisPendingChanges(currentTab)}
-        searchState={searchState}
+        searchState={effectiveSearchState}
+        searchVisible={currentTab.key === tab.key ? searchVisibleLocal : Boolean(effectiveSearchState.query.trim() || effectiveSearchState.visible)}
         searchMeta={searchMeta}
         whereInput={renderWhereInput(currentTab)}
         onToggleSearch={() => {
-          if (searchState.query.trim() || searchState.visible) {
+          if (searchState.query.trim() || searchVisibleLocal) {
             clearActiveSearchCellHighlight(currentTab.key)
-            updateTableSearchState(currentTab, {
-              visible: false,
-              query: '',
-              filterRows: false,
-              activeMatchIndex: 0
-            })
+            setSearchVisibleLocal(false)
+            if (searchState.query.trim() || searchState.filterRows || searchState.activeMatchIndex !== 0) {
+              updateTableSearchState(currentTab, {
+                query: '',
+                filterRows: false,
+                activeMatchIndex: 0
+              })
+            }
             return
           }
-          updateTableSearchState(currentTab, { visible: true })
+          setSearchVisibleLocal(true)
         }}
-        onSearchStateChange={(patch) => updateTableSearchState(currentTab, patch)}
+        onSearchStateChange={(patch) => {
+          if (patch.visible === true) {
+            setSearchVisibleLocal(true)
+          }
+          if (patch.visible === false) {
+            setSearchVisibleLocal(false)
+          }
+          const { visible: _visible, ...statePatch } = patch
+          if (Object.keys(statePatch).length > 0) {
+            updateTableSearchState(currentTab, statePatch)
+          }
+        }}
         onClearActiveHighlight={() => clearActiveSearchCellHighlight(currentTab.key)}
         onShowObjectDdl={(nextTab) => void showObjectDdl(nextTab.connectionId!, nextTab.tableName!, nextTab.objectType ?? 'table', nextTab.databaseName, nextTab.pgDatabaseName)}
         onPreviewTableRefresh={(nextTab) => void previewTable(nextTab.connectionId!, nextTab.tableName!, nextTab.databaseName, nextTab.pgDatabaseName, nextTab.limit, nextTab.page, nextTab.where)}
         onPreviewRedisRefresh={(nextTab) => void previewRedisDatabase(nextTab.connectionId!, nextTab.databaseName!, nextTab.limit, nextTab.page, nextTab.key, nextTab.where)}
         onAddPreviewRow={addPreviewRow}
-        onMarkSelectedRowsDeleted={markSelectedRowsDeleted}
+        onMarkSelectedRowsDeleted={(nextTab) => markSelectedRowsDeleted(nextTab, refs.selectedRowRefs.current[nextTab.key] ?? (nextTab.selectedRowKeys ?? []).map(String))}
         onSubmitPreviewChanges={(nextTab) => void submitPreviewChanges(nextTab)}
         onAddRedisRow={addRedisRow}
         onSubmitRedisChanges={(nextTab) => void submitRedisChanges(nextTab)}
@@ -419,7 +595,6 @@ const ResultTablePanel = memo(function ResultTablePanel({
     />
   )
 
-  const searchState = getImmediateTableSearchState(tab)
   const supportsCellSelection = tab.kind === 'preview' || tab.kind === 'query' || tab.kind === 'table-list'
   const supportsTableSearch = tab.kind === 'preview' || tab.kind === 'query' || tab.kind === 'redis-browser'
 
@@ -468,18 +643,18 @@ const ResultTablePanel = memo(function ResultTablePanel({
       event.preventDefault()
       event.stopPropagation()
 
-      if (searchState.query.trim() || searchState.visible) {
+      if (searchState.query.trim() || searchVisibleLocal) {
         return
       }
 
-      updateTableSearchState(tab, { visible: true })
+      setSearchVisibleLocal(true)
     }
 
     window.addEventListener('keydown', handleWindowKeyDown, true)
     return () => {
       window.removeEventListener('keydown', handleWindowKeyDown, true)
     }
-  }, [active, searchState.query, searchState.visible, supportsTableSearch, tab, tableSearchShortcut, updateTableSearchState])
+  }, [active, searchState.query, searchVisibleLocal, supportsTableSearch, tab, tableSearchShortcut])
   const supportsWritableCells = tab.kind === 'preview'
   const connection = getConnection(tab.connectionId)
   const derivedState = useMemo(() => buildResultTableDerivedState({
@@ -493,8 +668,6 @@ const ResultTablePanel = memo(function ResultTablePanel({
     searchState,
     tab.result,
     tab.editRows,
-    tab.selectedRowKeys,
-    tab.selectedRowKeyMap,
     tab.columnOrder,
     tab.columnWidths,
     tab.columnFilters,
@@ -503,8 +676,6 @@ const ResultTablePanel = memo(function ResultTablePanel({
   ])
   const {
     baseTableRows,
-    selectedRowKeyMap,
-    selectedRowKeysSet,
     orderedColumns,
     columnWidths,
     columnFilters,
@@ -623,16 +794,19 @@ const ResultTablePanel = memo(function ResultTablePanel({
     return refs.selectedCellRefs.current[tab.key] ?? []
   }
 
+  const getCurrentSelectedRowKeys = (): string[] => {
+    const nextSelectedRowKeys = refs.rowSelectionDraftRefs.current[tab.key]
+      ?? refs.selectedRowRefs.current[tab.key]
+      ?? (tab.selectedRowKeys ?? [])
+    return nextSelectedRowKeys.map(String).filter((rowKey) => orderedRowKeys.includes(rowKey))
+  }
+
   const getSelectedRowKeysForClipboard = (): string[] => {
     const renderedRows = refs.renderedSelectedRowRefs.current[tab.key]
     if (renderedRows && renderedRows.length > 0) {
       return renderedRows.filter((rowKey) => orderedRowKeys.includes(rowKey))
     }
-    const draftRows = refs.rowSelectionDraftRefs.current[tab.key]
-    if (draftRows && draftRows.length > 0) {
-      return draftRows.map(String).filter((rowKey) => orderedRowKeys.includes(rowKey))
-    }
-    return (tab.selectedRowKeys ?? []).map(String).filter((rowKey) => orderedRowKeys.includes(rowKey))
+    return getCurrentSelectedRowKeys()
   }
 
   const getClipboardSelectionCellKeys = (): string[] => {
@@ -743,10 +917,8 @@ const ResultTablePanel = memo(function ResultTablePanel({
   const ensureContextSelection = (cellKey: string): string[] => {
     const parsedCell = parseCellKey(cellKey)
     if (parsedCell) {
-      if (selectedRowKeysSet.has(parsedCell.rowKey)) {
-        const activeRowKeys = (refs.rowSelectionDraftRefs.current[tab.key] ?? tab.selectedRowKeys ?? [])
-          .map((key) => String(key))
-          .filter((rowKey) => orderedRowKeys.includes(rowKey))
+      const activeRowKeys = getCurrentSelectedRowKeys()
+      if (activeRowKeys.includes(parsedCell.rowKey)) {
         const rowKeys = activeRowKeys.length > 0 ? activeRowKeys : [parsedCell.rowKey]
         return rowKeys.flatMap((rowKey) => orderedColumns.map((column) => `${rowKey}:${column}`))
       }
@@ -978,43 +1150,110 @@ const ResultTablePanel = memo(function ResultTablePanel({
     { key: 'set-default', label: '设为 DEFAULT' }
   ]
 
-  const handleCellContextMenuAction = (actionKey: string, cellKey: string): void => {
+  const scheduleContextMenuSelectionUnlock = (frameCount = 1): void => {
+    const release = (): void => {
+      refs.contextMenuSelectionLockRefs.current[tab.key] = undefined
+    }
+    if (frameCount <= 0) {
+      release()
+      return
+    }
+    let remaining = frameCount
+    const step = (): void => {
+      remaining -= 1
+      if (remaining <= 0) {
+        release()
+        return
+      }
+      window.requestAnimationFrame(step)
+    }
+    window.requestAnimationFrame(step)
+  }
+
+  const forceCloseContextMenu = (): void => {
+    setCellContextMenu(null)
+    refs.suppressNextCellMouseDownRefs.current[tab.key] = undefined
+    scheduleContextMenuSelectionUnlock(0)
+  }
+
+  const openCellContextMenu = (
+    nextTabKey: string,
+    cellKey: string,
+    clientX: number,
+    clientY: number,
+    selection: string[]
+  ): void => {
+    refs.contextMenuSelectionLockRefs.current[nextTabKey] = true
+    setCellContextMenu({
+      cellKey,
+      x: clientX,
+      y: clientY,
+      selection: [...selection]
+    })
+    window.requestAnimationFrame(() => {
+      syncRenderedCellSelection(nextTabKey)
+    })
+  }
+
+  const handleCellContextMenuAction = (actionKey: string, cellKey: string, selectionOverride?: string[]): void => {
     const snapshot = refs.contextMenuCellSelectionSnapshotRefs.current[tab.key]
-    const selection = snapshot?.cellKeys.includes(cellKey)
+    const selection = selectionOverride && selectionOverride.includes(cellKey)
+      ? normalizeCellSelectionKeys(selectionOverride)
+      : snapshot?.cellKeys.includes(cellKey)
       ? snapshot.cellKeys
       : resolveContextSelection(cellKey)
+    refs.suppressNextShellClickClearRefs.current[tab.key] = true
     if (actionKey === 'copy-selection') {
       void copySelectedCells(selection)
+      forceCloseContextMenu()
       refs.contextMenuCellSelectionSnapshotRefs.current[tab.key] = undefined
+      scheduleContextMenuSelectionUnlock()
       return
     }
     if (actionKey === 'copy-as-insert') {
       void copySelectionAsInsert(selection)
+      forceCloseContextMenu()
       refs.contextMenuCellSelectionSnapshotRefs.current[tab.key] = undefined
+      scheduleContextMenuSelectionUnlock()
       return
     }
     if (actionKey === 'copy-as-md') {
       void copySelectionAsMarkdown(selection)
+      forceCloseContextMenu()
       refs.contextMenuCellSelectionSnapshotRefs.current[tab.key] = undefined
+      scheduleContextMenuSelectionUnlock()
       return
     }
     if (actionKey === 'inspect-record' || actionKey === 'inspect-value' || actionKey === 'inspect-aggregate') {
       const view: CellInspectorView = actionKey === 'inspect-record' ? 'record' : actionKey === 'inspect-value' ? 'value' : 'aggregate'
       setCommittedCellSelection(tab.key, selection)
+      refs.runtimeSelectedCellRefs.current[tab.key] = undefined
       refs.cellInspectorPanelRefs.current[tab.key]?.open(view, selection)
+      syncRenderedCellSelection(tab.key)
+      window.requestAnimationFrame(() => {
+        syncRenderedCellSelection(tab.key)
+        window.requestAnimationFrame(() => {
+          syncRenderedCellSelection(tab.key)
+        })
+      })
       refs.contextMenuCellSelectionRefs.current[tab.key] = undefined
+      forceCloseContextMenu()
       refs.contextMenuCellSelectionSnapshotRefs.current[tab.key] = undefined
+      scheduleContextMenuSelectionUnlock(3)
       return
     }
     if (!supportsWritableCells) {
       refs.contextMenuCellSelectionRefs.current[tab.key] = undefined
+      forceCloseContextMenu()
       refs.contextMenuCellSelectionSnapshotRefs.current[tab.key] = undefined
+      scheduleContextMenuSelectionUnlock()
       return
     }
     if (actionKey === 'set-null') {
       clearInlineCellEditor(tab.key)
       updatePreviewCells(tab.key, getSelectedCellPatchesForValue(null, selection))
       refs.contextMenuCellSelectionSnapshotRefs.current[tab.key] = undefined
+      scheduleContextMenuSelectionUnlock()
       return
     }
     if (actionKey === 'set-default') {
@@ -1022,7 +1261,9 @@ const ResultTablePanel = memo(function ResultTablePanel({
       updatePreviewCells(tab.key, getSelectedCellPatchesForValue(createDefaultValueMarker(), selection))
     }
     refs.contextMenuCellSelectionRefs.current[tab.key] = undefined
+    forceCloseContextMenu()
     refs.contextMenuCellSelectionSnapshotRefs.current[tab.key] = undefined
+    scheduleContextMenuSelectionUnlock()
   }
 
   const isEditableTarget = (target: EventTarget | null): boolean => {
@@ -1033,18 +1274,15 @@ const ResultTablePanel = memo(function ResultTablePanel({
   }
 
   const applySelectedRows = (nextSelectedRowKeys: Key[]): void => {
-    const nextSelectedRowKeyMap = Object.fromEntries(nextSelectedRowKeys.map((key) => [String(key), true as const]))
-    const currentSelected = JSON.stringify((tab.selectedRowKeys ?? []).map(String))
-    const nextSelected = JSON.stringify(nextSelectedRowKeys.map(String))
-    if (currentSelected === nextSelected) {
+    const normalizedSelectedRowKeys = nextSelectedRowKeys.map(String)
+    const currentSelectedRowKeys = refs.selectedRowRefs.current[tab.key] ?? (tab.selectedRowKeys ?? []).map(String)
+    if (
+      currentSelectedRowKeys.length === normalizedSelectedRowKeys.length
+      && currentSelectedRowKeys.every((rowKey, index) => rowKey === normalizedSelectedRowKeys[index])
+    ) {
       return
     }
-    startTransition(() => {
-      updateWorkspaceTab(tab.key, {
-        selectedRowKeys: nextSelectedRowKeys,
-        selectedRowKeyMap: nextSelectedRowKeyMap
-      })
-    })
+    refs.selectedRowRefs.current[tab.key] = normalizedSelectedRowKeys.length > 0 ? normalizedSelectedRowKeys : undefined
   }
 
   const updateRenderedSelectedRows = (nextSelectedRowKeys: Key[]): void => {
@@ -1057,12 +1295,18 @@ const ResultTablePanel = memo(function ResultTablePanel({
     const previousRowKeys = refs.renderedSelectedRowRefs.current[tab.key] ?? []
     for (const rowKey of previousRowKeys) {
       if (!nextRowKeySet.has(rowKey)) {
-        container.querySelector<HTMLElement>(`tr[data-row-key="${CSS.escape(rowKey)}"], .ant-table-row[data-row-key="${CSS.escape(rowKey)}"]`)?.classList.remove('row-selected')
+        container.querySelectorAll<HTMLElement>(`tr[data-row-key="${CSS.escape(rowKey)}"], .ant-table-row[data-row-key="${CSS.escape(rowKey)}"]`).forEach((rowElement) => {
+          rowElement.classList.remove('row-selected')
+          rowElement.querySelector<HTMLElement>('.row-number-button')?.classList.remove('selected')
+        })
       }
     }
     for (const rowKey of nextRowKeys) {
       if (!previousRowKeys.includes(rowKey)) {
-        container.querySelector<HTMLElement>(`tr[data-row-key="${CSS.escape(rowKey)}"], .ant-table-row[data-row-key="${CSS.escape(rowKey)}"]`)?.classList.add('row-selected')
+        container.querySelectorAll<HTMLElement>(`tr[data-row-key="${CSS.escape(rowKey)}"], .ant-table-row[data-row-key="${CSS.escape(rowKey)}"]`).forEach((rowElement) => {
+          rowElement.classList.add('row-selected')
+          rowElement.querySelector<HTMLElement>('.row-number-button')?.classList.add('selected')
+        })
       }
     }
     refs.renderedSelectedRowRefs.current[tab.key] = nextRowKeys.length > 0 ? nextRowKeys : undefined
@@ -1083,7 +1327,7 @@ const ResultTablePanel = memo(function ResultTablePanel({
   }
 
   const clearSelectedRows = (): void => {
-    if (!tab.selectedRowKeys?.length && !refs.rowSelectionDraftRefs.current[tab.key]?.length) {
+    if (!refs.selectedRowRefs.current[tab.key]?.length && !refs.rowSelectionDraftRefs.current[tab.key]?.length && !tab.selectedRowKeys?.length) {
       return
     }
     previewSelectedRows([])
@@ -1144,24 +1388,28 @@ const ResultTablePanel = memo(function ResultTablePanel({
     }
     refs.pendingRowDragFrameRefs.current[tab.key] = window.requestAnimationFrame(() => {
       refs.pendingRowDragFrameRefs.current[tab.key] = undefined
-      const latestAnchor = refs.rowDragAnchorRefs.current[tab.key]
-      const latestTarget = refs.pendingRowDragTargetRefs.current[tab.key]
-      if (!latestAnchor || !latestTarget) {
-        return
-      }
-      refs.pendingRowDragTargetRefs.current[tab.key] = undefined
-      const start = orderedRowIndexMap[latestAnchor]
-      const end = orderedRowIndexMap[latestTarget]
-      if (start === undefined || end === undefined) {
-        return
-      }
-      const nextSelected = orderedRowKeys.slice(Math.min(start, end), Math.max(start, end) + 1)
-      const currentDraft = refs.rowSelectionDraftRefs.current[tab.key]
-      if (currentDraft && currentDraft.length === nextSelected.length && currentDraft.every((key, index) => String(key) === String(nextSelected[index]))) {
-        return
-      }
-      previewSelectedRows(nextSelected)
+      flushPendingRowDragSelection()
     })
+  }
+
+  const flushPendingRowDragSelection = (): void => {
+    const latestAnchor = refs.rowDragAnchorRefs.current[tab.key]
+    const latestTarget = refs.pendingRowDragTargetRefs.current[tab.key]
+    if (!latestAnchor || !latestTarget) {
+      return
+    }
+    refs.pendingRowDragTargetRefs.current[tab.key] = undefined
+    const start = orderedRowIndexMap[latestAnchor]
+    const end = orderedRowIndexMap[latestTarget]
+    if (start === undefined || end === undefined) {
+      return
+    }
+    const nextSelected = orderedRowKeys.slice(Math.min(start, end), Math.max(start, end) + 1)
+    const currentDraft = refs.rowSelectionDraftRefs.current[tab.key]
+    if (currentDraft && currentDraft.length === nextSelected.length && currentDraft.every((key, index) => String(key) === String(nextSelected[index]))) {
+      return
+    }
+    previewSelectedRows(nextSelected)
   }
 
   const updateDragCellSelection = (rowKey: string, column: string): void => {
@@ -1179,36 +1427,40 @@ const ResultTablePanel = memo(function ResultTablePanel({
     }
     refs.pendingCellDragFrameRefs.current[tab.key] = window.requestAnimationFrame(() => {
       refs.pendingCellDragFrameRefs.current[tab.key] = undefined
-      const latestAnchor = refs.cellDragAnchorRefs.current[tab.key]
-      const latestTarget = refs.pendingCellDragTargetRefs.current[tab.key]
-      if (!latestAnchor || !latestTarget) {
-        return
-      }
-      refs.pendingCellDragTargetRefs.current[tab.key] = undefined
-      const startRowIndex = orderedRowKeys.indexOf(latestAnchor.rowKey)
-      const endRowIndex = orderedRowKeys.indexOf(latestTarget.rowKey)
-      const startColumnIndex = orderedColumnIndexMap[latestAnchor.column]
-      const endColumnIndex = orderedColumnIndexMap[latestTarget.column]
-      if (startRowIndex < 0 || endRowIndex < 0 || startColumnIndex === undefined || endColumnIndex === undefined) {
-        return
-      }
-      const rowStart = Math.min(startRowIndex, endRowIndex)
-      const rowEnd = Math.max(startRowIndex, endRowIndex)
-      const columnStart = Math.min(startColumnIndex, endColumnIndex)
-      const columnEnd = Math.max(startColumnIndex, endColumnIndex)
-      const nextCellKeys: string[] = []
-      for (let rowIndex = rowStart; rowIndex <= rowEnd; rowIndex += 1) {
-        for (let columnIndex = columnStart; columnIndex <= columnEnd; columnIndex += 1) {
-          nextCellKeys.push(`${orderedRowKeys[rowIndex]}:${orderedColumns[columnIndex]}`)
-        }
-      }
-      const committedCellKeys = refs.selectedCellRefs.current[tab.key] ?? []
-      const runtimeCellKeys = refs.runtimeSelectedCellRefs.current[tab.key] ?? committedCellKeys
-      if (runtimeCellKeys.length === nextCellKeys.length && runtimeCellKeys.every((key, index) => key === nextCellKeys[index])) {
-        return
-      }
-      applyRuntimeCellRangeSelection(tab.key, nextCellKeys)
+      flushPendingCellDragSelection()
     })
+  }
+
+  const flushPendingCellDragSelection = (): void => {
+    const latestAnchor = refs.cellDragAnchorRefs.current[tab.key]
+    const latestTarget = refs.pendingCellDragTargetRefs.current[tab.key]
+    if (!latestAnchor || !latestTarget) {
+      return
+    }
+    refs.pendingCellDragTargetRefs.current[tab.key] = undefined
+    const startRowIndex = orderedRowKeys.indexOf(latestAnchor.rowKey)
+    const endRowIndex = orderedRowKeys.indexOf(latestTarget.rowKey)
+    const startColumnIndex = orderedColumnIndexMap[latestAnchor.column]
+    const endColumnIndex = orderedColumnIndexMap[latestTarget.column]
+    if (startRowIndex < 0 || endRowIndex < 0 || startColumnIndex === undefined || endColumnIndex === undefined) {
+      return
+    }
+    const rowStart = Math.min(startRowIndex, endRowIndex)
+    const rowEnd = Math.max(startRowIndex, endRowIndex)
+    const columnStart = Math.min(startColumnIndex, endColumnIndex)
+    const columnEnd = Math.max(startColumnIndex, endColumnIndex)
+    const nextCellKeys: string[] = []
+    for (let rowIndex = rowStart; rowIndex <= rowEnd; rowIndex += 1) {
+      for (let columnIndex = columnStart; columnIndex <= columnEnd; columnIndex += 1) {
+        nextCellKeys.push(`${orderedRowKeys[rowIndex]}:${orderedColumns[columnIndex]}`)
+      }
+    }
+    const committedCellKeys = refs.selectedCellRefs.current[tab.key] ?? []
+    const runtimeCellKeys = refs.runtimeSelectedCellRefs.current[tab.key] ?? committedCellKeys
+    if (runtimeCellKeys.length === nextCellKeys.length && runtimeCellKeys.every((key, index) => key === nextCellKeys[index])) {
+      return
+    }
+    applyRuntimeCellRangeSelection(tab.key, nextCellKeys)
   }
 
   const copyColumnName = async (column: string): Promise<void> => {
@@ -1242,8 +1494,6 @@ const ResultTablePanel = memo(function ResultTablePanel({
     value: unknown,
     editable: boolean,
     onCellDragEnter: () => void,
-    contextMenuItems: MenuProps['items'],
-    onContextMenuAction: (key: string, cellKey: string) => void,
     onContextSelection: (cellKey: string) => string[],
     displayContent?: ReactNode
   ): ReactNode => (
@@ -1254,23 +1504,32 @@ const ResultTablePanel = memo(function ResultTablePanel({
       value={value}
       editable={editable}
       onCellDragEnter={onCellDragEnter}
-      contextMenuItems={contextMenuItems}
-      onContextMenuAction={onContextMenuAction}
-      onSyncRenderedSelection={syncRenderedCellSelection}
       onPrepareContextSelection={(nextTabKey, cellKey) => {
         refs.tableBodyRefs.current[nextTabKey]?.focus()
         refs.rowDragAnchorRefs.current[nextTabKey] = undefined
         refs.cellDragAnchorRefs.current[nextTabKey] = undefined
         refs.pendingCellDragTargetRefs.current[nextTabKey] = undefined
+        refs.suppressNextCellMouseDownRefs.current[nextTabKey] = cellKey
         const contextSelection = normalizeCellSelectionKeys(onContextSelection(cellKey))
+        setCommittedCellSelection(nextTabKey, contextSelection)
+        syncRenderedCellSelection(nextTabKey)
         refs.contextMenuCellSelectionRefs.current[nextTabKey] = [...contextSelection]
         refs.contextMenuCellSelectionSnapshotRefs.current[nextTabKey] = {
           anchorCellKey: cellKey,
           cellKeys: [...contextSelection]
         }
-        refs.runtimeSelectedCellRefs.current[nextTabKey] = contextSelection.length > 1 ? [...contextSelection] : undefined
+        refs.runtimeSelectedCellRefs.current[nextTabKey] = undefined
+        return contextSelection
+      }}
+      onOpenContextMenu={(nextTabKey, nextCellKey, clientX, clientY, selection) => {
+        openCellContextMenu(nextTabKey, nextCellKey, clientX, clientY, selection)
       }}
       onStartCellSelection={(nextTabKey, nextRowKey, nextColumn) => {
+        const nextCellKey = `${nextRowKey}:${nextColumn}`
+        if (refs.suppressNextCellMouseDownRefs.current[nextTabKey] === nextCellKey) {
+          refs.suppressNextCellMouseDownRefs.current[nextTabKey] = undefined
+          return
+        }
         if (refs.inlineCellEditorRefs.current[nextTabKey]) {
           return
         }
@@ -1286,19 +1545,6 @@ const ResultTablePanel = memo(function ResultTablePanel({
         refs.pendingCellDragTargetRefs.current[nextTabKey] = undefined
         refs.runtimeSelectedCellRefs.current[nextTabKey] = undefined
         openInlineCellEditor(nextTabKey, nextRowKey, nextColumn, host, rawValue)
-      }}
-      onFinishCellSelection={(nextTabKey) => {
-        if (refs.editingCellRefs.current[nextTabKey]?.rowKey === rowKey && refs.editingCellRefs.current[nextTabKey]?.column === column) {
-          return
-        }
-        refs.rowDragAnchorRefs.current[nextTabKey] = undefined
-        refs.cellDragAnchorRefs.current[nextTabKey] = undefined
-        if (refs.pendingCellDragFrameRefs.current[nextTabKey]) {
-          window.cancelAnimationFrame(refs.pendingCellDragFrameRefs.current[nextTabKey]!)
-          refs.pendingCellDragFrameRefs.current[nextTabKey] = undefined
-        }
-        refs.pendingCellDragTargetRefs.current[nextTabKey] = undefined
-        commitRuntimeCellSelection(nextTabKey, refs.runtimeSelectedCellRefs.current[nextTabKey] ?? [])
       }}
       displayContent={displayContent ?? cellDisplayText(value)}
     />
@@ -1454,11 +1700,10 @@ const ResultTablePanel = memo(function ResultTablePanel({
       'data-row-key': row.__rowKey
     } as TdHTMLAttributes<HTMLElement>),
     render: (_value: unknown, row: EditableRow, index: number) => {
-      const selected = Boolean(selectedRowKeyMap[row.__rowKey])
       return (
         <button
           type="button"
-          className={`row-number-button${selected ? ' selected' : ''}`}
+          className="row-number-button"
           title="选中当前行，拖动可选择多行"
           onMouseDown={(event) => {
             event.preventDefault()
@@ -1467,7 +1712,7 @@ const ResultTablePanel = memo(function ResultTablePanel({
             clearAllCellSelection(tab.key)
             if (event.ctrlKey || event.metaKey) {
               refs.rowDragAnchorRefs.current[tab.key] = undefined
-              const currentSelection = new Set((refs.rowSelectionDraftRefs.current[tab.key] ?? tab.selectedRowKeys ?? []).map(String))
+              const currentSelection = new Set(getCurrentSelectedRowKeys())
               if (currentSelection.has(row.__rowKey)) {
                 currentSelection.delete(row.__rowKey)
               } else {
@@ -1509,8 +1754,6 @@ const ResultTablePanel = memo(function ResultTablePanel({
           value,
           supportsWritableCells,
           () => updateDragCellSelection(row.__rowKey, column),
-          supportsWritableCells ? previewCellContextMenuItems : readOnlyCellContextMenuItems,
-          handleCellContextMenuAction,
           ensureContextSelection,
           highlightResultText(`${row.__rowKey}:${column}`, cellDisplayText(value), 'table-cell-text')
         )
@@ -1541,7 +1784,55 @@ const ResultTablePanel = memo(function ResultTablePanel({
   }
 
   return (
-    <div className={`result-table-shell${tab.kind === 'query' ? ' query-result-table-shell' : ''}`}>
+    <div
+      className={`result-table-shell${tab.kind === 'query' ? ' query-result-table-shell' : ''}`}
+      onMouseDownCapture={(event) => {
+        if (event.button !== 0) {
+          return
+        }
+        const target = event.target as HTMLElement | null
+        if (!target) {
+          return
+        }
+        if (target.closest('[data-result-status="true"]')) {
+          if (refs.contextMenuSelectionLockRefs.current[tab.key]) {
+            return
+          }
+          clearActiveSearchCellHighlight(tab.key)
+          clearRuntimeColumnSelection(tab.key)
+          clearSelectedRowsForTab(tab.key)
+          clearAllCellSelection(tab.key)
+          return
+        }
+        if (target.closest(`[data-cell-key], .row-number-button, .row-number-select-all, .column-header-content, .column-select-button, .column-sort-button, .column-resize-handle, .editable-cell-dom-input, .cell-inspector, ${RESULT_CELL_CONTEXT_MENU_SELECTOR}`)) {
+          return
+        }
+        if (refs.contextMenuSelectionLockRefs.current[tab.key]) {
+          return
+        }
+        clearActiveSearchCellHighlight(tab.key)
+        clearRuntimeColumnSelection(tab.key)
+        clearSelectedRowsForTab(tab.key)
+        clearAllCellSelection(tab.key)
+      }}
+      onClickCapture={(event) => {
+        if (refs.suppressNextShellClickClearRefs.current[tab.key]) {
+          refs.suppressNextShellClickClearRefs.current[tab.key] = undefined
+          return
+        }
+        if (refs.contextMenuSelectionLockRefs.current[tab.key]) {
+          return
+        }
+        const target = event.target as HTMLElement | null
+        if (!target) {
+          return
+        }
+        if (target.closest(`[data-cell-key], .row-number-button, .row-number-select-all, .column-header-content, .column-select-button, .column-sort-button, .column-resize-handle, .editable-cell-dom-input, .cell-inspector, ${RESULT_CELL_CONTEXT_MENU_SELECTOR}`)) {
+          return
+        }
+        clearAllCellSelection(tab.key)
+      }}
+    >
       {renderResultStatus(tab)}
       {renderTableToolbar(tab, {
         matchCount: searchMatches.length,
@@ -1562,7 +1853,6 @@ const ResultTablePanel = memo(function ResultTablePanel({
             <ResultTableBodyView
               tab={tab}
               searchSignature={searchSignature}
-              selectedRowKeyMap={selectedRowKeyMap}
               tableColumns={tableColumns}
               tableRows={tableRows}
               tableScrollX={tableScrollX}
@@ -1573,8 +1863,20 @@ const ResultTablePanel = memo(function ResultTablePanel({
               }}
               setBodyRef={handleBodyRef}
               setHeaderRef={(element) => { refs.tableHeaderRefs.current[tab.key] = element }}
-              onScrollCapture={() => scheduleRenderedCellSelectionSync(tab.key)}
+              onScrollCapture={() => {
+                const container = refs.tableBodyRefs.current[tab.key]
+                const holder = container?.querySelector<HTMLElement>('.ant-table-tbody-virtual-holder, .ant-table-body')
+                if (holder) {
+                  refs.tableScrollTopRefs.current[tab.key] = holder.scrollTop
+                }
+                scheduleRenderedCellSelectionSync(tab.key)
+              }}
               onKeyDown={(event) => {
+                const container = refs.tableBodyRefs.current[tab.key]
+                const holder = container?.querySelector<HTMLElement>('.ant-table-tbody-virtual-holder, .ant-table-body')
+                if (holder) {
+                  refs.tableScrollTopRefs.current[tab.key] = holder.scrollTop
+                }
                 if (!supportsCellSelection || isEditableTarget(event.target)) {
                   return
                 }
@@ -1614,7 +1916,10 @@ const ResultTablePanel = memo(function ResultTablePanel({
                 if (!target.closest('.column-header-content') && refs.selectedColumnRefs.current[tab.key]) {
                   clearRuntimeColumnSelection(tab.key)
                 }
-                if (!target.closest('[data-cell-key]') && (refs.selectedCellRefs.current[tab.key]?.length || refs.runtimeSelectedCellRefs.current[tab.key]?.length)) {
+                if (refs.contextMenuSelectionLockRefs.current[tab.key]) {
+                  return
+                }
+                if (!target.closest(`[data-cell-key], .cell-inspector, ${RESULT_CELL_CONTEXT_MENU_SELECTOR}`) && (refs.selectedCellRefs.current[tab.key]?.length || refs.runtimeSelectedCellRefs.current[tab.key]?.length)) {
                   clearActiveSearchCellHighlight(tab.key)
                   clearAllCellSelection(tab.key)
                 }
@@ -1634,6 +1939,8 @@ const ResultTablePanel = memo(function ResultTablePanel({
                   refs.pendingRowDragTargetRefs.current[tab.key] = undefined
                   return
                 }
+                flushPendingCellDragSelection()
+                flushPendingRowDragSelection()
                 refs.rowDragAnchorRefs.current[tab.key] = undefined
                 refs.cellDragAnchorRefs.current[tab.key] = undefined
                 refs.pendingRowDragTargetRefs.current[tab.key] = undefined
@@ -1646,6 +1953,9 @@ const ResultTablePanel = memo(function ResultTablePanel({
                   refs.pendingRowDragFrameRefs.current[tab.key] = undefined
                 }
                 refs.pendingCellDragTargetRefs.current[tab.key] = undefined
+                if ((refs.runtimeSelectedCellRefs.current[tab.key] ?? []).length > 0) {
+                  refs.suppressNextShellClickClearRefs.current[tab.key] = true
+                }
                 commitRuntimeCellSelection(tab.key, refs.runtimeSelectedCellRefs.current[tab.key] ?? [])
                 commitPreviewSelectedRows()
               }}
@@ -1656,6 +1966,8 @@ const ResultTablePanel = memo(function ResultTablePanel({
                 if (!refs.cellDragAnchorRefs.current[tab.key] && !refs.rowDragAnchorRefs.current[tab.key]) {
                   return
                 }
+                flushPendingCellDragSelection()
+                flushPendingRowDragSelection()
                 refs.rowDragAnchorRefs.current[tab.key] = undefined
                 refs.cellDragAnchorRefs.current[tab.key] = undefined
                 refs.pendingRowDragTargetRefs.current[tab.key] = undefined
@@ -1668,6 +1980,9 @@ const ResultTablePanel = memo(function ResultTablePanel({
                   refs.pendingRowDragFrameRefs.current[tab.key] = undefined
                 }
                 refs.pendingCellDragTargetRefs.current[tab.key] = undefined
+                if ((refs.runtimeSelectedCellRefs.current[tab.key] ?? []).length > 0) {
+                  refs.suppressNextShellClickClearRefs.current[tab.key] = true
+                }
                 commitRuntimeCellSelection(tab.key, refs.runtimeSelectedCellRefs.current[tab.key] ?? [])
                 commitPreviewSelectedRows()
               }}
@@ -1681,6 +1996,34 @@ const ResultTablePanel = memo(function ResultTablePanel({
               editable={supportsWritableCells && tab.kind === 'preview'}
               onUpdateValue={(rowKey, column, rawValue) => updatePreviewCell(tab.key, rowKey, column, editableValue(rawValue))}
             />
+            {cellContextMenu && typeof document !== 'undefined' && createPortal(
+              <div
+                className="result-cell-context-menu-backdrop"
+                onMouseDown={() => {
+                  forceCloseContextMenu()
+                }}
+                onContextMenu={(event) => {
+                  event.preventDefault()
+                  forceCloseContextMenu()
+                }}
+              >
+                <div
+                  className="result-cell-context-menu-panel"
+                  style={{ left: cellContextMenu.x, top: cellContextMenu.y }}
+                  onMouseDown={(event) => event.stopPropagation()}
+                  onContextMenu={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                  }}
+                >
+                  <Menu
+                    items={supportsWritableCells ? previewCellContextMenuItems : readOnlyCellContextMenuItems}
+                    onClick={({ key }) => handleCellContextMenuAction(String(key), cellContextMenu.cellKey, cellContextMenu.selection)}
+                  />
+                </div>
+              </div>,
+              document.body
+            )}
             {active && enableVirtualTable && (
               <div
                 ref={(element) => {

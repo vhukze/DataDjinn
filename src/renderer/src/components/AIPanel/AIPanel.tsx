@@ -190,8 +190,9 @@ type QueuedStreamUpdate = {
 
 interface AIPanelProps {
   requestJson: <T>(path: string, options?: RequestInit) => Promise<T>
-  connectionContext: AIConnectionContext
-  workspace?: AgentWorkspace
+  hasDatabaseContext: boolean
+  getConnectionContext?: () => AIConnectionContext | undefined
+  getWorkspaceSnapshot?: () => AgentWorkspace | undefined
   contextSources?: AIContextSource[]
   primaryContextSourceId?: string
   onRemoveContextSource?: (sourceId: string) => void
@@ -462,7 +463,7 @@ const parseSseLines = (buffer: string): { events: StreamEvent[]; rest: string } 
   return { events, rest }
 }
 
-export default function AIPanel({ requestJson, connectionContext, workspace, contextSources = [], primaryContextSourceId, onRemoveContextSource, onWorkspaceAction, onAgentDataChanged, shortcuts }: AIPanelProps): React.JSX.Element {
+export default function AIPanel({ requestJson, hasDatabaseContext, getConnectionContext, getWorkspaceSnapshot, contextSources = [], primaryContextSourceId, onRemoveContextSource, onWorkspaceAction, onAgentDataChanged, shortcuts }: AIPanelProps): React.JSX.Element {
   const [messageApi, contextHolder] = message.useMessage()
   const showError = (error: unknown, fallback = '操作失败'): void => {
     const content = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
@@ -499,6 +500,13 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
   const suppressAutoScrollRef = useRef(false)
   const autoCompactRunningRef = useRef(false)
   const contextStatsRequestKeyRef = useRef('')
+  const getConnectionContextRef = useRef(getConnectionContext)
+  const getWorkspaceSnapshotRef = useRef(getWorkspaceSnapshot)
+
+  getConnectionContextRef.current = getConnectionContext
+  getWorkspaceSnapshotRef.current = getWorkspaceSnapshot
+
+  const readConnectionContext = (): AIConnectionContext => getConnectionContextRef.current?.() ?? {}
 
   const activeConfigItem = useMemo(() => {
     if (selectedConfigId) {
@@ -516,7 +524,6 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
       }
     : null
   const ready = Boolean(config)
-  const hasDatabaseContext = Boolean(connectionContext.connectionId)
   const canChat = ready
   const activeSession = sessions.find((session) => session.id === activeSessionId)
   const messages = activeSession?.messages ?? []
@@ -584,6 +591,7 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
       return
     }
     const sessionMessages = buildConversationMessages(activeSession)
+    const workspace = getWorkspaceSnapshotRef.current?.()
     const requestKey = JSON.stringify({
       messages: sessionMessages,
       config,
@@ -597,7 +605,7 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
       method: 'POST',
       body: requestKey
     }).then(setContextStats).catch(() => setContextStats(null))
-  }, [activeSession?.compressedSummary, activeSession?.messages, config, requestJson, workspace])
+  }, [activeSession?.compressedSummary, activeSession?.messages, config, requestJson, getWorkspaceSnapshot])
 
   useEffect(() => {
     if (suppressAutoScrollRef.current) {
@@ -1069,7 +1077,7 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
         body: JSON.stringify({
           messages: session.messages.map((item) => ({ role: item.role, content: item.content })),
           config: config!,
-          workspace
+          workspace: getWorkspaceSnapshotRef.current?.()
         })
       })
       updateActiveSession((currentSession) => ({
@@ -1211,6 +1219,7 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
 
     const streamId = streamIdRef.current ?? crypto.randomUUID()
     streamIdRef.current = streamId
+    const connectionContext = readConnectionContext()
 
     try {
       await window.api.streamRequest(
@@ -1224,7 +1233,7 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
             connection_id: connectionContext.connectionId,
             database: connectionContext.database,
             pg_database: connectionContext.pgDatabase,
-            workspace
+            workspace: getWorkspaceSnapshotRef.current?.()
           })
         },
         (chunk) => {
@@ -1340,6 +1349,7 @@ export default function AIPanel({ requestJson, connectionContext, workspace, con
     */
   }
   const confirmAction = async (confirmation: AgentConfirmationView, approved: boolean): Promise<void> => {
+    const connectionContext = readConnectionContext()
     if (!connectionContext.connectionId) {
       showError('请先选择已打开的数据库连接')
       return

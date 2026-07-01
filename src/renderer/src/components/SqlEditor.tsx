@@ -335,13 +335,13 @@ const splitSqlStatements = (sql: string): { text: string; start: number; end: nu
     }
 
     if (char === ';') {
-      const raw = sql.slice(start, index)
+      const raw = sql.slice(start, index + 1)
       const trimmed = raw.trim()
       if (trimmed) {
         const trimmedStartOffset = raw.search(/\S/)
         const trimmedEndOffset = raw.length - raw.trimEnd().length
         const statementStart = start + Math.max(0, trimmedStartOffset)
-        const statementEnd = index - trimmedEndOffset
+        const statementEnd = (index + 1) - trimmedEndOffset
         statements.push({ text: trimmed, start: statementStart, end: statementEnd })
       }
       start = index + 1
@@ -434,6 +434,7 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, onReady, the
   const selectionChangeRef = useRef<((payload: SqlEditorSelectionPayload) => void) | undefined>(onSelectionChange)
   const readyRef = useRef<((handle: SqlEditorHandle | null) => void) | undefined>(onReady)
   const statementDecorationIdsRef = useRef<string[]>([])
+  const lastSelectionDispatchKeyRef = useRef('')
   const editorSelectionSyncFrameRef = useRef<number | undefined>(undefined)
   const editorContentSyncTimeoutRef = useRef<number | undefined>(undefined)
   const latestValueRef = useRef(value)
@@ -616,8 +617,16 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, onReady, the
     }
 
     const offset = model.getOffsetAt(position)
-    for (const statement of statements) {
-      if (offset >= statement.start && offset <= statement.end) {
+    for (let index = 0; index < statements.length; index += 1) {
+      const statement = statements[index]
+      if (offset >= statement.start && offset < statement.end) {
+        return statement
+      }
+      const nextStatement = statements[index + 1]
+      if (offset === statement.end && (!nextStatement || offset < nextStatement.start)) {
+        return statement
+      }
+      if (offset > statement.end && (!nextStatement || offset < nextStatement.start)) {
         return statement
       }
     }
@@ -729,31 +738,39 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, onReady, the
     const statements = getCachedStatements(model)
     const currentStatement = getCurrentStatementInfo(editor, statements)
     activeStatementKeyRef.current = getStatementIdentity(currentStatement)
+    lastSelectionDispatchKeyRef.current = `${activeStatementKeyRef.current}:${statements.length}`
     updateStatementDecorations(editor, currentStatement)
     selectionChangeRef.current?.(buildSelectionPayload(editor, statements, currentStatement, false))
   }
 
   const syncEditorSelectionState = (editor: Monaco.editor.IStandaloneCodeEditor): void => {
     const model = editor.getModel()
-    if (
-      model
-      && editorContentSyncTimeoutRef.current != null
-      && cachedStatementsRef.current.versionId !== model.getVersionId()
-    ) {
-      return
-    }
     const statements = getCachedStatements(model)
     const currentStatement = getCurrentStatementInfo(editor, statements)
     const nextStatementKey = getStatementIdentity(currentStatement)
-    if (nextStatementKey !== activeStatementKeyRef.current) {
-      activeStatementKeyRef.current = nextStatementKey
-      updateStatementDecorations(editor, currentStatement)
+    if (nextStatementKey === activeStatementKeyRef.current) {
+      return
     }
+    activeStatementKeyRef.current = nextStatementKey
+    updateStatementDecorations(editor, currentStatement)
+    const dispatchKey = `${nextStatementKey}:${statements.length}`
+    if (dispatchKey === lastSelectionDispatchKeyRef.current) {
+      return
+    }
+    lastSelectionDispatchKeyRef.current = dispatchKey
     selectionChangeRef.current?.(buildSelectionPayload(editor, statements, currentStatement, false))
   }
 
   const scheduleEditorSelectionSync = (editor: Monaco.editor.IStandaloneCodeEditor): void => {
-    if (editorSelectionSyncFrameRef.current) {
+    const model = editor.getModel()
+    if (editorContentSyncTimeoutRef.current != null) {
+      return
+    }
+    if (
+      model
+      && cachedStatementsRef.current.versionId === model.getVersionId()
+    ) {
+      syncEditorSelectionState(editor)
       return
     }
     editorSelectionSyncFrameRef.current = window.requestAnimationFrame(() => {

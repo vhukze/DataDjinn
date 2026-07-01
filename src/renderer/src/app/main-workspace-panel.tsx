@@ -6,6 +6,11 @@ import type { ReactNode, RefObject } from 'react'
 import WorkspaceTabsView from './workspace-tabs'
 import { useWorkspaceStore } from './workspace-store'
 
+const FAST_DROPDOWN_PROPS = {
+  destroyOnHidden: true,
+  transitionName: ''
+} as const
+
 type MainWorkspacePanelProps = {
   mainPanelRef: RefObject<HTMLDivElement | null>
   aiDockPanelRef: RefObject<HTMLDivElement | null>
@@ -15,6 +20,7 @@ type MainWorkspacePanelProps = {
   resizingAiPanel: boolean
   resizingResourcePanel: boolean
   renderWorkspaceTab: (tab: import('./workspace-model').WorkspaceTab, active: boolean) => ReactNode
+  workspaceRenderVersionToken: unknown
   onActiveTabChange: (key: string) => void
   onCloseTab: (key: string) => void
   onRenameTab: (key: string, title: string) => void
@@ -27,6 +33,7 @@ type MainWorkspacePanelProps = {
 
 type WorkspaceCenterAreaProps = {
   renderWorkspaceTab: (tab: import('./workspace-model').WorkspaceTab, active: boolean) => ReactNode
+  workspaceRenderVersionToken: unknown
   onActiveTabChange: (key: string) => void
   onCloseTab: (key: string) => void
   onRenameTab: (key: string, title: string) => void
@@ -37,6 +44,7 @@ type WorkspaceCenterAreaProps = {
 
 const WorkspaceCenterArea = memo(function WorkspaceCenterArea({
   renderWorkspaceTab,
+  workspaceRenderVersionToken,
   onActiveTabChange,
   onCloseTab,
   onRenameTab,
@@ -132,6 +140,7 @@ const WorkspaceCenterArea = memo(function WorkspaceCenterArea({
                   onClick: handleConnectionCreateMenuClick
                 }}
                 trigger={['click']}
+                {...FAST_DROPDOWN_PROPS}
               >
                 <Button
                   className="empty-workspace-button empty-workspace-button-primary"
@@ -152,34 +161,20 @@ const WorkspaceCenterArea = memo(function WorkspaceCenterArea({
           onCloseTab={handleCloseTab}
           onRenameTab={handleRenameTab}
           renderWorkspaceTab={renderWorkspaceTab}
+          renderVersionToken={workspaceRenderVersionToken}
         />
       )}
     </div>
   )
 }, (prev, next) => (
-  (() => {
-    const same = prev.renderWorkspaceTab === next.renderWorkspaceTab
-      && prev.onActiveTabChange === next.onActiveTabChange
-      && prev.onCloseTab === next.onCloseTab
-      && prev.onRenameTab === next.onRenameTab
-      && prev.openImportConnectionModal === next.openImportConnectionModal
-      && prev.connectionCreateMenuItems === next.connectionCreateMenuItems
-      && prev.onConnectionCreateMenuClick === next.onConnectionCreateMenuClick
-
-    if (!same) {
-      const changed: string[] = []
-      if (prev.renderWorkspaceTab !== next.renderWorkspaceTab) changed.push('renderWorkspaceTab')
-      if (prev.onActiveTabChange !== next.onActiveTabChange) changed.push('onActiveTabChange')
-      if (prev.onCloseTab !== next.onCloseTab) changed.push('onCloseTab')
-      if (prev.onRenameTab !== next.onRenameTab) changed.push('onRenameTab')
-      if (prev.openImportConnectionModal !== next.openImportConnectionModal) changed.push('openImportConnectionModal')
-      if (prev.connectionCreateMenuItems !== next.connectionCreateMenuItems) changed.push('connectionCreateMenuItems')
-      if (prev.onConnectionCreateMenuClick !== next.onConnectionCreateMenuClick) changed.push('onConnectionCreateMenuClick')
-      console.info('[perf][workspace-center] props-changed', changed)
-    }
-
-    return same
-  })()
+  prev.renderWorkspaceTab === next.renderWorkspaceTab
+  && prev.workspaceRenderVersionToken === next.workspaceRenderVersionToken
+  && prev.onActiveTabChange === next.onActiveTabChange
+  && prev.onCloseTab === next.onCloseTab
+  && prev.onRenameTab === next.onRenameTab
+  && prev.openImportConnectionModal === next.openImportConnectionModal
+  && prev.connectionCreateMenuItems === next.connectionCreateMenuItems
+  && prev.onConnectionCreateMenuClick === next.onConnectionCreateMenuClick
 ))
 
 type WorkspaceAiDockProps = {
@@ -235,6 +230,7 @@ const MainWorkspacePanel = memo(function MainWorkspacePanel({
   resizingAiPanel,
   resizingResourcePanel,
   renderWorkspaceTab,
+  workspaceRenderVersionToken,
   onActiveTabChange,
   onCloseTab,
   onRenameTab,
@@ -251,6 +247,7 @@ const MainWorkspacePanel = memo(function MainWorkspacePanel({
       <div className={`studio-shell${resizingResourcePanel || resizingAiPanel ? ' studio-shell-suspended' : ''}`}>
         <WorkspaceCenterArea
           renderWorkspaceTab={renderWorkspaceTab}
+          workspaceRenderVersionToken={workspaceRenderVersionToken}
           onActiveTabChange={onActiveTabChange}
           onCloseTab={onCloseTab}
           onRenameTab={onRenameTab}
@@ -276,6 +273,7 @@ const MainWorkspacePanel = memo(function MainWorkspacePanel({
   && prev.resizingAiPanel === next.resizingAiPanel
   && prev.resizingResourcePanel === next.resizingResourcePanel
   && prev.renderWorkspaceTab === next.renderWorkspaceTab
+  && prev.workspaceRenderVersionToken === next.workspaceRenderVersionToken
   && prev.onActiveTabChange === next.onActiveTabChange
   && prev.onCloseTab === next.onCloseTab
   && prev.onRenameTab === next.onRenameTab

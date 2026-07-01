@@ -14,6 +14,10 @@ type WorkspaceState = {
   getRecentQuerySql: () => string[]
   setTabs: (tabs: WorkspaceTab[] | ((current: WorkspaceTab[]) => WorkspaceTab[])) => void
   setActiveTabKey: (key?: string | ((current?: string) => string | undefined)) => void
+  setTabsAndActiveTabKey: (
+    tabs: WorkspaceTab[] | ((current: WorkspaceTab[]) => WorkspaceTab[]),
+    activeTabKey?: string | ((current?: string) => string | undefined)
+  ) => void
   resetWorkspace: () => void
 }
 
@@ -58,5 +62,16 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     }
   }),
   setActiveTabKey: (key) => set((state) => ({ activeTabKey: resolveUpdater(key, state.activeTabKey) })),
+  setTabsAndActiveTabKey: (tabs, activeTabKey) => set((state) => {
+    const nextTabs = resolveUpdater(tabs, state.tabs)
+    const nextActiveTabKey = activeTabKey === undefined
+      ? state.activeTabKey
+      : resolveUpdater(activeTabKey, state.activeTabKey)
+    return {
+      tabs: nextTabs,
+      tabSummaries: buildTabSummaries(nextTabs, state.tabSummaries),
+      activeTabKey: nextActiveTabKey
+    }
+  }),
   resetWorkspace: () => set({ tabs: [], tabSummaries: [], activeTabKey: undefined })
 }))

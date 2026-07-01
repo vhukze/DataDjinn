@@ -1,8 +1,9 @@
 import { LoadingOutlined } from '@ant-design/icons'
 import { Alert, Menu, Tree, Typography } from 'antd'
 import type { MenuProps } from 'antd'
-import { memo, startTransition, useCallback, useEffect, useRef } from 'react'
+import { memo, useCallback } from 'react'
 import type { Key, MutableRefObject, RefObject } from 'react'
+import { createPortal } from 'react-dom'
 import ReactBitsDock from '../components/ui/ReactBitsDock'
 import ReactBitsSearchInput from '../components/ui/ReactBitsSearchInput'
 import type { ConnectionInfo } from './connection-model'
@@ -143,28 +144,7 @@ const ResourceTreePanel = memo(function ResourceTreePanel({
 }: ResourceTreePanelProps) {
   void treeLoadingVersion
 
-  const pendingSelectionTimerRef = useRef<number | undefined>(undefined)
-
   const clearPendingTreeSelection = useCallback(() => {
-    if (pendingSelectionTimerRef.current == null) {
-      return
-    }
-    window.clearTimeout(pendingSelectionTimerRef.current)
-    pendingSelectionTimerRef.current = undefined
-  }, [])
-
-  useEffect(() => () => {
-    clearPendingTreeSelection()
-  }, [clearPendingTreeSelection])
-
-  const shouldDelayTreeSelection = useCallback((node: DatabaseTreeNode, nativeEvent?: MouseEvent) => {
-    if (nativeEvent?.shiftKey || nativeEvent?.ctrlKey || nativeEvent?.metaKey) {
-      return false
-    }
-    if (node.kind === 'column' || node.kind === 'folder' || node.kind === 'folder-drop-placeholder') {
-      return false
-    }
-    return true
   }, [])
 
   const commitTreeSelection = useCallback((node: DatabaseTreeNode, nativeEvent?: MouseEvent) => {
@@ -173,22 +153,10 @@ const ResourceTreePanel = memo(function ResourceTreePanel({
 
   const scheduleTreeSelection = useCallback((node: DatabaseTreeNode, nativeEvent?: MouseEvent) => {
     if ((nativeEvent?.detail ?? 1) > 1) {
-      clearPendingTreeSelection()
       return
     }
-
-    if (!shouldDelayTreeSelection(node, nativeEvent)) {
-      clearPendingTreeSelection()
-      commitTreeSelection(node, nativeEvent)
-      return
-    }
-
-    clearPendingTreeSelection()
-    pendingSelectionTimerRef.current = window.setTimeout(() => {
-      pendingSelectionTimerRef.current = undefined
-      commitTreeSelection(node, nativeEvent)
-    }, 320)
-  }, [clearPendingTreeSelection, commitTreeSelection, shouldDelayTreeSelection])
+    commitTreeSelection(node, nativeEvent)
+  }, [commitTreeSelection])
 
   return (
     <>
@@ -366,12 +334,10 @@ const ResourceTreePanel = memo(function ResourceTreePanel({
                 } else if (treeNode.kind !== 'connection') {
                   setSelectedTreeKeys([treeNode.key as Key])
                 }
-                startTransition(() => {
-                  setFocusedTreeNode(treeNode)
-                  if (treeNode.connectionId) {
-                    setSelectedConnectionId(treeNode.connectionId)
-                  }
-                })
+                setFocusedTreeNode(treeNode)
+                if (treeNode.connectionId) {
+                  setSelectedConnectionId(treeNode.connectionId)
+                }
                 setTreeContextMenu({
                   x: event.clientX,
                   y: event.clientY,
@@ -379,10 +345,11 @@ const ResourceTreePanel = memo(function ResourceTreePanel({
                 })
               }}
               onDrop={handleTreeDrop as never}
-              onDoubleClick={(_, node) => {
+              onDoubleClick={(event, node) => {
                 clearPendingTreeSelection()
                 const startedAt = performance.now()
                 const treeNode = node as DatabaseTreeNode
+                commitTreeSelection(treeNode, event.nativeEvent)
                 if (treeNode.kind === 'database' || treeNode.kind === 'pg-schema') {
                   activateAIContextFromNode(treeNode)
                 }
@@ -424,8 +391,8 @@ const ResourceTreePanel = memo(function ResourceTreePanel({
                       duration: Number((performance.now() - startedAt).toFixed(2))
                     })
                     void openConnectionById(treeNode.connectionId).then((openedConnection) => {
-                      if (openedConnection?.is_open) {
-                        toggleOrLoadTreeNode({ ...treeNode, childrenLoaded: openedConnection.database_type === 'sqlite' })
+                      if (openedConnection?.is_open && openedConnection.database_type !== 'sqlite') {
+                        toggleOrLoadTreeNode({ ...treeNode, closed: false, childrenLoaded: false, isLeaf: false })
                       }
                     })
                     return
@@ -446,7 +413,7 @@ const ResourceTreePanel = memo(function ResourceTreePanel({
             />
           )}
         </div>
-        {treeContextMenu && (
+        {treeContextMenu && typeof document !== 'undefined' && createPortal(
           <div className="tree-context-menu-backdrop">
             <div
               className="tree-context-menu-panel"
@@ -456,7 +423,8 @@ const ResourceTreePanel = memo(function ResourceTreePanel({
             >
               <Menu items={getTreeContextMenuItems(treeContextMenu.node)} onClick={handleTreeContextMenuClick} />
             </div>
-          </div>
+          </div>,
+          document.body
         )}
       </div>
     </>

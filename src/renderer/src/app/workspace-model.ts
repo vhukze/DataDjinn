@@ -106,6 +106,10 @@ export type TableSearchUiState = {
   wholeWord: boolean
   filterRows: boolean
   activeMatchIndex: number
+  position?: {
+    x: number
+    y: number
+  }
 }
 
 export type SqlEditorExecutionContext = {

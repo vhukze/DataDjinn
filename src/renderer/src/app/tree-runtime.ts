@@ -543,7 +543,7 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
     }
 
     if (!isTreeNodeChildrenLoaded(node)) {
-      void reloadNodeChildren({ ...node, isLeaf: false })
+      void reloadNodeChildren({ ...node, isLeaf: false }, true)
       return
     }
 

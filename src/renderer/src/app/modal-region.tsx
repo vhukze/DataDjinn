@@ -45,7 +45,17 @@ export const DdlPreviewModal = memo(forwardRef<DdlPreviewModalHandle, {
     }), [onError])
 
     return (
-      <Modal title={title || '查看 DDL'} open={open} footer={null} onCancel={() => setOpen(false)} width={980} centered maskClosable={false}>
+      <Modal
+        title={title || '查看 DDL'}
+        open={open}
+        footer={null}
+        onCancel={() => setOpen(false)}
+        width={980}
+        centered
+        maskClosable={false}
+        transitionName=""
+        maskTransitionName=""
+      >
         <div className="ddl-preview-shell">
           <SqlEditor
             value={loading ? '-- 加载中...' : content}

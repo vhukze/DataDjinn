@@ -1,7 +1,7 @@
 import { DownOutlined, PlayCircleOutlined, UpOutlined } from '@ant-design/icons'
 import { Button, Dropdown, Select, Splitter } from 'antd'
 import type { MenuProps } from 'antd'
-import { memo, useMemo } from 'react'
+import { memo, useEffect, useMemo, useRef } from 'react'
 import SqlEditor from '../components/SqlEditor'
 import type {
   SqlCompletionContext,
@@ -85,6 +85,14 @@ const QueryWorkspacePanel = memo(function QueryWorkspacePanel({
   handleSqlExecutionContextChange,
   onEditorReady
 }: QueryWorkspacePanelProps) {
+  const statementToggleButtonRef = useRef<HTMLButtonElement | null>(null)
+
+  useEffect(() => {
+    if (statementToggleButtonRef.current) {
+      statementToggleButtonRef.current.dataset.activeStatementIndex = String(executionContext?.currentStatementIndex ?? -1)
+    }
+  }, [executionContext, tab.key])
+
   const isMysql = connection?.database_type === 'mysql'
   const isDm = connection?.database_type === 'dm'
   const isPg = isSchemaScopedType(connection?.database_type)
@@ -122,6 +130,7 @@ const QueryWorkspacePanel = memo(function QueryWorkspacePanel({
   const resultCollapsed = Boolean(tab.resultCollapsed)
   const resultPanelVisible = resultVisible && !resultCollapsed
   const queryEditorHeight = tab.queryEditorHeight ?? 280
+  const activeStatementIndex = executionContext?.currentStatementIndex ?? -1
   const statementSource = useMemo(() => (
     (executionContext?.statements?.length ?? 0) > 0
       ? (executionContext?.statements ?? [])
@@ -133,7 +142,7 @@ const QueryWorkspacePanel = memo(function QueryWorkspacePanel({
   const statementMenuItems: MenuProps['items'] = useMemo(() => statementSource.map((statement, index) => {
     const firstLine = statement.text.split('\n').map((line) => line.trim()).find(Boolean) ?? statement.text.trim()
     const compactTitle = firstLine.length > 72 ? `${firstLine.slice(0, 72)}...` : firstLine
-    const isActive = executionContext?.currentStatementIndex === index
+    const isActive = activeStatementIndex === index
     return {
       key: String(index),
       label: (
@@ -146,7 +155,7 @@ const QueryWorkspacePanel = memo(function QueryWorkspacePanel({
         </div>
       )
     }
-  }), [executionContext?.currentStatementIndex, statementSource])
+  }), [activeStatementIndex, statementSource])
 
   return (
     <div className="query-workspace">
@@ -261,6 +270,8 @@ const QueryWorkspacePanel = memo(function QueryWorkspacePanel({
               <Dropdown
                 trigger={['click']}
                 overlayClassName="query-execute-dropdown"
+                transitionName=""
+                destroyOnHidden
                 menu={{
                   items: statementMenuItems,
                   onClick: ({ key }) => {
@@ -272,10 +283,12 @@ const QueryWorkspacePanel = memo(function QueryWorkspacePanel({
                 }}
               >
                 <Button
+                  ref={statementToggleButtonRef}
                   className="query-execute-dropdown-button"
                   type="primary"
                   icon={<DownOutlined />}
                   aria-label={EXECUTE_STATEMENT_ARIA_LABEL}
+                  data-active-statement-index={activeStatementIndex}
                 />
               </Dropdown>
             )}
@@ -320,7 +333,12 @@ const QueryWorkspacePanel = memo(function QueryWorkspacePanel({
                   value={tab.sql}
                   onChange={(sql) => scheduleQuerySqlDraftCommit(tab.key, sql)}
                   onExecute={(payload) => void runQuery(tab, payload.sql)}
-                  onSelectionChange={(payload) => handleSqlExecutionContextChange(tab.key, payload)}
+                  onSelectionChange={(payload) => {
+                    if (statementToggleButtonRef.current) {
+                      statementToggleButtonRef.current.dataset.activeStatementIndex = String(payload.currentStatementIndex)
+                    }
+                    handleSqlExecutionContextChange(tab.key, payload)
+                  }}
                   onReady={(handle) => onEditorReady(tab.key, handle)}
                   theme={theme}
                   completionContext={buildSqlCompletionContext(tab)}

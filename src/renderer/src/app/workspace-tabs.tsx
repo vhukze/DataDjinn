@@ -15,6 +15,7 @@ export type WorkspaceTabsViewProps = {
   onCloseTab: (key: string) => void
   onRenameTab: (key: string, title: string) => void
   renderWorkspaceTab: (tab: WorkspaceTab, active: boolean) => React.ReactNode
+  renderVersionToken: unknown
 }
 
 const MAX_CACHED_TAB_PANES = 3
@@ -27,6 +28,7 @@ function WorkspaceTabContentInner({
   tab: WorkspaceTabBase
   active: boolean
   renderWorkspaceTabRef: React.MutableRefObject<(tab: WorkspaceTab, active: boolean) => React.ReactNode>
+  renderVersionToken: unknown
 }) {
   const fullTab = useWorkspaceStore(useCallback((state) => state.getTabByKey(tab.key), [tab.key]))
   if (!fullTab) {
@@ -39,16 +41,19 @@ const WorkspaceTabContent = memo(WorkspaceTabContentInner) as (props: {
   tab: WorkspaceTabBase
   active: boolean
   renderWorkspaceTabRef: React.MutableRefObject<(tab: WorkspaceTab, active: boolean) => React.ReactNode>
+  renderVersionToken: unknown
 }) => React.ReactElement
 
 const WorkspaceTabPane = memo(function WorkspaceTabPane({
   tab,
   active,
-  renderWorkspaceTabRef
+  renderWorkspaceTabRef,
+  renderVersionToken
 }: {
   tab: WorkspaceTabBase
   active: boolean
   renderWorkspaceTabRef: React.MutableRefObject<(tab: WorkspaceTab, active: boolean) => React.ReactNode>
+  renderVersionToken: unknown
 }) {
   return (
     <div className={active ? 'workspace-active-content' : 'workspace-inactive-content'} aria-hidden={!active}>
@@ -56,12 +61,14 @@ const WorkspaceTabPane = memo(function WorkspaceTabPane({
         tab={tab}
         active={active}
         renderWorkspaceTabRef={renderWorkspaceTabRef}
+        renderVersionToken={renderVersionToken}
       />
     </div>
   )
 }, (prev, next) => (
   prev.tab === next.tab
   && prev.active === next.active
+  && prev.renderVersionToken === next.renderVersionToken
 ))
 
 function WorkspaceTabsViewInner({
@@ -70,7 +77,8 @@ function WorkspaceTabsViewInner({
   onActiveTabChange,
   onCloseTab,
   onRenameTab,
-  renderWorkspaceTab
+  renderWorkspaceTab,
+  renderVersionToken
 }: WorkspaceTabsViewProps) {
   const [editingTabKey, setEditingTabKey] = useState<string>()
   const [editingTabTitle, setEditingTabTitle] = useState('')
@@ -117,6 +125,18 @@ function WorkspaceTabsViewInner({
         : next
     })
   }, [activeTabKey, workspaceTabs])
+
+  const renderedMountedTabKeys = useMemo(() => {
+    const availableKeys = new Set(workspaceTabs.map((tab) => tab.key))
+    const filtered = mountedTabKeys.filter((key) => availableKeys.has(key))
+    if (!activeTabKey || !availableKeys.has(activeTabKey)) {
+      return filtered
+    }
+    const next = [...filtered.filter((key) => key !== activeTabKey), activeTabKey]
+    return next.length > MAX_CACHED_TAB_PANES
+      ? next.slice(next.length - MAX_CACHED_TAB_PANES)
+      : next
+  }, [activeTabKey, mountedTabKeys, workspaceTabs])
 
   const handleTabEdit = useCallback((targetKey: React.MouseEvent | React.KeyboardEvent | string, action: 'add' | 'remove') => {
     if (action === 'remove' && typeof targetKey === 'string') {
@@ -216,12 +236,13 @@ function WorkspaceTabsViewInner({
         items={items}
       />
       <div className="workspace-tab-panels">
-        {workspaceTabs.filter((tab) => mountedTabKeys.includes(tab.key)).map((tab) => (
+        {workspaceTabs.filter((tab) => renderedMountedTabKeys.includes(tab.key)).map((tab) => (
           <WorkspaceTabPane
             key={tab.key}
             tab={tab}
             active={tab.key === activeTabKey}
             renderWorkspaceTabRef={renderWorkspaceTabRef}
+            renderVersionToken={renderVersionToken}
           />
         ))}
       </div>
@@ -231,7 +252,12 @@ function WorkspaceTabsViewInner({
 
 const WorkspaceTabsView = memo(WorkspaceTabsViewInner, (prev, next) => (
   prev.workspaceTabs === next.workspaceTabs &&
-  prev.activeTabKey === next.activeTabKey
+  prev.activeTabKey === next.activeTabKey &&
+  prev.renderWorkspaceTab === next.renderWorkspaceTab &&
+  prev.renderVersionToken === next.renderVersionToken &&
+  prev.onActiveTabChange === next.onActiveTabChange &&
+  prev.onCloseTab === next.onCloseTab &&
+  prev.onRenameTab === next.onRenameTab
 )) as (props: WorkspaceTabsViewProps) => React.ReactElement
 
 export default WorkspaceTabsView

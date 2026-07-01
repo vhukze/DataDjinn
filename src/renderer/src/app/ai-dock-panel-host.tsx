@@ -1,4 +1,4 @@
-import { memo, useMemo } from 'react'
+import { memo, useCallback } from 'react'
 import AIPanel from '../components/AIPanel'
 import type { ConnectionInfo } from './connection-model'
 import type { AIContextSource, AIWorkspaceAction } from './workspace-model'
@@ -48,8 +48,9 @@ type AIDockPanelHostProps = {
 
 const MemoAIPanel = memo(AIPanel, (prev, next) => (
   prev.requestJson === next.requestJson
-  && prev.connectionContext === next.connectionContext
-  && prev.workspace === next.workspace
+  && prev.hasDatabaseContext === next.hasDatabaseContext
+  && prev.getConnectionContext === next.getConnectionContext
+  && prev.getWorkspaceSnapshot === next.getWorkspaceSnapshot
   && prev.contextSources === next.contextSources
   && prev.primaryContextSourceId === next.primaryContextSourceId
 ))
@@ -71,34 +72,26 @@ const AIDockPanelHost = memo(function AIDockPanelHost({
   shortcutNewline,
   shortcutStop
 }: AIDockPanelHostProps) {
-  const activeTabKey = useWorkspaceStore((state) => state.activeTabKey)
-
-  const activeTab = useMemo(
-    () => (activeTabKey ? useWorkspaceStore.getState().getTabByKey(activeTabKey) : undefined),
-    [activeTabKey]
-  )
-  const recentQueries = useMemo(
-    () => useWorkspaceStore.getState().getRecentQuerySql(),
-    [activeTabKey, activeTab?.sql]
-  )
-
-  const aiWorkspacePayload = useMemo(() => ({
-    active_sql: activeTab?.sql,
-    active_tab_kind: activeTab?.kind,
-    selected_table: activeTab?.tableName,
-    current_connection_name: aiContextConnection?.name,
-    current_db_type: aiContextConnection?.database_type,
-    current_server_version: aiContextConnection?.server_version,
-    current_database: aiDatabase,
-    current_pg_database: aiPgDatabase,
-    focused_resource: focusedResource,
-    connections: connectionSummaries,
-    recent_queries: recentQueries,
-    context_sources: effectiveAIContextSources
-  }), [
-    activeTab?.kind,
-    activeTab?.sql,
-    activeTab?.tableName,
+  const getWorkspaceSnapshot = useCallback(() => {
+    const workspaceState = useWorkspaceStore.getState()
+    const activeTab = workspaceState.activeTabKey
+      ? workspaceState.getTabByKey(workspaceState.activeTabKey)
+      : undefined
+    return {
+      active_sql: activeTab?.sql,
+      active_tab_kind: activeTab?.kind,
+      selected_table: activeTab?.tableName,
+      current_connection_name: aiContextConnection?.name,
+      current_db_type: aiContextConnection?.database_type,
+      current_server_version: aiContextConnection?.server_version,
+      current_database: aiDatabase,
+      current_pg_database: aiPgDatabase,
+      focused_resource: focusedResource,
+      connections: connectionSummaries,
+      recent_queries: workspaceState.getRecentQuerySql(),
+      context_sources: effectiveAIContextSources
+    }
+  }, [
     aiContextConnection?.database_type,
     aiContextConnection?.name,
     aiContextConnection?.server_version,
@@ -106,11 +99,11 @@ const AIDockPanelHost = memo(function AIDockPanelHost({
     aiPgDatabase,
     connectionSummaries,
     effectiveAIContextSources,
-    focusedResource,
-    recentQueries
+    focusedResource
   ])
 
-  const connectionContext = useMemo(() => ({
+  const hasDatabaseContext = Boolean(aiContextConnection?.is_open && aiContextConnection.connection_id)
+  const getConnectionContext = useCallback(() => ({
     connectionId: aiContextConnection?.is_open ? aiContextConnection.connection_id : undefined,
     dbType: aiContextConnection?.database_type,
     dbName: aiDbName,
@@ -119,7 +112,11 @@ const AIDockPanelHost = memo(function AIDockPanelHost({
     connectionName: aiContextConnection?.name,
     serverVersion: aiContextConnection?.server_version
   }), [
-    aiContextConnection,
+    aiContextConnection?.connection_id,
+    aiContextConnection?.database_type,
+    aiContextConnection?.is_open,
+    aiContextConnection?.name,
+    aiContextConnection?.server_version,
     aiDbName,
     aiDatabase,
     aiPgDatabase
@@ -128,8 +125,9 @@ const AIDockPanelHost = memo(function AIDockPanelHost({
   return (
     <MemoAIPanel
       requestJson={requestJson}
-      connectionContext={connectionContext}
-      workspace={aiWorkspacePayload}
+      hasDatabaseContext={hasDatabaseContext}
+      getConnectionContext={getConnectionContext}
+      getWorkspaceSnapshot={getWorkspaceSnapshot}
       contextSources={effectiveAIContextSources}
       primaryContextSourceId={primaryAIContextSource?.id}
       onRemoveContextSource={removeAIContextSource}

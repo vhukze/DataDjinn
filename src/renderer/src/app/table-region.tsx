@@ -16,7 +16,7 @@ import {
 import type { InputRef } from 'antd'
 import type { ColumnsType, TableRef } from 'antd/es/table'
 import { createPortal } from 'react-dom'
-import { memo, startTransition, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 
 type EditableRowLike = Record<string, unknown> & {
@@ -316,10 +316,6 @@ export const WhereClauseInput = memo(function WhereClauseInput({
     setSuggestionsDismissed(false)
   }, [tabKey, value])
 
-  useEffect(() => {
-    inputRef.current?.focus()
-  }, [])
-
   const suggestionState = useMemo(() => {
     if (disableSuggestions) {
       return { token: '', start: -1, options: [] as string[] }
@@ -474,7 +470,7 @@ export const SearchHighlightedText = memo(function SearchHighlightedText({
   return <span className={className} dangerouslySetInnerHTML={{ __html: highlightedHtml }} />
 })
 
-const PageSearchControls = memo(function PageSearchControls({
+export const PageSearchControls = memo(function PageSearchControls({
   state,
   matchCount,
   activeMatchIndex,
@@ -503,10 +499,10 @@ const PageSearchControls = memo(function PageSearchControls({
   }, [state.query])
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      inputRef.current?.focus()
-    }, 0)
-    return () => window.clearTimeout(timer)
+    const frameId = window.requestAnimationFrame(() => {
+      inputRef.current?.focus({ cursor: 'all' })
+    })
+    return () => window.cancelAnimationFrame(frameId)
   }, [])
 
   useEffect(() => {
@@ -517,16 +513,11 @@ const PageSearchControls = memo(function PageSearchControls({
     if (composingRef.current || draftQuery === state.query) {
       return
     }
-    const timer = window.setTimeout(() => {
-      onClearActiveHighlight()
-      startTransition(() => {
-        onStateChange({
-          query: draftQuery,
-          activeMatchIndex: 0
-        })
-      })
-    }, 120)
-    return () => window.clearTimeout(timer)
+    onClearActiveHighlight()
+    onStateChange({
+      query: draftQuery,
+      activeMatchIndex: 0
+    })
   }, [draftQuery, onClearActiveHighlight, onStateChange, state.query])
 
   let hasRegexError = false
@@ -830,7 +821,6 @@ export const ColumnFilterTrigger = memo(function ColumnFilterTrigger({
 export const ResultTableBodyView = memo(function ResultTableBodyView({
   tab,
   searchSignature,
-  selectedRowKeyMap,
   tableColumns,
   tableRows,
   tableScrollX,
@@ -847,7 +837,6 @@ export const ResultTableBodyView = memo(function ResultTableBodyView({
 }: {
   tab: WorkspaceTabLike
   searchSignature: string
-  selectedRowKeyMap: Record<string, true>
   tableColumns: ColumnsType<EditableRowLike>
   tableRows: EditableRowLike[]
   tableScrollX: number
@@ -863,6 +852,7 @@ export const ResultTableBodyView = memo(function ResultTableBodyView({
   onMouseLeave: () => void
 }) {
   void searchSignature
+  void tab.tableRenderVersion
   const bodyRef = useRef<HTMLDivElement | null>(null)
   const effectiveTableScrollY = tableScrollY
 
@@ -875,6 +865,21 @@ export const ResultTableBodyView = memo(function ResultTableBodyView({
       className="result-table-body"
       tabIndex={0}
       style={{ '--result-table-scroll-y': `${effectiveTableScrollY}px` } as React.CSSProperties}
+      onDragStart={(event) => {
+        event.preventDefault()
+      }}
+      onMouseDownCapture={(event) => {
+        if (event.button !== 0) {
+          return
+        }
+        const target = event.target as HTMLElement | null
+        if (!target) {
+          return
+        }
+        if (target.closest('.row-number-button, .row-number-select-all, .column-select-button, .column-sort-button, .column-resize-handle')) {
+          event.preventDefault()
+        }
+      }}
       onMouseEnter={(event) => {
         const currentTarget = event.currentTarget
         setHeaderRef(currentTarget.querySelector<HTMLDivElement>('.ant-table-header'))
@@ -886,12 +891,11 @@ export const ResultTableBodyView = memo(function ResultTableBodyView({
       onMouseLeave={onMouseLeave}
     >
       <Table
+        key={`${tab.key}:${tab.tableRenderVersion ?? 0}`}
         ref={setTableRef}
-        key={tab.key}
         className="result-table"
         rowClassName={(row) => [
-          row.__deleted ? 'row-deleted' : row.__state ? `row-${row.__state}` : '',
-          selectedRowKeyMap[row.__rowKey] ? 'row-selected' : ''
+          row.__deleted ? 'row-deleted' : row.__state ? `row-${row.__state}` : ''
         ].filter(Boolean).join(' ')}
         size="small"
         columns={tableColumns}
@@ -907,10 +911,13 @@ export const ResultTableBodyView = memo(function ResultTableBodyView({
   )
 }, (prev, next) => (
   prev.tab === next.tab
+  && prev.tab.tableRenderVersion === next.tab.tableRenderVersion
   && prev.searchSignature === next.searchSignature
-  && prev.selectedRowKeyMap === next.selectedRowKeyMap
   && prev.tableScrollX === next.tableScrollX
   && prev.tableScrollY === next.tableScrollY
+  && prev.tableRows === next.tableRows
+  && prev.tableColumns === next.tableColumns
+  && prev.virtual === next.virtual
 ))
 
 export const ResultTableHeader = memo(function ResultTableHeader({
@@ -921,8 +928,7 @@ export const ResultTableHeader = memo(function ResultTableHeader({
   searchMeta,
   onSearchStateChange,
   onClearActiveHighlight,
-  searchVisible,
-  onToggleSearch
+  searchVisible
 }: {
   leftActions: React.ReactNode
   whereInput: React.ReactNode
@@ -936,26 +942,54 @@ export const ResultTableHeader = memo(function ResultTableHeader({
   onSearchStateChange: (patch: Partial<TableSearchUiStateLike>) => void
   onClearActiveHighlight: () => void
   searchVisible: boolean
-  onToggleSearch: () => void
 }) {
-  const [activeMatchIndex, setActiveMatchIndex] = useState(0)
   const hasToolbarContent = Boolean(leftActions || whereInput || rightActions)
+  const matchCount = searchMeta.matchCount
+  const activeMatchIndex = matchCount > 0
+    ? Math.min(searchState.activeMatchIndex, matchCount - 1)
+    : 0
 
-  useEffect(() => {
-    setActiveMatchIndex(0)
-  }, [searchMeta.resetKey])
-
-  useEffect(() => {
-    setActiveMatchIndex((current) => {
-      if (searchMeta.matchCount <= 0) {
-        return 0
-      }
-      return Math.min(Math.max(current, 0), searchMeta.matchCount - 1)
+  const closeSearch = useCallback(() => {
+    onClearActiveHighlight()
+    onSearchStateChange({
+      visible: false,
+      query: '',
+      filterRows: false,
+      activeMatchIndex: 0
     })
-  }, [searchMeta.matchCount])
+  }, [onClearActiveHighlight, onSearchStateChange])
+
+  const moveSearchMatch = useCallback((direction: -1 | 1) => {
+    if (matchCount <= 0) {
+      return
+    }
+    const nextMatchIndex = (activeMatchIndex + direction + matchCount) % matchCount
+    onSearchStateChange({ activeMatchIndex: nextMatchIndex })
+    searchMeta.focusSearchMatch(nextMatchIndex)
+  }, [activeMatchIndex, matchCount, onSearchStateChange, searchMeta])
+
+  useEffect(() => {
+    if (!searchVisible) {
+      return
+    }
+
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') {
+        return
+      }
+      event.preventDefault()
+      event.stopPropagation()
+      closeSearch()
+    }
+
+    window.addEventListener('keydown', handleKeyDown, true)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown, true)
+    }
+  }, [closeSearch, searchVisible])
 
   return (
-    <>
+    <div className="result-table-header-shell">
       {hasToolbarContent && (
         <Flex align="center" justify="space-between" gap={8} className="table-data-toolbar">
           {leftActions}
@@ -966,31 +1000,20 @@ export const ResultTableHeader = memo(function ResultTableHeader({
         </Flex>
       )}
       {searchVisible && (
-        <PageSearchControls
-          state={searchState}
-          matchCount={searchMeta.matchCount}
-          activeMatchIndex={activeMatchIndex}
-          onStateChange={onSearchStateChange}
-          onPrevious={() => {
-            if (searchMeta.matchCount === 0) {
-              return
-            }
-            const nextIndex = activeMatchIndex <= 0 ? searchMeta.matchCount - 1 : activeMatchIndex - 1
-            setActiveMatchIndex(nextIndex)
-            searchMeta.focusSearchMatch(nextIndex)
-          }}
-          onNext={() => {
-            if (searchMeta.matchCount === 0) {
-              return
-            }
-            const nextIndex = activeMatchIndex >= searchMeta.matchCount - 1 ? 0 : activeMatchIndex + 1
-            setActiveMatchIndex(nextIndex)
-            searchMeta.focusSearchMatch(nextIndex)
-          }}
-          onClearActiveHighlight={onClearActiveHighlight}
-          onRequestClose={onToggleSearch}
-        />
+        <div className="result-table-search-overlay">
+          <div className="result-table-search-overlay-drag" aria-hidden="true" />
+          <PageSearchControls
+            state={searchState}
+            matchCount={matchCount}
+            activeMatchIndex={activeMatchIndex}
+            onStateChange={onSearchStateChange}
+            onPrevious={() => moveSearchMatch(-1)}
+            onNext={() => moveSearchMatch(1)}
+            onClearActiveHighlight={onClearActiveHighlight}
+            onRequestClose={closeSearch}
+          />
+        </div>
       )}
-    </>
+    </div>
   )
 })
