@@ -18,20 +18,12 @@ jobs:
         include:
           - os: windows-latest
             label: Windows
-            build_command: npm run build:win:all
+            build_command: npm run build:win:installer
             artifact_name: release-windows
             artifact_paths: |
               dist/*.exe
-              dist/*.zip
               dist/*.yml
               dist/*.blockmap
-          - os: macos-latest
-            label: macOS
-            build_command: npm run build:backend && npm run build:frontend && rm -rf backend/.venv && npx electron-builder --mac --publish never
-            artifact_name: release-macos
-            artifact_paths: |
-              dist/*.dmg
-              dist/*.zip
 
     steps:
       - name: Checkout
@@ -97,6 +89,5 @@ jobs:
           files: |
             dist-release/*.exe
             dist-release/*.zip
-            dist-release/*.dmg
             dist-release/*.yml
             dist-release/*.blockmap
