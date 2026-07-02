@@ -3848,9 +3848,9 @@ function App(): React.JSX.Element {
   const renderResultTable = (tab: WorkspaceTab): React.ReactNode => (
     <ResultTablePanel
       tab={tab}
+      searchState={getImmediateTableSearchState(tab)}
       refs={resultTableRefs}
       getConnection={getConnection}
-      getImmediateTableSearchState={getImmediateTableSearchState}
       updateWorkspaceTab={updateWorkspaceTab}
       updateTableSearchState={updateTableSearchState}
       changeTabPage={changeTabPage}
@@ -6500,7 +6500,7 @@ function App(): React.JSX.Element {
     setActiveTabKey(key)
   }, [setActiveTabKey])
 
-  const workspaceRenderVersionToken = useMemo(() => ({}), [workspaceTabSummaryCount])
+  const workspaceRenderVersionToken = useMemo(() => ({}), [workspaceTabSummaryCount, tableSearchUiState])
 
   const stableRenderWorkspaceTabRef = useRef(renderWorkspaceTab)
   stableRenderWorkspaceTabRef.current = renderWorkspaceTab

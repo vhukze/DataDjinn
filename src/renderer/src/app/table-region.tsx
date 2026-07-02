@@ -944,6 +944,9 @@ export const ResultTableHeader = memo(function ResultTableHeader({
   searchVisible: boolean
 }) {
   const hasToolbarContent = Boolean(leftActions || whereInput || rightActions)
+  if (!hasToolbarContent && !searchVisible) {
+    return null
+  }
   const matchCount = searchMeta.matchCount
   const activeMatchIndex = matchCount > 0
     ? Math.min(searchState.activeMatchIndex, matchCount - 1)

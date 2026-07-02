@@ -121,9 +121,9 @@ export type ResultTablePanelRefs = {
 
 type ResultTablePanelProps = {
   tab: WorkspaceTab
+  searchState: TableSearchUiState
   refs: ResultTablePanelRefs
   getConnection: (connectionId?: string) => ConnectionInfo | undefined
-  getImmediateTableSearchState: (tab: WorkspaceTab) => TableSearchUiState
   updateWorkspaceTab: (tabKey: string, patch: Partial<WorkspaceTab>) => void
   updateTableSearchState: (tab: WorkspaceTab, patch: Partial<TableSearchUiState>) => void
   changeTabPage: (tab: WorkspaceTab, page: number) => Promise<void>
@@ -180,9 +180,9 @@ const shouldUseVirtualTable = (tab: WorkspaceTab, rowCount: number): boolean => 
 
 const ResultTablePanel = memo(function ResultTablePanel({
   tab,
+  searchState,
   refs,
   getConnection,
-  getImmediateTableSearchState,
   updateWorkspaceTab,
   updateTableSearchState,
   changeTabPage,
@@ -225,7 +225,6 @@ const ResultTablePanel = memo(function ResultTablePanel({
   const active = useWorkspaceStore((state) => state.activeTabKey === tab.key)
   const tableBodyHostRef = useRef<HTMLDivElement | null>(null)
   const [tableScrollY, setTableScrollY] = useState(320)
-  const searchState = getImmediateTableSearchState(tab)
   const [searchVisibleLocal, setSearchVisibleLocal] = useState(Boolean(searchState.query.trim() || searchState.visible))
   const [cellContextMenu, setCellContextMenu] = useState<CellContextMenuState | null>(null)
 
@@ -440,9 +439,7 @@ const ResultTablePanel = memo(function ResultTablePanel({
   }
 
   const renderResultPager = (currentTab: WorkspaceTab): ReactNode => {
-    const effectiveSearchState = currentTab.key === tab.key
-      ? { ...searchState, visible: searchVisibleLocal }
-      : getImmediateTableSearchState(currentTab)
+    const effectiveSearchState = { ...searchState, visible: searchVisibleLocal }
 
     return (
       <ResultPager
@@ -450,7 +447,7 @@ const ResultTablePanel = memo(function ResultTablePanel({
         previewDefaultLimit={PREVIEW_DEFAULT_LIMIT}
         queryDefaultLimit={QUERY_DEFAULT_LIMIT}
         searchState={effectiveSearchState}
-        searchVisible={currentTab.key === tab.key ? searchVisibleLocal : Boolean(effectiveSearchState.query.trim() || effectiveSearchState.visible)}
+        searchVisible={searchVisibleLocal}
         onChangePage={(page) => void changeTabPage(currentTab, page)}
         onChangeLimit={(limit) => void changeTabLimit(currentTab, limit)}
         onToggleSearch={() => {
@@ -496,17 +493,21 @@ const ResultTablePanel = memo(function ResultTablePanel({
   )
 
   const renderWhereInput = (currentTab: WorkspaceTab): ReactNode => (
-    <ResultWhereInput
-      tab={currentTab}
-      onUpdateWhere={(nextWhere) => updateWorkspaceTab(currentTab.key, { where: nextWhere })}
-      onPreviewTable={(nextTab, nextWhere) => {
-        const previewObjectType = nextTab.objectType === 'view' ? 'view' : 'table'
-        void previewTable(nextTab.connectionId!, nextTab.tableName!, nextTab.databaseName, nextTab.pgDatabaseName, nextTab.limit, 1, nextWhere, previewObjectType)
-      }}
-      onPreviewRedisDatabase={(nextTab, nextWhere) => {
-        void previewRedisDatabase(nextTab.connectionId!, nextTab.databaseName!, nextTab.limit, 1, nextTab.key, nextWhere)
-      }}
-    />
+    (currentTab.kind === 'preview' || currentTab.kind === 'redis-browser')
+      ? (
+          <ResultWhereInput
+            tab={currentTab}
+            onUpdateWhere={(nextWhere) => updateWorkspaceTab(currentTab.key, { where: nextWhere })}
+            onPreviewTable={(nextTab, nextWhere) => {
+              const previewObjectType = nextTab.objectType === 'view' ? 'view' : 'table'
+              void previewTable(nextTab.connectionId!, nextTab.tableName!, nextTab.databaseName, nextTab.pgDatabaseName, nextTab.limit, 1, nextWhere, previewObjectType)
+            }}
+            onPreviewRedisDatabase={(nextTab, nextWhere) => {
+              void previewRedisDatabase(nextTab.connectionId!, nextTab.databaseName!, nextTab.limit, 1, nextTab.key, nextWhere)
+            }}
+          />
+        )
+      : null
   )
 
   const renderTableToolbar = (
@@ -517,9 +518,7 @@ const ResultTablePanel = memo(function ResultTablePanel({
       focusSearchMatch: (matchIndex: number) => void
     }
   ): ReactNode => {
-    const effectiveSearchState = currentTab.key === tab.key
-      ? { ...searchState, visible: searchVisibleLocal }
-      : getImmediateTableSearchState(currentTab)
+    const effectiveSearchState = { ...searchState, visible: searchVisibleLocal }
 
     return (
       <ResultTableToolbar
@@ -529,7 +528,7 @@ const ResultTablePanel = memo(function ResultTablePanel({
         pendingChanges={countPendingChanges(currentTab)}
         redisPendingChanges={countRedisPendingChanges(currentTab)}
         searchState={effectiveSearchState}
-        searchVisible={currentTab.key === tab.key ? searchVisibleLocal : Boolean(effectiveSearchState.query.trim() || effectiveSearchState.visible)}
+        searchVisible={searchVisibleLocal}
         searchMeta={searchMeta}
         whereInput={renderWhereInput(currentTab)}
         onToggleSearch={() => {
@@ -2045,9 +2044,9 @@ const ResultTablePanel = memo(function ResultTablePanel({
   )
 }, (prev, next) => (
   prev.tab === next.tab
+  && prev.searchState === next.searchState
   && prev.refs === next.refs
   && prev.getConnection === next.getConnection
-  && prev.getImmediateTableSearchState === next.getImmediateTableSearchState
   && prev.updateWorkspaceTab === next.updateWorkspaceTab
   && prev.updateTableSearchState === next.updateTableSearchState
   && prev.changeTabPage === next.changeTabPage

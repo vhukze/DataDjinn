@@ -1246,6 +1246,70 @@ test.describe('workspace regression', () => {
     }
   })
 
+  test('query result search should highlight matches without leaving an empty toolbar gap @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openQueryWorkspace(page)
+
+      const editorTextbox = page.getByRole('textbox', { name: 'Editor content' }).first()
+      await expect(editorTextbox).toBeVisible({ timeout: 30000 })
+      await editorTextbox.focus()
+      await page.keyboard.press('Control+A')
+      await page.keyboard.type('select id, category, title, payload, created_at from large_items order by id;')
+
+      const executeButton = page.locator('.query-execute-button').first()
+      await expect(executeButton).toBeVisible({ timeout: 30000 })
+      await executeButton.click()
+
+      const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      await expect(activeResult.locator('.result-table .ant-table-thead')).toBeVisible({ timeout: 30000 })
+
+      const closedMetrics = await activeResult.evaluate((node) => {
+        const status = node.querySelector('.result-status')
+        const content = node.querySelector('.result-table-content')
+        const headerShell = node.querySelector('.result-table-header-shell')
+        if (!(status instanceof HTMLElement) || !(content instanceof HTMLElement)) {
+          return null
+        }
+        const statusRect = status.getBoundingClientRect()
+        const contentRect = content.getBoundingClientRect()
+        return {
+          gap: contentRect.top - statusRect.bottom,
+          headerShellCount: headerShell ? 1 : 0
+        }
+      })
+      expect(closedMetrics).not.toBeNull()
+      expect(closedMetrics.gap, 'query result pager and table should not leave an extra blank toolbar gap').toBeLessThanOrEqual(12)
+      expect(closedMetrics.headerShellCount, 'query result should not render an empty toolbar shell while search is closed').toBe(0)
+
+      await activeResult.locator('.result-status-right .table-toolbar-toggle').click()
+      const searchBar = activeResult.locator('.result-table-search-overlay .table-search-bar')
+      await expect(searchBar).toBeVisible({ timeout: 10000 })
+
+      const searchInput = searchBar.locator('input')
+      await expect(searchInput).toBeVisible({ timeout: 10000 })
+      await searchInput.fill('category_1')
+
+      await expect.poll(async () => {
+        return activeResult.locator('mark.table-search-highlight').count()
+      }, {
+        timeout: 10000,
+        message: 'typing into query result search should create visible highlighted matches'
+      }).toBeGreaterThan(0)
+
+      await expect(searchBar.locator('.table-search-counter')).not.toHaveText('0/0')
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
   test('table preview long cell content should stay ellipsized within fixed column width @smoke', async () => {
     const electronApp = await launchRegressionApp()
 
