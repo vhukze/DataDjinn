@@ -1,6 +1,6 @@
 {
   "name": "datadjinn",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "AI-powered desktop database client",
   "main": "./out/main/index.js",
   "author": "example.com",
@@ -24,7 +24,7 @@
     "postinstall": "electron-builder install-app-deps",
     "build:unpack": "npm run build:backend && npm run build:frontend && electron-builder --dir",
     "build:win": "npm run build:win:all",
-    "build:win:installer": "npm run build:backend && npm run build:frontend && electron-builder --win nsis",
+    "build:win:installer": "npm run build:backend && npm run build:frontend && electron-builder --win nsis --publish never",
     "build:win:zip": "npm run build:backend && npm run build:frontend && electron-builder --win zip",
     "build:win:all": "npm run build:backend && npm run build:frontend && electron-builder --win nsis zip --publish never",
     "build:mac": "npm run build:backend && npm run build:frontend && electron-builder --mac --publish never",
