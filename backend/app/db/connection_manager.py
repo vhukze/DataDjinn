@@ -6,9 +6,11 @@ import json
 import os
 import re
 import shutil
+import socket
 import sys
 import zipfile
 from ctypes import wintypes
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -483,6 +485,26 @@ class StoredConnection(BaseModel):
     driver_path: str | None = None
     dm_driver_id: str | None = None
     dm_driver_path: str | None = None
+    ssh_enabled: bool = False
+    ssh_host: str | None = None
+    ssh_port: int | None = None
+    ssh_username: str | None = None
+    ssh_auth_type: str | None = None
+    encrypted_ssh_password: str | None = None
+    ssh_private_key_path: str | None = None
+    encrypted_ssh_passphrase: str | None = None
+
+
+@dataclass
+class SshTunnelHandle:
+    forwarder: Any
+    local_host: str
+    local_port: int
+
+    def close(self) -> None:
+        stop = getattr(self.forwarder, "stop", None)
+        if callable(stop):
+            stop()
 
 
 def _manual_driver_id(request: ConnectionRequest | StoredConnection) -> str | None:
@@ -553,16 +575,25 @@ def _decrypt_password(encrypted_password: str | None) -> str | None:
 class ConnectionManager:
     def __init__(self) -> None:
         self._engines: dict[str, Engine | MongoClient | Redis] = {}
+        self._ssh_tunnels: dict[str, SshTunnelHandle] = {}
         self._connections: dict[str, ConnectionInfo] = {}
         self._stored_connections: dict[str, StoredConnection] = {}
         self._load_stored_connections()
 
     def test_connection(self, request: ConnectionRequest) -> None:
-        engine = self._create_engine(request)
+        engine, tunnel = self._open_runtime_engine(request)
         try:
             self._ping_engine(engine)
         finally:
             self._dispose_engine(engine)
+            self._dispose_tunnel(tunnel)
+
+    def test_ssh_tunnel(self, request: ConnectionRequest) -> None:
+        if not self._uses_ssh_tunnel(request):
+            raise ValueError("请先启用 SSH 隧道后再测试")
+
+        tunnel = self._open_ssh_tunnel(request)
+        self._dispose_tunnel(tunnel)
 
     def create_connection(self, request: ConnectionRequest) -> ConnectionInfo:
         connection_id = uuid4().hex
@@ -577,8 +608,8 @@ class ConnectionManager:
             raise ValueError("连接不存在")
 
         old_engine = self._engines.pop(connection_id, None)
-        if old_engine is not None:
-            self._dispose_engine(old_engine)
+        old_tunnel = self._ssh_tunnels.pop(connection_id, None)
+        self._dispose_connection_resources(old_engine, old_tunnel)
 
         info = self._connection_info(connection_id, request, is_open=False)
         self._connections[connection_id] = info
@@ -609,6 +640,14 @@ class ConnectionManager:
             driver_path=_manual_driver_path(stored),
             dm_driver_id=stored.dm_driver_id,
             dm_driver_path=stored.dm_driver_path,
+            ssh_enabled=stored.ssh_enabled,
+            ssh_host=stored.ssh_host,
+            ssh_port=stored.ssh_port,
+            ssh_username=stored.ssh_username,
+            ssh_auth_type=stored.ssh_auth_type or "password",
+            ssh_password=_decrypt_password(stored.encrypted_ssh_password),
+            ssh_private_key_path=stored.ssh_private_key_path,
+            ssh_passphrase=_decrypt_password(stored.encrypted_ssh_passphrase),
         )
 
     def get_password(self, connection_id: str) -> str:
@@ -635,9 +674,8 @@ class ConnectionManager:
 
         self._connections.pop(connection_id, None)
         engine = self._engines.pop(connection_id, None)
-
-        if engine is not None:
-            self._dispose_engine(engine)
+        tunnel = self._ssh_tunnels.pop(connection_id, None)
+        self._dispose_connection_resources(engine, tunnel)
 
         self._save_stored_connections()
         return True
@@ -667,6 +705,14 @@ class ConnectionManager:
             driver_path=_manual_driver_path(stored),
             dm_driver_id=stored.dm_driver_id,
             dm_driver_path=stored.dm_driver_path,
+            ssh_enabled=stored.ssh_enabled,
+            ssh_host=stored.ssh_host,
+            ssh_port=stored.ssh_port,
+            ssh_username=stored.ssh_username,
+            ssh_auth_type=stored.ssh_auth_type or "password",
+            ssh_password=_decrypt_password(stored.encrypted_ssh_password),
+            ssh_private_key_path=stored.ssh_private_key_path,
+            ssh_passphrase=_decrypt_password(stored.encrypted_ssh_passphrase),
         )
 
     def open_connection(self, connection_id: str) -> ConnectionInfo:
@@ -676,21 +722,24 @@ class ConnectionManager:
             raise ValueError("连接不存在")
 
         request = self._request_from_stored(stored)
-        engine = self._create_engine(request)
+        engine, tunnel = self._open_runtime_engine(request)
 
         try:
             self._ping_engine(engine)
             server_version = self._detect_server_version(engine)
         except Exception:
-            self._dispose_engine(engine)
+            self._dispose_connection_resources(engine, tunnel)
             raise
 
         old_engine = self._engines.get(connection_id)
-
-        if old_engine is not None:
-            self._dispose_engine(old_engine)
+        old_tunnel = self._ssh_tunnels.get(connection_id)
+        self._dispose_connection_resources(old_engine, old_tunnel)
 
         self._engines[connection_id] = engine
+        if tunnel is not None:
+            self._ssh_tunnels[connection_id] = tunnel
+        else:
+            self._ssh_tunnels.pop(connection_id, None)
         info = self._connection_info(connection_id, request, stored, is_open=True, server_version=server_version)
         self._connections[connection_id] = info
         return info
@@ -702,9 +751,8 @@ class ConnectionManager:
             raise ValueError("连接不存在")
 
         engine = self._engines.pop(connection_id, None)
-
-        if engine is not None:
-            self._dispose_engine(engine)
+        tunnel = self._ssh_tunnels.pop(connection_id, None)
+        self._dispose_connection_resources(engine, tunnel)
 
         request = self._request_from_stored(stored)
         info = self._connection_info(connection_id, request, stored, is_open=False)
@@ -734,6 +782,173 @@ class ConnectionManager:
             return
 
         engine.dispose()
+
+    def _dispose_tunnel(self, tunnel: SshTunnelHandle | None) -> None:
+        if tunnel is None:
+            return
+
+        try:
+            tunnel.close()
+        except Exception:
+            pass
+
+    def _dispose_connection_resources(self, engine: Engine | MongoClient | Redis | None, tunnel: SshTunnelHandle | None) -> None:
+        if engine is not None:
+            self._dispose_engine(engine)
+        self._dispose_tunnel(tunnel)
+
+    def _open_runtime_engine(self, request: ConnectionRequest) -> tuple[Engine | MongoClient | Redis, SshTunnelHandle | None]:
+        runtime_request = request.model_copy(deep=True)
+        tunnel: SshTunnelHandle | None = None
+
+        if self._uses_ssh_tunnel(request):
+            tunnel = self._open_ssh_tunnel(request)
+            runtime_request = runtime_request.model_copy(update={
+                "host": tunnel.local_host,
+                "port": tunnel.local_port,
+                "ssh_enabled": False,
+                "ssh_password": None,
+                "ssh_passphrase": None,
+            })
+
+        try:
+            return self._create_engine(runtime_request), tunnel
+        except Exception:
+            self._dispose_tunnel(tunnel)
+            raise
+
+    def _uses_ssh_tunnel(self, request: ConnectionRequest | StoredConnection) -> bool:
+        return request.database_type != "sqlite" and bool(request.ssh_enabled)
+
+    def _normalize_ssh_host(self, host: str | None) -> str:
+        normalized = (host or "").strip()
+        if not normalized:
+            raise ValueError("启用 SSH 隧道时请输入 SSH 主机")
+        return normalized
+
+    def _normalize_ssh_port(self, port: int | None) -> int:
+        normalized = port or 22
+        if normalized < 1 or normalized > 65535:
+            raise ValueError("SSH 端口必须在 1 到 65535 之间")
+        return normalized
+
+    def _normalize_remote_port(self, request: ConnectionRequest) -> int:
+        if request.database_type == "clickhouse":
+            primary_port, _ = _resolve_clickhouse_port(request.port)
+            if not primary_port:
+                raise ValueError("ClickHouse 端口不能为空")
+            return primary_port
+
+        if isinstance(request.port, int):
+            return request.port
+
+        normalized = str(request.port or "").strip()
+        if normalized.isdigit():
+            return int(normalized)
+
+        raise ValueError("启用 SSH 隧道时数据库端口必须是单个端口号")
+
+    def _open_ssh_tunnel(self, request: ConnectionRequest) -> SshTunnelHandle:
+        if not request.host:
+            raise ValueError("启用 SSH 隧道时数据库主机不能为空")
+
+        try:
+            from sshtunnel import SSHTunnelForwarder
+        except ImportError as exc:
+            raise RuntimeError("缺少 SSH 隧道依赖 sshtunnel，请先安装后重试") from exc
+
+        ssh_host = self._normalize_ssh_host(request.ssh_host)
+        ssh_port = self._normalize_ssh_port(request.ssh_port)
+        ssh_username = (request.ssh_username or "").strip()
+        if not ssh_username:
+            raise ValueError("启用 SSH 隧道时请输入 SSH 用户名")
+
+        ssh_auth_type = request.ssh_auth_type or "password"
+        remote_port = self._normalize_remote_port(request)
+        self._ensure_ssh_gateway_reachable(ssh_host, ssh_port)
+        forwarder_kwargs: dict[str, Any] = {
+            "ssh_address_or_host": (ssh_host, ssh_port),
+            "ssh_username": ssh_username,
+            "remote_bind_address": (request.host, remote_port),
+            "local_bind_address": ("127.0.0.1", 0),
+        }
+
+        if ssh_auth_type == "private_key":
+            private_key_path = (request.ssh_private_key_path or "").strip()
+            if not private_key_path:
+                raise ValueError("私钥认证时请输入私钥路径")
+            private_key_file = Path(private_key_path).expanduser().resolve()
+            if not private_key_file.exists():
+                raise ValueError(f"SSH 私钥文件不存在：{private_key_file}")
+            forwarder_kwargs["ssh_pkey"] = str(private_key_file)
+            if request.ssh_passphrase:
+                forwarder_kwargs["ssh_private_key_password"] = request.ssh_passphrase
+        else:
+            ssh_password = request.ssh_password or ""
+            if not ssh_password:
+                raise ValueError("密码认证时请输入 SSH 登录密码")
+            forwarder_kwargs["ssh_password"] = ssh_password
+
+        forwarder = SSHTunnelForwarder(**forwarder_kwargs)
+        try:
+            forwarder.start()
+        except Exception as exc:
+            stop = getattr(forwarder, "stop", None)
+            if callable(stop):
+                try:
+                    stop()
+                except Exception:
+                    pass
+            raise self._translate_ssh_session_error(exc, ssh_host, ssh_port) from exc
+
+        return SshTunnelHandle(
+            forwarder=forwarder,
+            local_host="127.0.0.1",
+            local_port=int(forwarder.local_bind_port),
+        )
+
+    def _translate_ssh_session_error(self, exc: Exception, ssh_host: str, ssh_port: int) -> RuntimeError:
+        error_message = str(exc).lower()
+        if "authentication failed" in error_message or "auth fail" in error_message:
+            return RuntimeError("SSH 用户名、密码或私钥口令错误，连接被拒绝")
+        if "password is required for encrypted private keys" in error_message:
+            return RuntimeError("当前 SSH 私钥已加密，请填写私钥口令后重试")
+        if "private key file is encrypted" in error_message:
+            return RuntimeError("当前 SSH 私钥已加密，请填写私钥口令后重试")
+        if "not a valid rsa private key file" in error_message or "could not deserialize key data" in error_message:
+            return RuntimeError("SSH 私钥文件格式无效或内容损坏，请检查私钥文件")
+        return RuntimeError(
+            f"无法建立 SSH 会话（{ssh_host}:{ssh_port}）。请检查 SSH 用户、认证方式、私钥/密码以及服务端配置。原始错误：{exc}"
+        )
+
+    def _ensure_ssh_gateway_reachable(self, ssh_host: str, ssh_port: int) -> None:
+        gateway_socket: socket.socket | None = None
+        try:
+            gateway_socket = socket.create_connection((ssh_host, ssh_port), timeout=5)
+        except TimeoutError as exc:
+            raise RuntimeError(
+                f"无法连接到 SSH 网关（{ssh_host}:{ssh_port}）：连接超时。请检查 SSH 服务是否已启动、地址和端口是否正确，以及防火墙或安全组是否放行。"
+            ) from exc
+        except OSError as exc:
+            error_code = getattr(exc, "winerror", None) or getattr(exc, "errno", None)
+            if error_code in {10061, 111}:
+                raise RuntimeError(
+                    f"无法连接到 SSH 网关（{ssh_host}:{ssh_port}）：目标主机拒绝连接。请确认 SSH 服务已启动，并监听该端口。"
+                ) from exc
+            if error_code in {10060, 110}:
+                raise RuntimeError(
+                    f"无法连接到 SSH 网关（{ssh_host}:{ssh_port}）：连接超时。请检查网络是否可达、地址和端口是否正确，以及防火墙是否放行。"
+                ) from exc
+            if error_code in {10065, 113}:
+                raise RuntimeError(
+                    f"无法连接到 SSH 网关（{ssh_host}:{ssh_port}）：网络不可达。请检查网关地址、路由或 VPN / 局域网连接。"
+                ) from exc
+            raise RuntimeError(
+                f"无法连接到 SSH 网关（{ssh_host}:{ssh_port}）：{exc}"
+            ) from exc
+        finally:
+            if gateway_socket is not None:
+                gateway_socket.close()
 
     def _create_engine(self, request: ConnectionRequest) -> Engine | MongoClient | Redis:
         if request.database_type == "sqlite":
@@ -1146,6 +1361,10 @@ class ConnectionManager:
         )
 
     def _stored_connection(self, connection_id: str, request: ConnectionRequest) -> StoredConnection:
+        normalized_private_key_path = None
+        if request.ssh_private_key_path:
+            normalized_private_key_path = str(Path(request.ssh_private_key_path).expanduser().resolve())
+
         return StoredConnection(
             connection_id=connection_id,
             name=request.name,
@@ -1160,6 +1379,14 @@ class ConnectionManager:
             driver_path=_manual_driver_path(request),
             dm_driver_id=request.dm_driver_id,
             dm_driver_path=request.dm_driver_path,
+            ssh_enabled=bool(request.ssh_enabled),
+            ssh_host=request.ssh_host,
+            ssh_port=(request.ssh_port or 22) if request.ssh_enabled else None,
+            ssh_username=request.ssh_username,
+            ssh_auth_type=(request.ssh_auth_type or "password") if request.ssh_enabled else None,
+            encrypted_ssh_password=_encrypt_password(request.ssh_password) if request.ssh_enabled else None,
+            ssh_private_key_path=normalized_private_key_path if request.ssh_enabled else None,
+            encrypted_ssh_passphrase=_encrypt_password(request.ssh_passphrase) if request.ssh_enabled else None,
         )
 
     def _display_database(self, request: ConnectionRequest) -> str:

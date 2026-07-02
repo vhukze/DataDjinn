@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-blue?logo=apple" alt="Platform" />
+  <img src="https://img.shields.io/badge/platform-Windows-blue?logo=windows" alt="Platform" />
   <img src="https://img.shields.io/badge/electron-39.x-9feaf9?logo=electron" alt="Electron" />
   <img src="https://img.shields.io/badge/react-19.x-61dafb?logo=react" alt="React" />
   <img src="https://img.shields.io/badge/python-3.13+-3776AB?logo=python" alt="Python" />
@@ -25,6 +25,7 @@ DataDjinn 是一款**跨时代**的本地数据库桌面客户端，将传统数
 - 🧠 **AI 对话式数据库操作** —— 接入任意 OpenAI 兼容 API，AI 深度理解 Schema 上下文，支持自然语言查数据、建表、修改表结构
 - 🤖 **AI 流式思考与上下文管理** —— AI 回复与思考过程支持流式展示，支持折叠查看、上下文容量显示和自动压缩
 - 🔗 **多数据库支持** —— SQLite / MySQL / PostgreSQL / Oracle / 达梦 DM / 高斯数据库 / MongoDB / Redis / ClickHouse
+- 🛰️ **SSH 隧道连接** —— 新建和编辑连接时可直接配置 SSH 主机、密码或私钥认证，并支持单独测试 SSH 隧道连通性
 - ✨ **焕新工作区界面** —— 连接树、欢迎页、表格预览、查询窗口和 AI 面板统一升级为更轻盈的桌面工作区风格
 - ✍️ **专业 SQL / 命令编辑器** —— 基于 Monaco Editor，支持 SQL、MongoDB Shell 风格语句和 Redis 常用命令补全，多标签页并行工作
 - 🗂️ **连接导入与查询历史** —— 支持导入 DataGrip 数据源、自动保存查询工作区，并从历史列表快速恢复
@@ -122,9 +123,8 @@ Redis / MongoDB 导出为 JSON，适合迁移前留档、人工检查或和其�
 
 - `DataDjinn-x.x.x-setup.exe` —— Windows NSIS 安装包（推荐）
 - `DataDjinn-x.x.x-win.zip` —— Windows 解压即用版
-- `DataDjinn-x.x.x.dmg` —— macOS 安装包
 
-当前最新版本：`v0.2.6`。
+当前最新版本：`v0.2.7`。
 
 解压版无需安装，解压后双击 `DataDjinn.exe` 即可运行。已内置 Python 运行时和所有后端依赖，无需额外安装任何环境。
 
@@ -159,16 +159,11 @@ npm run dev
 ```bash
 # 构建完整 Windows 包（安装包 + 解压版）
 npm run build:win:all
-
-# 构建 macOS 安装包
-npm run build:mac
 ```
 
 构建产物在 `dist/` 目录：
 - `DataDjinn-x.x.x-setup.exe` — Windows NSIS 安装包
 - `DataDjinn-x.x.x-win.zip` — Windows 解压版
-- `DataDjinn-x.x.x.dmg` — macOS 安装包
-- `DataDjinn-x.x.x-mac.zip` — macOS 压缩包
 
 ---
 
@@ -263,7 +258,6 @@ DataDjinn/
 |------|------|
 | `npm run dev` | 启动开发模式（热重载） |
 | `npm run build:win:all` | 构建 Windows 安装包 + 解压版 |
-| `npm run build:mac` | 构建 macOS 安装包 |
 | `npm run typecheck` | TypeScript 类型检查 |
 | `npm run lint` | ESLint 代码检查 |
 | `npm run format` | Prettier 格式化 |

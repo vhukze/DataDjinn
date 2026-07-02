@@ -18,6 +18,14 @@ class ConnectionRequest(BaseModel):
     driver_path: str | None = None
     dm_driver_id: str | None = None
     dm_driver_path: str | None = None
+    ssh_enabled: bool = False
+    ssh_host: str | None = None
+    ssh_port: int | None = None
+    ssh_username: str | None = None
+    ssh_auth_type: Literal["password", "private_key"] | None = None
+    ssh_password: str | None = None
+    ssh_private_key_path: str | None = None
+    ssh_passphrase: str | None = None
 
 
 class ConnectionInfo(BaseModel):

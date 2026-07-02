@@ -35,6 +35,25 @@ def test_connection(request: ConnectionRequest) -> ConnectionTestResponse:
     return ConnectionTestResponse(success=True, message="连接成功")
 
 
+@router.post("/test-ssh", response_model=ConnectionTestResponse)
+def test_ssh_tunnel(request: ConnectionRequest) -> ConnectionTestResponse:
+    try:
+        connection_manager.test_ssh_tunnel(request)
+    except Exception as exc:
+        logger.exception(
+            "测试 SSH 隧道失败：type=%s host=%s port=%s ssh_host=%s ssh_port=%s ssh_username=%s",
+            request.database_type,
+            request.host,
+            request.port,
+            request.ssh_host,
+            request.ssh_port,
+            request.ssh_username,
+        )
+        return ConnectionTestResponse(success=False, message=friendly_error(exc))
+
+    return ConnectionTestResponse(success=True, message="SSH 隧道连接成功")
+
+
 @router.post("", response_model=ConnectionCreateResponse)
 def create_connection(request: ConnectionRequest) -> ConnectionCreateResponse:
     try:

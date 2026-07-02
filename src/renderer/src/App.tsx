@@ -94,6 +94,7 @@ import {
   ShortcutRecorder,
   tableDesignerSupportsEdit,
   TableDesignerMode,
+  trimToUndefined,
   toColumnDef,
   buildEditableRows,
   buildRedisEdits,
@@ -356,6 +357,7 @@ const STORAGE_ROOT_ITEM_ORDER = 'datadjinn-root-item-order'
 const STORAGE_FOLDER_CONNECTION_ORDER = 'datadjinn-folder-connection-order'
 const STORAGE_QUERY_WORKSPACES = 'datadjinn-query-workspaces'
 const STORAGE_SHORTCUT_SETTINGS = 'datadjinn-shortcut-settings'
+const RESOURCE_PANEL_MIN_WIDTH = 304
 const readPersisted = (key: string): Record<string, string[]> => {
   try {
     const stored = localStorage.getItem(key)
@@ -442,6 +444,7 @@ function App(): React.JSX.Element {
   const [editingConnectionInfoId, setEditingConnectionInfoId] = useState<string>()
   const [connectionLoading, setConnectionLoading] = useState(false)
   const [testingConnection, setTestingConnection] = useState(false)
+  const [testingSshConnection, setTestingSshConnection] = useState(false)
   const [connectionPasswordPromptOpen, setConnectionPasswordPromptOpen] = useState(false)
   const [connectionPasswordPromptConnectionId, setConnectionPasswordPromptConnectionId] = useState<string>('')
   const [connectionPasswordPromptConnectionName, setConnectionPasswordPromptConnectionName] = useState('')
@@ -2480,8 +2483,8 @@ function App(): React.JSX.Element {
         return
       }
       const shellWidth = shell.getBoundingClientRect().width
-      const nextSize = Math.min(500, Math.max(220, resizeState.startSize + (event.clientX - resizeState.startX)))
-      const boundedSize = Math.min(nextSize, Math.max(220, shellWidth - (aiPanelOpen ? aiPanelSize : 0) - 260))
+      const nextSize = Math.min(500, Math.max(RESOURCE_PANEL_MIN_WIDTH, resizeState.startSize + (event.clientX - resizeState.startX)))
+      const boundedSize = Math.min(nextSize, Math.max(RESOURCE_PANEL_MIN_WIDTH, shellWidth - (aiPanelOpen ? aiPanelSize : 0) - 260))
       if (resourcePanelRef.current) {
         resourcePanelRef.current.style.width = `${boundedSize}px`
         resourcePanelRef.current.style.flex = `0 0 ${boundedSize}px`
@@ -4124,6 +4127,11 @@ function App(): React.JSX.Element {
   } = treeRuntime
 
   const openConnectionModalRef = useRef<(nextDatabaseType: DatabaseType) => Promise<void>>(async () => undefined)
+  const buildConnectionSshDefaults = (): Pick<ConnectionFormValues, 'ssh_enabled' | 'ssh_port' | 'ssh_auth_type'> => ({
+    ssh_enabled: false,
+    ssh_port: 22,
+    ssh_auth_type: 'password'
+  })
 
   const buildCreateConnectionDefaults = (nextDatabaseType: DatabaseType): ConnectionFormValues => {
     if (nextDatabaseType === 'sqlite') {
@@ -4139,7 +4147,8 @@ function App(): React.JSX.Element {
         name: 'PostgreSQL',
         host: '127.0.0.1',
         port: 5432,
-        database: 'postgres'
+        database: 'postgres',
+        ...buildConnectionSshDefaults()
       }
     }
     if (nextDatabaseType === 'dm') {
@@ -4150,7 +4159,8 @@ function App(): React.JSX.Element {
         port: 5236,
         username: 'SYSDBA',
         driver_id: undefined,
-        dm_driver_id: undefined
+        dm_driver_id: undefined,
+        ...buildConnectionSshDefaults()
       }
     }
     if (nextDatabaseType === 'gaussdb') {
@@ -4161,7 +4171,8 @@ function App(): React.JSX.Element {
         port: 8000,
         username: 'gaussdb',
         database: 'postgres',
-        driver_id: undefined
+        driver_id: undefined,
+        ...buildConnectionSshDefaults()
       }
     }
     if (nextDatabaseType === 'oracle') {
@@ -4171,7 +4182,8 @@ function App(): React.JSX.Element {
         host: '127.0.0.1',
         port: 1521,
         username: 'system',
-        database: 'orclpdb1'
+        database: 'orclpdb1',
+        ...buildConnectionSshDefaults()
       }
     }
     if (nextDatabaseType === 'mongodb') {
@@ -4180,7 +4192,8 @@ function App(): React.JSX.Element {
         name: 'MongoDB',
         host: '127.0.0.1',
         port: 27017,
-        database: 'admin'
+        database: 'admin',
+        ...buildConnectionSshDefaults()
       }
     }
     if (nextDatabaseType === 'redis') {
@@ -4189,7 +4202,8 @@ function App(): React.JSX.Element {
         name: 'Redis',
         host: '127.0.0.1',
         port: 6379,
-        database: '0'
+        database: '0',
+        ...buildConnectionSshDefaults()
       }
     }
     if (nextDatabaseType === 'clickhouse') {
@@ -4199,14 +4213,16 @@ function App(): React.JSX.Element {
         host: '127.0.0.1',
         port: 8123,
         username: 'default',
-        database: 'default'
+        database: 'default',
+        ...buildConnectionSshDefaults()
       }
     }
     return {
       database_type: 'mysql',
       name: 'MySQL',
       host: '127.0.0.1',
-      port: 3306
+      port: 3306,
+      ...buildConnectionSshDefaults()
     }
   }
 
@@ -4256,7 +4272,12 @@ function App(): React.JSX.Element {
 
     try {
       const data = await requestJson<ConnectionFormValues>(`/connections/${connection.connection_id}`)
-      const formValues = { ...data }
+      const formValues: ConnectionFormValues = {
+        ...data,
+        ssh_enabled: Boolean(data.ssh_enabled),
+        ssh_port: data.ssh_port ?? 22,
+        ssh_auth_type: data.ssh_auth_type ?? 'password'
+      }
       if (data.database_type === 'dm' || data.database_type === 'gaussdb') {
         const loadedDrivers = await loadDrivers()
         const currentDriverId = data.driver_id ?? data.dm_driver_id
@@ -4275,7 +4296,36 @@ function App(): React.JSX.Element {
         }
       }
       setConnectionModalDatabaseType(formValues.database_type)
-      form.setFieldsValue(formValues)
+      form.setFieldsValue({
+        database_type: formValues.database_type,
+        name: formValues.name,
+        host: formValues.host,
+        port: formValues.port,
+        username: formValues.username,
+        password: formValues.password,
+        database: formValues.database,
+        sqlite_path: formValues.sqlite_path,
+        driver_id: formValues.driver_id,
+        dm_driver_id: formValues.dm_driver_id,
+        ssh_enabled: formValues.ssh_enabled,
+        ssh_auth_type: formValues.ssh_auth_type
+      })
+      const applyDeferredSshFields = (): void => {
+        form.setFieldsValue({
+          ssh_host: formValues.ssh_host,
+          ssh_port: formValues.ssh_port,
+          ssh_username: formValues.ssh_username,
+          ssh_password: formValues.ssh_password,
+          ssh_private_key_path: formValues.ssh_private_key_path,
+          ssh_passphrase: formValues.ssh_passphrase
+        })
+      }
+      connectionModalHydrationFrameRef.current = window.requestAnimationFrame(() => {
+        connectionModalHydrationFrameRef.current = window.requestAnimationFrame(() => {
+          connectionModalHydrationFrameRef.current = undefined
+          applyDeferredSshFields()
+        })
+      })
     } catch (err) {
       showError(err instanceof Error ? err.message : '加载连接信息失败')
       setConnectionModalOpen(false)
@@ -4385,6 +4435,28 @@ function App(): React.JSX.Element {
     }
   }), [openCreateFolderModal, stableConnectionCreateMenuItems])
 
+  const buildConnectionSshPayload = (values: ConnectionFormValues): Partial<ConnectionFormValues> => {
+    if (values.database_type === 'sqlite') {
+      return {}
+    }
+
+    if (!values.ssh_enabled) {
+      return { ssh_enabled: false }
+    }
+
+    const sshAuthType = values.ssh_auth_type ?? 'password'
+    return {
+      ssh_enabled: true,
+      ssh_host: trimToUndefined(values.ssh_host),
+      ssh_port: values.ssh_port ?? 22,
+      ssh_username: trimToUndefined(values.ssh_username),
+      ssh_auth_type: sshAuthType,
+      ssh_password: sshAuthType === 'password' ? values.ssh_password : undefined,
+      ssh_private_key_path: sshAuthType === 'private_key' ? trimToUndefined(values.ssh_private_key_path) : undefined,
+      ssh_passphrase: sshAuthType === 'private_key' ? values.ssh_passphrase : undefined
+    }
+  }
+
   const cleanFormValues = (values: ConnectionFormValues): ConnectionFormValues => {
     if (values.database_type === 'sqlite') {
       return {
@@ -4402,7 +4474,8 @@ function App(): React.JSX.Element {
         port: values.port,
         username: values.username,
         password: values.password,
-        database: values.database
+        database: values.database,
+        ...buildConnectionSshPayload(values)
       }
     }
 
@@ -4415,7 +4488,8 @@ function App(): React.JSX.Element {
         username: values.username,
         password: values.password,
         database: values.database,
-        driver_id: values.driver_id ?? values.dm_driver_id
+        driver_id: values.driver_id ?? values.dm_driver_id,
+        ...buildConnectionSshPayload(values)
       }
     }
 
@@ -4428,7 +4502,8 @@ function App(): React.JSX.Element {
         username: values.username,
         password: values.password,
         database: values.database,
-        driver_id: values.driver_id
+        driver_id: values.driver_id,
+        ...buildConnectionSshPayload(values)
       }
     }
 
@@ -4440,7 +4515,8 @@ function App(): React.JSX.Element {
         port: values.port,
         username: values.username,
         password: values.password,
-        database: values.database
+        database: values.database,
+        ...buildConnectionSshPayload(values)
       }
     }
 
@@ -4452,7 +4528,8 @@ function App(): React.JSX.Element {
         port: values.port,
         username: values.username,
         password: values.password,
-        database: values.database
+        database: values.database,
+        ...buildConnectionSshPayload(values)
       }
     }
 
@@ -4464,7 +4541,8 @@ function App(): React.JSX.Element {
         port: values.port,
         username: values.username,
         password: values.password,
-        database: values.database
+        database: values.database,
+        ...buildConnectionSshPayload(values)
       }
     }
 
@@ -4476,7 +4554,8 @@ function App(): React.JSX.Element {
         port: values.port,
         username: values.username,
         password: values.password,
-        database: values.database
+        database: values.database,
+        ...buildConnectionSshPayload(values)
       }
     }
 
@@ -4487,7 +4566,8 @@ function App(): React.JSX.Element {
       port: values.port,
       username: values.username,
       password: values.password,
-      database: values.database
+      database: values.database,
+      ...buildConnectionSshPayload(values)
     }
   }
 
@@ -4949,7 +5029,15 @@ function App(): React.JSX.Element {
         'password',
         'database',
         'driver_id',
-        'dm_driver_id'
+        'dm_driver_id',
+        'ssh_enabled',
+        'ssh_host',
+        'ssh_port',
+        'ssh_username',
+        'ssh_auth_type',
+        'ssh_password',
+        'ssh_private_key_path',
+        'ssh_passphrase'
       ])
       const result = await requestJson<ConnectionTestResponse>('/connections/test', {
         method: 'POST',
@@ -4965,6 +5053,51 @@ function App(): React.JSX.Element {
       showError(err instanceof Error ? err.message : '测试连接失败')
     } finally {
       setTestingConnection(false)
+    }
+  }
+
+  const testSshConnection = async (): Promise<void> => {
+    setTestingSshConnection(true)
+
+    try {
+      const values = await form.validateFields([
+        'name',
+        'database_type',
+        'host',
+        'port',
+        'ssh_enabled',
+        'ssh_host',
+        'ssh_port',
+        'ssh_username',
+        'ssh_auth_type',
+        'ssh_password',
+        'ssh_private_key_path',
+        'ssh_passphrase'
+      ])
+      const sshPayload: ConnectionFormValues = {
+        name: String(values.name ?? 'SSH 测试').trim() || 'SSH 测试',
+        database_type: values.database_type,
+        host: values.host,
+        port: values.port,
+        ...buildConnectionSshPayload({
+          ...values,
+          ssh_enabled: true
+        })
+      }
+      const result = await requestJson<ConnectionTestResponse>('/connections/test-ssh', {
+        method: 'POST',
+        body: JSON.stringify(sshPayload)
+      })
+
+      if (result.success) {
+        messageApi.success(result.message || 'SSH 隧道连接测试成功')
+      } else {
+        showError(result.message || 'SSH 隧道连接测试失败')
+      }
+    } catch (err) {
+      showError(err instanceof Error ? err.message : '测试 SSH 失败')
+    } finally {
+      setTestingSshConnection(false)
     }
   }
 
@@ -7534,6 +7667,7 @@ function App(): React.JSX.Element {
         databaseType={connectionModalDatabaseType}
         loading={connectionLoading}
         testingConnection={testingConnection}
+        testingSshConnection={testingSshConnection}
         driversLoading={driversLoading}
         manualDriverOptions={manualDriverOptions}
         selectedManualDriver={selectedManualDriver}
@@ -7541,6 +7675,7 @@ function App(): React.JSX.Element {
         onOk={() => void saveConnection()}
         onCancel={() => setConnectionModalOpen(false)}
         onTestConnection={() => void testConnection()}
+        onTestSshConnection={() => void testSshConnection()}
         onSelectSqliteFile={() => void selectSqliteFile()}
         onOpenDriverManager={openDriverManager}
         onDriverChange={handleConnectionDriverChange}

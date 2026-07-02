@@ -56,6 +56,7 @@ export const DATABASE_TYPE_LABELS: Record<DatabaseType, string> = {
 
 export type ImportConnectionSource = 'datagrip'
 export type ImportConnectionCandidateStatus = 'ready' | 'warning' | 'error'
+export type SshAuthType = 'password' | 'private_key'
 
 export type ConnectionFormValues = {
   name: string
@@ -70,6 +71,14 @@ export type ConnectionFormValues = {
   driver_path?: string
   dm_driver_id?: string
   dm_driver_path?: string
+  ssh_enabled?: boolean
+  ssh_host?: string
+  ssh_port?: number
+  ssh_username?: string
+  ssh_auth_type?: SshAuthType
+  ssh_password?: string
+  ssh_private_key_path?: string
+  ssh_passphrase?: string
 }
 
 export type ImportConnectionCandidate = {

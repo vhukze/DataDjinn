@@ -15,3 +15,5 @@ clickhouse-connect==0.10.0
 jaydebeapi==1.2.3
 JPype1==1.5.2
 oracledb==3.1.1
+sshtunnel==0.4.0
+paramiko>=3.5.1,<4
