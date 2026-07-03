@@ -1,9 +1,9 @@
 {
   "name": "datadjinn",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "AI-powered desktop database client",
   "main": "./out/main/index.js",
-  "author": "example.com",
+  "author": "vhukze",
   "homepage": "https://electron-vite.org",
   "scripts": {
     "format": "prettier --write .",

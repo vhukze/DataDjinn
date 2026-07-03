@@ -12,7 +12,7 @@ export const DATABASE_TYPE_LABELS: Record<DatabaseType, string> = {
   clickhouse: 'CK'
 }
 
-export type ImportConnectionSource = 'datagrip'
+export type ImportConnectionSource = 'datagrip' | 'datadjinn'
 export type ImportConnectionCandidateStatus = 'ready' | 'warning' | 'error'
 export type SshAuthType = 'password' | 'private_key'
 
@@ -65,7 +65,8 @@ export type ImportConnectionResult = {
 }
 
 export const IMPORT_CONNECTION_SOURCE_OPTIONS = [
-  { label: 'DataGrip', value: 'datagrip' }
+  { label: 'DataGrip', value: 'datagrip' },
+  { label: 'DataDjinn', value: 'datadjinn' }
 ]
 
 export const defaultPortForDatabaseType = (databaseType: DatabaseType): number | undefined => {

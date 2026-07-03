@@ -1,7 +1,7 @@
 import { app, dialog, shell, BrowserWindow, ipcMain, screen, webContents } from 'electron'
 import { join } from 'path'
 import { createWriteStream, existsSync, readFileSync } from 'fs'
-import { mkdir, readFile } from 'fs/promises'
+import { mkdir, readFile, writeFile } from 'fs/promises'
 import { pipeline } from 'stream/promises'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import StoreModule from 'electron-store'
@@ -736,6 +736,30 @@ app.whenReady().then(() => {
     return result.filePaths[0]
   })
 
+  ipcMain.handle('select-connection-transfer-import-file', async () => {
+    const window = BrowserWindow.getFocusedWindow()
+
+    if (!window) {
+      return null
+    }
+
+    const result = await dialog.showOpenDialog(window, {
+      title: '????????',
+      filters: [
+        { name: 'DataDjinn ????', extensions: ['ddj'] },
+        { name: 'JSON ??', extensions: ['json'] },
+        { name: '????', extensions: ['*'] }
+      ],
+      properties: ['openFile']
+    })
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return null
+    }
+
+    return result.filePaths[0]
+  })
+
   ipcMain.handle('select-export-path', async (_event, format: string, defaultName?: string) => {
     const window = BrowserWindow.getFocusedWindow()
 
@@ -744,15 +768,15 @@ app.whenReady().then(() => {
     }
 
     const filters: Electron.FileFilter[] = format === 'csv'
-      ? [{ name: 'CSV 文件', extensions: ['csv'] }]
+      ? [{ name: 'CSV ??', extensions: ['csv'] }]
       : format === 'json'
-        ? [{ name: 'JSON 文件', extensions: ['json'] }]
-        : [{ name: 'SQL 文件', extensions: ['sql'] }]
+        ? [{ name: 'JSON ??', extensions: ['json'] }]
+        : [{ name: 'SQL ??', extensions: ['sql'] }]
 
     const result = await dialog.showSaveDialog(window, {
-      title: '选择导出路径',
+      title: '??????',
       defaultPath: defaultName,
-      filters: [...filters, { name: '所有文件', extensions: ['*'] }]
+      filters: [...filters, { name: '????', extensions: ['*'] }]
     })
 
     if (result.canceled || !result.filePath) {
@@ -760,6 +784,39 @@ app.whenReady().then(() => {
     }
 
     return result.filePath
+  })
+
+  ipcMain.handle('select-connection-transfer-export-path', async (_event, defaultName?: string) => {
+    const window = BrowserWindow.getFocusedWindow()
+
+    if (!window) {
+      return null
+    }
+
+    const result = await dialog.showSaveDialog(window, {
+      title: '????????',
+      defaultPath: defaultName,
+      filters: [
+        { name: 'DataDjinn ????', extensions: ['ddj'] },
+        { name: 'JSON ??', extensions: ['json'] },
+        { name: '????', extensions: ['*'] }
+      ]
+    })
+
+    if (result.canceled || !result.filePath) {
+      return null
+    }
+
+    return result.filePath
+  })
+
+  ipcMain.handle('read-text-file', async (_event, filePath: string) => {
+    return readFile(filePath, 'utf-8')
+  })
+
+  ipcMain.handle('write-text-file', async (_event, filePath: string, content: string) => {
+    await writeFile(filePath, content, 'utf-8')
+    return true
   })
 
   ipcMain.handle('window:minimize', (event) => BrowserWindow.fromWebContents(event.sender)?.minimize())

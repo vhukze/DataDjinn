@@ -323,6 +323,36 @@ async function countVisibleDropdowns(page) {
     }).length)
 }
 
+async function readVisibleResourceCreateDropdownMetrics(page) {
+  return page.evaluate(() => {
+    const menus = Array.from(document.querySelectorAll('.resource-create-dropdown .ant-dropdown-menu'))
+      .filter((node): node is HTMLElement => node instanceof HTMLElement)
+    const visibleMenu = menus.find((node) => {
+      const rect = node.getBoundingClientRect()
+      const style = window.getComputedStyle(node)
+      return rect.width > 0
+        && rect.height > 0
+        && style.display !== 'none'
+        && style.visibility !== 'hidden'
+        && style.opacity !== '0'
+    })
+    if (!(visibleMenu instanceof HTMLElement)) {
+      return null
+    }
+    const style = window.getComputedStyle(visibleMenu)
+    const match = style.backgroundColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i)
+    return {
+      backdropFilter: style.backdropFilter,
+      webkitBackdropFilter: style.webkitBackdropFilter,
+      borderRadius: style.borderRadius,
+      boxShadow: style.boxShadow,
+      backgroundImage: style.backgroundImage,
+      backgroundColor: style.backgroundColor,
+      rgb: match ? match.slice(1, 4).map((value) => Number.parseInt(value, 10)) : null
+    }
+  })
+}
+
 function countSelectedCellsInNode(node) {
   return Array.from(node.querySelectorAll('.editable-cell[data-cell-key]'))
     .filter((element) => element instanceof HTMLElement)
@@ -837,17 +867,18 @@ async function measureModalOpenClose(page, { label, open, close, modalSelector }
 
 async function measureConnectionCreateFlow(page, itemLabel) {
   const createButton = page.locator('.resource-header .resource-add')
-  const menuItem = page.locator('.resource-create-dropdown .ant-dropdown-menu-item').filter({ hasText: itemLabel })
   const modal = page.locator('.connection-editor-modal')
 
   await waitForBrowserIdle(page)
   const menuOpenStartedAt = Date.now()
   await createButton.click()
-  await expect(menuItem).toBeVisible({ timeout: 10000 })
+  await expect.poll(async () => {
+    return (await getVisibleDropdownMenuItemCenter(page, itemLabel)) !== null
+  }, { timeout: 10000 }).toBe(true)
   const menuOpenMs = Date.now() - menuOpenStartedAt
 
   const modalOpenStartedAt = Date.now()
-  await menuItem.click()
+  await clickVisibleDropdownMenuItem(page, itemLabel)
   await expect(modal).toBeVisible({ timeout: 10000 })
   const modalOpenMs = Date.now() - modalOpenStartedAt
 
@@ -1256,7 +1287,7 @@ test.describe('workspace regression', () => {
       expect(searchPosition.topGap, 'table search row should render below the toolbar instead of jumping to the corner').toBeGreaterThanOrEqual(0)
       const searchCloseStartedAt = Date.now()
       await page.keyboard.press('Escape')
-      await expect(searchBar).toHaveCount(0)
+      await expect(searchBar).not.toBeVisible({ timeout: 10000 })
       const searchCloseMs = Date.now() - searchCloseStartedAt
       console.log(`[perf][table-search][button-close] ${searchCloseMs}`)
       expect(searchCloseMs, 'table search bar closes too slowly').toBeLessThan(250)
@@ -1266,7 +1297,7 @@ test.describe('workspace regression', () => {
       await expect(searchBar).toBeVisible({ timeout: 10000 })
       const shortcutCloseStartedAt = Date.now()
       await page.keyboard.press('Escape')
-      await expect(searchBar).toHaveCount(0)
+      await expect(searchBar).not.toBeVisible({ timeout: 10000 })
       const shortcutCloseMs = Date.now() - shortcutCloseStartedAt
       console.log(`[perf][table-search][shortcut-close] ${shortcutCloseMs}`)
       expect(shortcutCloseMs, 'table search bar shortcut close is too slow').toBeLessThan(250)
@@ -2388,7 +2419,7 @@ test.describe('workspace regression', () => {
         label: 'connection-editor',
         open: async () => {
           await createButton.click()
-          await page.locator('.resource-create-dropdown .ant-dropdown-menu-item').filter({ hasText: 'SQLite' }).click()
+          await clickVisibleDropdownMenuItem(page, 'SQLite')
         },
         close: async () => page.locator('.connection-editor-modal .ant-modal-close').click(),
         modalSelector: '.connection-editor-modal'
@@ -2442,11 +2473,11 @@ test.describe('workspace regression', () => {
         }
       })
 
-      await page.locator('.resource-create-dropdown .ant-dropdown-menu-item').filter({ hasText: 'MySQL' }).click()
+      await clickVisibleDropdownMenuItem(page, 'MySQL')
 
       const modal = page.locator('.connection-editor-modal')
       await expect(modal).toBeVisible({ timeout: 10000 })
-      await expect(modal.getByLabel('主机')).toBeVisible({ timeout: 10000 })
+      await expect(modal.getByLabel(/^主机$/)).toBeVisible({ timeout: 10000 })
 
       const frameSamples = await captureFrames
 
@@ -2495,16 +2526,19 @@ test.describe('workspace regression', () => {
       const headerLayout = await page.locator('.resource-header').evaluate((node) => {
         const kicker = node.querySelector('.panel-kicker')
         const title = node.querySelector('.panel-title')
-        const importButton = node.querySelector('.resource-import')
+        const transferGroup = node.querySelector('.resource-transfer-group')
+        const importButton = node.querySelector('.resource-transfer-segment-import')
+        const exportButton = node.querySelector('.resource-transfer-segment-export')
         const addButton = node.querySelector('.resource-add')
-        if (!(kicker instanceof HTMLElement) || !(title instanceof HTMLElement) || !(importButton instanceof HTMLElement) || !(addButton instanceof HTMLElement)) {
+        if (!(kicker instanceof HTMLElement) || !(title instanceof HTMLElement) || !(transferGroup instanceof HTMLElement) || !(importButton instanceof HTMLElement) || !(exportButton instanceof HTMLElement) || !(addButton instanceof HTMLElement)) {
           return null
         }
 
         const headerStyle = window.getComputedStyle(node)
-        const kickerRect = kicker.getBoundingClientRect()
         const titleRect = title.getBoundingClientRect()
+        const transferRect = transferGroup.getBoundingClientRect()
         const importRect = importButton.getBoundingClientRect()
+        const exportRect = exportButton.getBoundingClientRect()
         const addRect = addButton.getBoundingClientRect()
 
         return {
@@ -2517,7 +2551,9 @@ test.describe('workspace regression', () => {
           importMid: importRect.top + (importRect.height / 2),
           titleWidth: titleRect.width,
           titleHeight: titleRect.height,
+          transferWidth: transferRect.width,
           importWidth: importRect.width,
+          exportWidth: exportRect.width,
           addWidth: addRect.width,
         }
       })
@@ -2529,12 +2565,15 @@ test.describe('workspace regression', () => {
 
       expect(headerLayout.flexDirection, 'resource header should keep a single-row layout at minimum width').toBe('row')
       expect(headerLayout.headerScrollWidth, 'resource header should not overflow horizontally at minimum width').toBeLessThanOrEqual(headerLayout.headerClientWidth + 1)
-      expect(headerLayout.titleWidth, '数据资产标题 should stay horizontal instead of collapsing vertically').toBeGreaterThan(headerLayout.titleHeight * 2)
+      expect(headerLayout.titleWidth, 'resource title should stay horizontal instead of collapsing vertically').toBeGreaterThan(headerLayout.titleHeight * 2)
       expect(headerLayout.headerHeight, 'resource header should stay compact instead of stacking into multiple rows').toBeLessThan(76)
       expect(headerLayout.kickerDisplay, 'DATABASE EXPLORER label should hide before it collides with the buttons').toBe('none')
       expect(Math.abs(headerLayout.titleMid - headerLayout.importMid), 'title and actions should remain visually centered on a single row').toBeLessThanOrEqual(3)
-      expect(headerLayout.importWidth, '导入连接按钮 should stay wide enough to render normally').toBeGreaterThan(92)
-      expect(headerLayout.addWidth, '新建按钮 should stay wide enough to render normally').toBeGreaterThan(64)
+      expect(headerLayout.transferWidth, 'import/export group should stay narrower than the previous wide version').toBeLessThan(118)
+      expect(headerLayout.transferWidth, 'import/export group should preserve a readable total width budget').toBeGreaterThan(98)
+      expect(headerLayout.importWidth, 'import segment should stay readable').toBeGreaterThan(36)
+      expect(headerLayout.exportWidth, 'export segment should stay readable').toBeGreaterThan(36)
+      expect(headerLayout.addWidth, 'create button should stay wide enough to render normally').toBeGreaterThan(64)
     } finally {
       await electronApp.close()
     }
@@ -2554,16 +2593,20 @@ test.describe('workspace regression', () => {
       const headerLayout = await page.locator('.resource-header').evaluate((node) => {
         const kicker = node.querySelector('.panel-kicker')
         const title = node.querySelector('.panel-title')
-        const importButton = node.querySelector('.resource-import')
+        const transferGroup = node.querySelector('.resource-transfer-group')
+        const importButton = node.querySelector('.resource-transfer-segment-import')
+        const exportButton = node.querySelector('.resource-transfer-segment-export')
         const addButton = node.querySelector('.resource-add')
-        if (!(kicker instanceof HTMLElement) || !(title instanceof HTMLElement) || !(importButton instanceof HTMLElement) || !(addButton instanceof HTMLElement)) {
+        if (!(kicker instanceof HTMLElement) || !(title instanceof HTMLElement) || !(transferGroup instanceof HTMLElement) || !(importButton instanceof HTMLElement) || !(exportButton instanceof HTMLElement) || !(addButton instanceof HTMLElement)) {
           return null
         }
 
         const headerStyle = window.getComputedStyle(node)
         const kickerRect = kicker.getBoundingClientRect()
         const titleRect = title.getBoundingClientRect()
+        const transferRect = transferGroup.getBoundingClientRect()
         const importRect = importButton.getBoundingClientRect()
+        const exportRect = exportButton.getBoundingClientRect()
         const addRect = addButton.getBoundingClientRect()
 
         return {
@@ -2573,10 +2616,12 @@ test.describe('workspace regression', () => {
           titleMid: titleRect.top + (titleRect.height / 2),
           importMid: importRect.top + (importRect.height / 2),
           importTop: importRect.top,
-          importRight: importRect.right,
+          importRight: transferRect.right,
           headerRight: node.getBoundingClientRect().right,
           addTop: addRect.top,
+          transferWidth: transferRect.width,
           importWidth: importRect.width,
+          exportWidth: exportRect.width,
           addWidth: addRect.width
         }
       })
@@ -2591,9 +2636,252 @@ test.describe('workspace regression', () => {
       expect(headerLayout.kickerWidth, 'hidden english label should not keep occupying horizontal space').toBeLessThanOrEqual(1)
       expect(Math.abs(headerLayout.titleMid - headerLayout.importMid), 'title and action row should stay visually centered').toBeLessThanOrEqual(3)
       expect(headerLayout.importRight, 'buttons should stay within the header bounds at medium narrow width').toBeLessThanOrEqual(headerLayout.headerRight + 1)
-      expect(headerLayout.importWidth, '导入连接按钮 should keep a readable width at medium narrow width').toBeGreaterThan(92)
-      expect(headerLayout.addWidth, '新建按钮 should keep a readable width at medium narrow width').toBeGreaterThan(64)
-      expect(Math.abs(headerLayout.importTop - headerLayout.addTop), 'buttons should stay aligned on the same row').toBeLessThanOrEqual(2)
+      expect(headerLayout.transferWidth, 'import/export group should keep a narrower but stable total width at medium narrow width').toBeLessThan(114)
+      expect(headerLayout.transferWidth, 'import/export group should keep a stable total width at medium narrow width').toBeGreaterThan(94)
+      expect(headerLayout.importWidth, 'import segment should keep a readable width at medium narrow width').toBeGreaterThan(34)
+      expect(headerLayout.exportWidth, 'export segment should keep a readable width at medium narrow width').toBeGreaterThan(34)
+      expect(headerLayout.addWidth, 'create button should keep a readable width at medium narrow width').toBeGreaterThan(64)
+      expect(Math.abs(headerLayout.importTop - headerLayout.addTop), 'buttons should stay aligned on the same row').toBeLessThanOrEqual(3)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('connection transfer UI should expose export fields and import DataDjinn bundles @bug', async () => {
+    const electronApp = await launchRegressionApp()
+    const connectionName = 'UI import export ' + crypto.randomUUID().slice(0, 8)
+    const { encryptConnectionTransferBundle } = await import('../../src/renderer/src/app/connection-transfer')
+
+    const encryptedBundle = await encryptConnectionTransferBundle({
+      version: 1,
+      exported_at: new Date().toISOString(),
+      source_app_name: 'DataDjinn',
+      source_app_version: '0.2.7',
+      connections: [
+        {
+          export_id: 'ui-import-export',
+          payload: {
+            name: connectionName,
+            database_type: 'mysql',
+            host: '127.0.0.1',
+            port: 3306,
+            username: 'root',
+            password: 'db-export-secret',
+            database: 'demo',
+            ssh_enabled: true,
+            ssh_host: '127.0.0.2',
+            ssh_port: 22,
+            ssh_username: 'jump-user',
+            ssh_auth_type: 'password',
+            ssh_password: 'ssh-export-secret'
+          }
+        }
+      ],
+      folders: [],
+      connection_folder_assignments: {},
+      connection_folder_order: [],
+      root_connection_order: ['ui-import-export'],
+      root_item_order: ['connection:ui-import-export'],
+      folder_connection_order: {}
+    }, 'transfer-passphrase')
+
+    try {
+      const page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+
+      await page.locator('.resource-transfer-segment-export').click()
+      const exportModal = page.locator('.export-connection-modal')
+      await expect(exportModal).toBeVisible({ timeout: 10000 })
+      await expect(exportModal.locator('input[type="password"]')).toHaveCount(2)
+      await exportModal.locator('.ant-modal-close').click()
+      await expect(exportModal).not.toBeVisible({ timeout: 10000 })
+
+      await page.evaluate((content) => {
+        ;(window).__DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_FILE_PATH__ = 'virtual-transfer.ddj'
+        ;(window).__DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_CONTENT__ = content
+      }, encryptedBundle)
+
+      await page.locator('.resource-import').click()
+      const importModal = page.locator('.import-connection-modal')
+      await expect(importModal).toBeVisible({ timeout: 10000 })
+      await importModal.locator('.ant-select').click()
+      await page.locator('.ant-select-dropdown .ant-select-item-option').filter({ hasText: 'DataDjinn' }).click()
+      await importModal.locator('.import-connection-file-row .ant-btn').click()
+      await importModal.locator('input[type="password"]').fill('transfer-passphrase')
+      await importModal.locator('.ant-modal-footer .ant-btn').nth(1).click()
+      await expect(importModal.locator('.ant-table')).toBeVisible({ timeout: 10000 })
+      await expect(importModal).toContainText(connectionName)
+      await importModal.locator('.ant-modal-footer .ant-btn-primary').click()
+
+      const resultModal = page.locator('.import-connection-result-modal')
+      await expect(resultModal).toBeVisible({ timeout: 10000 })
+      await expect(resultModal.locator('.ant-alert')).toBeVisible()
+
+      const importedCount = await page.evaluate(async (targetName) => {
+        const response = await window.api.requestJson('/connections')
+        return Array.isArray(response?.connections)
+          ? response.connections.filter((item) => item?.name === targetName).length
+          : 0
+      }, connectionName)
+      expect(importedCount).toBe(1)
+    } finally {
+      const page = electronApp.windows().length > 0 ? electronApp.windows()[0] : null
+      if (page) {
+        await page.evaluate(async (targetName) => {
+          try {
+            const response = await window.api.requestJson('/connections')
+            const targets = Array.isArray(response?.connections)
+              ? response.connections.filter((item) => item?.name === targetName)
+              : []
+            for (const target of targets) {
+              await window.api.requestJson('/connections/' + target.connection_id, { method: 'DELETE' })
+            }
+          } catch {
+            // Ignore cleanup failures in regression teardown.
+          }
+        }, connectionName)
+      }
+      await electronApp.close()
+    }
+  })
+
+  test('connection transfer should roundtrip through a real exported ddj file @bug', async () => {
+    const electronApp = await launchRegressionApp()
+    const exportedFilePath = path.join(projectRoot, '.tmp', `connection-transfer-roundtrip-${crypto.randomUUID().slice(0, 8)}.ddj`)
+    const importedConnectionName = `Roundtrip import ${crypto.randomUUID().slice(0, 8)}`
+    const {
+      decryptConnectionTransferBundle,
+      encryptConnectionTransferBundle
+    } = await import('../../src/renderer/src/app/connection-transfer')
+
+    try {
+      const page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+
+      await page.evaluate((filePath) => {
+        ;(window).__DATADJINN_TEST_CONNECTION_TRANSFER_EXPORT_PATH__ = filePath
+        delete (window).__DATADJINN_TEST_CONNECTION_TRANSFER_EXPORT_HANDLER__
+      }, exportedFilePath)
+
+      await page.locator('.resource-transfer-segment-export').click()
+      const exportModal = page.locator('.export-connection-modal')
+      await expect(exportModal).toBeVisible({ timeout: 10000 })
+      await exportModal.locator('input[type="password"]').nth(0).fill('Cafe\u0301 transfer 123')
+      await exportModal.locator('input[type="password"]').nth(1).fill('Cafe\u0301 transfer 123')
+      await exportModal.locator('.ant-modal-footer .ant-btn-primary').click()
+      await expect(exportModal).not.toBeVisible({ timeout: 10000 })
+      expect(fs.existsSync(exportedFilePath), 'export should create a real ddj file on disk').toBe(true)
+
+      const exportedRawText = fs.readFileSync(exportedFilePath, 'utf-8')
+      const exportedBundle = await decryptConnectionTransferBundle(exportedRawText, 'Caf\u00e9 transfer 123')
+      expect(exportedBundle.connections.length, 'exported ddj file should contain at least one connection').toBeGreaterThan(0)
+      exportedBundle.connections[0]!.payload.name = importedConnectionName
+      fs.writeFileSync(exportedFilePath, await encryptConnectionTransferBundle(exportedBundle, 'Cafe\u0301 transfer 123'), 'utf-8')
+
+      await page.evaluate((filePath) => {
+        ;(window).__DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_FILE_PATH__ = filePath
+        delete (window).__DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_CONTENT__
+      }, exportedFilePath)
+
+      await page.locator('.resource-import').click()
+      const importModal = page.locator('.import-connection-modal')
+      await expect(importModal).toBeVisible({ timeout: 10000 })
+      await importModal.locator('.ant-select').click()
+      await page.locator('.ant-select-dropdown .ant-select-item-option').filter({ hasText: 'DataDjinn' }).click()
+      await importModal.locator('.import-connection-file-row .ant-btn').click()
+      await importModal.locator('input[type="password"]').fill('Caf\u00e9 transfer 123')
+      await importModal.locator('.ant-modal-footer .ant-btn').nth(1).click()
+      await expect(importModal.locator('.ant-table')).toBeVisible({ timeout: 10000 })
+      await expect(importModal).toContainText(importedConnectionName)
+      await importModal.locator('.ant-modal-footer .ant-btn-primary').click()
+
+      const resultModal = page.locator('.import-connection-result-modal')
+      await expect(resultModal).toBeVisible({ timeout: 10000 })
+
+      const importedCount = await page.evaluate(async (targetName) => {
+        const response = await window.api.requestJson('/connections')
+        return Array.isArray(response?.connections)
+          ? response.connections.filter((item) => item?.name === targetName).length
+          : 0
+      }, importedConnectionName)
+      expect(importedCount).toBe(1)
+    } finally {
+      const page = electronApp.windows().length > 0 ? electronApp.windows()[0] : null
+      if (page) {
+        await page.evaluate(async (targetName) => {
+          try {
+            const response = await window.api.requestJson('/connections')
+            const targets = Array.isArray(response?.connections)
+              ? response.connections.filter((item) => item?.name === targetName)
+              : []
+            for (const target of targets) {
+              await window.api.requestJson('/connections/' + target.connection_id, { method: 'DELETE' })
+            }
+          } catch {
+            // Ignore cleanup failures in regression teardown.
+          }
+        }, importedConnectionName)
+      }
+      try {
+        fs.rmSync(exportedFilePath, { force: true })
+      } catch {
+        // Ignore cleanup failures for temporary export files.
+      }
+      await electronApp.close()
+    }
+  })
+
+  test('import connection password field should only keep a single outer border @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+
+      await page.locator('.resource-import').click()
+      const importModal = page.locator('.import-connection-modal')
+      await expect(importModal).toBeVisible({ timeout: 10000 })
+      await importModal.locator('.ant-select').click()
+      await page.locator('.ant-select-dropdown .ant-select-item-option').filter({ hasText: 'DataDjinn' }).click()
+      await expect(importModal.locator('input[type="password"]')).toBeVisible({ timeout: 10000 })
+
+      const metrics = await importModal.locator('input[type="password"]').first().evaluate((node) => {
+        const input = node instanceof HTMLInputElement ? node : null
+        const wrapper = input?.closest('.ant-input-affix-wrapper')
+        if (!(wrapper instanceof HTMLElement) || !(input instanceof HTMLElement)) {
+          return null
+        }
+        const wrapperStyle = window.getComputedStyle(wrapper)
+        const inputStyle = window.getComputedStyle(input)
+        return {
+          wrapperBorderTopWidth: wrapperStyle.borderTopWidth,
+          wrapperBorderTopStyle: wrapperStyle.borderTopStyle,
+          inputBorderTopWidth: inputStyle.borderTopWidth,
+          inputBorderTopStyle: inputStyle.borderTopStyle,
+          inputBoxShadow: inputStyle.boxShadow,
+          inputBackgroundImage: inputStyle.backgroundImage,
+          inputBackgroundColor: inputStyle.backgroundColor
+        }
+      })
+
+      expect(metrics, 'import password field metrics should be readable').not.toBeNull()
+      if (!metrics) {
+        return
+      }
+
+      expect(Number.parseFloat(metrics.wrapperBorderTopWidth), 'password wrapper should keep the single visible border').toBeGreaterThan(0)
+      expect(metrics.wrapperBorderTopStyle, 'password wrapper should keep the visible outer border').not.toBe('none')
+      expect(Number.parseFloat(metrics.inputBorderTopWidth), 'inner password input should not render its own border').toBe(0)
+      expect(metrics.inputBorderTopStyle === 'none' || metrics.inputBorderTopStyle === 'solid', 'inner password input should not draw a second border line').toBe(true)
+      expect(metrics.inputBoxShadow, 'inner password input should not draw an extra glow ring').toBe('none')
+      expect(metrics.inputBackgroundImage, 'inner password input should not paint a second background layer').toBe('none')
+      expect(metrics.inputBackgroundColor === 'rgba(0, 0, 0, 0)' || metrics.inputBackgroundColor === 'transparent', 'inner password input should stay transparent').toBe(true)
     } finally {
       await electronApp.close()
     }
@@ -2638,6 +2926,94 @@ test.describe('workspace regression', () => {
     }
   })
 
+  test('resource create dropdown should keep the glass panel styling @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+
+      await page.locator('.resource-header .resource-add').click()
+      await expect.poll(async () => readVisibleResourceCreateDropdownMetrics(page), { timeout: 10000 }).not.toBeNull()
+      const metrics = await readVisibleResourceCreateDropdownMetrics(page)
+      expect(metrics, 'resource create dropdown metrics should be readable').not.toBeNull()
+      if (!metrics) {
+        return
+      }
+
+      expect(Number.parseFloat(metrics.borderRadius), 'create dropdown should keep rounded corners').toBeGreaterThanOrEqual(16)
+      expect(metrics.boxShadow, 'create dropdown should keep a floating glass shadow').not.toBe('none')
+      expect(metrics.backgroundImage, 'create dropdown should keep layered gradients instead of a flat fallback background').toContain('gradient')
+      expect(metrics.backgroundImage, 'create dropdown should keep multiple glass highlight layers').toContain('radial-gradient')
+      expect(metrics.backdropFilter, 'create dropdown should avoid live backdrop blur to keep remote sessions stable').toBe('none')
+      expect(metrics.webkitBackdropFilter ?? 'none', 'create dropdown should avoid live backdrop blur to keep remote sessions stable').toBe('none')
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('resource create dropdown should stay bright in light theme @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+
+      const currentTheme = await page.evaluate(() => document.body.getAttribute('data-theme'))
+      if (currentTheme === 'dark') {
+        await page.locator('.theme-toggle-btn').click()
+      }
+      await expect.poll(async () => page.evaluate(() => document.body.getAttribute('data-theme')), { timeout: 10000 }).toBe('light')
+
+      await page.locator('.resource-header .resource-add').click()
+      await expect.poll(async () => readVisibleResourceCreateDropdownMetrics(page), { timeout: 10000 }).not.toBeNull()
+      const metrics = await readVisibleResourceCreateDropdownMetrics(page)
+      expect(metrics, 'light theme dropdown metrics should be readable').not.toBeNull()
+      if (!metrics) {
+        return
+      }
+
+      expect(metrics.backgroundImage, 'light theme create dropdown should still keep layered gradients').toContain('gradient')
+      expect(metrics.rgb, 'light theme create dropdown should keep a bright background tone').not.toBeNull()
+      expect(metrics.rgb?.[0] ?? 0, 'light theme create dropdown should not regress to a dark background').toBeGreaterThan(220)
+      expect(metrics.rgb?.[1] ?? 0, 'light theme create dropdown should not regress to a dark background').toBeGreaterThan(220)
+      expect(metrics.rgb?.[2] ?? 0, 'light theme create dropdown should not regress to a dark background').toBeGreaterThan(220)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('empty workspace create dropdown should reuse the shared stable glass styling @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+
+      await page.locator('.empty-workspace-button-primary').click()
+      await expect.poll(async () => readVisibleResourceCreateDropdownMetrics(page), { timeout: 10000 }).not.toBeNull()
+      const metrics = await readVisibleResourceCreateDropdownMetrics(page)
+      expect(metrics, 'empty workspace dropdown metrics should be readable').not.toBeNull()
+      if (!metrics) {
+        return
+      }
+
+      expect(metrics.backgroundImage, 'empty workspace create dropdown should reuse the shared gradient styling').toContain('gradient')
+      expect(metrics.backgroundImage, 'empty workspace create dropdown should reuse radial highlight layers').toContain('radial-gradient')
+      expect(Number.parseFloat(metrics.borderRadius), 'empty workspace create dropdown should keep the same rounded panel').toBeGreaterThanOrEqual(16)
+      expect(metrics.backdropFilter, 'empty workspace create dropdown should avoid live backdrop blur for remote stability').toBe('none')
+      expect(metrics.webkitBackdropFilter ?? 'none', 'empty workspace create dropdown should avoid live backdrop blur for remote stability').toBe('none')
+    } finally {
+      await electronApp.close()
+    }
+  })
+
   test('editing a connection should hydrate ssh tunnel fields back into the form @bug', async () => {
     const electronApp = await launchRegressionApp()
     const connectionName = `SSH 编辑回显 ${crypto.randomUUID().slice(0, 8)}`
@@ -2649,7 +3025,7 @@ test.describe('workspace regression', () => {
       await ensureWindowSize(page)
 
       await page.locator('.resource-header .resource-add').click()
-      await page.locator('.resource-create-dropdown .ant-dropdown-menu-item').filter({ hasText: 'MySQL' }).click()
+      await clickVisibleDropdownMenuItem(page, 'MySQL')
 
       const modal = page.locator('.connection-editor-modal')
       await expect(modal).toBeVisible({ timeout: 10000 })
@@ -2716,7 +3092,7 @@ test.describe('workspace regression', () => {
       await ensureWindowSize(page)
 
       await page.locator('.resource-header .resource-add').click()
-      await page.locator('.resource-create-dropdown .ant-dropdown-menu-item').filter({ hasText: 'MySQL' }).click()
+      await clickVisibleDropdownMenuItem(page, 'MySQL')
 
       const modal = page.locator('.connection-editor-modal')
       await expect(modal).toBeVisible({ timeout: 10000 })
@@ -2800,7 +3176,7 @@ test.describe('workspace regression', () => {
       await ensureWindowSize(page)
 
       await page.locator('.resource-header .resource-add').click()
-      await page.locator('.resource-create-dropdown .ant-dropdown-menu-item').filter({ hasText: 'MySQL' }).click()
+      await clickVisibleDropdownMenuItem(page, 'MySQL')
 
       const modal = page.locator('.connection-editor-modal')
       await expect(modal).toBeVisible({ timeout: 10000 })
@@ -2869,7 +3245,7 @@ test.describe('workspace regression', () => {
       await ensureWindowSize(page)
 
       await page.locator('.resource-header .resource-add').click()
-      await page.locator('.resource-create-dropdown .ant-dropdown-menu-item').filter({ hasText: 'MySQL' }).click()
+      await clickVisibleDropdownMenuItem(page, 'MySQL')
 
       const modal = page.locator('.connection-editor-modal')
       await expect(modal).toBeVisible({ timeout: 10000 })
@@ -2925,7 +3301,7 @@ test.describe('workspace regression', () => {
       await ensureWindowSize(page)
 
       await page.locator('.resource-header .resource-add').click()
-      await page.locator('.resource-create-dropdown .ant-dropdown-menu-item').filter({ hasText: 'MySQL' }).click()
+      await clickVisibleDropdownMenuItem(page, 'MySQL')
 
       const modal = page.locator('.connection-editor-modal')
       await expect(modal).toBeVisible({ timeout: 10000 })
@@ -2968,7 +3344,7 @@ test.describe('workspace regression', () => {
       await modal.locator('.connection-editor-side .ant-select').click()
       await page.locator('.ant-select-dropdown .ant-select-item-option').filter({ hasText: '私钥文件' }).click()
       await expect(modal.getByPlaceholder('例如：C:\\Users\\你的用户名\\.ssh\\id_rsa')).toBeVisible()
-      await expect(modal.getByPlaceholder('请输入 SSH 登录密码')).toHaveCount(0)
+      await expect(modal.getByPlaceholder('请输入 SSH 登录密码')).not.toBeVisible()
 
       await modal.locator('.connection-editor-side .ant-select').click()
       await page.locator('.ant-select-dropdown .ant-select-item-option').filter({ hasText: '密码认证' }).click()

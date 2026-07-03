@@ -11,7 +11,6 @@
   FolderAddOutlined,
   FolderOpenOutlined,
   LoadingOutlined,
-  LoginOutlined,
   MoonOutlined,
   PlayCircleOutlined,
   PlusOutlined,
@@ -133,6 +132,12 @@ import ResourceTreePanel from './app/resource-tree-panel'
 import { type CellInspectorPanelHandle } from './app/cell-inspector-panel'
 import type { AIActiveContext, AIContextSource, AIWorkspaceAction, EditableRow, PersistedQueryWorkspace, RedisKeyEdit, SqlEditorExecutionContext, TableSearchUiState, WorkspaceTab } from './app/workspace-model'
 import {
+  type DataDjinnConnectionTransferBundle,
+  buildDataDjinnImportCandidates,
+  decryptConnectionTransferBundle,
+  encryptConnectionTransferBundle
+} from './app/connection-transfer'
+import {
   buildConnectionNode as buildConnectionNodeFromModule,
   buildFolderNode as buildFolderNodeFromModule,
   buildResourceTree as buildResourceTreeFromModule,
@@ -179,6 +184,13 @@ const FAST_PRELOADED_DROPDOWN_PROPS = {
   ...FAST_DROPDOWN_PROPS,
   forceRender: true
 } as const
+
+type ConnectionTransferTestWindow = typeof window & {
+  __DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_FILE_PATH__?: string
+  __DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_CONTENT__?: string
+  __DATADJINN_TEST_CONNECTION_TRANSFER_EXPORT_PATH__?: string
+  __DATADJINN_TEST_CONNECTION_TRANSFER_EXPORT_HANDLER__?: (payload: { filePath: string; content: string }) => void | Promise<void>
+}
 
 type TreeSelectorPopoverProps = {
   options: string[]
@@ -518,11 +530,18 @@ function App(): React.JSX.Element {
   const [importConnectionModalOpen, setImportConnectionModalOpen] = useState(false)
   const [importConnectionSource, setImportConnectionSource] = useState<ImportConnectionSource>('datagrip')
   const [importConnectionRawText, setImportConnectionRawText] = useState('')
+  const [importConnectionFilePath, setImportConnectionFilePath] = useState('')
+  const [importConnectionSecret, setImportConnectionSecret] = useState('')
   const [importConnectionCandidates, setImportConnectionCandidates] = useState<ImportConnectionCandidate[]>([])
   const [importConnectionParsing, setImportConnectionParsing] = useState(false)
   const [importingConnections, setImportingConnections] = useState(false)
   const [importConnectionResult, setImportConnectionResult] = useState<ImportConnectionResult | null>(null)
   const [importConnectionResultOpen, setImportConnectionResultOpen] = useState(false)
+  const [importConnectionBundle, setImportConnectionBundle] = useState<DataDjinnConnectionTransferBundle | null>(null)
+  const [exportConnectionModalOpen, setExportConnectionModalOpen] = useState(false)
+  const [exportConnectionSecret, setExportConnectionSecret] = useState('')
+  const [exportConnectionSecretConfirm, setExportConnectionSecretConfirm] = useState('')
+  const [exportingConnections, setExportingConnections] = useState(false)
   const [backupRestoreModalOpen, setBackupRestoreModalOpen] = useState(false)
   const [backupRestoreConnectionId, setBackupRestoreConnectionId] = useState<string>('')
   const [backupRestoreDatabase, setBackupRestoreDatabase] = useState<string>('')
@@ -4704,6 +4723,55 @@ function App(): React.JSX.Element {
     return nextName
   }
 
+  const buildImportFolderUniqueName = (baseName: string, usedNames: Set<string>): string => {
+    const trimmed = baseName.trim() || '未命名分组'
+    let nextName = trimmed
+    let suffix = 1
+
+    while (usedNames.has(nextName.trim().toLocaleLowerCase())) {
+      nextName = `${trimmed}（${suffix}）`
+      suffix += 1
+    }
+
+    usedNames.add(nextName.trim().toLocaleLowerCase())
+    return nextName
+  }
+
+  const buildConnectionTransferDefaultFileName = (): string => {
+    const current = new Date()
+    const pad = (value: number): string => String(value).padStart(2, '0')
+    const datePart = `${current.getFullYear()}${pad(current.getMonth() + 1)}${pad(current.getDate())}`
+    const timePart = `${pad(current.getHours())}${pad(current.getMinutes())}${pad(current.getSeconds())}`
+    return `datadjinn-connections-${datePart}-${timePart}.ddj`
+  }
+
+  const normalizeImportConnectionCandidates = useCallback((rawCandidates: ImportConnectionCandidate[]): ImportConnectionCandidate[] => {
+    const usedNames = new Set(connections.map((connection) => connection.name.trim().toLocaleLowerCase()).filter(Boolean))
+    return rawCandidates.map<ImportConnectionCandidate>((candidate) => {
+      if (!candidate.payload) {
+        return candidate
+      }
+
+      const originalName = candidate.payload.name
+      const uniqueName = buildImportConnectionUniqueName(originalName, usedNames)
+      if (uniqueName === originalName) {
+        return candidate
+      }
+
+      const renamedMessage = `名称重复，已自动调整为 ${uniqueName}`
+      return {
+        ...candidate,
+        name: uniqueName,
+        payload: {
+          ...candidate.payload,
+          name: uniqueName
+        },
+        status: 'warning',
+        message: candidate.message ? `${candidate.message}；${renamedMessage}` : renamedMessage
+      }
+    })
+  }, [connections])
+
   const isConnectionPasswordRetryError = (message: string): boolean => {
     const normalized = message.toLowerCase()
     return normalized.includes('密码错误') ||
@@ -4734,7 +4802,10 @@ function App(): React.JSX.Element {
   const resetImportConnectionState = useCallback((): void => {
     setImportConnectionSource('datagrip')
     setImportConnectionRawText('')
+    setImportConnectionFilePath('')
+    setImportConnectionSecret('')
     setImportConnectionCandidates([])
+    setImportConnectionBundle(null)
     setImportConnectionParsing(false)
     setImportingConnections(false)
   }, [])
@@ -4742,6 +4813,18 @@ function App(): React.JSX.Element {
   const openImportConnectionModal = useCallback((): void => {
     setImportConnectionModalOpen(true)
   }, [])
+
+  const openExportConnectionModal = useCallback((): void => {
+    if (connections.length === 0) {
+      messageApi.warning('当前没有可导出的连接')
+      return
+    }
+
+    setExportConnectionModalOpen(true)
+    if (!appInfo) {
+      void window.api.getAppInfo().then(setAppInfo).catch(() => undefined)
+    }
+  }, [appInfo, connections.length, messageApi])
 
   const openImportConnectionModalRef = useRef(openImportConnectionModal)
   openImportConnectionModalRef.current = openImportConnectionModal
@@ -4751,49 +4834,184 @@ function App(): React.JSX.Element {
     setImportConnectionModalOpen(false)
   }, [])
 
+  const closeExportConnectionModal = useCallback((): void => {
+    setExportConnectionModalOpen(false)
+  }, [])
+
   const closeImportConnectionResultModal = (): void => {
     setImportConnectionResultOpen(false)
     setImportConnectionResult(null)
   }
 
-  const parseImportConnections = (): void => {
-    const rawText = importConnectionRawText.trim()
-    if (!rawText) {
-      messageApi.warning('请先粘贴连接配置文本')
+  const chooseImportConnectionTransferFile = async (): Promise<void> => {
+    const testWindow = window as ConnectionTransferTestWindow
+    if (typeof testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_FILE_PATH__ === 'string' && testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_FILE_PATH__.trim()) {
+      setImportConnectionFilePath(testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_FILE_PATH__)
       return
     }
 
-    if (importConnectionSource !== 'datagrip') {
-      messageApi.warning('当前仅支持 DataGrip 导入')
+    const filePath = await window.api.selectConnectionTransferImportFile()
+    if (!filePath) {
       return
     }
 
+    setImportConnectionFilePath(filePath)
+  }
+
+  const applyImportedConnectionFolderState = useCallback((
+    bundle: DataDjinnConnectionTransferBundle,
+    createdByImportKey: Map<string, ConnectionInfo>
+  ): void => {
+    if (createdByImportKey.size === 0) {
+      return
+    }
+
+    const existingFolderNames = new Set(connectionFolders.map((folder) => folder.name.trim().toLocaleLowerCase()).filter(Boolean))
+    const folderById = new Map(bundle.folders.map((folder) => [folder.id, folder]))
+    const orderedFolderIds = mergeOrderedIds(bundle.folders.map((folder) => folder.id), bundle.connection_folder_order)
+    const folderIdMap = new Map<string, string>()
+    const nextFolders: ConnectionFolder[] = []
+
+    for (const folderId of orderedFolderIds) {
+      const folder = folderById.get(folderId)
+      if (!folder) {
+        continue
+      }
+
+      const nextFolderId = globalThis.crypto?.randomUUID?.() ?? `folder-${Date.now()}-${nextFolders.length}`
+      const nextFolderName = buildImportFolderUniqueName(folder.name, existingFolderNames)
+      folderIdMap.set(folderId, nextFolderId)
+      nextFolders.push({ id: nextFolderId, name: nextFolderName })
+    }
+
+    const importedConnectionIds = Array.from(createdByImportKey.values()).map((connection) => connection.connection_id)
+    const importedConnectionIdSet = new Set(importedConnectionIds)
+
+    if (nextFolders.length > 0) {
+      setConnectionFolders((current) => [...current, ...nextFolders])
+      setConnectionFolderOrder((current) => [...current, ...nextFolders.map((folder) => folder.id)])
+      setExpandedKeys((current) => {
+        const next = [...current]
+        for (const folder of nextFolders) {
+          const key = `folder:${folder.id}`
+          if (!next.includes(key)) {
+            next.push(key)
+          }
+        }
+        return next
+      })
+    }
+
+    setConnectionFolderAssignments((current) => {
+      let changed = false
+      const next = { ...current }
+      for (const [importKey, folderId] of Object.entries(bundle.connection_folder_assignments)) {
+        const created = createdByImportKey.get(importKey)
+        const mappedFolderId = folderIdMap.get(folderId)
+        if (!created || !mappedFolderId || next[created.connection_id] === mappedFolderId) {
+          continue
+        }
+
+        next[created.connection_id] = mappedFolderId
+        changed = true
+      }
+      return changed ? next : current
+    })
+
+    const orderedRootConnectionIds = mergeOrderedIds(
+      importedConnectionIds.filter((connectionId) => {
+        const importKey = Array.from(createdByImportKey.entries()).find(([, created]) => created.connection_id === connectionId)?.[0]
+        if (!importKey) {
+          return false
+        }
+        return !bundle.connection_folder_assignments[importKey]
+      }),
+      bundle.root_connection_order
+        .map((importKey) => createdByImportKey.get(importKey)?.connection_id)
+        .filter((connectionId): connectionId is string => Boolean(connectionId))
+    )
+
+    setRootConnectionOrder((current) => [
+      ...current.filter((connectionId) => !importedConnectionIdSet.has(connectionId)),
+      ...orderedRootConnectionIds
+    ])
+
+    const orderedRootItemIds = mergeOrderedIds(
+      [
+        ...nextFolders.map((folder) => rootFolderOrderId(folder.id)),
+        ...orderedRootConnectionIds.map(rootConnectionOrderId)
+      ],
+      bundle.root_item_order
+        .map((itemId) => {
+          if (itemId.startsWith('folder:')) {
+            const nextFolderId = folderIdMap.get(itemId.slice('folder:'.length))
+            return nextFolderId ? rootFolderOrderId(nextFolderId) : undefined
+          }
+          if (itemId.startsWith('connection:')) {
+            const created = createdByImportKey.get(itemId.slice('connection:'.length))
+            return created ? rootConnectionOrderId(created.connection_id) : undefined
+          }
+          return undefined
+        })
+        .filter((itemId): itemId is string => Boolean(itemId))
+    )
+
+    const orderedRootItemIdSet = new Set(orderedRootItemIds)
+    setRootItemOrder((current) => [
+      ...current.filter((itemId) => !orderedRootItemIdSet.has(itemId)),
+      ...orderedRootItemIds
+    ])
+
+    setFolderConnectionOrder((current) => {
+      const next = { ...current }
+      for (const [sourceFolderId, nextFolderId] of folderIdMap.entries()) {
+        const assignedConnectionIds = Array.from(createdByImportKey.entries())
+          .filter(([importKey]) => bundle.connection_folder_assignments[importKey] === sourceFolderId)
+          .map(([, created]) => created.connection_id)
+        next[nextFolderId] = mergeOrderedIds(
+          assignedConnectionIds,
+          (bundle.folder_connection_order[sourceFolderId] ?? [])
+            .map((importKey) => createdByImportKey.get(importKey)?.connection_id)
+            .filter((connectionId): connectionId is string => Boolean(connectionId))
+        )
+      }
+      return next
+    })
+  }, [connectionFolders])
+
+  const parseImportConnections = async (): Promise<void> => {
     setImportConnectionParsing(true)
     try {
-      const usedNames = new Set(connections.map((connection) => connection.name.trim().toLocaleLowerCase()).filter(Boolean))
-      const candidates = parseDataGripImportText(rawText).map<ImportConnectionCandidate>((candidate) => {
-        if (!candidate.payload) {
-          return candidate
+      let candidates: ImportConnectionCandidate[] = []
+
+      if (importConnectionSource === 'datagrip') {
+        const rawText = importConnectionRawText.trim()
+        if (!rawText) {
+          messageApi.warning('请先粘贴连接配置文本')
+          return
         }
 
-        const originalName = candidate.payload.name
-        const uniqueName = buildImportConnectionUniqueName(originalName, usedNames)
-        if (uniqueName === originalName) {
-          return candidate
+        setImportConnectionBundle(null)
+        candidates = normalizeImportConnectionCandidates(parseDataGripImportText(rawText))
+      } else {
+        if (!importConnectionFilePath.trim()) {
+          messageApi.warning('请先选择 DataDjinn 连接文件')
+          return
+        }
+        if (!importConnectionSecret.trim()) {
+          messageApi.warning('请输入导入口令')
+          return
         }
 
-        const renamedMessage = `名称重复，已自动调整为 ${uniqueName}`
-        return {
-          ...candidate,
-          name: uniqueName,
-          payload: {
-            ...candidate.payload,
-            name: uniqueName
-          },
-          status: 'warning',
-          message: candidate.message ? `${candidate.message}；${renamedMessage}` : renamedMessage
-        }
-      })
+        const testWindow = window as ConnectionTransferTestWindow
+        const rawText = typeof testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_CONTENT__ === 'string'
+          ? testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_CONTENT__
+          : await window.api.readTextFile(importConnectionFilePath)
+        const bundle = await decryptConnectionTransferBundle(rawText, importConnectionSecret)
+        setImportConnectionBundle(bundle)
+        candidates = normalizeImportConnectionCandidates(buildDataDjinnImportCandidates(bundle))
+      }
+
       setImportConnectionCandidates(candidates)
       if (candidates.length === 0) {
         messageApi.warning('未识别到可导入的连接配置')
@@ -4819,6 +5037,7 @@ function App(): React.JSX.Element {
     }
     let nextConnections = connections
     const usedNames = new Set(nextConnections.map((connection) => connection.name.trim().toLocaleLowerCase()).filter(Boolean))
+    const createdByImportKey = new Map<string, ConnectionInfo>()
 
     try {
       for (const candidate of readyCandidates) {
@@ -4853,6 +5072,7 @@ function App(): React.JSX.Element {
             body: JSON.stringify(cleanFormValues(finalPayload))
           })
           nextConnections = [...nextConnections, created]
+          createdByImportKey.set(candidate.key, created)
           result.success.push({
             name: created.name,
             database_type: created.database_type,
@@ -4868,6 +5088,9 @@ function App(): React.JSX.Element {
       }
 
       setConnections(nextConnections)
+      if (importConnectionSource === 'datadjinn' && importConnectionBundle) {
+        applyImportedConnectionFolderState(importConnectionBundle, createdByImportKey)
+      }
       refreshTree(nextConnections)
       if (result.success.length > 0) {
         const lastImported = nextConnections[nextConnections.length - 1]
@@ -4884,6 +5107,84 @@ function App(): React.JSX.Element {
       }
     } finally {
       setImportingConnections(false)
+    }
+  }
+
+  const exportAllConnections = async (): Promise<void> => {
+    const normalizedSecret = exportConnectionSecret.trim()
+    if (!normalizedSecret) {
+      messageApi.warning('请输入导出口令')
+      return
+    }
+    if (normalizedSecret !== exportConnectionSecretConfirm.trim()) {
+      messageApi.warning('两次输入的导出口令不一致')
+      return
+    }
+    if (connections.length === 0) {
+      messageApi.warning('当前没有可导出的连接')
+      return
+    }
+
+    setExportingConnections(true)
+    try {
+      const detailedConnections = await Promise.all(connections.map(async (connection) => ({
+        export_id: connection.connection_id,
+        payload: cleanFormValues(await requestJson<ConnectionFormValues>(`/connections/${connection.connection_id}`))
+      })))
+      const connectionIdSet = new Set(detailedConnections.map((connection) => connection.export_id))
+      const folderIdSet = new Set(connectionFolders.map((folder) => folder.id))
+      const bundle: DataDjinnConnectionTransferBundle = {
+        version: 1,
+        exported_at: new Date().toISOString(),
+        source_app_name: appInfo?.name ?? 'DataDjinn',
+        source_app_version: appInfo?.version ?? updateSettings?.currentVersion,
+        connections: detailedConnections,
+        folders: connectionFolders.map((folder) => ({ id: folder.id, name: folder.name })),
+        connection_folder_assignments: Object.fromEntries(
+          Object.entries(connectionFolderAssignments).filter(([connectionId, folderId]) => (
+            connectionIdSet.has(connectionId) &&
+            folderIdSet.has(folderId)
+          ))
+        ),
+        connection_folder_order: connectionFolderOrder.filter((folderId) => folderIdSet.has(folderId)),
+        root_connection_order: rootConnectionOrder.filter((connectionId) => connectionIdSet.has(connectionId)),
+        root_item_order: rootItemOrder.filter((itemId) => {
+          if (itemId.startsWith('folder:')) {
+            return folderIdSet.has(itemId.slice('folder:'.length))
+          }
+          if (itemId.startsWith('connection:')) {
+            return connectionIdSet.has(itemId.slice('connection:'.length))
+          }
+          return false
+        }),
+        folder_connection_order: Object.fromEntries(
+          Object.entries(folderConnectionOrder)
+            .filter(([folderId]) => folderIdSet.has(folderId))
+            .map(([folderId, ids]) => [folderId, ids.filter((connectionId) => connectionIdSet.has(connectionId))])
+        )
+      }
+
+      const encryptedContent = await encryptConnectionTransferBundle(bundle, normalizedSecret)
+      const testWindow = window as ConnectionTransferTestWindow
+      const overrideExportPath = typeof testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_EXPORT_PATH__ === 'string'
+        ? testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_EXPORT_PATH__.trim()
+        : ''
+      const filePath = overrideExportPath || await window.api.selectConnectionTransferExportPath(buildConnectionTransferDefaultFileName())
+      if (!filePath) {
+        return
+      }
+
+      if (typeof testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_EXPORT_HANDLER__ === 'function') {
+        await Promise.resolve(testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_EXPORT_HANDLER__({ filePath, content: encryptedContent }))
+      } else {
+        await window.api.writeTextFile(filePath, encryptedContent)
+      }
+      messageApi.success(`连接已导出到 ${filePath}`)
+      setExportConnectionModalOpen(false)
+    } catch (error) {
+      showError(error instanceof Error ? error.message : '导出连接失败')
+    } finally {
+      setExportingConnections(false)
     }
   }
 
@@ -6928,7 +7229,11 @@ function App(): React.JSX.Element {
                 <Typography.Title level={5} className="panel-title">数据资产</Typography.Title>
               </Space>
               <Space className="resource-header-actions" size={8}>
-                <Button className="resource-import" size="small" icon={<LoginOutlined />} onClick={openImportConnectionModal}>导入连接</Button>
+                <div className="resource-transfer-group" role="group" aria-label="连接导入导出">
+                  <Button className="resource-transfer-segment resource-transfer-segment-import resource-import" size="small" onClick={openImportConnectionModal}>导入</Button>
+                  <span className="resource-transfer-divider" aria-hidden="true" />
+                  <Button className="resource-transfer-segment resource-transfer-segment-export resource-export" size="small" onClick={openExportConnectionModal}>导出</Button>
+                </div>
                 <Dropdown menu={resourceCreateMenu} trigger={['click']} overlayClassName="resource-create-dropdown" {...FAST_PRELOADED_DROPDOWN_PROPS}>
                   <Button className="resource-add" type="primary" size="small" icon={<PlusOutlined />}>新建</Button>
                 </Dropdown>
@@ -7152,6 +7457,52 @@ function App(): React.JSX.Element {
         )}
       </ImperativeModalHost>
       <Modal
+        title="导出连接"
+        open={exportConnectionModalOpen}
+        width={760}
+        className="export-connection-modal"
+        onCancel={closeExportConnectionModal}
+        afterOpenChange={(nextOpen) => {
+          if (!nextOpen) {
+            setExportConnectionSecret('')
+            setExportConnectionSecretConfirm('')
+            setExportingConnections(false)
+          }
+        }}
+        maskClosable={false}
+        {...FAST_MODAL_PROPS}
+        footer={(
+          <Space>
+            <Button onClick={closeExportConnectionModal}>关闭</Button>
+            <Button type="primary" loading={exportingConnections} onClick={() => void exportAllConnections()}>导出</Button>
+          </Space>
+        )}
+      >
+        <Space direction="vertical" className="full-width import-connection-layout" size={18}>
+          <div className="import-connection-hero">
+            <div className="import-connection-hero-badge">Connection Export</div>
+            <Typography.Title level={4}>导出当前所有连接、密码与分组结构</Typography.Title>
+            <Typography.Text type="secondary">导出文件会使用你设置的口令进行整体加密，可在另一台设备通过 DataDjinn 导入。</Typography.Text>
+          </div>
+          <Form layout="vertical" className="import-connection-form">
+            <Form.Item label="导出口令" className="import-connection-field" extra="请妥善保管此口令，另一台设备导入时需要使用同一个口令解密。">
+              <Input.Password
+                value={exportConnectionSecret}
+                placeholder="请输入导出口令"
+                onChange={(event) => setExportConnectionSecret(event.target.value)}
+              />
+            </Form.Item>
+            <Form.Item label="确认导出口令" className="import-connection-field">
+              <Input.Password
+                value={exportConnectionSecretConfirm}
+                placeholder="请再次输入导出口令"
+                onChange={(event) => setExportConnectionSecretConfirm(event.target.value)}
+              />
+            </Form.Item>
+          </Form>
+        </Space>
+      </Modal>
+      <Modal
         title="导入连接"
         open={importConnectionModalOpen}
         width={980}
@@ -7182,29 +7533,71 @@ function App(): React.JSX.Element {
         <Space direction="vertical" className="full-width import-connection-layout" size={18}>
           <div className="import-connection-hero">
             <div className="import-connection-hero-badge">Data Source Import</div>
-            <Typography.Title level={4}>粘贴 DataGrip / IDEA 数据源配置，批量导入到 DataDjinn</Typography.Title>
-            <Typography.Text type="secondary">先解析，再确认导入。解析结果会提前展示可导入状态和失败原因。</Typography.Text>
+            <Typography.Title level={4}>
+              {importConnectionSource === 'datadjinn'
+                ? '导入 DataDjinn 连接文件，恢复连接、密码与分组结构'
+                : '粘贴 DataGrip / IDEA 数据源配置，批量导入到 DataDjinn'}
+            </Typography.Title>
+            <Typography.Text type="secondary">
+              {importConnectionSource === 'datadjinn'
+                ? '先选择加密导出文件并输入口令，再解析确认导入。'
+                : '先解析，再确认导入。解析结果会提前展示可导入状态和失败原因。'}
+            </Typography.Text>
           </div>
           <Form layout="vertical" className="import-connection-form">
             <Form.Item label="来源" className="import-connection-field">
               <Select
                 value={importConnectionSource}
                 options={IMPORT_CONNECTION_SOURCE_OPTIONS}
-                onChange={(value) => setImportConnectionSource(value as ImportConnectionSource)}
+                onChange={(value) => {
+                  setImportConnectionSource(value as ImportConnectionSource)
+                  setImportConnectionCandidates([])
+                  setImportConnectionBundle(null)
+                }}
               />
             </Form.Item>
-            <Form.Item
-              label="连接配置文本"
-              className="import-connection-field import-connection-field-textarea"
-              extra="选中复制DataGrip/IDEA中的数据源并复制粘贴到上方。"
-            >
-              <Input.TextArea
-                value={importConnectionRawText}
-                autoSize={{ minRows: 10, maxRows: 18 }}
-                placeholder="#DataSourceSettings# ..."
-                onChange={(event) => setImportConnectionRawText(event.target.value)}
-              />
-            </Form.Item>
+            {importConnectionSource === 'datadjinn' ? (
+              <>
+                <Form.Item
+                  label="连接文件"
+                  className="import-connection-field"
+                  extra="选择通过 DataDjinn 导出的 .ddj 加密连接文件。"
+                >
+                  <div className="import-connection-file-row">
+                    <Input
+                      value={importConnectionFilePath}
+                      readOnly
+                      placeholder="请选择 .ddj 文件"
+                    />
+                    <Button onClick={() => void chooseImportConnectionTransferFile()}>选择文件</Button>
+                  </div>
+                </Form.Item>
+                <Form.Item
+                  label="导入口令"
+                  className="import-connection-field"
+                  extra="请输入导出时设置的口令，用于解密连接文件。"
+                >
+                  <Input.Password
+                    value={importConnectionSecret}
+                    placeholder="请输入导入口令"
+                    onChange={(event) => setImportConnectionSecret(event.target.value)}
+                  />
+                </Form.Item>
+              </>
+            ) : (
+              <Form.Item
+                label="连接配置文本"
+                className="import-connection-field import-connection-field-textarea"
+                extra="选中复制 DataGrip / IDEA 中的数据源并复制粘贴到上方。"
+              >
+                <Input.TextArea
+                  value={importConnectionRawText}
+                  autoSize={{ minRows: 10, maxRows: 18 }}
+                  placeholder="#DataSourceSettings# ..."
+                  onChange={(event) => setImportConnectionRawText(event.target.value)}
+                />
+              </Form.Item>
+            )}
           </Form>
           {importConnectionCandidates.length > 0 && (
             <Space direction="vertical" className="full-width import-connection-preview" size={12}>

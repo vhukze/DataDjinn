@@ -6,9 +6,13 @@ const api = {
   selectSqlFile: (): Promise<{ name: string; content: string } | null> => ipcRenderer.invoke('select-sql-file'),
   selectSqliteFile: (): Promise<string | null> => ipcRenderer.invoke('select-sqlite-file'),
   selectImportFile: (): Promise<string | null> => ipcRenderer.invoke('select-import-file'),
+  selectConnectionTransferImportFile: (): Promise<string | null> => ipcRenderer.invoke('select-connection-transfer-import-file'),
   selectExportPath: (format: 'sql' | 'csv' | 'json', defaultName?: string): Promise<string | null> => ipcRenderer.invoke('select-export-path', format, defaultName),
+  selectConnectionTransferExportPath: (defaultName?: string): Promise<string | null> => ipcRenderer.invoke('select-connection-transfer-export-path', defaultName),
   selectDriverFile: (): Promise<string | null> => ipcRenderer.invoke('select-driver-file'),
   selectJavaDirectory: (): Promise<string | null> => ipcRenderer.invoke('select-java-directory'),
+  readTextFile: (filePath: string): Promise<string> => ipcRenderer.invoke('read-text-file', filePath),
+  writeTextFile: (filePath: string, content: string): Promise<boolean> => ipcRenderer.invoke('write-text-file', filePath, content),
   requestJson: (path: string, options?: { method?: string; headers?: Record<string, string>; body?: string }) => ipcRenderer.invoke('api:request', path, options),
   streamRequest: (
     streamId: string,

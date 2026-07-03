@@ -11,6 +11,11 @@ const FAST_DROPDOWN_PROPS = {
   transitionName: ''
 } as const
 
+const FAST_PRELOADED_DROPDOWN_PROPS = {
+  ...FAST_DROPDOWN_PROPS,
+  forceRender: true
+} as const
+
 type MainWorkspacePanelProps = {
   mainPanelRef: RefObject<HTMLDivElement | null>
   aiDockPanelRef: RefObject<HTMLDivElement | null>
@@ -140,7 +145,8 @@ const WorkspaceCenterArea = memo(function WorkspaceCenterArea({
                   onClick: handleConnectionCreateMenuClick
                 }}
                 trigger={['click']}
-                {...FAST_DROPDOWN_PROPS}
+                overlayClassName="resource-create-dropdown"
+                {...FAST_PRELOADED_DROPDOWN_PROPS}
               >
                 <Button
                   className="empty-workspace-button empty-workspace-button-primary"

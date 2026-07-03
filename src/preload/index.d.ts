@@ -72,9 +72,13 @@ interface DataDjinnAPI {
   selectSqlFile: () => Promise<SqlFileResult>
   selectSqliteFile: () => Promise<string | null>
   selectImportFile: () => Promise<string | null>
+  selectConnectionTransferImportFile: () => Promise<string | null>
   selectExportPath: (format: 'sql' | 'csv' | 'json', defaultName?: string) => Promise<string | null>
+  selectConnectionTransferExportPath: (defaultName?: string) => Promise<string | null>
   selectDriverFile: () => Promise<string | null>
   selectJavaDirectory: () => Promise<string | null>
+  readTextFile: (filePath: string) => Promise<string>
+  writeTextFile: (filePath: string, content: string) => Promise<boolean>
   requestJson: <T>(path: string, options?: { method?: string; headers?: Record<string, string>; body?: string }) => Promise<T>
   streamRequest: (streamId: string, path: string, options: { method?: string; headers?: Record<string, string>; body?: string }, onChunk: (chunk: string) => void | Promise<void>) => Promise<void>
   cancelStreamRequest: (streamId: string) => Promise<void>
