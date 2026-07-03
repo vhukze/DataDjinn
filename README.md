@@ -44,18 +44,19 @@ DataDjinn 是一款**跨时代**的本地数据库桌面客户端，将传统数
 
 > 启动应用后，左侧树管理连接与 Schema，中央 SQL 编辑器编写查询，右侧 AI 面板用自然语言操作数据库。
 
-### SQL 编辑与 AI 问答
+### 创建连接
+<img width="1792" height="974" alt="image" src="https://github.com/user-attachments/assets/844bbe20-4e4b-4079-9170-daa761d78be5" />
 
-<img width="1792" height="974" alt="image" src="https://github.com/user-attachments/assets/07de839b-546a-4b00-a4fc-45896dfe007a" />
+### SQL 编辑与 AI 问答
+<img width="1792" height="974" alt="image" src="https://github.com/user-attachments/assets/5ecdf166-6dae-4d5c-9f9e-31bbfbffd900" />
 
 ### 数据预览与 AI 分析
-
-<img width="1792" height="974" alt="image" src="https://github.com/user-attachments/assets/724c1328-ad83-426e-9ccb-e7b9f5cfbca9" />
-
+<img width="1792" height="974" alt="image" src="https://github.com/user-attachments/assets/390a5e77-5411-46c7-8033-0d8af80c1b10" />
 
 ### AI 设置
 
-<img width="1792" height="974" alt="image" src="https://github.com/user-attachments/assets/4f0d4ed9-55cf-40ae-a711-67e1e6f0288d" />
+<img width="1792" height="974" alt="image" src="https://github.com/user-attachments/assets/46c59551-ef81-4ff1-99bf-1ec3ef05bd2f" />
+
 
 ---
 
