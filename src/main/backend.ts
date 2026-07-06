@@ -1,7 +1,7 @@
 import { BrowserWindow, app } from 'electron'
 import { is } from '@electron-toolkit/utils'
-import { ChildProcessWithoutNullStreams, spawn } from 'child_process'
-import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync } from 'fs'
+import { ChildProcessWithoutNullStreams, spawn, spawnSync } from 'child_process'
+import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'fs'
 import { get } from 'http'
 import { dirname, join } from 'path'
 import { AddressInfo, createServer } from 'net'
@@ -45,6 +45,80 @@ export class BackendManager {
   private restartAttempts = 0
   private startPromise: Promise<BackendStatus> | null = null
   private launchId = 0
+
+  private shouldEnableBackendReload(): boolean {
+    return is.dev && !process.env.DATADJINN_TEST_USER_DATA_DIR
+  }
+
+  private getTestBackendRegistryPath(): string | null {
+    const testRunRoot = process.env.DATADJINN_TEST_RUN_ROOT?.trim()
+    if (!testRunRoot) {
+      return null
+    }
+
+    return join(testRunRoot, 'active-backend-pids.json')
+  }
+
+  private readRecordedTestBackendPids(): number[] {
+    const registryPath = this.getTestBackendRegistryPath()
+    if (!registryPath || !existsSync(registryPath)) {
+      return []
+    }
+
+    try {
+      const payload = JSON.parse(readFileSync(registryPath, 'utf-8')) as { pids?: unknown }
+      if (!Array.isArray(payload.pids)) {
+        return []
+      }
+      return payload.pids
+        .map((value) => Number.parseInt(String(value), 10))
+        .filter((value) => Number.isInteger(value) && value > 0)
+    } catch {
+      return []
+    }
+  }
+
+  private writeRecordedTestBackendPids(pids: number[]): void {
+    const registryPath = this.getTestBackendRegistryPath()
+    if (!registryPath) {
+      return
+    }
+
+    mkdirSync(dirname(registryPath), { recursive: true })
+    writeFileSync(registryPath, JSON.stringify({ pids }, null, 2), 'utf-8')
+  }
+
+  private cleanupRecordedTestBackends(): void {
+    const recordedPids = this.readRecordedTestBackendPids()
+    if (recordedPids.length === 0) {
+      return
+    }
+
+    for (const pid of recordedPids) {
+      if (pid === process.pid) {
+        continue
+      }
+      spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true })
+    }
+
+    this.writeRecordedTestBackendPids([])
+  }
+
+  private recordTestBackendPid(pid?: number): void {
+    if (!pid) {
+      return
+    }
+    this.writeRecordedTestBackendPids([pid])
+  }
+
+  private clearRecordedTestBackendPid(pid?: number): void {
+    if (!pid) {
+      return
+    }
+
+    const remainingPids = this.readRecordedTestBackendPids().filter((item) => item !== pid)
+    this.writeRecordedTestBackendPids(remainingPids)
+  }
 
   getStatus(): BackendStatus {
     return { ...this.status }
@@ -161,6 +235,7 @@ export class BackendManager {
 
     this.clearScheduledRestart()
     this.stopping = false
+    this.cleanupRecordedTestBackends()
     this.port = await getFreePort()
     const apiBaseUrl = `http://127.0.0.1:${this.port}/api`
     const logPath = this.getLogPath()
@@ -189,12 +264,14 @@ export class BackendManager {
         ...process.env,
         ...command.env,
         DATADJINN_BACKEND_PORT: String(this.port),
-        DATADJINN_BACKEND_RELOAD: is.dev ? '1' : '0',
+        DATADJINN_BACKEND_RELOAD: this.shouldEnableBackendReload() ? '1' : '0',
         DATADJINN_DATA_DIR: app.getPath('userData'),
+        DATADJINN_PARENT_PID: String(process.pid),
         PYTHONIOENCODING: 'utf-8'
       }
     })
     this.process = child
+    this.recordTestBackendPid(child.pid)
 
     child.stdout.pipe(logStream)
     child.stderr.pipe(logStream)
@@ -207,6 +284,7 @@ export class BackendManager {
       }
 
       this.process = null
+      this.clearRecordedTestBackendPid(child.pid)
 
       if (this.stopping) {
         if (!this.suppressStopStatus) {

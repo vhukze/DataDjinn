@@ -29,6 +29,7 @@ async function launchRegressionApp() {
     args: [electronEntry],
     env: {
       ...process.env,
+      DATADJINN_TEST_RUN_ROOT: regressionRootDir,
       DATADJINN_TEST_USER_DATA_DIR: userDataDir,
       DATADJINN_SKIP_SPLASH: '1'
     }
@@ -2747,6 +2748,158 @@ test.describe('workspace regression', () => {
     }
   })
 
+  test('DBeaver import should show the default path tip and restore folder structure from data-sources.json @bug', async () => {
+    const electronApp = await launchRegressionApp()
+    const importedMysqlName = `DBeaver MySQL ${crypto.randomUUID().slice(0, 8)}`
+    const importedPgName = `DBeaver PG ${crypto.randomUUID().slice(0, 8)}`
+    const dbeaverFilePath = path.join(projectRoot, '.tmp', `dbeaver-import-${crypto.randomUUID().slice(0, 8)}.json`)
+    const folderNames = ['沈阳信息中心', '空分组', '实验局']
+
+    fs.writeFileSync(dbeaverFilePath, JSON.stringify({
+      folders: {
+        [folderNames[0]]: {},
+        [folderNames[1]]: {},
+        [folderNames[2]]: {}
+      },
+      connections: {
+        'mysql8-1': {
+          provider: 'mysql',
+          driver: 'mysql8',
+          name: importedMysqlName,
+          folder: folderNames[0],
+          configuration: {
+            host: '10.41.26.8',
+            port: '3306',
+            database: 'analytics',
+            url: 'jdbc:mysql://10.41.26.8:3306/analytics',
+            user: 'root'
+          }
+        },
+        'postgres-jdbc-1': {
+          provider: 'postgresql',
+          driver: 'postgres-jdbc',
+          name: importedPgName,
+          configuration: {
+            url: 'jdbc:postgresql://10.41.26.6:15432/reporting',
+            user: 'report'
+          }
+        }
+      }
+    }, null, 2), 'utf-8')
+
+    let folderStateSnapshot = null
+
+    try {
+      const page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+
+      folderStateSnapshot = await page.evaluate(() => ({
+        folders: localStorage.getItem('datadjinn-connection-folders'),
+        assignments: localStorage.getItem('datadjinn-connection-folder-assignments'),
+        folderOrder: localStorage.getItem('datadjinn-connection-folder-order'),
+        rootConnectionOrder: localStorage.getItem('datadjinn-root-connection-order'),
+        rootItemOrder: localStorage.getItem('datadjinn-root-item-order'),
+        folderConnectionOrder: localStorage.getItem('datadjinn-folder-connection-order')
+      }))
+
+      await page.locator('.resource-import').click()
+      const importModal = page.locator('.import-connection-modal')
+      await expect(importModal).toBeVisible({ timeout: 10000 })
+      await importModal.locator('.ant-select').click()
+      await page.locator('.ant-select-dropdown .ant-select-item-option').filter({ hasText: 'DBeaver' }).click()
+      await expect(importModal).toContainText('用户目录\\AppData\\Roaming\\DBeaverData\\workspace6\\General\\.dbeaver\\data-sources.json')
+      await page.evaluate((filePath) => {
+        ;(window).__DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_FILE_PATH__ = filePath
+      }, dbeaverFilePath)
+      await importModal.locator('.import-connection-file-row .ant-btn').click()
+      await expect(importModal.locator('.import-connection-file-row input')).toHaveValue(dbeaverFilePath)
+      await importModal.locator('.ant-modal-footer .ant-btn').nth(1).click()
+      await expect(importModal.locator('.ant-table')).toBeVisible({ timeout: 10000 })
+      await expect(importModal).toContainText(importedMysqlName)
+      await expect(importModal).toContainText(folderNames[0])
+      await importModal.locator('.ant-modal-footer .ant-btn-primary').click()
+
+      const resultModal = page.locator('.import-connection-result-modal')
+      await expect(resultModal).toBeVisible({ timeout: 10000 })
+
+      const importedState = await page.evaluate(async ({ mysqlName, pgName }) => {
+        const response = await window.api.requestJson('/connections')
+        const connections = Array.isArray(response?.connections) ? response.connections : []
+        const mysqlConnection = connections.find((item) => item?.name === mysqlName) ?? null
+        const pgConnection = connections.find((item) => item?.name === pgName) ?? null
+        const folders = JSON.parse(localStorage.getItem('datadjinn-connection-folders') ?? '[]')
+        const assignments = JSON.parse(localStorage.getItem('datadjinn-connection-folder-assignments') ?? '{}')
+        const rootItemOrder = JSON.parse(localStorage.getItem('datadjinn-root-item-order') ?? '[]')
+        const folderConnectionOrder = JSON.parse(localStorage.getItem('datadjinn-folder-connection-order') ?? '{}')
+        return {
+          mysqlConnectionId: mysqlConnection?.connection_id ?? null,
+          pgConnectionId: pgConnection?.connection_id ?? null,
+          folderNames: Array.isArray(folders) ? folders.map((item) => item?.name) : [],
+          assignments,
+          rootItemOrder,
+          folderConnectionOrder
+        }
+      }, {
+        mysqlName: importedMysqlName,
+        pgName: importedPgName
+      })
+
+      expect(importedState.mysqlConnectionId).toBeTruthy()
+      expect(importedState.pgConnectionId).toBeTruthy()
+      expect(importedState.folderNames).toEqual(expect.arrayContaining(folderNames))
+
+      const importedMysqlFolderId = importedState.assignments[importedState.mysqlConnectionId]
+      expect(importedMysqlFolderId, 'imported DBeaver connection should be assigned into its folder').toBeTruthy()
+      expect(importedState.rootItemOrder.some((itemId) => typeof itemId === 'string' && itemId.startsWith('folder:')), 'parsed DBeaver folders should participate in root item order').toBe(true)
+      expect(Object.values(importedState.folderConnectionOrder).some((connectionIds) => Array.isArray(connectionIds) && connectionIds.includes(importedState.mysqlConnectionId)), 'folder connection order should include the imported folder member').toBe(true)
+    } finally {
+      const page = electronApp.windows().length > 0 ? electronApp.windows()[0] : null
+      if (page) {
+        await page.evaluate(async ({ mysqlName, pgName, snapshot }) => {
+          try {
+            const response = await window.api.requestJson('/connections')
+            const targets = Array.isArray(response?.connections)
+              ? response.connections.filter((item) => item?.name === mysqlName || item?.name === pgName)
+              : []
+            for (const target of targets) {
+              await window.api.requestJson('/connections/' + target.connection_id, { method: 'DELETE' })
+            }
+          } catch {
+            // Ignore cleanup failures in regression teardown.
+          }
+
+          const restoreKey = (key, value) => {
+            if (typeof value === 'string') {
+              localStorage.setItem(key, value)
+              return
+            }
+            localStorage.removeItem(key)
+          }
+
+          restoreKey('datadjinn-connection-folders', snapshot?.folders)
+          restoreKey('datadjinn-connection-folder-assignments', snapshot?.assignments)
+          restoreKey('datadjinn-connection-folder-order', snapshot?.folderOrder)
+          restoreKey('datadjinn-root-connection-order', snapshot?.rootConnectionOrder)
+          restoreKey('datadjinn-root-item-order', snapshot?.rootItemOrder)
+          restoreKey('datadjinn-folder-connection-order', snapshot?.folderConnectionOrder)
+          delete window.__DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_FILE_PATH__
+        }, {
+          mysqlName: importedMysqlName,
+          pgName: importedPgName,
+          snapshot: folderStateSnapshot
+        })
+      }
+      try {
+        fs.rmSync(dbeaverFilePath, { force: true })
+      } catch {
+        // Ignore cleanup failures for temporary import files.
+      }
+      await electronApp.close()
+    }
+  })
+
   test('connection transfer should roundtrip through a real exported ddj file @bug', async () => {
     const electronApp = await launchRegressionApp()
     const exportedFilePath = path.join(projectRoot, '.tmp', `connection-transfer-roundtrip-${crypto.randomUUID().slice(0, 8)}.ddj`)
@@ -4636,6 +4789,98 @@ test.describe('workspace regression', () => {
       const deltaY = Math.abs(menuBox.y - clickY)
       expect(deltaX, 'tree context menu should stay near the horizontal click position').toBeLessThan(40)
       expect(deltaY, 'tree context menu should stay near the vertical click position').toBeLessThan(40)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('tree context menu should flip upward when there is not enough space below @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await page.evaluate(() => {
+        window.moveTo(0, 0)
+        window.resizeTo(1440, 520)
+      })
+      await openFixtureConnection(page)
+      await ensureTreeNodeExpanded(page, `object-group:${fixtureConnectionId}:::table`)
+
+      const targetKey = `table:${fixtureConnectionId}:::table:${largeTableName}`
+      await expect.poll(async () => revealTreeNode(page, targetKey), { timeout: 15000 }).toBe(true)
+      await page.evaluate((nodeKey) => {
+        const target = document.querySelector(`.resource-tree-node-title[data-tree-node-key="${CSS.escape(nodeKey)}"]`)
+        if (!(target instanceof HTMLElement)) {
+          throw new Error(`Tree node not found: ${nodeKey}`)
+        }
+        target.scrollIntoView({ block: 'end' })
+      }, targetKey)
+
+      const targetNode = treeNode(page, targetKey)
+      await expect(targetNode).toBeVisible({ timeout: 15000 })
+      const nodeBox = await targetNode.boundingBox()
+      expect(nodeBox).not.toBeNull()
+
+      const clickX = nodeBox.x + Math.min(nodeBox.width - 12, 140)
+      const clickY = nodeBox.y + nodeBox.height / 2
+      await page.mouse.click(clickX, clickY, { button: 'right' })
+
+      const menu = page.locator('.tree-context-menu-panel')
+      await expect(menu).toBeVisible({ timeout: 10000 })
+      const menuMetrics = await menu.evaluate((node) => {
+        const rect = node.getBoundingClientRect()
+        return {
+          top: rect.top,
+          bottom: rect.bottom,
+          height: rect.height,
+          viewportHeight: window.innerHeight
+        }
+      })
+
+      expect(menuMetrics.bottom, 'tree context menu should stay within the app viewport').toBeLessThanOrEqual(menuMetrics.viewportHeight - 6)
+      expect(menuMetrics.top, 'tree context menu should flip above the click when the lower space is insufficient').toBeLessThan(clickY - Math.min(20, menuMetrics.height / 5))
+      expect(clickY - menuMetrics.bottom, 'flipped tree context menu should stay visually close to the clicked node').toBeLessThanOrEqual(20)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('resource tree should not expose a horizontal scrollbar when the panel is narrow @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await resizeResourcePanel(page, 280)
+
+      const overflowMetrics = await page.evaluate(() => {
+        return [
+          '.resource-tree-viewport',
+          '.resource-tree-viewport .ant-tree-list',
+          '.resource-tree-viewport .ant-tree-list-holder',
+          '.resource-tree-viewport .ant-tree-list-holder-inner'
+        ].map((selector) => {
+          const node = document.querySelector(selector)
+          if (!(node instanceof HTMLElement)) {
+            return null
+          }
+          return {
+            selector,
+            clientWidth: node.clientWidth,
+            scrollWidth: node.scrollWidth,
+            overflowX: window.getComputedStyle(node).overflowX
+          }
+        }).filter(Boolean)
+      })
+
+      for (const metric of overflowMetrics) {
+        expect(metric.scrollWidth - metric.clientWidth, `${metric.selector} should not overflow horizontally`).toBeLessThanOrEqual(1)
+      }
     } finally {
       await electronApp.close()
     }

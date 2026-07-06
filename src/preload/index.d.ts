@@ -72,7 +72,7 @@ interface DataDjinnAPI {
   selectSqlFile: () => Promise<SqlFileResult>
   selectSqliteFile: () => Promise<string | null>
   selectImportFile: () => Promise<string | null>
-  selectConnectionTransferImportFile: () => Promise<string | null>
+  selectConnectionTransferImportFile: (source?: 'datadjinn' | 'dbeaver') => Promise<string | null>
   selectExportPath: (format: 'sql' | 'csv' | 'json', defaultName?: string) => Promise<string | null>
   selectConnectionTransferExportPath: (defaultName?: string) => Promise<string | null>
   selectDriverFile: () => Promise<string | null>

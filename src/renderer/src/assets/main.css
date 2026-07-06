@@ -2708,6 +2708,7 @@ body[data-theme="dark"] .ant-popover-message {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  overflow-x: hidden;
 }
 
 .resource-tree-loading-state {
@@ -2739,8 +2740,23 @@ body[data-theme="dark"] .ant-popover-message {
   overflow: hidden;
 }
 
+.resource-tree-shell .ant-tree-list,
+.resource-tree-shell .ant-tree-list-holder,
+.resource-tree-shell .ant-tree-list-holder-inner {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.resource-tree-shell .ant-tree-list,
+.resource-tree-shell .ant-tree-list-holder {
+  overflow-x: hidden !important;
+}
+
 .resource-tree-shell .ant-tree {
   height: 100%;
+  width: 100%;
+  min-width: 0;
   color: var(--dj-text-primary);
   background: transparent;
 }
@@ -3572,11 +3588,12 @@ body:not([data-theme="dark"]) .tree-selector-toggle-btn.ant-btn.ant-btn-link {
   position: fixed;
   min-width: 180px;
   max-width: 260px;
+  max-height: calc(100vh - 16px);
   background: var(--dj-bg-panel);
   border: 1px solid var(--dj-border-subtle);
   border-radius: 10px;
   box-shadow: var(--dj-shadow-card);
-  overflow: hidden;
+  overflow: auto;
   pointer-events: auto;
 }
 

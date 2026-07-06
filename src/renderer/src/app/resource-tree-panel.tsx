@@ -1,7 +1,7 @@
 import { LoadingOutlined } from '@ant-design/icons'
 import { Alert, Menu, Tree, Typography } from 'antd'
 import type { MenuProps } from 'antd'
-import { memo, useCallback } from 'react'
+import { memo, useCallback, useLayoutEffect, useRef, useState } from 'react'
 import type { Key, MutableRefObject, RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import ReactBitsDock from '../components/ui/ReactBitsDock'
@@ -9,6 +9,12 @@ import ReactBitsSearchInput from '../components/ui/ReactBitsSearchInput'
 import type { ConnectionInfo } from './connection-model'
 import type { DatabaseType } from './data-sources'
 import type { DatabaseTreeNode } from './tree-model'
+import {
+  clampTreeContextMenuPosition,
+  estimateTreeContextMenuHeight,
+  TREE_CONTEXT_MENU_FALLBACK_HEIGHT,
+  TREE_CONTEXT_MENU_FALLBACK_WIDTH
+} from './tree-context-menu-position'
 
 type ResourceTreePanelProps = {
   resourceTreeContainerRef: RefObject<HTMLDivElement | null>
@@ -87,6 +93,7 @@ type ResourceTreePanelProps = {
   copyTreeNodeNames: () => Promise<void>
 }
 
+
 const ResourceTreePanel = memo(function ResourceTreePanel({
   resourceTreeContainerRef,
   resourceTreeViewportRef,
@@ -143,6 +150,76 @@ const ResourceTreePanel = memo(function ResourceTreePanel({
   copyTreeNodeNames,
 }: ResourceTreePanelProps) {
   void treeLoadingVersion
+  const treeContextMenuPanelRef = useRef<HTMLDivElement | null>(null)
+  const treeContextMenuItems = treeContextMenu ? getTreeContextMenuItems(treeContextMenu.node) : []
+  const [treeContextMenuStyle, setTreeContextMenuStyle] = useState<{
+    left: number
+    top: number
+    visibility: 'hidden' | 'visible'
+  } | null>(null)
+
+  useLayoutEffect(() => {
+    if (!treeContextMenu) {
+      setTreeContextMenuStyle(null)
+      return
+    }
+
+    const estimatedPosition = clampTreeContextMenuPosition(
+      treeContextMenu.x,
+      treeContextMenu.y,
+      TREE_CONTEXT_MENU_FALLBACK_WIDTH,
+      estimateTreeContextMenuHeight(treeContextMenuItems)
+    )
+
+    setTreeContextMenuStyle({
+      left: estimatedPosition.left,
+      top: estimatedPosition.top,
+      visibility: 'hidden'
+    })
+
+    const updatePosition = (): void => {
+      const panel = treeContextMenuPanelRef.current
+      if (!panel) {
+        return
+      }
+
+      const rect = panel.getBoundingClientRect()
+      const width = rect.width || TREE_CONTEXT_MENU_FALLBACK_WIDTH
+      const height = rect.height || TREE_CONTEXT_MENU_FALLBACK_HEIGHT
+      const nextPosition = clampTreeContextMenuPosition(treeContextMenu.x, treeContextMenu.y, width, height)
+
+      setTreeContextMenuStyle({
+        left: nextPosition.left,
+        top: nextPosition.top,
+        visibility: 'visible'
+      })
+    }
+
+    let resizeObserver: ResizeObserver | undefined
+    const runPositionUpdate = (): void => {
+      window.requestAnimationFrame(() => {
+        updatePosition()
+        window.requestAnimationFrame(updatePosition)
+      })
+    }
+
+    runPositionUpdate()
+    window.addEventListener('resize', runPositionUpdate)
+
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => {
+        runPositionUpdate()
+      })
+      if (treeContextMenuPanelRef.current) {
+        resizeObserver.observe(treeContextMenuPanelRef.current)
+      }
+    }
+
+    return () => {
+      window.removeEventListener('resize', runPositionUpdate)
+      resizeObserver?.disconnect()
+    }
+  }, [treeContextMenu])
 
   const clearPendingTreeSelection = useCallback(() => {
   }, [])
@@ -416,12 +493,17 @@ const ResourceTreePanel = memo(function ResourceTreePanel({
         {treeContextMenu && typeof document !== 'undefined' && createPortal(
           <div className="tree-context-menu-backdrop">
             <div
+              ref={treeContextMenuPanelRef}
               className="tree-context-menu-panel"
-              style={{ left: treeContextMenu.x, top: treeContextMenu.y }}
+              style={treeContextMenuStyle ?? {
+                left: treeContextMenu.x,
+                top: treeContextMenu.y,
+                visibility: 'hidden'
+              }}
               onMouseDown={(event) => event.stopPropagation()}
               onContextMenu={(event) => event.preventDefault()}
             >
-              <Menu items={getTreeContextMenuItems(treeContextMenu.node)} onClick={handleTreeContextMenuClick} />
+              <Menu items={treeContextMenuItems} onClick={handleTreeContextMenuClick} />
             </div>
           </div>,
           document.body

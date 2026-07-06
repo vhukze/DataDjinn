@@ -8,6 +8,7 @@ import StoreModule from 'electron-store'
 import { autoUpdater } from 'electron-updater'
 import icon from '../../resources/icon.ico?asset'
 import { backendManager } from './backend'
+import { buildConnectionTransferImportDialogOptions } from './connection-transfer-dialog'
 
 type AIConfig = {
   provider?: 'openai-compatible' | 'anthropic'
@@ -736,20 +737,18 @@ app.whenReady().then(() => {
     return result.filePaths[0]
   })
 
-  ipcMain.handle('select-connection-transfer-import-file', async () => {
+  ipcMain.handle('select-connection-transfer-import-file', async (_event, source?: 'datadjinn' | 'dbeaver') => {
     const window = BrowserWindow.getFocusedWindow()
 
     if (!window) {
       return null
     }
 
+    const dialogOptions = buildConnectionTransferImportDialogOptions(source)
+
     const result = await dialog.showOpenDialog(window, {
-      title: '????????',
-      filters: [
-        { name: 'DataDjinn ????', extensions: ['ddj'] },
-        { name: 'JSON ??', extensions: ['json'] },
-        { name: '????', extensions: ['*'] }
-      ],
+      title: dialogOptions.title,
+      filters: dialogOptions.filters,
       properties: ['openFile']
     })
 

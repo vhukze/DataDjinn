@@ -73,6 +73,7 @@ import {
   editableValue,
   ImportConnectionCandidate,
   ImportConnectionCandidateStatus,
+  ImportConnectionFolderPlan,
   ImportConnectionResult,
   ImportConnectionSource,
   IMPORT_CONNECTION_SOURCE_OPTIONS,
@@ -84,6 +85,7 @@ import {
   JavaRuntimeConfigResponse,
   JavaRuntimeInfo,
   normalizeDriverInfo,
+  parseDBeaverImportText,
   parseDataGripImportText,
   PREVIEW_DEFAULT_LIMIT,
   QUERY_DEFAULT_LIMIT,
@@ -533,6 +535,7 @@ function App(): React.JSX.Element {
   const [importConnectionFilePath, setImportConnectionFilePath] = useState('')
   const [importConnectionSecret, setImportConnectionSecret] = useState('')
   const [importConnectionCandidates, setImportConnectionCandidates] = useState<ImportConnectionCandidate[]>([])
+  const [importConnectionFolderPlan, setImportConnectionFolderPlan] = useState<ImportConnectionFolderPlan | null>(null)
   const [importConnectionParsing, setImportConnectionParsing] = useState(false)
   const [importingConnections, setImportingConnections] = useState(false)
   const [importConnectionResult, setImportConnectionResult] = useState<ImportConnectionResult | null>(null)
@@ -4389,6 +4392,14 @@ function App(): React.JSX.Element {
       render: (value?: DatabaseType) => value ? DATABASE_TYPE_LABELS[value] : '-'
     },
     {
+      title: '分组',
+      dataIndex: 'sourceFolderName',
+      key: 'sourceFolderName',
+      width: 150,
+      ellipsis: true,
+      render: (value?: string) => value || '-'
+    },
+    {
       title: '主机',
       dataIndex: 'host',
       key: 'host',
@@ -4805,6 +4816,7 @@ function App(): React.JSX.Element {
     setImportConnectionFilePath('')
     setImportConnectionSecret('')
     setImportConnectionCandidates([])
+    setImportConnectionFolderPlan(null)
     setImportConnectionBundle(null)
     setImportConnectionParsing(false)
     setImportingConnections(false)
@@ -4845,12 +4857,14 @@ function App(): React.JSX.Element {
 
   const chooseImportConnectionTransferFile = async (): Promise<void> => {
     const testWindow = window as ConnectionTransferTestWindow
+    const importFileSource = importConnectionSource === 'dbeaver' ? 'dbeaver' : 'datadjinn'
+    ;(testWindow as ConnectionTransferTestWindow & { __DATADJINN_TEST_IMPORT_FILE_SOURCE__?: string }).__DATADJINN_TEST_IMPORT_FILE_SOURCE__ = importFileSource
     if (typeof testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_FILE_PATH__ === 'string' && testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_FILE_PATH__.trim()) {
       setImportConnectionFilePath(testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_FILE_PATH__)
       return
     }
 
-    const filePath = await window.api.selectConnectionTransferImportFile()
+    const filePath = await window.api.selectConnectionTransferImportFile(importFileSource)
     if (!filePath) {
       return
     }
@@ -4859,7 +4873,7 @@ function App(): React.JSX.Element {
   }
 
   const applyImportedConnectionFolderState = useCallback((
-    bundle: DataDjinnConnectionTransferBundle,
+    bundle: Pick<ImportConnectionFolderPlan, 'folders' | 'connection_folder_assignments' | 'connection_folder_order' | 'root_connection_order' | 'root_item_order' | 'folder_connection_order'>,
     createdByImportKey: Map<string, ConnectionInfo>
   ): void => {
     if (createdByImportKey.size === 0) {
@@ -4991,8 +5005,20 @@ function App(): React.JSX.Element {
           return
         }
 
+        setImportConnectionFolderPlan(null)
         setImportConnectionBundle(null)
         candidates = normalizeImportConnectionCandidates(parseDataGripImportText(rawText))
+      } else if (importConnectionSource === 'dbeaver') {
+        if (!importConnectionFilePath.trim()) {
+          messageApi.warning('请先选择 DBeaver 的 data-sources.json 文件')
+          return
+        }
+
+        const rawText = await window.api.readTextFile(importConnectionFilePath)
+        const parsedImport = parseDBeaverImportText(rawText)
+        setImportConnectionFolderPlan(parsedImport.folderPlan)
+        setImportConnectionBundle(null)
+        candidates = normalizeImportConnectionCandidates(parsedImport.candidates)
       } else {
         if (!importConnectionFilePath.trim()) {
           messageApi.warning('请先选择 DataDjinn 连接文件')
@@ -5008,6 +5034,7 @@ function App(): React.JSX.Element {
           ? testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_CONTENT__
           : await window.api.readTextFile(importConnectionFilePath)
         const bundle = await decryptConnectionTransferBundle(rawText, importConnectionSecret)
+        setImportConnectionFolderPlan(null)
         setImportConnectionBundle(bundle)
         candidates = normalizeImportConnectionCandidates(buildDataDjinnImportCandidates(bundle))
       }
@@ -5090,6 +5117,8 @@ function App(): React.JSX.Element {
       setConnections(nextConnections)
       if (importConnectionSource === 'datadjinn' && importConnectionBundle) {
         applyImportedConnectionFolderState(importConnectionBundle, createdByImportKey)
+      } else if (importConnectionSource === 'dbeaver' && importConnectionFolderPlan) {
+        applyImportedConnectionFolderState(importConnectionFolderPlan, createdByImportKey)
       }
       refreshTree(nextConnections)
       if (result.success.length > 0) {
@@ -7536,12 +7565,16 @@ function App(): React.JSX.Element {
             <Typography.Title level={4}>
               {importConnectionSource === 'datadjinn'
                 ? '导入 DataDjinn 连接文件，恢复连接、密码与分组结构'
-                : '粘贴 DataGrip / IDEA 数据源配置，批量导入到 DataDjinn'}
+                : importConnectionSource === 'dbeaver'
+                  ? '上传 DBeaver 的 data-sources.json，批量导入连接和分组'
+                  : '粘贴 DataGrip / IDEA 数据源配置，批量导入到 DataDjinn'}
             </Typography.Title>
             <Typography.Text type="secondary">
               {importConnectionSource === 'datadjinn'
                 ? '先选择加密导出文件并输入口令，再解析确认导入。'
-                : '先解析，再确认导入。解析结果会提前展示可导入状态和失败原因。'}
+                : importConnectionSource === 'dbeaver'
+                  ? '请上传 DBeaver 的 data-sources.json。默认位置通常在：用户目录\\AppData\\Roaming\\DBeaverData\\workspace6\\General\\.dbeaver\\data-sources.json'
+                  : '先解析，再确认导入。解析结果会提前展示可导入状态和失败原因。'}
             </Typography.Text>
           </div>
           <Form layout="vertical" className="import-connection-form">
@@ -7551,7 +7584,11 @@ function App(): React.JSX.Element {
                 options={IMPORT_CONNECTION_SOURCE_OPTIONS}
                 onChange={(value) => {
                   setImportConnectionSource(value as ImportConnectionSource)
+                  setImportConnectionRawText('')
+                  setImportConnectionFilePath('')
+                  setImportConnectionSecret('')
                   setImportConnectionCandidates([])
+                  setImportConnectionFolderPlan(null)
                   setImportConnectionBundle(null)
                 }}
               />
@@ -7584,6 +7621,21 @@ function App(): React.JSX.Element {
                   />
                 </Form.Item>
               </>
+            ) : importConnectionSource === 'dbeaver' ? (
+              <Form.Item
+                label="DBeaver 连接文件"
+                className="import-connection-field"
+                extra="请选择 DBeaver 导出的 data-sources.json，分组信息也会一并解析。"
+              >
+                <div className="import-connection-file-row">
+                  <Input
+                    value={importConnectionFilePath}
+                    readOnly
+                    placeholder="请选择 data-sources.json 文件"
+                  />
+                  <Button onClick={() => void chooseImportConnectionTransferFile()}>选择文件</Button>
+                </div>
+              </Form.Item>
             ) : (
               <Form.Item
                 label="连接配置文本"
