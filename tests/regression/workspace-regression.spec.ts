@@ -2900,6 +2900,165 @@ test.describe('workspace regression', () => {
     }
   })
 
+  test('DBeaver import should merge into an existing folder with the same name instead of creating a suffixed duplicate @bug', async () => {
+    const electronApp = await launchRegressionApp()
+    const importedMysqlName = `DBeaver Merge ${crypto.randomUUID().slice(0, 8)}`
+    const dbeaverFilePath = path.join(projectRoot, '.tmp', `dbeaver-import-merge-${crypto.randomUUID().slice(0, 8)}.json`)
+    const existingFolderId = `folder-${crypto.randomUUID().slice(0, 8)}`
+    const existingFolderName = 'Shared Import Group'
+
+    fs.writeFileSync(dbeaverFilePath, JSON.stringify({
+      folders: {
+        [existingFolderName]: {}
+      },
+      connections: {
+        'mysql8-merge-1': {
+          provider: 'mysql',
+          driver: 'mysql8',
+          name: importedMysqlName,
+          folder: existingFolderName,
+          configuration: {
+            host: '10.41.26.8',
+            port: '3306',
+            database: 'analytics',
+            url: 'jdbc:mysql://10.41.26.8:3306/analytics',
+            user: 'root'
+          }
+        }
+      }
+    }, null, 2), 'utf-8')
+
+    let folderStateSnapshot = null
+
+    try {
+      const page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+
+      folderStateSnapshot = await page.evaluate(() => ({
+        folders: localStorage.getItem('datadjinn-connection-folders'),
+        assignments: localStorage.getItem('datadjinn-connection-folder-assignments'),
+        folderOrder: localStorage.getItem('datadjinn-connection-folder-order'),
+        rootConnectionOrder: localStorage.getItem('datadjinn-root-connection-order'),
+        rootItemOrder: localStorage.getItem('datadjinn-root-item-order'),
+        folderConnectionOrder: localStorage.getItem('datadjinn-folder-connection-order')
+      }))
+
+      await page.evaluate(({ folderId, folderName }) => {
+        localStorage.setItem('datadjinn-connection-folders', JSON.stringify([{ id: folderId, name: folderName }]))
+        localStorage.setItem('datadjinn-connection-folder-assignments', JSON.stringify({}))
+        localStorage.setItem('datadjinn-connection-folder-order', JSON.stringify([folderId]))
+        localStorage.setItem('datadjinn-root-connection-order', JSON.stringify([]))
+        localStorage.setItem('datadjinn-root-item-order', JSON.stringify([`folder:${folderId}`]))
+        localStorage.setItem('datadjinn-folder-connection-order', JSON.stringify({ [folderId]: [] }))
+      }, {
+        folderId: existingFolderId,
+        folderName: existingFolderName
+      })
+      await page.reload()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+
+      await page.locator('.resource-import').click()
+      const importModal = page.locator('.import-connection-modal')
+      await expect(importModal).toBeVisible({ timeout: 10000 })
+      await importModal.locator('.ant-select').click()
+      await page.locator('.ant-select-dropdown .ant-select-item-option').filter({ hasText: 'DBeaver' }).click()
+      await page.evaluate((filePath) => {
+        ;(window).__DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_FILE_PATH__ = filePath
+      }, dbeaverFilePath)
+      await importModal.locator('.import-connection-file-row .ant-btn').click()
+      await expect(importModal.locator('.import-connection-file-row input')).toHaveValue(dbeaverFilePath)
+      await importModal.locator('.ant-modal-footer .ant-btn').nth(1).click()
+      await expect(importModal.locator('.ant-table')).toBeVisible({ timeout: 10000 })
+      await expect(importModal).toContainText(importedMysqlName)
+      await importModal.locator('.ant-modal-footer .ant-btn-primary').click()
+
+      const resultModal = page.locator('.import-connection-result-modal')
+      await expect(resultModal).toBeVisible({ timeout: 10000 })
+
+      const importedState = await page.evaluate(async ({ folderId, folderName, mysqlName }) => {
+        const response = await window.api.requestJson('/connections')
+        const connections = Array.isArray(response?.connections) ? response.connections : []
+        const mysqlConnection = connections.find((item) => item?.name === mysqlName) ?? null
+        const folders = JSON.parse(localStorage.getItem('datadjinn-connection-folders') ?? '[]')
+        const assignments = JSON.parse(localStorage.getItem('datadjinn-connection-folder-assignments') ?? '{}')
+        const connectionFolderOrder = JSON.parse(localStorage.getItem('datadjinn-connection-folder-order') ?? '[]')
+        const rootItemOrder = JSON.parse(localStorage.getItem('datadjinn-root-item-order') ?? '[]')
+        const folderConnectionOrder = JSON.parse(localStorage.getItem('datadjinn-folder-connection-order') ?? '{}')
+        const normalizedFolderNames = Array.isArray(folders)
+          ? folders.map((item) => typeof item?.name === 'string' ? item.name : '').filter(Boolean)
+          : []
+        return {
+          mysqlConnectionId: mysqlConnection?.connection_id ?? null,
+          folderNames: normalizedFolderNames,
+          assignments,
+          connectionFolderOrder,
+          rootItemOrder,
+          folderConnectionOrder,
+          matchingFolderCount: normalizedFolderNames.filter((name) => name === folderName).length,
+          suffixedFolderCount: normalizedFolderNames.filter((name) => name === `${folderName}（1）`).length,
+          reusedFolderAssignment: mysqlConnection ? assignments[mysqlConnection.connection_id] === folderId : false
+        }
+      }, {
+        folderId: existingFolderId,
+        folderName: existingFolderName,
+        mysqlName: importedMysqlName
+      })
+
+      expect(importedState.mysqlConnectionId).toBeTruthy()
+      expect(importedState.matchingFolderCount).toBe(1)
+      expect(importedState.suffixedFolderCount).toBe(0)
+      expect(importedState.reusedFolderAssignment, 'imported connection should reuse the existing folder id').toBe(true)
+      expect(importedState.connectionFolderOrder).toEqual([existingFolderId])
+      expect(importedState.rootItemOrder.filter((itemId) => itemId === `folder:${existingFolderId}`)).toHaveLength(1)
+      expect(importedState.folderConnectionOrder[existingFolderId]).toContain(importedState.mysqlConnectionId)
+    } finally {
+      const page = electronApp.windows().length > 0 ? electronApp.windows()[0] : null
+      if (page) {
+        await page.evaluate(async ({ mysqlName, snapshot }) => {
+          try {
+            const response = await window.api.requestJson('/connections')
+            const targets = Array.isArray(response?.connections)
+              ? response.connections.filter((item) => item?.name === mysqlName)
+              : []
+            for (const target of targets) {
+              await window.api.requestJson('/connections/' + target.connection_id, { method: 'DELETE' })
+            }
+          } catch {
+            // Ignore cleanup failures in regression teardown.
+          }
+
+          const restoreKey = (key, value) => {
+            if (typeof value === 'string') {
+              localStorage.setItem(key, value)
+              return
+            }
+            localStorage.removeItem(key)
+          }
+
+          restoreKey('datadjinn-connection-folders', snapshot?.folders)
+          restoreKey('datadjinn-connection-folder-assignments', snapshot?.assignments)
+          restoreKey('datadjinn-connection-folder-order', snapshot?.folderOrder)
+          restoreKey('datadjinn-root-connection-order', snapshot?.rootConnectionOrder)
+          restoreKey('datadjinn-root-item-order', snapshot?.rootItemOrder)
+          restoreKey('datadjinn-folder-connection-order', snapshot?.folderConnectionOrder)
+          delete window.__DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_FILE_PATH__
+        }, {
+          mysqlName: importedMysqlName,
+          snapshot: folderStateSnapshot
+        })
+      }
+      try {
+        fs.rmSync(dbeaverFilePath, { force: true })
+      } catch {
+        // Ignore cleanup failures for temporary import files.
+      }
+      await electronApp.close()
+    }
+  })
+
   test('connection transfer should roundtrip through a real exported ddj file @bug', async () => {
     const electronApp = await launchRegressionApp()
     const exportedFilePath = path.join(projectRoot, '.tmp', `connection-transfer-roundtrip-${crypto.randomUUID().slice(0, 8)}.ddj`)

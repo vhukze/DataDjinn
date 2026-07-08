@@ -4734,20 +4734,6 @@ function App(): React.JSX.Element {
     return nextName
   }
 
-  const buildImportFolderUniqueName = (baseName: string, usedNames: Set<string>): string => {
-    const trimmed = baseName.trim() || '未命名分组'
-    let nextName = trimmed
-    let suffix = 1
-
-    while (usedNames.has(nextName.trim().toLocaleLowerCase())) {
-      nextName = `${trimmed}（${suffix}）`
-      suffix += 1
-    }
-
-    usedNames.add(nextName.trim().toLocaleLowerCase())
-    return nextName
-  }
-
   const buildConnectionTransferDefaultFileName = (): string => {
     const current = new Date()
     const pad = (value: number): string => String(value).padStart(2, '0')
@@ -4880,11 +4866,16 @@ function App(): React.JSX.Element {
       return
     }
 
-    const existingFolderNames = new Set(connectionFolders.map((folder) => folder.name.trim().toLocaleLowerCase()).filter(Boolean))
+    const normalizeFolderName = (name: string): string => (name.trim() || '未命名分组').toLocaleLowerCase()
+    const existingFoldersByName = new Map(
+      connectionFolders.map((folder) => [normalizeFolderName(folder.name), folder] as const)
+    )
     const folderById = new Map(bundle.folders.map((folder) => [folder.id, folder]))
     const orderedFolderIds = mergeOrderedIds(bundle.folders.map((folder) => folder.id), bundle.connection_folder_order)
     const folderIdMap = new Map<string, string>()
     const nextFolders: ConnectionFolder[] = []
+    const appendedFolderIds: string[] = []
+    const reusedFolderIds = new Set<string>()
 
     for (const folderId of orderedFolderIds) {
       const folder = folderById.get(folderId)
@@ -4892,10 +4883,23 @@ function App(): React.JSX.Element {
         continue
       }
 
+      const normalizedFolderName = normalizeFolderName(folder.name)
+      const existingFolder = existingFoldersByName.get(normalizedFolderName)
+      if (existingFolder) {
+        folderIdMap.set(folderId, existingFolder.id)
+        reusedFolderIds.add(folderId)
+        continue
+      }
+
       const nextFolderId = globalThis.crypto?.randomUUID?.() ?? `folder-${Date.now()}-${nextFolders.length}`
-      const nextFolderName = buildImportFolderUniqueName(folder.name, existingFolderNames)
+      const nextFolder: ConnectionFolder = {
+        id: nextFolderId,
+        name: folder.name.trim() || '未命名分组'
+      }
       folderIdMap.set(folderId, nextFolderId)
-      nextFolders.push({ id: nextFolderId, name: nextFolderName })
+      nextFolders.push(nextFolder)
+      appendedFolderIds.push(nextFolderId)
+      existingFoldersByName.set(normalizedFolderName, nextFolder)
     }
 
     const importedConnectionIds = Array.from(createdByImportKey.values()).map((connection) => connection.connection_id)
@@ -4903,7 +4907,7 @@ function App(): React.JSX.Element {
 
     if (nextFolders.length > 0) {
       setConnectionFolders((current) => [...current, ...nextFolders])
-      setConnectionFolderOrder((current) => [...current, ...nextFolders.map((folder) => folder.id)])
+      setConnectionFolderOrder((current) => [...current, ...appendedFolderIds])
       setExpandedKeys((current) => {
         const next = [...current]
         for (const folder of nextFolders) {
@@ -4958,7 +4962,11 @@ function App(): React.JSX.Element {
       bundle.root_item_order
         .map((itemId) => {
           if (itemId.startsWith('folder:')) {
-            const nextFolderId = folderIdMap.get(itemId.slice('folder:'.length))
+            const sourceFolderId = itemId.slice('folder:'.length)
+            if (reusedFolderIds.has(sourceFolderId)) {
+              return undefined
+            }
+            const nextFolderId = folderIdMap.get(sourceFolderId)
             return nextFolderId ? rootFolderOrderId(nextFolderId) : undefined
           }
           if (itemId.startsWith('connection:')) {
@@ -4982,11 +4990,15 @@ function App(): React.JSX.Element {
         const assignedConnectionIds = Array.from(createdByImportKey.entries())
           .filter(([importKey]) => bundle.connection_folder_assignments[importKey] === sourceFolderId)
           .map(([, created]) => created.connection_id)
-        next[nextFolderId] = mergeOrderedIds(
+        const orderedImportedConnectionIds = mergeOrderedIds(
           assignedConnectionIds,
           (bundle.folder_connection_order[sourceFolderId] ?? [])
             .map((importKey) => createdByImportKey.get(importKey)?.connection_id)
             .filter((connectionId): connectionId is string => Boolean(connectionId))
+        )
+        next[nextFolderId] = mergeOrderedIds(
+          [...(current[nextFolderId] ?? []), ...orderedImportedConnectionIds],
+          current[nextFolderId] ?? []
         )
       }
       return next
