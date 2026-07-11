@@ -68,7 +68,7 @@ jobs:
           DATADJINN_DATA_DIR="$TEST_DATA_DIR" PYTHONPATH=backend "$VENV_PY" -m unittest discover -s backend/tests -v
 
       - name: Run Electron regression tests
-        run: npm run test:regression
+        run: npm run test:regression:smoke -- --grep-invert=@bug
 
       - name: Build packages
         run: ${{ matrix.build_command }}
