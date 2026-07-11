@@ -95,7 +95,7 @@ import type {
   SqlFileRunResponse,
   TableInfo
 } from './app/connection-model'
-import type { DatabaseType } from './app/data-sources'
+import { parseDBeaverImportText, type DatabaseType } from './app/data-sources'
 import MainWorkspacePanel from './app/main-workspace-panel'
 import {
   ConnectionFormValues,
@@ -122,7 +122,6 @@ import {
   JavaRuntimeConfigResponse,
   JavaRuntimeInfo,
   normalizeDriverInfo,
-  parseDBeaverImportText,
   parseDataGripImportText,
   PREVIEW_DEFAULT_LIMIT,
   QUERY_DEFAULT_LIMIT,

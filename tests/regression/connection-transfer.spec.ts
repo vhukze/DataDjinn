@@ -8,7 +8,7 @@ import {
   encryptConnectionTransferBundle,
   type DataDjinnConnectionTransferBundle
 } from '../../src/renderer/src/app/connection-transfer'
-import { parseDBeaverImportText } from '../../src/renderer/src/app/app-shared'
+import { parseDBeaverImportText } from '../../src/renderer/src/app/data-sources'
 import { buildConnectionTransferImportDialogOptions } from '../../src/main/connection-transfer-dialog'
 
 test('DataDjinn 连接传输文件应加密保存密码并支持完整回读 @bug', async () => {
