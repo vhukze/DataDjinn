@@ -63,7 +63,9 @@ jobs:
           else
             VENV_PY="backend/.venv/bin/python"
           fi
-          PYTHONPATH=backend "$VENV_PY" -m unittest discover -s backend/tests -v
+          TEST_DATA_DIR="$RUNNER_TEMP/datadjinn-test-data"
+          mkdir -p "$TEST_DATA_DIR"
+          DATADJINN_DATA_DIR="$TEST_DATA_DIR" PYTHONPATH=backend "$VENV_PY" -m unittest discover -s backend/tests -v
 
       - name: Run Electron regression tests
         run: npm run test:regression
