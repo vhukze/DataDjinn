@@ -1,7 +1,15 @@
 import { BrowserWindow, app } from 'electron'
 import { is } from '@electron-toolkit/utils'
 import { ChildProcessWithoutNullStreams, spawn, spawnSync } from 'child_process'
-import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'fs'
+import {
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync
+} from 'fs'
+import { randomBytes } from 'crypto'
 import { get } from 'http'
 import { dirname, join } from 'path'
 import { AddressInfo, createServer } from 'net'
@@ -45,6 +53,11 @@ export class BackendManager {
   private restartAttempts = 0
   private startPromise: Promise<BackendStatus> | null = null
   private launchId = 0
+  private readonly apiToken = randomBytes(32).toString('base64url')
+
+  getRequestHeaders(): Record<string, string> {
+    return { 'X-DataDjinn-Api-Token': this.apiToken }
+  }
 
   private shouldEnableBackendReload(): boolean {
     return is.dev && !process.env.DATADJINN_TEST_USER_DATA_DIR
@@ -223,7 +236,11 @@ export class BackendManager {
         resolve()
       })
 
-      current.kill()
+      if (process.platform === 'win32' && current.pid) {
+        spawn('taskkill', ['/pid', String(current.pid), '/T', '/F'], { windowsHide: true })
+      } else {
+        current.kill()
+      }
     })
     this.suppressStopStatus = false
   }
@@ -267,6 +284,7 @@ export class BackendManager {
         DATADJINN_BACKEND_RELOAD: this.shouldEnableBackendReload() ? '1' : '0',
         DATADJINN_DATA_DIR: app.getPath('userData'),
         DATADJINN_PARENT_PID: String(process.pid),
+        DATADJINN_API_TOKEN: this.apiToken,
         PYTHONIOENCODING: 'utf-8'
       }
     })
@@ -296,23 +314,45 @@ export class BackendManager {
       this.scheduleRestart(`后端异常退出，退出码：${code ?? 'unknown'}`, apiBaseUrl, logPath, code)
     })
 
-    const healthy = await this.waitForHealth(apiBaseUrl, is.dev ? HEALTH_TIMEOUT_MS : PACKAGED_HEALTH_TIMEOUT_MS)
+    const healthy = await this.waitForHealth(
+      apiBaseUrl,
+      is.dev ? HEALTH_TIMEOUT_MS : PACKAGED_HEALTH_TIMEOUT_MS
+    )
     if (launchId !== this.launchId || !this.process) {
       return this.getStatus()
     }
 
     if (!healthy) {
-      this.setStatus({ state: 'failed', apiBaseUrl, pid: this.process.pid, message: '后端启动超时，正在自动重启', logPath })
-      this.process.kill()
+      this.setStatus({
+        state: 'failed',
+        apiBaseUrl,
+        pid: this.process.pid,
+        message: '后端启动超时，请检查后端日志后手动重试',
+        logPath
+      })
+      // A startup timeout is usually configuration or packaging related. Stop the
+      // child completely instead of repeatedly spawning backends in the background.
+      await this.stop(false)
       return this.getStatus()
     }
 
     this.restartAttempts = 0
-    this.setStatus({ state: 'online', apiBaseUrl, pid: this.process.pid, message: '后端已就绪', logPath })
+    this.setStatus({
+      state: 'online',
+      apiBaseUrl,
+      pid: this.process.pid,
+      message: '后端已就绪',
+      logPath
+    })
     return this.getStatus()
   }
 
-  private scheduleRestart(reason: string, apiBaseUrl?: string, logPath?: string, exitCode?: number | null): void {
+  private scheduleRestart(
+    reason: string,
+    apiBaseUrl?: string,
+    logPath?: string,
+    exitCode?: number | null
+  ): void {
     if (this.stopping || this.restartTimer) {
       return
     }
@@ -368,24 +408,29 @@ export class BackendManager {
   private getBackendCommand(): BackendCommand {
     if (is.dev) {
       const backendDir = join(process.cwd(), 'backend')
-      const venvPython = process.platform === 'win32'
-        ? join(backendDir, '.venv', 'Scripts', 'python.exe')
-        : join(backendDir, '.venv', 'bin', 'python')
+      const venvPython =
+        process.platform === 'win32'
+          ? join(backendDir, '.venv', 'Scripts', 'python.exe')
+          : join(backendDir, '.venv', 'bin', 'python')
       const sitePackages = this.resolveVenvSitePackages(backendDir)
-      const venvBinDir = process.platform === 'win32'
-        ? join(backendDir, '.venv', 'Scripts')
-        : join(backendDir, '.venv', 'bin')
+      const venvBinDir =
+        process.platform === 'win32'
+          ? join(backendDir, '.venv', 'Scripts')
+          : join(backendDir, '.venv', 'bin')
       const pyvenvCfg = join(backendDir, '.venv', 'pyvenv.cfg')
       const fallbackPython = this.resolveSystemPythonFromVenv(pyvenvCfg)
       const preferFallbackPython = process.platform === 'win32' && Boolean(fallbackPython)
-      const command = preferFallbackPython ? (fallbackPython ?? venvPython) : (existsSync(venvPython) ? venvPython : (fallbackPython ?? venvPython))
-      const pathParts = [
-        venvBinDir,
-        process.env.PATH ?? ''
-      ].filter(Boolean)
+      const command = preferFallbackPython
+        ? (fallbackPython ?? venvPython)
+        : existsSync(venvPython)
+          ? venvPython
+          : (fallbackPython ?? venvPython)
+      const pathParts = [venvBinDir, process.env.PATH ?? ''].filter(Boolean)
       const pythonEnv = {
         ...(sitePackages ? { PYTHONPATH: sitePackages } : {}),
-        ...(existsSync(join(backendDir, '.venv')) ? { VIRTUAL_ENV: join(backendDir, '.venv') } : {}),
+        ...(existsSync(join(backendDir, '.venv'))
+          ? { VIRTUAL_ENV: join(backendDir, '.venv') }
+          : {}),
         PATH: pathParts.join(process.platform === 'win32' ? ';' : ':')
       }
 
@@ -433,9 +478,7 @@ export class BackendManager {
 
     try {
       const content = readFileSync(pyvenvCfg, 'utf-8')
-      const executableLine = content
-        .split(/\r?\n/)
-        .find((line) => line.startsWith('executable = '))
+      const executableLine = content.split(/\r?\n/).find((line) => line.startsWith('executable = '))
 
       if (!executableLine) {
         return undefined
@@ -460,8 +503,7 @@ export class BackendManager {
     }
 
     try {
-      const versionDir = readdirSync(libDir)
-        .find((entry) => entry.startsWith('python'))
+      const versionDir = readdirSync(libDir).find((entry) => entry.startsWith('python'))
       if (!versionDir) {
         return undefined
       }

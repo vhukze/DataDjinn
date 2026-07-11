@@ -11,7 +11,7 @@ from uuid import uuid4
 
 import sqlparse
 from openai import OpenAI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Engine, text
 
 from app.db.backup_manager import backup_manager
@@ -38,13 +38,15 @@ class AIMessage(BaseModel):
 
 
 class AgentContextSource(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
+
     id: str
     type: Literal["database", "schema"]
     connectionId: str
     connectionName: str
     dbType: str
     database: str | None = None
-    schema: str | None = None
+    schema_name: str | None = Field(default=None, alias="schema", serialization_alias="schema")
     pgDatabase: str | None = None
     sizeDisplay: str | None = None
     sizeBytes: int | None = None
@@ -62,12 +64,14 @@ class AgentConnectionSummary(BaseModel):
 
 
 class AgentFocusedResource(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
+
     kind: str
     connectionId: str | None = None
     connectionName: str | None = None
     dbType: str | None = None
     database: str | None = None
-    schema: str | None = None
+    schema_name: str | None = Field(default=None, alias="schema", serialization_alias="schema")
     pgDatabase: str | None = None
     table: str | None = None
     objectType: str | None = None
@@ -418,6 +422,8 @@ TOOLS = [*DATABASE_TOOLS, *WORKSPACE_TOOLS]
 
 
 def _extra_value(value: Any, key: str) -> Any:
+    if isinstance(value, dict):
+        return value.get(key)
     dumped = value.model_dump(exclude_none=True) if hasattr(value, "model_dump") else {}
     if key in dumped:
         return dumped[key]
@@ -468,9 +474,13 @@ def _merge_openai_tool_call_delta(current_value: str, fragment: str) -> str:
 
 
 def _update_openai_tool_call_state(states: dict[int, dict[str, Any]], tool_call: Any) -> None:
+    tool_call_id = str(_extra_value(tool_call, "id") or "")
     index = _extra_value(tool_call, "index")
     if not isinstance(index, int):
-        index = len(states)
+        index = next(
+            (existing_index for existing_index, state in states.items() if state["id"] == tool_call_id),
+            0 if len(states) == 1 else len(states),
+        )
     state = states.setdefault(
         index,
         {
@@ -479,19 +489,22 @@ def _update_openai_tool_call_state(states: dict[int, dict[str, Any]], tool_call:
             "function": {"name": "", "arguments": ""},
         },
     )
-    tool_call_id = str(_extra_value(tool_call, "id") or "")
     if tool_call_id:
         state["id"] = tool_call_id
     tool_type = str(_extra_value(tool_call, "type") or "")
     if tool_type:
         state["type"] = tool_type
-    function_value = _extra_value(tool_call, "function")
-    if not function_value:
-        return
-    function_name = str(_extra_value(function_value, "name") or "")
+    function_value = _extra_value(tool_call, "function") or _extra_value(tool_call, "function_call")
+    function_name_value = (
+        _extra_value(function_value, "name") if function_value else None
+    ) or _extra_value(tool_call, "name")
+    function_name = str(function_name_value or "")
     if function_name:
         state["function"]["name"] = _merge_openai_tool_call_delta(state["function"]["name"], function_name)
-    function_arguments = str(_extra_value(function_value, "arguments") or "")
+    function_arguments_value = (
+        _extra_value(function_value, "arguments") if function_value else None
+    ) or _extra_value(tool_call, "arguments")
+    function_arguments = str(function_arguments_value or "")
     if function_arguments:
         state["function"]["arguments"] = f"{state['function']['arguments']}{function_arguments}"
 
@@ -1367,7 +1380,7 @@ def build_system_prompt(db_type: str, db_name: str, workspace: AgentWorkspaceCon
             "serverVersion": workspace.current_server_version,
             "database": workspace.current_database,
             "pgDatabase": workspace.current_pg_database,
-            "schema": workspace.focused_resource.schema if workspace.focused_resource and workspace.focused_resource.schema else workspace.current_database,
+            "schema": workspace.focused_resource.schema_name if workspace.focused_resource and workspace.focused_resource.schema_name else workspace.current_database,
         }
         workspace_lines.append(f"当前执行上下文：{json.dumps({key: value for key, value in current_context.items() if value}, ensure_ascii=False, default=str)}")
         if workspace.connections:

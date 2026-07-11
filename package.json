@@ -1,6 +1,6 @@
 {
   "name": "datadjinn",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "description": "AI-powered desktop database client",
   "main": "./out/main/index.js",
   "author": "vhukze",
@@ -36,13 +36,16 @@
     "@electron-toolkit/utils": "^4.0.0",
     "@monaco-editor/react": "^4.7.0",
     "antd": "^6.4.3",
-    "dompurify": "^3.3.1",
+    "dompurify": "^3.4.11",
     "electron-store": "^11.0.2",
     "electron-updater": "^6.8.3",
     "marked": "^17.0.1",
-    "monaco-editor": "^0.55.1",
+    "monaco-editor": "0.53.0",
     "motion": "^12.40.0",
     "zustand": "^5.0.13"
+  },
+  "overrides": {
+    "js-yaml": "4.3.0"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config-prettier": "^3.0.0",

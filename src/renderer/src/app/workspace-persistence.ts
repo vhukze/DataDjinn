@@ -28,16 +28,15 @@ export const buildPersistedQueryWorkspace = (
 export const isSamePersistedQueryWorkspace = (
   left: PersistedQueryWorkspace,
   right: PersistedQueryWorkspace
-): boolean => (
-  left.title === right.title
-  && left.connectionId === right.connectionId
-  && left.connectionName === right.connectionName
-  && left.databaseName === right.databaseName
-  && left.pgDatabaseName === right.pgDatabaseName
-  && left.sql === right.sql
-  && left.limit === right.limit
-  && left.queryEditorHeight === right.queryEditorHeight
-)
+): boolean =>
+  left.title === right.title &&
+  left.connectionId === right.connectionId &&
+  left.connectionName === right.connectionName &&
+  left.databaseName === right.databaseName &&
+  left.pgDatabaseName === right.pgDatabaseName &&
+  left.sql === right.sql &&
+  left.limit === right.limit &&
+  left.queryEditorHeight === right.queryEditorHeight
 
 export const upsertPersistedQueryWorkspace = (
   current: PersistedQueryWorkspace[],

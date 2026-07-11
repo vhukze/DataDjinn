@@ -30,7 +30,9 @@ export const getDefaultSelectedDatabases = (
   databases: DatabaseInfo[] = []
 ): string[] => {
   if (connection.database_type === 'redis') {
-    const nonEmpty = databases.filter((database) => (database.size_bytes ?? 0) > 0).map((database) => database.name)
+    const nonEmpty = databases
+      .filter((database) => (database.size_bytes ?? 0) > 0)
+      .map((database) => database.name)
     const configured = connection.database?.split('@')[0]
     if (configured && available.includes(configured) && !nonEmpty.includes(configured)) {
       nonEmpty.unshift(configured)
@@ -46,7 +48,10 @@ export const getDefaultSelectedDatabases = (
   return configured && available.includes(configured) ? [configured] : available
 }
 
-export const getVisibleConnectionIdsFromTree = (treeData: DatabaseTreeNode[], expandedKeys: React.Key[]): string[] => {
+export const getVisibleConnectionIdsFromTree = (
+  treeData: DatabaseTreeNode[],
+  expandedKeys: React.Key[]
+): string[] => {
   const result: string[] = []
   for (const node of treeData) {
     if (node.kind === 'connection' && node.connectionId) {
@@ -69,8 +74,10 @@ export const buildTreeConnectionNode = (
   connectionTypeIcons: ConnectionTypeIcons
 ): DatabaseTreeNode => buildConnectionNodeFromModule(connection, connectionTypeIcons)
 
-export const buildTreeDatabaseNode = (connection: ConnectionInfo, database: DatabaseInfo): DatabaseTreeNode =>
-  buildDatabaseNodeFromModule(connection, database)
+export const buildTreeDatabaseNode = (
+  connection: ConnectionInfo,
+  database: DatabaseInfo
+): DatabaseTreeNode => buildDatabaseNodeFromModule(connection, database)
 
 export const buildTreePgSchemaNode = (
   connection: ConnectionInfo,
@@ -83,7 +90,8 @@ export const buildTreeObjectGroupNodes = (
   databaseType: DatabaseType,
   databaseName?: string,
   pgDatabaseName?: string
-): DatabaseTreeNode[] => buildObjectGroupNodesFromModule(connectionId, databaseType, databaseName, pgDatabaseName)
+): DatabaseTreeNode[] =>
+  buildObjectGroupNodesFromModule(connectionId, databaseType, databaseName, pgDatabaseName)
 
 type TreeRuntimeDeps = {
   requestJson: <T>(path: string, options?: RequestInit) => Promise<T>
@@ -108,15 +116,36 @@ type TreeRuntimeDeps = {
 }
 
 export type TreeRuntimeApi = {
-  objectNodesForGroup: (connectionId: string, objectType: DbObjectType, databaseName?: string, pgDatabaseName?: string) => Promise<DatabaseTreeNode[]>
-  preloadObjectGroupNodes: (connectionId: string, databaseName?: string, pgDatabaseName?: string, databaseType?: DatabaseType) => Promise<DatabaseTreeNode[]>
-  preloadDatabaseChildren: (connection: ConnectionInfo, databaseName: string, selectedSchemaOverride?: string[]) => Promise<DatabaseTreeNode[]>
-  preloadConnectionTree: (connection: ConnectionInfo, selectedDatabaseOverride?: string[]) => Promise<DatabaseTreeNode[]>
+  objectNodesForGroup: (
+    connectionId: string,
+    objectType: DbObjectType,
+    databaseName?: string,
+    pgDatabaseName?: string
+  ) => Promise<DatabaseTreeNode[]>
+  preloadObjectGroupNodes: (
+    connectionId: string,
+    databaseName?: string,
+    pgDatabaseName?: string,
+    databaseType?: DatabaseType
+  ) => Promise<DatabaseTreeNode[]>
+  preloadDatabaseChildren: (
+    connection: ConnectionInfo,
+    databaseName: string,
+    selectedSchemaOverride?: string[]
+  ) => Promise<DatabaseTreeNode[]>
+  preloadConnectionTree: (
+    connection: ConnectionInfo,
+    selectedDatabaseOverride?: string[]
+  ) => Promise<DatabaseTreeNode[]>
   loadChildrenForNode: (node: DatabaseTreeNode) => Promise<DatabaseTreeNode[]>
   reloadNodeChildren: (node: DatabaseTreeNode, expand?: boolean) => Promise<void>
   setTreeDataSnapshot: (nextTreeData: DatabaseTreeNode[]) => void
   updateTreeNodeSnapshot: (key: React.Key, children: DatabaseTreeNode[]) => void
-  ensureQueryContextTreeExpanded: (connection: ConnectionInfo, databaseName?: string, pgDatabaseName?: string) => Promise<void>
+  ensureQueryContextTreeExpanded: (
+    connection: ConnectionInfo,
+    databaseName?: string,
+    pgDatabaseName?: string
+  ) => Promise<void>
   collapseTreeNode: (node: DatabaseTreeNode) => void
   toggleOrLoadTreeNode: (node: DatabaseTreeNode) => void
 }
@@ -125,23 +154,29 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
   const buildConnectionNode = (connection: ConnectionInfo): DatabaseTreeNode =>
     buildTreeConnectionNode(connection, deps.connectionTypeIcons)
 
-  const buildDatabaseNode = (connection: ConnectionInfo, database: DatabaseInfo): DatabaseTreeNode =>
-    buildTreeDatabaseNode(connection, database)
+  const buildDatabaseNode = (
+    connection: ConnectionInfo,
+    database: DatabaseInfo
+  ): DatabaseTreeNode => buildTreeDatabaseNode(connection, database)
 
-  const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, schema: DatabaseInfo): DatabaseTreeNode =>
-    buildTreePgSchemaNode(connection, pgDatabaseName, schema)
+  const buildPgSchemaNode = (
+    connection: ConnectionInfo,
+    pgDatabaseName: string,
+    schema: DatabaseInfo
+  ): DatabaseTreeNode => buildTreePgSchemaNode(connection, pgDatabaseName, schema)
 
   const buildObjectGroupNodes = (
     connectionId: string,
     databaseName?: string,
     pgDatabaseName?: string,
     databaseType?: DatabaseType
-  ): DatabaseTreeNode[] => buildTreeObjectGroupNodes(
-    connectionId,
-    databaseType ?? deps.getConnection(connectionId)?.database_type ?? 'sqlite',
-    databaseName,
-    pgDatabaseName
-  )
+  ): DatabaseTreeNode[] =>
+    buildTreeObjectGroupNodes(
+      connectionId,
+      databaseType ?? deps.getConnection(connectionId)?.database_type ?? 'sqlite',
+      databaseName,
+      pgDatabaseName
+    )
 
   const objectGroupCacheKey = (
     connectionId: string,
@@ -173,7 +208,12 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
       return undefined
     }
     return objectGroupChildrenCache.get(
-      objectGroupCacheKey(node.connectionId, node.objectType, node.databaseName, node.pgDatabaseName)
+      objectGroupCacheKey(
+        node.connectionId,
+        node.objectType,
+        node.databaseName,
+        node.pgDatabaseName
+      )
     )
   }
 
@@ -206,9 +246,15 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
     }
 
     const requestPromise = (async () => {
-      const path = deps.withPgDatabase(`/connections/${connectionId}/objects`, databaseName, pgDatabaseName)
+      const path = deps.withPgDatabase(
+        `/connections/${connectionId}/objects`,
+        databaseName,
+        pgDatabaseName
+      )
       const requestStartedAt = performance.now()
-      const data = await deps.requestJson<{ objects: DbObjectInfo[] }>(`${path}${databaseName || pgDatabaseName ? '&' : '?'}type=${objectType}`)
+      const data = await deps.requestJson<{ objects: DbObjectInfo[] }>(
+        `${path}${databaseName || pgDatabaseName ? '&' : '?'}type=${objectType}`
+      )
       console.info('[perf][tree-runtime] object-group-request-resolved', {
         cacheKey,
         objectType,
@@ -216,7 +262,9 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
         duration: Number((performance.now() - requestStartedAt).toFixed(2))
       })
       const nextChildren = data.objects.map<DatabaseTreeNode>((object) => {
-        const resolvedType = DB_OBJECT_GROUP_BY_TYPE[object.type as DbObjectType] ? object.type as DbObjectType : objectType
+        const resolvedType = DB_OBJECT_GROUP_BY_TYPE[object.type as DbObjectType]
+          ? (object.type as DbObjectType)
+          : objectType
         const kind = resolvedType === 'table' ? 'table' : 'db-object'
         const group = DB_OBJECT_GROUP_BY_TYPE[resolvedType]
 
@@ -263,7 +311,8 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
     databaseName?: string,
     pgDatabaseName?: string,
     databaseType?: DatabaseType
-  ): Promise<DatabaseTreeNode[]> => buildObjectGroupNodes(connectionId, databaseName, pgDatabaseName, databaseType)
+  ): Promise<DatabaseTreeNode[]> =>
+    buildObjectGroupNodes(connectionId, databaseName, pgDatabaseName, databaseType)
 
   const preloadDatabaseChildren = async (
     connection: ConnectionInfo,
@@ -275,11 +324,15 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
     }
 
     if (deps.isSchemaScopedType(connection.database_type)) {
-      const data = await deps.requestJson<{ databases: DatabaseInfo[] }>(`/connections/${connection.connection_id}/schemas?database=${encodeURIComponent(databaseName)}`)
+      const data = await deps.requestJson<{ databases: DatabaseInfo[] }>(
+        `/connections/${connection.connection_id}/schemas?database=${encodeURIComponent(databaseName)}`
+      )
       const selectorKey = `${connection.connection_id}:${databaseName}`
       const schemaNames = data.databases.map((schema) => schema.name)
       const currentSelected = selectedSchemaOverride ?? deps.selectedSchemasRef.current[selectorKey]
-      const nextSelected = currentSelected ? filterPersistedTreeValues(currentSelected, schemaNames) : schemaNames
+      const nextSelected = currentSelected
+        ? filterPersistedTreeValues(currentSelected, schemaNames)
+        : schemaNames
 
       deps.setAllSchemas((current) => ({ ...current, [selectorKey]: schemaNames }))
       deps.setSelectedSchemas((current) => {
@@ -294,16 +347,24 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
     }
 
     void deps.preloadCompletionForDatabase(connection.connection_id, databaseName)
-    return preloadObjectGroupNodes(connection.connection_id, databaseName, undefined, connection.database_type)
+    return preloadObjectGroupNodes(
+      connection.connection_id,
+      databaseName,
+      undefined,
+      connection.database_type
+    )
   }
 
   const preloadConnectionTree = async (
     connection: ConnectionInfo,
     selectedDatabaseOverride?: string[]
   ): Promise<DatabaseTreeNode[]> => {
-    const data = await deps.requestJson<{ databases: DatabaseInfo[] }>(`/connections/${connection.connection_id}/databases`)
+    const data = await deps.requestJson<{ databases: DatabaseInfo[] }>(
+      `/connections/${connection.connection_id}/databases`
+    )
     const dbNames = data.databases.map((database) => database.name)
-    const currentSelected = selectedDatabaseOverride ?? deps.selectedDatabasesRef.current[connection.connection_id]
+    const currentSelected =
+      selectedDatabaseOverride ?? deps.selectedDatabasesRef.current[connection.connection_id]
     const nextSelected = currentSelected
       ? filterPersistedTreeValues(currentSelected, dbNames)
       : getDefaultSelectedDatabases(connection, dbNames, data.databases)
@@ -319,11 +380,11 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
       .filter((database) => nextSelected.includes(database.name))
       .map((database) => buildDatabaseNode(connection, database))
 
-      deps.setTreeData((current) => {
-        const next = updateTreeNode(current, `connection:${connection.connection_id}`, databaseNodes)
-        deps.treeDataRef.current = next
-        return next
-      })
+    deps.setTreeData((current) => {
+      const next = updateTreeNode(current, `connection:${connection.connection_id}`, databaseNodes)
+      deps.treeDataRef.current = next
+      return next
+    })
     return databaseNodes
   }
 
@@ -334,7 +395,19 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
 
     if (node.kind === 'connection' && node.connectionId) {
       const connection = deps.getConnection(node.connectionId)
-      if (!connection || !['mysql', 'postgresql', 'gaussdb', 'dm', 'oracle', 'mongodb', 'redis', 'clickhouse'].includes(connection.database_type)) {
+      if (
+        !connection ||
+        ![
+          'mysql',
+          'postgresql',
+          'gaussdb',
+          'dm',
+          'oracle',
+          'mongodb',
+          'redis',
+          'clickhouse'
+        ].includes(connection.database_type)
+      ) {
         return []
       }
       return preloadConnectionTree(connection)
@@ -349,19 +422,33 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
     }
 
     if (node.kind === 'pg-schema' && node.connectionId && node.databaseName) {
-      return preloadObjectGroupNodes(node.connectionId, node.databaseName, node.pgDatabaseName, deps.getConnection(node.connectionId)?.database_type)
+      return preloadObjectGroupNodes(
+        node.connectionId,
+        node.databaseName,
+        node.pgDatabaseName,
+        deps.getConnection(node.connectionId)?.database_type
+      )
     }
 
     if (node.kind === 'object-group' && node.connectionId && node.objectType) {
       if (node.objectType === 'table') {
         prefetchSqliteObjectGroups(node.connectionId)
       }
-      return objectNodesForGroup(node.connectionId, node.objectType, node.databaseName, node.pgDatabaseName)
+      return objectNodesForGroup(
+        node.connectionId,
+        node.objectType,
+        node.databaseName,
+        node.pgDatabaseName
+      )
     }
 
     if (node.kind === 'table' && node.connectionId && node.tableName) {
       const data = await deps.requestJson<{ columns: ColumnInfo[] }>(
-        deps.withPgDatabase(`/connections/${node.connectionId}/tables/${encodeURIComponent(node.tableName)}/columns`, node.databaseName, node.pgDatabaseName)
+        deps.withPgDatabase(
+          `/connections/${node.connectionId}/tables/${encodeURIComponent(node.tableName)}/columns`,
+          node.databaseName,
+          node.pgDatabaseName
+        )
       )
       return data.columns.map<DatabaseTreeNode>((column) => ({
         key: `column:${node.connectionId}:${node.databaseName ?? 'main'}:${node.tableName}:${column.name}`,
@@ -470,8 +557,11 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
     }
 
     if (connection.database_type !== 'redis') {
-      const currentSelectedDatabases = deps.selectedDatabasesRef.current[connection.connection_id] ?? []
-      const requiredDatabase = deps.isSchemaScopedType(connection.database_type) ? pgDatabaseName : databaseName
+      const currentSelectedDatabases =
+        deps.selectedDatabasesRef.current[connection.connection_id] ?? []
+      const requiredDatabase = deps.isSchemaScopedType(connection.database_type)
+        ? pgDatabaseName
+        : databaseName
       const selectedDatabaseOverride = requiredDatabase
         ? Array.from(new Set([...currentSelectedDatabases, requiredDatabase]))
         : currentSelectedDatabases
@@ -484,17 +574,27 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
     if (pgDatabaseName && deps.isSchemaScopedType(connection.database_type)) {
       const databaseKey = `database:${connection.connection_id}:${pgDatabaseName}`
       nextExpandedKeys.add(databaseKey)
-      const currentSelectedSchemas = deps.selectedSchemasRef.current[`${connection.connection_id}:${pgDatabaseName}`] ?? []
+      const currentSelectedSchemas =
+        deps.selectedSchemasRef.current[`${connection.connection_id}:${pgDatabaseName}`] ?? []
       const selectedSchemaOverride = databaseName
         ? Array.from(new Set([...currentSelectedSchemas, databaseName]))
         : currentSelectedSchemas
-      const schemaChildren = await preloadDatabaseChildren(connection, pgDatabaseName, selectedSchemaOverride)
+      const schemaChildren = await preloadDatabaseChildren(
+        connection,
+        pgDatabaseName,
+        selectedSchemaOverride
+      )
       updateTreeNodeSnapshot(databaseKey, schemaChildren)
 
       if (databaseName) {
         const schemaKey = `pg-schema:${connection.connection_id}:${pgDatabaseName}:${databaseName}`
         nextExpandedKeys.add(schemaKey)
-        const objectGroupChildren = await preloadObjectGroupNodes(connection.connection_id, databaseName, pgDatabaseName, connection.database_type)
+        const objectGroupChildren = await preloadObjectGroupNodes(
+          connection.connection_id,
+          databaseName,
+          pgDatabaseName,
+          connection.database_type
+        )
         updateTreeNodeSnapshot(schemaKey, objectGroupChildren)
       }
     } else if (databaseName && connection.database_type !== 'redis') {

@@ -1,5 +1,41 @@
-import { CheckCircleOutlined, ClockCircleOutlined, CloseCircleOutlined, CloseOutlined, DatabaseOutlined, DeleteOutlined, DownOutlined, ExclamationCircleOutlined, LoadingOutlined, PlusOutlined, RightOutlined, SendOutlined, SettingOutlined, StopOutlined, ToolOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, Collapse, Dropdown, Flex, Form, Input, InputNumber, List, Modal, Progress, Select, Space, Steps, Switch, Tag, Typography, message } from 'antd'
+import {
+  CheckCircleOutlined,
+  ClockCircleOutlined,
+  CloseCircleOutlined,
+  CloseOutlined,
+  DatabaseOutlined,
+  DeleteOutlined,
+  DownOutlined,
+  ExclamationCircleOutlined,
+  LoadingOutlined,
+  PlusOutlined,
+  RightOutlined,
+  SendOutlined,
+  SettingOutlined,
+  StopOutlined,
+  ToolOutlined
+} from '@ant-design/icons'
+import {
+  Alert,
+  Button,
+  Card,
+  Collapse,
+  Dropdown,
+  Flex,
+  Form,
+  Input,
+  InputNumber,
+  List,
+  Modal,
+  Progress,
+  Select,
+  Space,
+  Steps,
+  Switch,
+  Tag,
+  Typography,
+  message
+} from 'antd'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -213,14 +249,23 @@ const createAIConfigItem = (config?: Partial<AIConfigItem>): AIConfigItem => ({
   base_url: config?.base_url ?? '',
   api_key: config?.api_key ?? '',
   model: config?.model ?? '',
-  max_context_tokens: typeof config?.max_context_tokens === 'number' && Number.isFinite(config.max_context_tokens) && config.max_context_tokens > 0
-    ? Math.round(config.max_context_tokens)
-    : undefined
+  max_context_tokens:
+    typeof config?.max_context_tokens === 'number' &&
+    Number.isFinite(config.max_context_tokens) &&
+    config.max_context_tokens > 0
+      ? Math.round(config.max_context_tokens)
+      : undefined
 })
 
 const activeAIConfig = (configs: AIConfigItem[]): AIConfig | null => {
   const active = configs.find((item) => item.enabled)
-  if (!active || !active.base_url || !active.api_key || !active.model || !active.max_context_tokens) {
+  if (
+    !active ||
+    !active.base_url ||
+    !active.api_key ||
+    !active.model ||
+    !active.max_context_tokens
+  ) {
     return null
   }
 
@@ -237,16 +282,25 @@ const AUTO_COMPACT_USAGE_RATIO = 0.8
 const MIN_MESSAGES_TO_COMPACT = 6
 const STREAM_EVENTS_PER_FRAME = 1
 
-const normalizeShortcut = (shortcut?: string): string => shortcut?.replace(/\s+/g, '').toLowerCase() ?? ''
+const normalizeShortcut = (shortcut?: string): string =>
+  shortcut?.replace(/\s+/g, '').toLowerCase() ?? ''
 
-const buildShortcutFromKeyboardEvent = (event: { ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey: boolean; key: string }): string => {
+const buildShortcutFromKeyboardEvent = (event: {
+  ctrlKey: boolean
+  metaKey: boolean
+  altKey: boolean
+  shiftKey: boolean
+  key: string
+}): string => {
   const normalizedKey = event.key.length === 1 ? event.key.toLowerCase() : event.key.toLowerCase()
   return [
     event.ctrlKey || event.metaKey ? 'ctrl' : '',
     event.altKey ? 'alt' : '',
     event.shiftKey ? 'shift' : '',
     normalizedKey
-  ].filter(Boolean).join('+')
+  ]
+    .filter(Boolean)
+    .join('+')
 }
 
 const formatTokenK = (value: number): string => {
@@ -261,11 +315,14 @@ const formatTokenK = (value: number): string => {
   return String(value)
 }
 
-const isStreamingTextEvent = (event: StreamEvent): boolean => event.type === 'token' || event.type === 'reasoning'
+const isStreamingTextEvent = (event: StreamEvent): boolean =>
+  event.type === 'token' || event.type === 'reasoning'
 
 const isDraftSession = (session: AISession): boolean => session.messages.length === 0
 
-const sanitizeThinkingForPersistence = (thinking: ChatMessage['thinking']): ChatMessage['thinking'] => {
+const sanitizeThinkingForPersistence = (
+  thinking: ChatMessage['thinking']
+): ChatMessage['thinking'] => {
   if (!thinking) {
     return undefined
   }
@@ -310,9 +367,12 @@ const sanitizeSegmentForPersistence = (segment: ChatMessageSegment): ChatMessage
 
 const sanitizeToolCallForPersistence = (tool: ToolCallView): ToolCallView => ({
   ...tool,
-  status: tool.status === 'running'
-    ? (tool.result !== undefined ? toolResultStatus(tool.result) : 'completed')
-    : tool.status
+  status:
+    tool.status === 'running'
+      ? tool.result !== undefined
+        ? toolResultStatus(tool.result)
+        : 'completed'
+      : tool.status
 })
 
 const sanitizeMessageForPersistence = (message: ChatMessage): ChatMessage | null => {
@@ -331,12 +391,12 @@ const sanitizeMessageForPersistence = (message: ChatMessage): ChatMessage | null
   const toolCalls = (message.toolCalls ?? []).map(sanitizeToolCallForPersistence)
   const thinking = sanitizeThinkingForPersistence(message.thinking)
   const hasVisibleContent = Boolean(
-    normalizedContent
-    || nonContentSegments.length > 0
-    || toolCalls.length > 0
-    || thinking?.content?.trim()
-    || message.plan
-    || message.confirmation
+    normalizedContent ||
+    nonContentSegments.length > 0 ||
+    toolCalls.length > 0 ||
+    thinking?.content?.trim() ||
+    message.plan ||
+    message.confirmation
   )
 
   if (message.role === 'assistant' && !hasVisibleContent) {
@@ -389,7 +449,8 @@ const createSession = (): AISession => {
   }
 }
 
-const sessionTitle = (content: string): string => content.replace(/\s+/g, ' ').slice(0, 24) || '新会话'
+const sessionTitle = (content: string): string =>
+  content.replace(/\s+/g, ' ').slice(0, 24) || '新会话'
 
 const contextSourceTitle = (source: AIContextSource): string => {
   if (source.type === 'schema') {
@@ -425,7 +486,11 @@ const toolResultStatus = (result: unknown): ToolCallView['status'] => {
   return record.error || record.success === false ? 'failed' : 'completed'
 }
 
-const applySendButtonMagnet = (button: HTMLButtonElement | null, clientX: number, clientY: number): void => {
+const applySendButtonMagnet = (
+  button: HTMLButtonElement | null,
+  clientX: number,
+  clientY: number
+): void => {
   if (!button) {
     return
   }
@@ -445,7 +510,12 @@ const resetSendButtonMagnet = (button: HTMLButtonElement | null): void => {
 }
 
 const isMutatingToolResult = (name: string | undefined, result: unknown): boolean => {
-  if (!name || !['execute_query', 'restore_database_backup'].includes(name) || !result || typeof result !== 'object') {
+  if (
+    !name ||
+    !['execute_query', 'restore_database_backup'].includes(name) ||
+    !result ||
+    typeof result !== 'object'
+  ) {
     return false
   }
 
@@ -457,16 +527,33 @@ const parseSseLines = (buffer: string): { events: StreamEvent[]; rest: string } 
   const parts = buffer.split('\n\n')
   const rest = parts.pop() ?? ''
   const events = parts
-    .map((part) => part.split('\n').find((line) => line.startsWith('data: '))?.slice(6))
+    .map((part) =>
+      part
+        .split('\n')
+        .find((line) => line.startsWith('data: '))
+        ?.slice(6)
+    )
     .filter((line): line is string => Boolean(line))
     .map((line) => JSON.parse(line) as StreamEvent)
   return { events, rest }
 }
 
-export default function AIPanel({ requestJson, hasDatabaseContext, getConnectionContext, getWorkspaceSnapshot, contextSources = [], primaryContextSourceId, onRemoveContextSource, onWorkspaceAction, onAgentDataChanged, shortcuts }: AIPanelProps): React.JSX.Element {
+export default function AIPanel({
+  requestJson,
+  hasDatabaseContext,
+  getConnectionContext,
+  getWorkspaceSnapshot,
+  contextSources = [],
+  primaryContextSourceId,
+  onRemoveContextSource,
+  onWorkspaceAction,
+  onAgentDataChanged,
+  shortcuts
+}: AIPanelProps): React.JSX.Element {
   const [messageApi, contextHolder] = message.useMessage()
   const showError = (error: unknown, fallback = '操作失败'): void => {
-    const content = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
+    const content =
+      error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
     Modal.error({
       title: '操作失败',
       centered: true,
@@ -510,19 +597,26 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
 
   const activeConfigItem = useMemo(() => {
     if (selectedConfigId) {
-      return configs.find((item) => item.id === selectedConfigId) ?? configs.find((item) => item.enabled)
+      return (
+        configs.find((item) => item.id === selectedConfigId) ?? configs.find((item) => item.enabled)
+      )
     }
     return configs.find((item) => item.enabled)
   }, [configs, selectedConfigId])
-  const config = activeConfigItem && activeConfigItem.base_url && activeConfigItem.api_key && activeConfigItem.model && activeConfigItem.max_context_tokens
-    ? {
-        provider: activeConfigItem.provider ?? 'openai-compatible',
-        base_url: activeConfigItem.base_url,
-        api_key: activeConfigItem.api_key,
-        model: activeConfigItem.model,
-        max_context_tokens: activeConfigItem.max_context_tokens
-      }
-    : null
+  const config =
+    activeConfigItem &&
+    activeConfigItem.base_url &&
+    activeConfigItem.api_key &&
+    activeConfigItem.model &&
+    activeConfigItem.max_context_tokens
+      ? {
+          provider: activeConfigItem.provider ?? 'openai-compatible',
+          base_url: activeConfigItem.base_url,
+          api_key: activeConfigItem.api_key,
+          model: activeConfigItem.model,
+          max_context_tokens: activeConfigItem.max_context_tokens
+        }
+      : null
   const ready = Boolean(config)
   const canChat = ready
   const activeSession = sessions.find((session) => session.id === activeSessionId)
@@ -533,11 +627,16 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
     () => messages.map((item) => ({ role: item.role, content: item.content })),
     [messages]
   )
-  const buildConversationMessages = (session?: AISession): Array<{ role: string; content: string }> => {
+  const buildConversationMessages = (
+    session?: AISession
+  ): Array<{ role: string; content: string }> => {
     if (!session) {
       return []
     }
-    const nextMessages = session.messages.map((item) => ({ role: item.role, content: item.content }))
+    const nextMessages = session.messages.map((item) => ({
+      role: item.role,
+      content: item.content
+    }))
     if (session.compressedSummary) {
       nextMessages.unshift({
         role: 'assistant',
@@ -547,24 +646,37 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
     return nextMessages
   }
   const maxContextTokens = effectiveContextStats?.max_tokens ?? config?.max_context_tokens ?? 0
-  const contextUsagePercent = maxContextTokens > 0 ? Math.round(((effectiveContextStats?.used_tokens ?? 0) / maxContextTokens) * 100) : 0
+  const contextUsagePercent =
+    maxContextTokens > 0
+      ? Math.round(((effectiveContextStats?.used_tokens ?? 0) / maxContextTokens) * 100)
+      : 0
   const contextProgressPercent = contextUsagePercent > 0 ? Math.max(contextUsagePercent, 4) : 0
-  const contextLevel = contextUsagePercent >= 80 ? 'full' : contextUsagePercent >= 60 ? 'warning' : 'ok'
+  const contextLevel =
+    contextUsagePercent >= 80 ? 'full' : contextUsagePercent >= 60 ? 'warning' : 'ok'
 
   useEffect(() => {
-    void Promise.all([window.api.getAIConfigs(), window.api.getAIConfig()]).then(([storedConfigs, legacyConfig]) => {
-      const nextConfigs = storedConfigs.length > 0
-        ? storedConfigs.map((item) => createAIConfigItem(item))
-        : legacyConfig
-          ? [createAIConfigItem({ ...legacyConfig, name: legacyConfig.model || '默认 AI', enabled: true })]
-          : []
-      setConfigs(nextConfigs)
-      if (storedConfigs.length === 0 && nextConfigs.length > 0) {
-        void window.api.setAIConfigs(nextConfigs)
+    void Promise.all([window.api.getAIConfigs(), window.api.getAIConfig()]).then(
+      ([storedConfigs, legacyConfig]) => {
+        const nextConfigs =
+          storedConfigs.length > 0
+            ? storedConfigs.map((item) => createAIConfigItem(item))
+            : legacyConfig
+              ? [
+                  createAIConfigItem({
+                    ...legacyConfig,
+                    name: legacyConfig.model || '默认 AI',
+                    enabled: true
+                  })
+                ]
+              : []
+        setConfigs(nextConfigs)
+        if (storedConfigs.length === 0 && nextConfigs.length > 0) {
+          void window.api.setAIConfigs(nextConfigs)
+        }
+        const initialActive = nextConfigs.find((item) => item.enabled) ?? nextConfigs[0]
+        setSelectedConfigId(initialActive?.id ?? '')
       }
-      const initialActive = nextConfigs.find((item) => item.enabled) ?? nextConfigs[0]
-      setSelectedConfigId(initialActive?.id ?? '')
-    })
+    )
     void window.api.getAISessions().then((stored) => {
       const restoredSessions = normalizePersistedSessions(stored as AISession[])
       const restored = restoredSessions.length > 0 ? restoredSessions : [createSession()]
@@ -604,8 +716,16 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
     void requestJson<AIContextStats>('/ai/context-stats', {
       method: 'POST',
       body: requestKey
-    }).then(setContextStats).catch(() => setContextStats(null))
-  }, [activeSession?.compressedSummary, activeSession?.messages, config, requestJson, getWorkspaceSnapshot])
+    })
+      .then(setContextStats)
+      .catch(() => setContextStats(null))
+  }, [
+    activeSession?.compressedSummary,
+    activeSession?.messages,
+    config,
+    requestJson,
+    getWorkspaceSnapshot
+  ])
 
   useEffect(() => {
     if (suppressAutoScrollRef.current) {
@@ -646,9 +766,14 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
     writeSessions(normalized)
   }
 
-  const updateActiveSession = (updater: (session: AISession) => AISession, options?: { persist?: boolean; persistDelay?: number }): void => {
+  const updateActiveSession = (
+    updater: (session: AISession) => AISession,
+    options?: { persist?: boolean; persistDelay?: number }
+  ): void => {
     setSessions((current) => {
-      const next = normalizeSessions(current.map((session) => session.id === activeSessionId ? updater(session) : session))
+      const next = normalizeSessions(
+        current.map((session) => (session.id === activeSessionId ? updater(session) : session))
+      )
       if (options?.persist === false) {
         if (options.persistDelay !== undefined) {
           schedulePersistSessions(next, options.persistDelay)
@@ -689,12 +814,15 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
       return { ...message, segments: [...segments, nextSegment] }
     }
 
-    const appendThinking = (message: ChatMessage, summary: string, detail?: string, done = false): ChatMessage => {
+    const appendThinking = (
+      message: ChatMessage,
+      summary: string,
+      detail?: string,
+      done = false
+    ): ChatMessage => {
       const currentContent = message.thinking?.content ?? ''
       const currentPreview = message.thinking?.preview ?? ''
-      const nextContent = detail
-        ? `${currentContent}${detail}`
-        : currentContent
+      const nextContent = detail ? `${currentContent}${detail}` : currentContent
       const previewSource = nextContent || currentContent || detail || currentPreview || summary
       const normalizedPreview = previewSource.replace(/\s+/g, ' ').trim()
       return {
@@ -723,15 +851,31 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
       return appendThinking(item, '正在思考', event.content)
     }
     if (event.type === 'plan') {
-      return appendThinking({ ...item, plan: event.plan, steps: event.plan.steps }, '正在思考执行步骤', `计划：${event.plan.summary || event.plan.goal}`)
+      return appendThinking(
+        { ...item, plan: event.plan, steps: event.plan.steps },
+        '正在思考执行步骤',
+        `计划：${event.plan.summary || event.plan.goal}`
+      )
     }
     if (event.type === 'step_start') {
-      const nextItem = { ...item, steps: (item.steps ?? []).map((step) => step.id === event.step_id ? { ...step, status: 'running' as const } : step) }
+      const nextItem = {
+        ...item,
+        steps: (item.steps ?? []).map((step) =>
+          step.id === event.step_id ? { ...step, status: 'running' as const } : step
+        )
+      }
       const step = nextItem.steps?.find((candidate) => candidate.id === event.step_id)
       return appendThinking(nextItem, '正在执行步骤', step ? `步骤：${step.title}` : '开始执行步骤')
     }
     if (event.type === 'step_result') {
-      const nextItem = { ...item, steps: (item.steps ?? []).map((step) => step.id === event.step_id ? { ...step, status: 'completed' as const, result: event.result } : step) }
+      const nextItem = {
+        ...item,
+        steps: (item.steps ?? []).map((step) =>
+          step.id === event.step_id
+            ? { ...step, status: 'completed' as const, result: event.result }
+            : step
+        )
+      }
       const step = nextItem.steps?.find((candidate) => candidate.id === event.step_id)
       return appendThinking(nextItem, '正在整理结果', step ? `完成：${step.title}` : '步骤执行完成')
     }
@@ -740,7 +884,18 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
     }
     if (event.type === 'tool_start') {
       return appendThinking(
-        { ...item, toolCalls: [...(item.toolCalls ?? []), { id: event.tool_call_id, name: event.name, status: 'running' as const, arguments: event.arguments }] },
+        {
+          ...item,
+          toolCalls: [
+            ...(item.toolCalls ?? []),
+            {
+              id: event.tool_call_id,
+              name: event.name,
+              status: 'running' as const,
+              arguments: event.arguments
+            }
+          ]
+        },
         '正在调用工具',
         `工具：${event.name}`
       )
@@ -748,7 +903,12 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
     if (event.type === 'tool_result') {
       const status = toolResultStatus(event.result)
       return appendThinking(
-        { ...item, toolCalls: (item.toolCalls ?? []).map((tool) => tool.id === event.tool_call_id ? { ...tool, status, result: event.result } : tool) },
+        {
+          ...item,
+          toolCalls: (item.toolCalls ?? []).map((tool) =>
+            tool.id === event.tool_call_id ? { ...tool, status, result: event.result } : tool
+          )
+        },
         status === 'waiting_confirm' ? '等待确认' : '正在继续处理',
         `${event.name}：${status === 'waiting_confirm' ? '等待确认' : status === 'completed' ? '已完成' : '已失败'}`
       )
@@ -819,11 +979,23 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
     }
 
     if (event.type === 'step_start') {
-      return { ...item, steps: (item.steps ?? []).map((step) => step.id === event.step_id ? { ...step, status: 'running' as const } : step) }
+      return {
+        ...item,
+        steps: (item.steps ?? []).map((step) =>
+          step.id === event.step_id ? { ...step, status: 'running' as const } : step
+        )
+      }
     }
 
     if (event.type === 'step_result') {
-      return { ...item, steps: (item.steps ?? []).map((step) => step.id === event.step_id ? { ...step, status: 'completed' as const, result: event.result } : step) }
+      return {
+        ...item,
+        steps: (item.steps ?? []).map((step) =>
+          step.id === event.step_id
+            ? { ...step, status: 'completed' as const, result: event.result }
+            : step
+        )
+      }
     }
 
     /*
@@ -874,7 +1046,18 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
 
     if (event.type === 'tool_start') {
       return appendSegment(
-        { ...item, toolCalls: [...(item.toolCalls ?? []), { id: event.tool_call_id, name: event.name, status: 'running' as const, arguments: event.arguments }] },
+        {
+          ...item,
+          toolCalls: [
+            ...(item.toolCalls ?? []),
+            {
+              id: event.tool_call_id,
+              name: event.name,
+              status: 'running' as const,
+              arguments: event.arguments
+            }
+          ]
+        },
         {
           id: crypto.randomUUID(),
           type: 'tool',
@@ -892,9 +1075,11 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
       const status = toolResultStatus(event.result)
       const nextMessage = {
         ...item,
-        toolCalls: (item.toolCalls ?? []).map((tool) => tool.id === event.tool_call_id ? { ...tool, status, result: event.result } : tool)
+        toolCalls: (item.toolCalls ?? []).map((tool) =>
+          tool.id === event.tool_call_id ? { ...tool, status, result: event.result } : tool
+        )
       }
-      const nextSegments = (nextMessage.segments ?? []).map((segment) => (
+      const nextSegments = (nextMessage.segments ?? []).map((segment) =>
         segment.type === 'tool' && segment.toolCallId === event.tool_call_id
           ? {
               ...segment,
@@ -903,7 +1088,7 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
               preview: `${event.name} ${status === 'waiting_confirm' ? '等待确认' : status === 'completed' ? '已完成' : '失败'}`
             }
           : segment
-      ))
+      )
       return { ...nextMessage, segments: nextSegments }
     }
 
@@ -975,23 +1160,28 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
       }
     }
 
-    setSessions((current) => current.map((session) => {
-      if (session.id !== activeSessionId) {
-        return session
-      }
+    setSessions((current) =>
+      current.map((session) => {
+        if (session.id !== activeSessionId) {
+          return session
+        }
 
-      return {
-        ...session,
-        updatedAt: Date.now(),
-        messages: session.messages.map((item) => {
-          const itemEvents = groupedEvents.get(item.id)
-          if (!itemEvents || itemEvents.length === 0) {
-            return item
-          }
-          return itemEvents.reduce((message, event) => applyStreamEventToMessageV2(message, event), item)
-        })
-      }
-    }))
+        return {
+          ...session,
+          updatedAt: Date.now(),
+          messages: session.messages.map((item) => {
+            const itemEvents = groupedEvents.get(item.id)
+            if (!itemEvents || itemEvents.length === 0) {
+              return item
+            }
+            return itemEvents.reduce(
+              (message, event) => applyStreamEventToMessageV2(message, event),
+              item
+            )
+          })
+        }
+      })
+    )
 
     if (queuedStreamEventsRef.current.length > 0) {
       streamFlushFrameRef.current = window.requestAnimationFrame(() => {
@@ -1041,9 +1231,10 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
       return
     }
 
-    const nextActiveSessionId = activeSessionId === sessionId
-      ? (remaining[sessionIndex] ?? remaining[sessionIndex - 1] ?? remaining[0]).id
-      : activeSessionId
+    const nextActiveSessionId =
+      activeSessionId === sessionId
+        ? (remaining[sessionIndex] ?? remaining[sessionIndex - 1] ?? remaining[0]).id
+        : activeSessionId
 
     setSessions(remaining)
     setActiveSessionId(nextActiveSessionId)
@@ -1064,14 +1255,17 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
     setCompacting(true)
     try {
       const compactingMessageId = crypto.randomUUID()
-      updateActiveSession((currentSession) => ({
-        ...currentSession,
-        updatedAt: Date.now(),
-        messages: [
-          ...currentSession.messages,
-          { id: compactingMessageId, role: 'assistant', content: '自动压缩上下文中…' }
-        ]
-      }), { persist: true })
+      updateActiveSession(
+        (currentSession) => ({
+          ...currentSession,
+          updatedAt: Date.now(),
+          messages: [
+            ...currentSession.messages,
+            { id: compactingMessageId, role: 'assistant', content: '自动压缩上下文中…' }
+          ]
+        }),
+        { persist: true }
+      )
       const result = await requestJson<{ summary: string }>('/ai/compact', {
         method: 'POST',
         body: JSON.stringify({
@@ -1080,16 +1274,24 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
           workspace: getWorkspaceSnapshotRef.current?.()
         })
       })
-      updateActiveSession((currentSession) => ({
-        ...currentSession,
-        updatedAt: Date.now(),
-        compactedAt: Date.now(),
-        compressedSummary: result.summary,
-        messages: currentSession.messages
-          .filter((item) => item.id === compactingMessageId || item.role === 'user' || item.role === 'assistant')
-          .slice(-2)
-          .map((item) => item.id === compactingMessageId ? { ...item, content: '已自动压缩上下文。' } : item)
-      }), { persist: true })
+      updateActiveSession(
+        (currentSession) => ({
+          ...currentSession,
+          updatedAt: Date.now(),
+          compactedAt: Date.now(),
+          compressedSummary: result.summary,
+          messages: currentSession.messages
+            .filter(
+              (item) =>
+                item.id === compactingMessageId || item.role === 'user' || item.role === 'assistant'
+            )
+            .slice(-2)
+            .map((item) =>
+              item.id === compactingMessageId ? { ...item, content: '已自动压缩上下文。' } : item
+            )
+        }),
+        { persist: true }
+      )
       return true
     } catch (err) {
       showError(err instanceof Error ? err.message : '上下文压缩失败')
@@ -1106,11 +1308,16 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
   }
 
   const addConfig = (): void => {
-    setConfigs((current) => [...current, createAIConfigItem({ name: `AI 配置 ${current.length + 1}` })])
+    setConfigs((current) => [
+      ...current,
+      createAIConfigItem({ name: `AI 配置 ${current.length + 1}` })
+    ])
   }
 
   const updateConfig = (id: string, patch: Partial<AIConfigItem>): void => {
-    setConfigs((current) => current.map((item) => item.id === id ? createAIConfigItem({ ...item, ...patch }) : item))
+    setConfigs((current) =>
+      current.map((item) => (item.id === id ? createAIConfigItem({ ...item, ...patch }) : item))
+    )
   }
 
   const removeConfig = (id: string): void => {
@@ -1118,7 +1325,9 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
   }
 
   const toggleConfig = (id: string, enabled: boolean): void => {
-    setConfigs((current) => current.map((item) => ({ ...item, enabled: enabled && item.id === id })))
+    setConfigs((current) =>
+      current.map((item) => ({ ...item, enabled: enabled && item.id === id }))
+    )
   }
 
   const testAI = async (): Promise<void> => {
@@ -1134,7 +1343,10 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
         method: 'POST',
         body: JSON.stringify({ config: next })
       })
-      const nextResult = { success: result.success, message: result.message || (result.success ? 'AI 配置可用' : 'AI 配置不可用') }
+      const nextResult = {
+        success: result.success,
+        message: result.message || (result.success ? 'AI 配置可用' : 'AI 配置不可用')
+      }
       setTestResult(nextResult)
       if (result.success) {
         messageApi.success(nextResult.message)
@@ -1142,7 +1354,10 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
         showError(nextResult.message)
       }
     } catch (err) {
-      const nextResult = { success: false, message: err instanceof Error ? err.message : '测试连接失败' }
+      const nextResult = {
+        success: false,
+        message: err instanceof Error ? err.message : '测试连接失败'
+      }
       setTestResult(nextResult)
       showError(nextResult.message)
     } finally {
@@ -1172,14 +1387,19 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
     }
 
     let nextApiMessages = buildConversationMessages(activeSession)
-    if ((effectiveContextStats?.usage_ratio ?? 0) >= AUTO_COMPACT_USAGE_RATIO && !autoCompactRunningRef.current) {
+    if (
+      (effectiveContextStats?.usage_ratio ?? 0) >= AUTO_COMPACT_USAGE_RATIO &&
+      !autoCompactRunningRef.current
+    ) {
       autoCompactRunningRef.current = true
       try {
         await compactActiveSession()
       } finally {
         autoCompactRunningRef.current = false
       }
-      nextApiMessages = buildConversationMessages(sessions.find((item) => item.id === activeSessionId))
+      nextApiMessages = buildConversationMessages(
+        sessions.find((item) => item.id === activeSessionId)
+      )
     }
 
     const userMessage: ChatMessage = { id: crypto.randomUUID(), role: 'user', content }
@@ -1190,7 +1410,11 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
         ...session,
         title: wasEmpty ? sessionTitle(content) : session.title,
         updatedAt: Date.now(),
-        messages: [...session.messages, userMessage, { id: assistantId, role: 'assistant', content: '', toolCalls: [] }]
+        messages: [
+          ...session.messages,
+          userMessage,
+          { id: assistantId, role: 'assistant', content: '', toolCalls: [] }
+        ]
       }
     })
     setInput('')
@@ -1200,7 +1424,13 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
       await streamChat([...nextApiMessages, { role: 'user', content }], assistantId)
     } catch (err) {
       const error = err instanceof Error ? err.message : 'AI 请求失败'
-      updateActiveSession((session) => ({ ...session, updatedAt: Date.now(), messages: session.messages.map((item) => (item.id === assistantId ? { ...item, content: item.content || error } : item)) }))
+      updateActiveSession((session) => ({
+        ...session,
+        updatedAt: Date.now(),
+        messages: session.messages.map((item) =>
+          item.id === assistantId ? { ...item, content: item.content || error } : item
+        )
+      }))
       showError(error)
     } finally {
       streamIdRef.current = null
@@ -1214,7 +1444,10 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
     }
   }
 
-  const streamChat = async (nextMessages: { role: string; content: string }[], assistantId: string): Promise<void> => {
+  const streamChat = async (
+    nextMessages: { role: string; content: string }[],
+    assistantId: string
+  ): Promise<void> => {
     let buffer = ''
 
     const streamId = streamIdRef.current ?? crypto.randomUUID()
@@ -1249,9 +1482,7 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
       const remaining = buffer.trim()
       if (remaining) {
         try {
-          const line = remaining
-            .split('\n')
-            .find((item) => item.startsWith('data: '))
+          const line = remaining.split('\n').find((item) => item.startsWith('data: '))
           if (line) {
             applyStreamEvent(assistantId, JSON.parse(line.slice(6)) as StreamEvent)
           }
@@ -1348,7 +1579,10 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
     })
     */
   }
-  const confirmAction = async (confirmation: AgentConfirmationView, approved: boolean): Promise<void> => {
+  const confirmAction = async (
+    confirmation: AgentConfirmationView,
+    approved: boolean
+  ): Promise<void> => {
     const connectionContext = readConnectionContext()
     if (!connectionContext.connectionId) {
       showError('请先选择已打开的数据库连接')
@@ -1356,7 +1590,14 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
     }
     setConfirmingId(confirmation.id)
     try {
-      const result = await requestJson<{ message: string; executed?: boolean; sql?: string; result?: unknown; action?: string; backup?: unknown }>('/ai/confirm', {
+      const result = await requestJson<{
+        message: string
+        executed?: boolean
+        sql?: string
+        result?: unknown
+        action?: string
+        backup?: unknown
+      }>('/ai/confirm', {
         method: 'POST',
         body: JSON.stringify({
           connection_id: connectionContext.connectionId,
@@ -1371,15 +1612,25 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
       }
 
       const resultPayload = result.action === 'restore_backup' ? result.backup : result.result
-      const resultContent = approved ? `确认执行结果：${result.message}\n\n\`\`\`json\n${JSON.stringify(resultPayload ?? {}, null, 2)}\n\`\`\`` : result.message
-      const resultMessage: ChatMessage = { id: crypto.randomUUID(), role: 'assistant', content: resultContent }
+      const resultContent = approved
+        ? `确认执行结果：${result.message}\n\n\`\`\`json\n${JSON.stringify(resultPayload ?? {}, null, 2)}\n\`\`\``
+        : result.message
+      const resultMessage: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: resultContent
+      }
 
       if (!approved) {
         updateActiveSession((session) => ({
           ...session,
           updatedAt: Date.now(),
           messages: [
-            ...session.messages.map((item) => item.confirmation?.id === confirmation.id ? { ...item, confirmation: undefined } : item),
+            ...session.messages.map((item) =>
+              item.confirmation?.id === confirmation.id
+                ? { ...item, confirmation: undefined }
+                : item
+            ),
             resultMessage
           ]
         }))
@@ -1388,14 +1639,17 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
       }
 
       const assistantId = crypto.randomUUID()
-      const continuationContent = result.action === 'restore_backup'
-        ? `用户已确认并恢复备份，后端返回 executed=${result.executed === true ? 'true' : 'false'}，备份恢复结果如下。只有 executed=true 才能认为恢复成功；请基于该结果继续完成原计划的后续步骤，不要重复恢复已完成备份。\n\nBackup:\n${JSON.stringify(result.backup ?? {}, null, 2)}`
-        : `用户已确认并执行 SQL，后端返回 executed=${result.executed === true ? 'true' : 'false'}，SQL 和执行结果如下。只有 executed=true 才能认为该 SQL 执行成功；请基于该结果继续完成原计划的后续步骤，不要重复执行已完成 SQL。如果还需要创建其他表，必须继续逐条调用 execute_query(readonly=false) 并等待用户确认。\n\nSQL:\n${result.sql ?? confirmation.sql ?? ''}\n\nResult:\n${JSON.stringify(result.result ?? {}, null, 2)}`
+      const continuationContent =
+        result.action === 'restore_backup'
+          ? `用户已确认并恢复备份，后端返回 executed=${result.executed === true ? 'true' : 'false'}，备份恢复结果如下。只有 executed=true 才能认为恢复成功；请基于该结果继续完成原计划的后续步骤，不要重复恢复已完成备份。\n\nBackup:\n${JSON.stringify(result.backup ?? {}, null, 2)}`
+          : `用户已确认并执行 SQL，后端返回 executed=${result.executed === true ? 'true' : 'false'}，SQL 和执行结果如下。只有 executed=true 才能认为该 SQL 执行成功；请基于该结果继续完成原计划的后续步骤，不要重复执行已完成 SQL。如果还需要创建其他表，必须继续逐条调用 execute_query(readonly=false) 并等待用户确认。\n\nSQL:\n${result.sql ?? confirmation.sql ?? ''}\n\nResult:\n${JSON.stringify(result.result ?? {}, null, 2)}`
       updateActiveSession((session) => ({
         ...session,
         updatedAt: Date.now(),
         messages: [
-          ...session.messages.map((item) => item.confirmation?.id === confirmation.id ? { ...item, confirmation: undefined } : item),
+          ...session.messages.map((item) =>
+            item.confirmation?.id === confirmation.id ? { ...item, confirmation: undefined } : item
+          ),
           resultMessage,
           { id: assistantId, role: 'assistant', content: '', toolCalls: [] }
         ]
@@ -1404,17 +1658,22 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
       setSending(true)
       streamIdRef.current = crypto.randomUUID()
       try {
-        await streamChat([
-          ...apiMessages,
-          { role: 'assistant', content: resultContent },
-          { role: 'user', content: continuationContent }
-        ], assistantId)
+        await streamChat(
+          [
+            ...apiMessages,
+            { role: 'assistant', content: resultContent },
+            { role: 'user', content: continuationContent }
+          ],
+          assistantId
+        )
       } catch (err) {
         const error = err instanceof Error ? err.message : 'AI 继续执行失败'
         updateActiveSession((session) => ({
           ...session,
           updatedAt: Date.now(),
-          messages: session.messages.map((item) => item.id === assistantId ? { ...item, content: item.content || error } : item)
+          messages: session.messages.map((item) =>
+            item.id === assistantId ? { ...item, content: item.content || error } : item
+          )
         }))
         showError(error)
       } finally {
@@ -1429,7 +1688,9 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
   }
 
   const renderMarkdown = (content: string): { __html: string } => ({
-    __html: DOMPurify.sanitize(marked.parse(content || '...', { gfm: true, breaks: true }) as string)
+    __html: DOMPurify.sanitize(
+      marked.parse(content || '...', { gfm: true, breaks: true }) as string
+    )
   })
 
   const riskColor = (risk?: string): 'success' | 'warning' | 'error' | 'default' => {
@@ -1463,7 +1724,17 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
       return null
     }
     return (
-      <Card size="small" className="ai-agent-card" title={<Space><ClockCircleOutlined />Agent 计划<Tag color={riskColor(item.plan.risk_level)}>{item.plan.risk_level ?? 'safe'}</Tag></Space>}>
+      <Card
+        size="small"
+        className="ai-agent-card"
+        title={
+          <Space>
+            <ClockCircleOutlined />
+            Agent 计划
+            <Tag color={riskColor(item.plan.risk_level)}>{item.plan.risk_level ?? 'safe'}</Tag>
+          </Space>
+        }
+      >
         <Space direction="vertical" className="full-width" size={8}>
           <Typography.Text strong>{item.plan.goal}</Typography.Text>
           <Typography.Text type="secondary">{item.plan.summary}</Typography.Text>
@@ -1471,10 +1742,20 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
             direction="vertical"
             size="small"
             items={(item.steps ?? item.plan.steps).map((step) => ({
-              title: <Space>{step.title}<Tag color={riskColor(step.risk_level)}>{step.risk_level ?? 'safe'}</Tag></Space>,
+              title: (
+                <Space>
+                  {step.title}
+                  <Tag color={riskColor(step.risk_level)}>{step.risk_level ?? 'safe'}</Tag>
+                </Space>
+              ),
               description: step.description,
               status: stepStatus(step.status),
-              icon: step.status === 'completed' ? <CheckCircleOutlined /> : step.status === 'failed' ? <ExclamationCircleOutlined /> : undefined
+              icon:
+                step.status === 'completed' ? (
+                  <CheckCircleOutlined />
+                ) : step.status === 'failed' ? (
+                  <ExclamationCircleOutlined />
+                ) : undefined
             }))}
           />
         </Space>
@@ -1492,18 +1773,39 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
         className="ai-confirmation-card"
         type={confirmation.risk_level === 'dangerous' ? 'error' : 'warning'}
         showIcon
-        message={<Space>{confirmation.title}<Tag color={riskColor(confirmation.risk_level)}>{confirmation.risk_level}</Tag></Space>}
-        description={(
+        message={
+          <Space>
+            {confirmation.title}
+            <Tag color={riskColor(confirmation.risk_level)}>{confirmation.risk_level}</Tag>
+          </Space>
+        }
+        description={
           <Space direction="vertical" className="full-width">
             <Typography.Text>{confirmation.explanation}</Typography.Text>
             {confirmation.sql && <pre>{confirmation.sql}</pre>}
-            {confirmation.estimated_impact !== undefined && <pre>{String(JSON.stringify(confirmation.estimated_impact, null, 2))}</pre>}
+            {confirmation.estimated_impact !== undefined && (
+              <pre>{String(JSON.stringify(confirmation.estimated_impact, null, 2))}</pre>
+            )}
             <Space>
-              <Button size="small" onClick={() => void confirmAction(confirmation, false)} loading={confirmingId === confirmation.id}>取消</Button>
-              <Button size="small" danger type="primary" onClick={() => void confirmAction(confirmation, true)} loading={confirmingId === confirmation.id}>确认执行</Button>
+              <Button
+                size="small"
+                onClick={() => void confirmAction(confirmation, false)}
+                loading={confirmingId === confirmation.id}
+              >
+                取消
+              </Button>
+              <Button
+                size="small"
+                danger
+                type="primary"
+                onClick={() => void confirmAction(confirmation, true)}
+                loading={confirmingId === confirmation.id}
+              >
+                确认执行
+              </Button>
             </Space>
           </Space>
-        )}
+        }
       />
     )
   }
@@ -1515,10 +1817,17 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
 
     const expanded = item.thinking.expanded ?? !item.thinking.done
     const thinkingLabel = '\u601D\u8003\uff1A'
-    const expandedText = (item.thinking.content || item.thinking.preview || item.thinking.summary || '')
+    const expandedText = (
+      item.thinking.content ||
+      item.thinking.preview ||
+      item.thinking.summary ||
+      ''
+    )
       .replace(/\r\n/g, '\n')
       .trim()
-    const collapsedText = expandedText.replace(/\s+/g, ' ').trim() || (item.thinking.summary || '').replace(/\s+/g, ' ').trim()
+    const collapsedText =
+      expandedText.replace(/\s+/g, ' ').trim() ||
+      (item.thinking.summary || '').replace(/\s+/g, ' ').trim()
 
     if (!collapsedText) {
       return null
@@ -1532,16 +1841,33 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
             suppressAutoScrollRef.current = true
             updateActiveSession((session) => ({
               ...session,
-              messages: session.messages.map((message) => (
+              messages: session.messages.map((message) =>
                 message.id === item.id && message.thinking
-                  ? { ...message, thinking: { ...message.thinking, expanded: !(message.thinking.expanded ?? !message.thinking.done) } }
+                  ? {
+                      ...message,
+                      thinking: {
+                        ...message.thinking,
+                        expanded: !(message.thinking.expanded ?? !message.thinking.done)
+                      }
+                    }
                   : message
-              ))
+              )
             }))
           }}
         >
-          <span className={`ai-thinking-toggle${item.thinking.done ? '' : ' is-loading'}`} aria-hidden="true">
-            {item.thinking.done ? (expanded ? <DownOutlined /> : <RightOutlined />) : <LoadingOutlined spin />}
+          <span
+            className={`ai-thinking-toggle${item.thinking.done ? '' : ' is-loading'}`}
+            aria-hidden="true"
+          >
+            {item.thinking.done ? (
+              expanded ? (
+                <DownOutlined />
+              ) : (
+                <RightOutlined />
+              )
+            ) : (
+              <LoadingOutlined spin />
+            )}
           </span>
           <span className={`ai-thinking-content${expanded ? ' expanded' : ''}`}>
             <span className="ai-thinking-inline-title">{thinkingLabel}</span>
@@ -1554,11 +1880,17 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
     )
   }
 
-  const renderThinkingSegment = (item: ChatMessage, segment: ChatMessageSegment): React.JSX.Element | null => {
+  const renderThinkingSegment = (
+    item: ChatMessage,
+    segment: ChatMessageSegment
+  ): React.JSX.Element | null => {
     const expanded = segment.expanded ?? !segment.done
     const thinkingLabel = '\u601D\u8003\uff1A'
-    const fullContent = (segment.content || segment.preview || segment.summary || '').replace(/\r\n/g, '\n').trim()
-    const compactContent = fullContent.replace(/\s+/g, ' ').trim() || (segment.summary || '').replace(/\s+/g, ' ').trim()
+    const fullContent = (segment.content || segment.preview || segment.summary || '')
+      .replace(/\r\n/g, '\n')
+      .trim()
+    const compactContent =
+      fullContent.replace(/\s+/g, ' ').trim() || (segment.summary || '').replace(/\s+/g, ' ').trim()
 
     if (!compactContent) {
       return null
@@ -1572,21 +1904,34 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
             suppressAutoScrollRef.current = true
             updateActiveSession((session) => ({
               ...session,
-              messages: session.messages.map((message) => (
+              messages: session.messages.map((message) =>
                 message.id === item.id && message.segments
                   ? {
                       ...message,
-                      segments: message.segments.map((current) => current.id === segment.id
-                        ? { ...current, expanded: !(current.expanded ?? !current.done) }
-                        : current)
+                      segments: message.segments.map((current) =>
+                        current.id === segment.id
+                          ? { ...current, expanded: !(current.expanded ?? !current.done) }
+                          : current
+                      )
                     }
                   : message
-              ))
+              )
             }))
           }}
         >
-          <span className={`ai-thinking-toggle${segment.done ? '' : ' is-loading'}`} aria-hidden="true">
-            {segment.done ? (expanded ? <DownOutlined /> : <RightOutlined />) : <LoadingOutlined spin />}
+          <span
+            className={`ai-thinking-toggle${segment.done ? '' : ' is-loading'}`}
+            aria-hidden="true"
+          >
+            {segment.done ? (
+              expanded ? (
+                <DownOutlined />
+              ) : (
+                <RightOutlined />
+              )
+            ) : (
+              <LoadingOutlined spin />
+            )}
           </span>
           <span className={`ai-thinking-content${expanded ? ' expanded' : ''}`}>
             <span className="ai-thinking-inline-title">{thinkingLabel}</span>
@@ -1602,45 +1947,65 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
   const renderAssistantContent = (item: ChatMessage): React.JSX.Element => {
     if (item.segments && item.segments.length > 0) {
       const hasThinkingSegment = item.segments.some((segment) => segment.type === 'thinking')
-      const hasContentSegment = item.segments.some((segment) => segment.type === 'content' && segment.content.trim())
+      const hasContentSegment = item.segments.some(
+        (segment) => segment.type === 'content' && segment.content.trim()
+      )
       return (
         <>
           {!hasThinkingSegment && renderThinking(item)}
-          {item.segments.map((segment) => (
-            segment.type === 'thinking'
-              ? renderThinkingSegment(item, segment)
-              : segment.type === 'tool'
-                ? (
-                    <Collapse
-                      key={segment.id}
-                      size="small"
-                      className="ai-tool-calls ai-tool-calls-inline"
-                      items={[{
-                        key: segment.id,
-                        label: (
-                          <Space>
-                            {(() => {
-                              const tool = (item.toolCalls ?? []).find((current) => current.id === segment.toolCallId)
-                              return tool?.status === 'running'
-                                ? <LoadingOutlined spin />
-                                : tool?.status === 'waiting_confirm'
-                                  ? <ClockCircleOutlined style={{ color: '#faad14' }} />
-                                  : tool?.status === 'completed'
-                                    ? <CheckCircleOutlined style={{ color: '#52c41a' }} />
-                                    : <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
-                            })()}
-                            <ToolOutlined />
-                            {segment.preview || `工具：${segment.summary || segment.content}`}
-                          </Space>
-                        ),
-                        children: (
-                          <pre>{JSON.stringify((item.toolCalls ?? []).find((current) => current.id === segment.toolCallId) ?? {}, null, 2)}</pre>
-                        )
-                      }]}
-                    />
-                  )
-                : <div key={segment.id} className="ai-markdown" dangerouslySetInnerHTML={renderMarkdown(segment.content)} />
-          ))}
+          {item.segments.map((segment) =>
+            segment.type === 'thinking' ? (
+              renderThinkingSegment(item, segment)
+            ) : segment.type === 'tool' ? (
+              <Collapse
+                key={segment.id}
+                size="small"
+                className="ai-tool-calls ai-tool-calls-inline"
+                items={[
+                  {
+                    key: segment.id,
+                    label: (
+                      <Space>
+                        {(() => {
+                          const tool = (item.toolCalls ?? []).find(
+                            (current) => current.id === segment.toolCallId
+                          )
+                          return tool?.status === 'running' ? (
+                            <LoadingOutlined spin />
+                          ) : tool?.status === 'waiting_confirm' ? (
+                            <ClockCircleOutlined style={{ color: '#faad14' }} />
+                          ) : tool?.status === 'completed' ? (
+                            <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                          ) : (
+                            <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
+                          )
+                        })()}
+                        <ToolOutlined />
+                        {segment.preview || `工具：${segment.summary || segment.content}`}
+                      </Space>
+                    ),
+                    children: (
+                      <pre>
+                        {JSON.stringify(
+                          (item.toolCalls ?? []).find(
+                            (current) => current.id === segment.toolCallId
+                          ) ?? {},
+                          null,
+                          2
+                        )}
+                      </pre>
+                    )
+                  }
+                ]}
+              />
+            ) : (
+              <div
+                key={segment.id}
+                className="ai-markdown"
+                dangerouslySetInnerHTML={renderMarkdown(segment.content)}
+              />
+            )
+          )}
           {!hasContentSegment && item.content.trim() && (
             <div className="ai-markdown" dangerouslySetInnerHTML={renderMarkdown(item.content)} />
           )}
@@ -1674,12 +2039,24 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
           {contextSources.map((source) => {
             const isPrimary = source.id === primaryContextSourceId
             return (
-              <Flex key={source.id} align="center" justify="space-between" className="ai-context-source-item" gap={8}>
+              <Flex
+                key={source.id}
+                align="center"
+                justify="space-between"
+                className="ai-context-source-item"
+                gap={8}
+              >
                 <Space size={6} className="ai-context-source-main">
                   <DatabaseOutlined />
                   <div className="ai-context-source-text">
-                    <Typography.Text ellipsis title={contextSourceTitle(source)}>{contextSourceTitle(source)}</Typography.Text>
-                    <Typography.Text type="secondary">{source.connectionName} · {source.dbType} · {contextSourceTypeLabel[source.type]}{source.sizeDisplay ? ` · ${source.sizeDisplay}` : ''}</Typography.Text>
+                    <Typography.Text ellipsis title={contextSourceTitle(source)}>
+                      {contextSourceTitle(source)}
+                    </Typography.Text>
+                    <Typography.Text type="secondary">
+                      {source.connectionName} · {source.dbType} ·{' '}
+                      {contextSourceTypeLabel[source.type]}
+                      {source.sizeDisplay ? ` · ${source.sizeDisplay}` : ''}
+                    </Typography.Text>
                   </div>
                 </Space>
                 {isPrimary ? (
@@ -1716,7 +2093,11 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
               popupClassName="ai-session-select-popup"
               onChange={setActiveSessionId}
               popupMatchSelectWidth={false}
-              options={sessions.map((session) => ({ label: session.title, value: session.id, title: session.title }))}
+              options={sessions.map((session) => ({
+                label: session.title,
+                value: session.id,
+                title: session.title
+              }))}
               optionRender={(option) => {
                 const session = sessions.find((item) => item.id === option.value)
                 if (!session) {
@@ -1724,7 +2105,9 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
                 }
                 return (
                   <Flex align="center" justify="space-between" gap={8} className="full-width">
-                    <Typography.Text ellipsis title={session.title}>{session.title}</Typography.Text>
+                    <Typography.Text ellipsis title={session.title}>
+                      {session.title}
+                    </Typography.Text>
                     <Button
                       type="text"
                       size="small"
@@ -1747,14 +2130,35 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
             />
           </div>
           <div className="ai-panel-action-buttons">
-            <Button size="small" className="ai-panel-ghost-btn" icon={<PlusOutlined />} onClick={newSession}>新建</Button>
-            <Button size="small" className="ai-panel-ghost-btn" icon={<SettingOutlined />} onClick={() => setSettingsOpen(true)}>设置</Button>
+            <Button
+              size="small"
+              className="ai-panel-ghost-btn"
+              icon={<PlusOutlined />}
+              onClick={newSession}
+            >
+              新建
+            </Button>
+            <Button
+              size="small"
+              className="ai-panel-ghost-btn"
+              icon={<SettingOutlined />}
+              onClick={() => setSettingsOpen(true)}
+            >
+              设置
+            </Button>
           </div>
         </Space>
       </Flex>
       <Space direction="vertical" className="full-width ai-panel" size="middle">
         {!ready && <Alert type="warning" showIcon message="请先配置并启用 AI 接口" />}
-        {ready && !hasDatabaseContext && <Alert type="info" showIcon message="未选择上下文" description="当前仅支持 AI 问答、整理连接信息和生成 SQL 到查询窗口，不能执行数据库查询或结构读取任务。" />}
+        {ready && !hasDatabaseContext && (
+          <Alert
+            type="info"
+            showIcon
+            message="未选择上下文"
+            description="当前仅支持 AI 问答、整理连接信息和生成 SQL 到查询窗口，不能执行数据库查询或结构读取任务。"
+          />
+        )}
         {renderContextSources()}
         <div ref={scrollRef} className="ai-message-list">
           <List
@@ -1762,11 +2166,20 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
             locale={{ emptyText: '可以问我：列出当前库的表、分析某张表结构、生成查询 SQL。' }}
             renderItem={(item) => (
               <List.Item className={`ai-message ai-message-${item.role}`}>
-                <Card size="small" className={`full-width ai-message-card ai-message-card-${item.role}`} title={item.role === 'user' ? '你' : 'AI'}>
+                <Card
+                  size="small"
+                  className={`full-width ai-message-card ai-message-card-${item.role}`}
+                  title={item.role === 'user' ? '你' : 'AI'}
+                >
                   {item.role === 'assistant' ? renderAssistantContent(item) : null}
                   {renderAgentPlan(item)}
                   {renderConfirmation(item.confirmation)}
-                  {item.role === 'user' ? <div className="ai-markdown" dangerouslySetInnerHTML={renderMarkdown(item.content)} /> : null}
+                  {item.role === 'user' ? (
+                    <div
+                      className="ai-markdown"
+                      dangerouslySetInnerHTML={renderMarkdown(item.content)}
+                    />
+                  ) : null}
                 </Card>
               </List.Item>
             )}
@@ -1779,13 +2192,15 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
             className="ai-input-box"
             onChange={(event) => setInput(event.target.value)}
             onPressEnter={(event) => {
-              const pressed = normalizeShortcut(buildShortcutFromKeyboardEvent({
-                ctrlKey: event.ctrlKey,
-                metaKey: event.metaKey,
-                altKey: event.altKey,
-                shiftKey: event.shiftKey,
-                key: 'Enter'
-              }))
+              const pressed = normalizeShortcut(
+                buildShortcutFromKeyboardEvent({
+                  ctrlKey: event.ctrlKey,
+                  metaKey: event.metaKey,
+                  altKey: event.altKey,
+                  shiftKey: event.shiftKey,
+                  key: 'Enter'
+                })
+              )
               const sendShortcut = normalizeShortcut(shortcuts?.send || 'Enter')
               const newlineShortcut = normalizeShortcut(shortcuts?.newline || 'Shift+Enter')
 
@@ -1821,7 +2236,9 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
                 selectable: true,
                 selectedKeys: selectedConfigId ? [selectedConfigId] : [],
                 items: configs
-                  .filter((item) => item.base_url && item.api_key && item.model && item.max_context_tokens)
+                  .filter(
+                    (item) => item.base_url && item.api_key && item.model && item.max_context_tokens
+                  )
                   .map((item) => ({
                     key: item.id,
                     label: `${item.name} · ${item.model}`
@@ -1830,7 +2247,9 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
               }}
             >
               <button type="button" className="ai-model-trigger">
-                <span className="ai-model-trigger-name">{activeConfigItem?.model ?? '未连接 AI'}</span>
+                <span className="ai-model-trigger-name">
+                  {activeConfigItem?.model ?? '未连接 AI'}
+                </span>
                 <DownOutlined />
               </button>
             </Dropdown>
@@ -1841,16 +2260,22 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
                 status={contextLevel === 'full' ? 'exception' : 'normal'}
                 showInfo={false}
                 trailColor="rgba(255,255,255,0.08)"
-                strokeColor={contextLevel === 'full' ? '#ff6b6b' : contextLevel === 'warning' ? '#f7c45c' : '#79d7ff'}
+                strokeColor={
+                  contextLevel === 'full'
+                    ? '#ff6b6b'
+                    : contextLevel === 'warning'
+                      ? '#f7c45c'
+                      : '#79d7ff'
+                }
               />
               <Typography.Text type="secondary" className="ai-context-meter-text">
                 {!config?.max_context_tokens || config.max_context_tokens <= 0
                   ? '未设置上下文'
                   : effectiveContextStats
-                  ? maxContextTokens > 0
-                    ? `上下文 ${formatTokenK(effectiveContextStats.used_tokens)} / ${formatTokenK(maxContextTokens)}`
-                    : `上下文 ${formatTokenK(effectiveContextStats.used_tokens)} / 未配置`
-                  : '上下文统计中…'}
+                    ? maxContextTokens > 0
+                      ? `上下文 ${formatTokenK(effectiveContextStats.used_tokens)} / ${formatTokenK(maxContextTokens)}`
+                      : `上下文 ${formatTokenK(effectiveContextStats.used_tokens)} / 未配置`
+                    : '上下文统计中…'}
               </Typography.Text>
             </div>
             {sending ? (
@@ -1860,7 +2285,9 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
                 className="ai-send-button"
                 icon={<StopOutlined />}
                 onClick={stopMessage}
-                onPointerMove={(event) => applySendButtonMagnet(sendButtonRef.current, event.clientX, event.clientY)}
+                onPointerMove={(event) =>
+                  applySendButtonMagnet(sendButtonRef.current, event.clientX, event.clientY)
+                }
                 onPointerLeave={() => resetSendButtonMagnet(sendButtonRef.current)}
                 onBlur={() => resetSendButtonMagnet(sendButtonRef.current)}
               />
@@ -1872,7 +2299,9 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
                 icon={<SendOutlined />}
                 disabled={!ready || !input.trim() || !activeSessionId}
                 onClick={() => void sendMessage()}
-                onPointerMove={(event) => applySendButtonMagnet(sendButtonRef.current, event.clientX, event.clientY)}
+                onPointerMove={(event) =>
+                  applySendButtonMagnet(sendButtonRef.current, event.clientX, event.clientY)
+                }
                 onPointerLeave={() => resetSendButtonMagnet(sendButtonRef.current)}
                 onBlur={() => resetSendButtonMagnet(sendButtonRef.current)}
               />
@@ -1881,15 +2310,17 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
         </div>
       </Space>
       <Modal
-        title={(
+        title={
           <Space className="ai-settings-title" size={10}>
-            <span className="ai-settings-title-orb"><SettingOutlined /></span>
+            <span className="ai-settings-title-orb">
+              <SettingOutlined />
+            </span>
             <span className="ai-settings-title-copy">
               <Typography.Text strong>AI 设置</Typography.Text>
               <Typography.Text type="secondary">配置模型、上下文与连接测试</Typography.Text>
             </span>
           </Space>
-        )}
+        }
         open={settingsOpen}
         onCancel={() => setSettingsOpen(false)}
         footer={null}
@@ -1898,11 +2329,24 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
       >
         <Space direction="vertical" className="full-width ai-settings-body" size="middle">
           <Flex justify="space-between" align="center" className="ai-settings-toolbar">
-            <Typography.Text type="secondary">可添加多个 OpenAI 兼容接口配置；同一时间最多启用一个，也可以全部关闭。</Typography.Text>
-            <Button className="ai-panel-ghost-btn ai-settings-add-btn" icon={<PlusOutlined />} onClick={addConfig}>添加配置</Button>
+            <Typography.Text type="secondary">
+              可添加多个 OpenAI 兼容接口配置；同一时间最多启用一个，也可以全部关闭。
+            </Typography.Text>
+            <Button
+              className="ai-panel-ghost-btn ai-settings-add-btn"
+              icon={<PlusOutlined />}
+              onClick={addConfig}
+            >
+              添加配置
+            </Button>
           </Flex>
           {configs.length === 0 ? (
-            <Alert type="info" showIcon message="暂无 AI 配置" description="添加配置并启用后，Djinn Agent 才会连接 AI。" />
+            <Alert
+              type="info"
+              showIcon
+              message="暂无 AI 配置"
+              description="添加配置并启用后，Djinn Agent 才会连接 AI。"
+            />
           ) : (
             <Collapse
               accordion={false}
@@ -1910,47 +2354,103 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
               items={configs.map((item, index) => ({
                 key: item.id,
                 className: item.enabled ? 'ai-config-panel-enabled' : undefined,
-                label: <Space><Typography.Text strong>{item.name || `AI 配置 ${index + 1}`}</Typography.Text><Tag>{item.provider === 'anthropic' ? 'Anthropic 兼容接口' : 'OpenAI 兼容接口'}</Tag>{item.enabled && <Tag color="success">已启用</Tag>}</Space>,
+                label: (
+                  <Space>
+                    <Typography.Text strong>{item.name || `AI 配置 ${index + 1}`}</Typography.Text>
+                    <Tag>
+                      {item.provider === 'anthropic' ? 'Anthropic 兼容接口' : 'OpenAI 兼容接口'}
+                    </Tag>
+                    {item.enabled && <Tag color="success">已启用</Tag>}
+                  </Space>
+                ),
                 extra: (
                   <Space onClick={(event) => event.stopPropagation()}>
-                    <Switch className="ai-config-switch" size="small" checked={item.enabled} onChange={(checked) => toggleConfig(item.id, checked)} />
-                    <Button type="text" danger size="small" icon={<DeleteOutlined />} onClick={() => removeConfig(item.id)} />
+                    <Switch
+                      className="ai-config-switch"
+                      size="small"
+                      checked={item.enabled}
+                      onChange={(checked) => toggleConfig(item.id, checked)}
+                    />
+                    <Button
+                      type="text"
+                      danger
+                      size="small"
+                      icon={<DeleteOutlined />}
+                      onClick={() => removeConfig(item.id)}
+                    />
                   </Space>
                 ),
                 children: (
                   <Form layout="vertical" className="ai-settings-form">
                     <Form.Item label="配置名称">
-                      <Input value={item.name} placeholder="例如：Claude 中转" onChange={(event) => updateConfig(item.id, { name: event.target.value })} />
+                      <Input
+                        value={item.name}
+                        placeholder="例如：Claude 中转"
+                        onChange={(event) => updateConfig(item.id, { name: event.target.value })}
+                      />
                     </Form.Item>
                     <Form.Item label="接口类型">
-                      <Select popupClassName="ai-settings-select-popup" value={item.provider ?? 'openai-compatible'} options={[{ label: 'OpenAI 兼容接口', value: 'openai-compatible' }, { label: 'Anthropic 兼容接口', value: 'anthropic' }]} onChange={(value) => updateConfig(item.id, { provider: value })} />
+                      <Select
+                        popupClassName="ai-settings-select-popup"
+                        value={item.provider ?? 'openai-compatible'}
+                        options={[
+                          { label: 'OpenAI 兼容接口', value: 'openai-compatible' },
+                          { label: 'Anthropic 兼容接口', value: 'anthropic' }
+                        ]}
+                        onChange={(value) => updateConfig(item.id, { provider: value })}
+                      />
                     </Form.Item>
                     <Form.Item label="Base URL" required>
-                      <Input value={item.base_url} placeholder="例如：https://api.openai.com/v1" onChange={(event) => updateConfig(item.id, { base_url: event.target.value })} />
+                      <Input
+                        value={item.base_url}
+                        placeholder="例如：https://api.openai.com/v1"
+                        onChange={(event) =>
+                          updateConfig(item.id, { base_url: event.target.value })
+                        }
+                      />
                     </Form.Item>
                     <Form.Item label="API Key" required>
-                      <Input.Password value={item.api_key} onChange={(event) => updateConfig(item.id, { api_key: event.target.value })} />
+                      <Input.Password
+                        className="ai-settings-api-key-input"
+                        value={item.api_key}
+                        onChange={(event) => updateConfig(item.id, { api_key: event.target.value })}
+                      />
                     </Form.Item>
                     <Form.Item label="Model" required>
-                      <Input value={item.model} placeholder="例如：claude-sonnet-4-6 或 gpt-4o-mini" onChange={(event) => updateConfig(item.id, { model: event.target.value })} />
+                      <Input
+                        value={item.model}
+                        placeholder="例如：claude-sonnet-4-6 或 gpt-4o-mini"
+                        onChange={(event) => updateConfig(item.id, { model: event.target.value })}
+                      />
                     </Form.Item>
-                    <Form.Item label="最大上下文" required extra="这里按 k 单位填写真实最大上下文，例如填 200 表示 200k，填 1000 表示 1M。">
+                    <Form.Item
+                      label="最大上下文"
+                      required
+                      extra="这里按 k 单位填写真实最大上下文，例如填 200 表示 200k，填 1000 表示 1M。"
+                    >
                       <InputNumber
                         min={1}
                         step={1}
                         className="full-width"
-                        value={typeof item.max_context_tokens === 'number' && item.max_context_tokens > 0 ? item.max_context_tokens / 1000 : undefined}
+                        value={
+                          typeof item.max_context_tokens === 'number' && item.max_context_tokens > 0
+                            ? item.max_context_tokens / 1000
+                            : undefined
+                        }
                         placeholder="例如：200"
-                        formatter={(value) => value === undefined || value === null ? '' : `${value}`}
+                        formatter={(value) =>
+                          value === undefined || value === null ? '' : `${value}`
+                        }
                         parser={(value) => {
                           const normalized = String(value ?? '').replace(/[^\d.]/g, '')
                           return normalized ? Number(normalized) : 0
                         }}
                         onChange={(value) => {
                           updateConfig(item.id, {
-                            max_context_tokens: typeof value === 'number' && Number.isFinite(value) && value > 0
-                              ? Math.max(1000, Math.round(value) * 1000)
-                              : undefined
+                            max_context_tokens:
+                              typeof value === 'number' && Number.isFinite(value) && value > 0
+                                ? Math.max(1000, Math.round(value) * 1000)
+                                : undefined
                           })
                         }}
                       />
@@ -1960,10 +2460,24 @@ export default function AIPanel({ requestJson, hasDatabaseContext, getConnection
               }))}
             />
           )}
-          {testResult && <Alert type={testResult.success ? 'success' : 'error'} showIcon message={testResult.message} />}
+          {testResult && (
+            <Alert
+              type={testResult.success ? 'success' : 'error'}
+              showIcon
+              message={testResult.message}
+            />
+          )}
           <Space className="ai-settings-actions">
-            <Button type="primary" className="ai-settings-primary-btn" onClick={() => void saveConfigs().then(() => setSettingsOpen(false))}>保存</Button>
-            <Button className="ai-panel-ghost-btn" loading={testing} onClick={() => void testAI()}>测试连接</Button>
+            <Button
+              type="primary"
+              className="ai-settings-primary-btn"
+              onClick={() => void saveConfigs().then(() => setSettingsOpen(false))}
+            >
+              保存
+            </Button>
+            <Button className="ai-panel-ghost-btn" loading={testing} onClick={() => void testAI()}>
+              测试连接
+            </Button>
           </Space>
         </Space>
       </Modal>

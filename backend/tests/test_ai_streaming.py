@@ -168,6 +168,53 @@ class DatabaseAgentStreamingTests(unittest.TestCase):
             ],
         )
 
+    def test_openai_stream_chat_supports_mapping_tool_call_deltas(self) -> None:
+        config = AIConfig(provider="openai-compatible", base_url="https://example.com/v1", api_key="test", model="demo", max_context_tokens=200_000)
+        agent = DatabaseAgent(None, config)
+        agent.client = FakeOpenAIClient(
+            [
+                [
+                    FakeObject(
+                        choices=[
+                            FakeObject(
+                                delta=FakeObject(
+                                    tool_calls=[
+                                        {
+                                            "index": 0,
+                                            "id": "call_mapping",
+                                            "type": "function",
+                                            "function": {
+                                                "name": "append_query_sql",
+                                                "arguments": '{"sql":"SELECT 1"}',
+                                            },
+                                        }
+                                    ]
+                                ),
+                                finish_reason="tool_calls",
+                            )
+                        ]
+                    )
+                ],
+                [FakeObject(choices=[FakeObject(delta=FakeObject(content="done"), finish_reason="stop")])],
+            ]
+        )
+
+        tool_calls: list[tuple[str, dict[str, Any]]] = []
+
+        def fake_call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+            tool_calls.append((name, arguments))
+            return {"ok": True}
+
+        agent.call_tool = fake_call_tool  # type: ignore[method-assign]
+
+        events = list(agent.stream_chat([{"role": "user", "content": "use a tool"}]))
+
+        self.assertEqual(tool_calls, [("append_query_sql", {"sql": "SELECT 1"})])
+        self.assertIn(
+            {"type": "tool_start", "tool_call_id": "call_mapping", "name": "append_query_sql", "arguments": {"sql": "SELECT 1"}},
+            events,
+        )
+
     def test_anthropic_stream_chat_emits_incremental_reasoning_and_tokens(self) -> None:
         config = AIConfig(provider="anthropic", base_url="https://example.com", api_key="test", model="demo", max_context_tokens=200_000)
         agent = DatabaseAgent(None, config)

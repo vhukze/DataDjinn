@@ -27,7 +27,9 @@ function WorkspaceTabContentInner({
 }: {
   tab: WorkspaceTabBase
   active: boolean
-  renderWorkspaceTabRef: React.MutableRefObject<(tab: WorkspaceTab, active: boolean) => React.ReactNode>
+  renderWorkspaceTabRef: React.MutableRefObject<
+    (tab: WorkspaceTab, active: boolean) => React.ReactNode
+  >
   renderVersionToken: unknown
 }) {
   const fullTab = useWorkspaceStore(useCallback((state) => state.getTabByKey(tab.key), [tab.key]))
@@ -40,36 +42,45 @@ function WorkspaceTabContentInner({
 const WorkspaceTabContent = memo(WorkspaceTabContentInner) as (props: {
   tab: WorkspaceTabBase
   active: boolean
-  renderWorkspaceTabRef: React.MutableRefObject<(tab: WorkspaceTab, active: boolean) => React.ReactNode>
+  renderWorkspaceTabRef: React.MutableRefObject<
+    (tab: WorkspaceTab, active: boolean) => React.ReactNode
+  >
   renderVersionToken: unknown
 }) => React.ReactElement
 
-const WorkspaceTabPane = memo(function WorkspaceTabPane({
-  tab,
-  active,
-  renderWorkspaceTabRef,
-  renderVersionToken
-}: {
-  tab: WorkspaceTabBase
-  active: boolean
-  renderWorkspaceTabRef: React.MutableRefObject<(tab: WorkspaceTab, active: boolean) => React.ReactNode>
-  renderVersionToken: unknown
-}) {
-  return (
-    <div className={active ? 'workspace-active-content' : 'workspace-inactive-content'} aria-hidden={!active}>
-      <WorkspaceTabContent
-        tab={tab}
-        active={active}
-        renderWorkspaceTabRef={renderWorkspaceTabRef}
-        renderVersionToken={renderVersionToken}
-      />
-    </div>
-  )
-}, (prev, next) => (
-  prev.tab === next.tab
-  && prev.active === next.active
-  && prev.renderVersionToken === next.renderVersionToken
-))
+const WorkspaceTabPane = memo(
+  function WorkspaceTabPane({
+    tab,
+    active,
+    renderWorkspaceTabRef,
+    renderVersionToken
+  }: {
+    tab: WorkspaceTabBase
+    active: boolean
+    renderWorkspaceTabRef: React.MutableRefObject<
+      (tab: WorkspaceTab, active: boolean) => React.ReactNode
+    >
+    renderVersionToken: unknown
+  }) {
+    return (
+      <div
+        className={active ? 'workspace-active-content' : 'workspace-inactive-content'}
+        aria-hidden={!active}
+      >
+        <WorkspaceTabContent
+          tab={tab}
+          active={active}
+          renderWorkspaceTabRef={renderWorkspaceTabRef}
+          renderVersionToken={renderVersionToken}
+        />
+      </div>
+    )
+  },
+  (prev, next) =>
+    prev.tab === next.tab &&
+    prev.active === next.active &&
+    prev.renderVersionToken === next.renderVersionToken
+)
 
 function WorkspaceTabsViewInner({
   workspaceTabs,
@@ -82,8 +93,11 @@ function WorkspaceTabsViewInner({
 }: WorkspaceTabsViewProps) {
   const [editingTabKey, setEditingTabKey] = useState<string>()
   const [editingTabTitle, setEditingTabTitle] = useState('')
-  const [mountedTabKeys, setMountedTabKeys] = useState<string[]>(() => activeTabKey ? [activeTabKey] : [])
-  const renderWorkspaceTabRef = useRef<(tab: WorkspaceTab, active: boolean) => React.ReactNode>(renderWorkspaceTab)
+  const [mountedTabKeys, setMountedTabKeys] = useState<string[]>(() =>
+    activeTabKey ? [activeTabKey] : []
+  )
+  const renderWorkspaceTabRef =
+    useRef<(tab: WorkspaceTab, active: boolean) => React.ReactNode>(renderWorkspaceTab)
   const onActiveTabChangeRef = useRef(onActiveTabChange)
   const onCloseTabRef = useRef(onCloseTab)
   const onRenameTabRef = useRef(onRenameTab)
@@ -138,11 +152,14 @@ function WorkspaceTabsViewInner({
       : next
   }, [activeTabKey, mountedTabKeys, workspaceTabs])
 
-  const handleTabEdit = useCallback((targetKey: React.MouseEvent | React.KeyboardEvent | string, action: 'add' | 'remove') => {
-    if (action === 'remove' && typeof targetKey === 'string') {
-      onCloseTabRef.current(targetKey)
-    }
-  }, [])
+  const handleTabEdit = useCallback(
+    (targetKey: React.MouseEvent | React.KeyboardEvent | string, action: 'add' | 'remove') => {
+      if (action === 'remove' && typeof targetKey === 'string') {
+        onCloseTabRef.current(targetKey)
+      }
+    },
+    []
+  )
 
   const commitTabRename = useCallback((tabKey: string, title: string) => {
     const nextTitle = title.trim()
@@ -152,43 +169,44 @@ function WorkspaceTabsViewInner({
     setEditingTabKey(undefined)
   }, [])
 
-  const items = useMemo(() => (
-    workspaceTabs.map((tab) => ({
-      key: tab.key,
-      label: editingTabKey === tab.key
-        ? (
-          <Input
-            size="small"
-            value={editingTabTitle}
-            autoFocus
-            onChange={(event) => setEditingTabTitle(event.currentTarget.value)}
-            onBlur={() => commitTabRename(tab.key, editingTabTitle)}
-            onPressEnter={() => commitTabRename(tab.key, editingTabTitle)}
-            onKeyDown={(event) => {
-              event.stopPropagation()
-              if (event.key === 'Escape') {
-                event.preventDefault()
-                setEditingTabKey(undefined)
-              }
-            }}
-          />
-        )
-        : (
-          <span
-            data-workspace-tab-key={tab.key}
-            onDoubleClick={(event) => {
-              event.stopPropagation()
-              setEditingTabKey(tab.key)
-              setEditingTabTitle(tab.title)
-            }}
-          >
-            {tab.title}
-          </span>
-        ),
-      closable: true,
-      children: null
-    }))
-  ), [activeTabKey, commitTabRename, editingTabKey, editingTabTitle, workspaceTabs])
+  const items = useMemo(
+    () =>
+      workspaceTabs.map((tab) => ({
+        key: tab.key,
+        label:
+          editingTabKey === tab.key ? (
+            <Input
+              size="small"
+              value={editingTabTitle}
+              autoFocus
+              onChange={(event) => setEditingTabTitle(event.currentTarget.value)}
+              onBlur={() => commitTabRename(tab.key, editingTabTitle)}
+              onPressEnter={() => commitTabRename(tab.key, editingTabTitle)}
+              onKeyDown={(event) => {
+                event.stopPropagation()
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  setEditingTabKey(undefined)
+                }
+              }}
+            />
+          ) : (
+            <span
+              data-workspace-tab-key={tab.key}
+              onDoubleClick={(event) => {
+                event.stopPropagation()
+                setEditingTabKey(tab.key)
+                setEditingTabTitle(tab.title)
+              }}
+            >
+              {tab.title}
+            </span>
+          ),
+        closable: true,
+        children: null
+      })),
+    [activeTabKey, commitTabRename, editingTabKey, editingTabTitle, workspaceTabs]
+  )
 
   const handleTabMiddleClose = useCallback((target: EventTarget | null) => {
     if (!(target instanceof HTMLElement)) {
@@ -198,8 +216,9 @@ function WorkspaceTabsViewInner({
       return
     }
     const tabNode = target.closest('.ant-tabs-tab')
-    const tabKey = tabNode?.getAttribute('data-node-key')
-      ?? tabNode?.querySelector<HTMLElement>('[data-workspace-tab-key]')?.dataset.workspaceTabKey
+    const tabKey =
+      tabNode?.getAttribute('data-node-key') ??
+      tabNode?.querySelector<HTMLElement>('[data-workspace-tab-key]')?.dataset.workspaceTabKey
     if (tabKey) {
       onCloseTabRef.current(tabKey)
     }
@@ -236,28 +255,32 @@ function WorkspaceTabsViewInner({
         items={items}
       />
       <div className="workspace-tab-panels">
-        {workspaceTabs.filter((tab) => renderedMountedTabKeys.includes(tab.key)).map((tab) => (
-          <WorkspaceTabPane
-            key={tab.key}
-            tab={tab}
-            active={tab.key === activeTabKey}
-            renderWorkspaceTabRef={renderWorkspaceTabRef}
-            renderVersionToken={renderVersionToken}
-          />
-        ))}
+        {workspaceTabs
+          .filter((tab) => renderedMountedTabKeys.includes(tab.key))
+          .map((tab) => (
+            <WorkspaceTabPane
+              key={tab.key}
+              tab={tab}
+              active={tab.key === activeTabKey}
+              renderWorkspaceTabRef={renderWorkspaceTabRef}
+              renderVersionToken={renderVersionToken}
+            />
+          ))}
       </div>
     </div>
   )
 }
 
-const WorkspaceTabsView = memo(WorkspaceTabsViewInner, (prev, next) => (
-  prev.workspaceTabs === next.workspaceTabs &&
-  prev.activeTabKey === next.activeTabKey &&
-  prev.renderWorkspaceTab === next.renderWorkspaceTab &&
-  prev.renderVersionToken === next.renderVersionToken &&
-  prev.onActiveTabChange === next.onActiveTabChange &&
-  prev.onCloseTab === next.onCloseTab &&
-  prev.onRenameTab === next.onRenameTab
-)) as (props: WorkspaceTabsViewProps) => React.ReactElement
+const WorkspaceTabsView = memo(
+  WorkspaceTabsViewInner,
+  (prev, next) =>
+    prev.workspaceTabs === next.workspaceTabs &&
+    prev.activeTabKey === next.activeTabKey &&
+    prev.renderWorkspaceTab === next.renderWorkspaceTab &&
+    prev.renderVersionToken === next.renderVersionToken &&
+    prev.onActiveTabChange === next.onActiveTabChange &&
+    prev.onCloseTab === next.onCloseTab &&
+    prev.onRenameTab === next.onRenameTab
+) as (props: WorkspaceTabsViewProps) => React.ReactElement
 
 export default WorkspaceTabsView

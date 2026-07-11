@@ -28,6 +28,9 @@ export const configureMonacoWorkers = (): void => {
   const environment: MonacoEnvironmentLike = {
     getWorker: (_workerId: string, label: string) => createMonacoWorker(label)
   }
-  ;(globalThis as typeof globalThis & { MonacoEnvironment?: MonacoEnvironmentLike }).MonacoEnvironment = environment
-  ;(window as Window & { MonacoEnvironment?: MonacoEnvironmentLike }).MonacoEnvironment = environment
+  ;(
+    globalThis as typeof globalThis & { MonacoEnvironment?: MonacoEnvironmentLike }
+  ).MonacoEnvironment = environment
+  ;(window as Window & { MonacoEnvironment?: MonacoEnvironmentLike }).MonacoEnvironment =
+    environment
 }

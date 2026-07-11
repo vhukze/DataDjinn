@@ -45,14 +45,22 @@
     radial-gradient(circle at 24% 20%, var(--dj-liquid-glow-a) 0%, transparent 46%),
     radial-gradient(circle at 76% 28%, var(--dj-liquid-glow-c) 0%, transparent 40%),
     radial-gradient(circle at 30% 18%, rgba(255, 255, 255, 0.32) 0%, transparent 46%),
-    linear-gradient(180deg, color-mix(in srgb, white 20%, var(--dj-bg-panel)) 0%, color-mix(in srgb, var(--dj-bg-glass) 92%, transparent) 58%, color-mix(in srgb, var(--dj-bg-panel) 94%, transparent) 100%);
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, white 20%, var(--dj-bg-panel)) 0%,
+      color-mix(in srgb, var(--dj-bg-glass) 92%, transparent) 58%,
+      color-mix(in srgb, var(--dj-bg-panel) 94%, transparent) 100%
+    );
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.34),
     inset 0 -1px 0 rgba(255, 255, 255, 0.08),
     0 2px 4px rgba(15, 23, 42, 0.06),
     0 10px 20px color-mix(in srgb, var(--dj-liquid-glow-b) 18%, transparent),
     0 14px 28px color-mix(in srgb, black 10%, transparent);
-  transition: color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+  transition:
+    color 0.16s ease,
+    background 0.16s ease,
+    box-shadow 0.16s ease;
 }
 
 .rb-dock-item:hover .rb-dock-icon,
@@ -62,7 +70,12 @@
     radial-gradient(circle at 24% 20%, var(--dj-liquid-glow-a) 0%, transparent 50%),
     radial-gradient(circle at 76% 28%, var(--dj-liquid-glow-b) 0%, transparent 44%),
     radial-gradient(circle at 30% 18%, rgba(255, 255, 255, 0.38) 0%, transparent 46%),
-    linear-gradient(180deg, color-mix(in srgb, var(--dj-accent-soft) 24%, white) 0%, color-mix(in srgb, var(--dj-bg-glass) 92%, white 6%) 58%, color-mix(in srgb, var(--dj-bg-panel) 96%, transparent) 100%);
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--dj-accent-soft) 24%, white) 0%,
+      color-mix(in srgb, var(--dj-bg-glass) 92%, white 6%) 58%,
+      color-mix(in srgb, var(--dj-bg-panel) 96%, transparent) 100%
+    );
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.38),
     inset 0 -1px 0 rgba(255, 255, 255, 0.1),
@@ -79,9 +92,18 @@
   color: var(--dj-accent);
   background:
     radial-gradient(circle at 24% 20%, rgba(255, 255, 255, 0.24) 0%, transparent 40%),
-    radial-gradient(circle at 76% 28%, color-mix(in srgb, var(--dj-liquid-glow-c) 84%, transparent) 0%, transparent 38%),
+    radial-gradient(
+      circle at 76% 28%,
+      color-mix(in srgb, var(--dj-liquid-glow-c) 84%, transparent) 0%,
+      transparent 38%
+    ),
     radial-gradient(circle at 30% 18%, rgba(255, 255, 255, 0.32) 0%, transparent 44%),
-    linear-gradient(180deg, color-mix(in srgb, #8ec9ff 56%, white) 0%, color-mix(in srgb, var(--dj-accent-soft) 42%, white) 54%, color-mix(in srgb, var(--dj-accent-soft) 18%, var(--dj-bg-glass)) 100%);
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, #8ec9ff 56%, white) 0%,
+      color-mix(in srgb, var(--dj-accent-soft) 42%, white) 54%,
+      color-mix(in srgb, var(--dj-accent-soft) 18%, var(--dj-bg-glass)) 100%
+    );
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.32),
     inset 0 -1px 0 rgba(255, 255, 255, 0.08),

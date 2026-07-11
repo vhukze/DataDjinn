@@ -11,7 +11,8 @@ export interface ConnectionTransferImportDialogOptions {
 export function buildConnectionTransferImportDialogOptions(
   source?: ConnectionTransferImportSource
 ): ConnectionTransferImportDialogOptions {
-  const normalizedSource: ConnectionTransferImportSource = source === 'dbeaver' ? 'dbeaver' : 'datadjinn'
+  const normalizedSource: ConnectionTransferImportSource =
+    source === 'dbeaver' ? 'dbeaver' : 'datadjinn'
 
   if (normalizedSource === 'dbeaver') {
     return {

@@ -10,10 +10,7 @@ import type {
 } from '../components/SqlEditor'
 import type { ConnectionInfo } from './connection-model'
 import { getQuerySelectWidth } from './query-utils'
-import type {
-  SqlEditorExecutionContext,
-  WorkspaceTab
-} from './workspace-model'
+import type { SqlEditorExecutionContext, WorkspaceTab } from './workspace-model'
 
 type ShortcutSettingsLike = {
   sql_execute: string
@@ -38,7 +35,10 @@ type QueryWorkspacePanelProps = {
   isDatabaseScopedType: (databaseType?: ConnectionInfo['database_type']) => boolean
   ensureDatabasesLoaded: (connectionId: string) => Promise<void> | void
   ensureSchemasLoaded: (connectionId: string, pgDatabaseName: string) => Promise<string[]>
-  preloadCompletionForDatabase: (connectionId: string, databaseName: string) => Promise<void> | void
+  preloadCompletionForDatabase: (
+    connectionId: string,
+    databaseName?: string
+  ) => Promise<void> | void
   updateWorkspaceTab: (key: string, patch: Partial<WorkspaceTab>) => void
   renderResultTable: (tab: WorkspaceTab) => React.ReactNode
   runQuery: (tab: WorkspaceTab, sql?: string) => Promise<void> | void
@@ -89,7 +89,9 @@ const QueryWorkspacePanel = memo(function QueryWorkspacePanel({
 
   useEffect(() => {
     if (statementToggleButtonRef.current) {
-      statementToggleButtonRef.current.dataset.activeStatementIndex = String(executionContext?.currentStatementIndex ?? -1)
+      statementToggleButtonRef.current.dataset.activeStatementIndex = String(
+        executionContext?.currentStatementIndex ?? -1
+      )
     }
   }, [executionContext, tab.key])
 
@@ -100,21 +102,26 @@ const QueryWorkspacePanel = memo(function QueryWorkspacePanel({
   const isRedis = connection?.database_type === 'redis'
   const isClickHouse = connection?.database_type === 'clickhouse'
   const dbOptions = tab.connectionId ? (allDatabases[tab.connectionId] ?? []) : []
-  const schemaKey = tab.connectionId && tab.pgDatabaseName ? `${tab.connectionId}:${tab.pgDatabaseName}` : ''
+  const schemaKey =
+    tab.connectionId && tab.pgDatabaseName ? `${tab.connectionId}:${tab.pgDatabaseName}` : ''
   const schemaOptions = schemaKey ? (allSchemas[schemaKey] ?? []) : []
   const databaseSelectPlaceholder = isPg
     ? SELECT_DATABASE_PLACEHOLDER
-    : (isDm || connection?.database_type === 'oracle')
-        ? SELECT_SCHEMA_PLACEHOLDER
-        : isMongo
-          ? SELECT_STORE_PLACEHOLDER
-          : isRedis
-            ? SELECT_REDIS_DB_PLACEHOLDER
-            : isClickHouse
-              ? SELECT_STORE_PLACEHOLDER
-              : SELECT_LIBRARY_PLACEHOLDER
+    : isDm || connection?.database_type === 'oracle'
+      ? SELECT_SCHEMA_PLACEHOLDER
+      : isMongo
+        ? SELECT_STORE_PLACEHOLDER
+        : isRedis
+          ? SELECT_REDIS_DB_PLACEHOLDER
+          : isClickHouse
+            ? SELECT_STORE_PLACEHOLDER
+            : SELECT_LIBRARY_PLACEHOLDER
   const connectionSelectWidth = useMemo(
-    () => getQuerySelectWidth(connections.map((item) => item.name), SELECT_CONNECTION_PLACEHOLDER),
+    () =>
+      getQuerySelectWidth(
+        connections.map((item) => item.name),
+        SELECT_CONNECTION_PLACEHOLDER
+      ),
     [connections]
   )
   const databaseSelectWidth = useMemo(
@@ -131,31 +138,45 @@ const QueryWorkspacePanel = memo(function QueryWorkspacePanel({
   const resultPanelVisible = resultVisible && !resultCollapsed
   const queryEditorHeight = tab.queryEditorHeight ?? 280
   const activeStatementIndex = executionContext?.currentStatementIndex ?? -1
-  const statementSource = useMemo(() => (
-    (executionContext?.statements?.length ?? 0) > 0
-      ? (executionContext?.statements ?? [])
-      : (tab.sql.trim()
+  const statementSource = useMemo(
+    () =>
+      (executionContext?.statements?.length ?? 0) > 0
+        ? (executionContext?.statements ?? [])
+        : tab.sql.trim()
           ? [buildSingleStatementFallback(tab.sql)]
-          : [])
-  ), [executionContext?.statements, tab.sql])
+          : [],
+    [executionContext?.statements, tab.sql]
+  )
 
-  const statementMenuItems: MenuProps['items'] = useMemo(() => statementSource.map((statement, index) => {
-    const firstLine = statement.text.split('\n').map((line) => line.trim()).find(Boolean) ?? statement.text.trim()
-    const compactTitle = firstLine.length > 72 ? `${firstLine.slice(0, 72)}...` : firstLine
-    const isActive = activeStatementIndex === index
-    return {
-      key: String(index),
-      label: (
-        <div className={`query-statement-menu-item${isActive ? ' is-active' : ''}`}>
-          <span className="query-statement-menu-title">{compactTitle || `SQL ${index + 1}`}</span>
-          <span className="query-statement-menu-meta">
-            第{statement.startLineNumber} 行
-            {statement.endLineNumber > statement.startLineNumber ? ` - ${statement.endLineNumber} 行` : ''}
-          </span>
-        </div>
-      )
-    }
-  }), [activeStatementIndex, statementSource])
+  const statementMenuItems: MenuProps['items'] = useMemo(
+    () =>
+      statementSource.map((statement, index) => {
+        const firstLine =
+          statement.text
+            .split('\n')
+            .map((line) => line.trim())
+            .find(Boolean) ?? statement.text.trim()
+        const compactTitle = firstLine.length > 72 ? `${firstLine.slice(0, 72)}...` : firstLine
+        const isActive = activeStatementIndex === index
+        return {
+          key: String(index),
+          label: (
+            <div className={`query-statement-menu-item${isActive ? ' is-active' : ''}`}>
+              <span className="query-statement-menu-title">
+                {compactTitle || `SQL ${index + 1}`}
+              </span>
+              <span className="query-statement-menu-meta">
+                第{statement.startLineNumber} 行
+                {statement.endLineNumber > statement.startLineNumber
+                  ? ` - ${statement.endLineNumber} 行`
+                  : ''}
+              </span>
+            </div>
+          )
+        }
+      }),
+    [activeStatementIndex, statementSource]
+  )
 
   return (
     <div className="query-workspace">
@@ -178,31 +199,47 @@ const QueryWorkspacePanel = memo(function QueryWorkspacePanel({
               onChange={(connectionId) => {
                 const nextConn = connections.find((item) => item.connection_id === connectionId)
                 void ensureDatabasesLoaded(connectionId)
-                const nextDb = isDatabaseScopedType(nextConn?.database_type) || nextConn?.database_type === 'dm' || nextConn?.database_type === 'oracle'
-                  ? getDefaultDatabaseName(nextConn)
-                  : undefined
-                const nextPgDb = nextConn && isSchemaScopedType(nextConn.database_type)
-                  ? getDefaultPgDatabase(nextConn)
-                  : undefined
+                const nextDb =
+                  isDatabaseScopedType(nextConn?.database_type) ||
+                  nextConn?.database_type === 'dm' ||
+                  nextConn?.database_type === 'oracle'
+                    ? getDefaultDatabaseName(nextConn)
+                    : undefined
+                const nextPgDb =
+                  nextConn && isSchemaScopedType(nextConn.database_type)
+                    ? getDefaultPgDatabase(nextConn)
+                    : undefined
                 updateWorkspaceTab(tab.key, {
                   connectionId,
                   databaseName: nextDb,
                   pgDatabaseName: nextPgDb
                 })
 
-                if ((isDatabaseScopedType(nextConn?.database_type) || nextConn?.database_type === 'dm' || nextConn?.database_type === 'oracle') && nextDb) {
+                if (
+                  (nextConn?.database_type === 'sqlite' ||
+                    isDatabaseScopedType(nextConn?.database_type) ||
+                    nextConn?.database_type === 'dm' ||
+                    nextConn?.database_type === 'oracle') &&
+                  (nextDb || nextConn?.database_type === 'sqlite')
+                ) {
                   void preloadCompletionForDatabase(connectionId, nextDb)
                 }
               }}
               options={connections.map((item) => ({ label: item.name, value: item.connection_id }))}
             />
           </div>
-          {(isMysql || isPg || isDm || connection?.database_type === 'oracle' || isMongo || isRedis || isClickHouse) && (
+          {(isMysql ||
+            isPg ||
+            isDm ||
+            connection?.database_type === 'oracle' ||
+            isMongo ||
+            isRedis ||
+            isClickHouse) && (
             <div className="query-toolbar-select-shell" style={{ width: databaseSelectWidth }}>
               <Select
                 className="database-select query-toolbar-select"
                 placeholder={databaseSelectPlaceholder}
-                value={isPg ? (tab.pgDatabaseName || undefined) : (tab.databaseName || undefined)}
+                value={isPg ? tab.pgDatabaseName || undefined : tab.databaseName || undefined}
                 variant="borderless"
                 popupClassName="query-toolbar-select-dropdown"
                 classNames={{
@@ -216,7 +253,10 @@ const QueryWorkspacePanel = memo(function QueryWorkspacePanel({
                   if (isPg && tab.connectionId) {
                     const schemaNames = await ensureSchemasLoaded(tab.connectionId, value)
                     const defaultSchema = getDefaultPgSchema(schemaNames)
-                    updateWorkspaceTab(tab.key, { pgDatabaseName: value, databaseName: defaultSchema })
+                    updateWorkspaceTab(tab.key, {
+                      pgDatabaseName: value,
+                      databaseName: defaultSchema
+                    })
                     return
                   }
 
@@ -313,7 +353,9 @@ const QueryWorkspacePanel = memo(function QueryWorkspacePanel({
           onResize={(sizes) => {
             const nextHeight = sizes[0]
             if (typeof nextHeight === 'number' && Number.isFinite(nextHeight)) {
-              const toggle = document.querySelector<HTMLButtonElement>(`button.query-result-toggle-collapse[title="${COLLAPSE_RESULT_LABEL}"]`)
+              const toggle = document.querySelector<HTMLButtonElement>(
+                `button.query-result-toggle-collapse[title="${COLLAPSE_RESULT_LABEL}"]`
+              )
               if (toggle) {
                 toggle.style.top = `${Math.max(44, nextHeight)}px`
               }
@@ -326,7 +368,12 @@ const QueryWorkspacePanel = memo(function QueryWorkspacePanel({
             }
           }}
         >
-          <Splitter.Panel defaultSize={queryEditorHeight} min={160} max="75%" className="sql-editor-panel">
+          <Splitter.Panel
+            defaultSize={queryEditorHeight}
+            min={160}
+            max="75%"
+            className="sql-editor-panel"
+          >
             <div className="query-surface query-editor-surface">
               <div className="sql-editor-container">
                 <SqlEditor
@@ -335,7 +382,9 @@ const QueryWorkspacePanel = memo(function QueryWorkspacePanel({
                   onExecute={(payload) => void runQuery(tab, payload.sql)}
                   onSelectionChange={(payload) => {
                     if (statementToggleButtonRef.current) {
-                      statementToggleButtonRef.current.dataset.activeStatementIndex = String(payload.currentStatementIndex)
+                      statementToggleButtonRef.current.dataset.activeStatementIndex = String(
+                        payload.currentStatementIndex
+                      )
                     }
                     handleSqlExecutionContextChange(tab.key, payload)
                   }}
@@ -353,9 +402,7 @@ const QueryWorkspacePanel = memo(function QueryWorkspacePanel({
           </Splitter.Panel>
           <Splitter.Panel min={120} className="query-result-splitter-panel">
             <div className="query-surface query-result-surface">
-              <div className="query-result-panel">
-                {renderResultTable(tab)}
-              </div>
+              <div className="query-result-panel">{renderResultTable(tab)}</div>
             </div>
           </Splitter.Panel>
         </Splitter>

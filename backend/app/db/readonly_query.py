@@ -9,6 +9,7 @@ import sqlparse
 from sqlalchemy import Engine, quoted_name, text
 
 from app.db.mongo_utils import is_mongo_client, mongo_default_database, serialize_mongo_document
+from app.db.query_timeout import apply_query_timeout
 from app.db.redis_utils import is_redis_client, redis_client_for_database, redis_key_length, redis_key_type, redis_scan_keys, redis_text, serialize_redis_value
 from app.schemas.query import QueryResponse
 
@@ -478,9 +479,10 @@ def _execute_on_connection_with_context(engine: Engine, sql: str, limit: int | N
             connection.execute(text(f"ALTER SESSION SET CURRENT_SCHEMA = {quoted}"))
         elif engine.dialect.name in {"clickhouse", "clickhousedb"}:
             connection.execute(text(f"USE {quoted}"))
-        result = connection.execute(text(limited_sql))
-        columns = _visible_result_columns(result.keys())
-        raw_rows = result.mappings().fetchall()
+        with apply_query_timeout(connection):
+            result = connection.execute(text(limited_sql))
+            columns = _visible_result_columns(result.keys())
+            raw_rows = result.mappings().fetchall()
 
     limited = limit is not None and len(raw_rows) > limit
     visible_rows = raw_rows if limit is None else raw_rows[:limit]
@@ -691,7 +693,8 @@ def _count_preview_rows(engine: Engine, quoted_table: str, where_sql: str) -> in
     query = f"SELECT COUNT(*) FROM {quoted_table}{f' WHERE {where_sql}' if where_sql else ''}"
     try:
         with engine.connect() as connection:
-            return int(connection.execute(text(query)).scalar() or 0)
+            with apply_query_timeout(connection):
+                return int(connection.execute(text(query)).scalar() or 0)
     except Exception:
         return None
 
@@ -700,9 +703,10 @@ def _execute_limited_query(engine: Engine, sql: str, limit: int | None, offset: 
     limited_sql = sql if limit is None else _with_limit(engine, sql, limit + 1, offset)
 
     with engine.connect() as connection:
-        result = connection.execute(text(limited_sql))
-        columns = _visible_result_columns(result.keys())
-        raw_rows = result.mappings().fetchall()
+        with apply_query_timeout(connection):
+            result = connection.execute(text(limited_sql))
+            columns = _visible_result_columns(result.keys())
+            raw_rows = result.mappings().fetchall()
 
     limited = limit is not None and len(raw_rows) > limit
     visible_rows = raw_rows if limit is None else raw_rows[:limit]
@@ -725,12 +729,13 @@ def _execute_mutation_query(engine: Engine, sql: str, database: str | None = Non
             elif engine.dialect.name in {"mysql", "clickhouse", "clickhousedb"}:
                 connection.execute(text(f"USE {quoted}"))
 
-        result = connection.execute(text(sql))
-        if getattr(result, "returns_rows", False):
-            columns = _visible_result_columns(result.keys())
-            raw_rows = result.mappings().fetchall()
-            rows = _query_rows(raw_rows, columns)
-            return QueryResponse(columns=[column_name for _, column_name in columns], rows=rows, row_count=len(rows), limited=False)
+        with apply_query_timeout(connection):
+            result = connection.execute(text(sql))
+            if getattr(result, "returns_rows", False):
+                columns = _visible_result_columns(result.keys())
+                raw_rows = result.mappings().fetchall()
+                rows = _query_rows(raw_rows, columns)
+                return QueryResponse(columns=[column_name for _, column_name in columns], rows=rows, row_count=len(rows), limited=False)
 
         affected_rows = result.rowcount if result.rowcount is not None and result.rowcount >= 0 else 0
         return QueryResponse(
@@ -760,12 +765,13 @@ def _execute_mutation_statements(engine: Engine, statements: list[str], database
             elif engine.dialect.name in {"mysql", "clickhouse", "clickhousedb"}:
                 connection.execute(text(f"USE {quoted}"))
 
-        for statement in statements:
-            result = connection.execute(text(statement))
-            if getattr(result, "returns_rows", False):
-                raise ValueError("多条 SQL 执行中不支持夹带查询语句")
-            if result.rowcount is not None and result.rowcount > 0:
-                total_affected_rows += result.rowcount
+        with apply_query_timeout(connection):
+            for statement in statements:
+                result = connection.execute(text(statement))
+                if getattr(result, "returns_rows", False):
+                    raise ValueError("多条 SQL 执行中不支持夹带查询语句")
+                if result.rowcount is not None and result.rowcount > 0:
+                    total_affected_rows += result.rowcount
 
     return QueryResponse(
         columns=["message", "affected_rows"],

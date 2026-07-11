@@ -51,7 +51,16 @@ monaco.editor.defineTheme('datadjinn-dark', {
   }
 })
 
-export type SqlDialect = 'sqlite' | 'mysql' | 'postgresql' | 'dm' | 'gaussdb' | 'oracle' | 'mongodb' | 'redis' | 'clickhouse'
+export type SqlDialect =
+  | 'sqlite'
+  | 'mysql'
+  | 'postgresql'
+  | 'dm'
+  | 'gaussdb'
+  | 'oracle'
+  | 'mongodb'
+  | 'redis'
+  | 'clickhouse'
 
 export interface SqlCompletionColumn {
   name: string
@@ -202,20 +211,75 @@ const DIALECT_KEYWORDS: Record<SqlDialect, string[]> = {
   mysql: ['AUTO_INCREMENT', 'ENGINE', 'UNSIGNED', 'SHOW DATABASES', 'SHOW TABLES', 'DESCRIBE'],
   postgresql: ['SERIAL', 'BIGSERIAL', 'RETURNING', 'ILIKE', 'ON CONFLICT', 'JSONB', 'UUID'],
   dm: ['ROWNUM', 'CONNECT BY', 'START WITH', 'SYSDATE', 'SYSTIMESTAMP', 'NVL', 'DECODE', 'DUAL'],
-  gaussdb: ['SERIAL', 'BIGSERIAL', 'RETURNING', 'ILIKE', 'ON CONFLICT', 'JSONB', 'UUID', 'DISTRIBUTE BY', 'PARTITION BY'],
-  oracle: ['ROWNUM', 'CONNECT BY', 'START WITH', 'SYSDATE', 'SYSTIMESTAMP', 'NVL', 'DECODE', 'DUAL', 'MERGE', 'SEQUENCE'],
-  mongodb: ['db', 'find', 'aggregate', 'countDocuments', 'distinct', 'sort', 'limit', 'skip', 'ObjectId'],
-  redis: ['SCAN', 'KEYS', 'GET', 'SET', 'HGETALL', 'HSET', 'LRANGE', 'LPUSH', 'RPUSH', 'SMEMBERS', 'SADD', 'ZRANGE', 'ZADD', 'DEL', 'EXPIRE', 'TTL', 'TYPE'],
-  clickhouse: ['MergeTree', 'ReplacingMergeTree', 'ORDER BY', 'PARTITION BY', 'UInt8', 'UInt32', 'UInt64', 'Int64', 'String', 'DateTime', 'Nullable', 'SHOW CREATE TABLE', 'DESCRIBE TABLE']
+  gaussdb: [
+    'SERIAL',
+    'BIGSERIAL',
+    'RETURNING',
+    'ILIKE',
+    'ON CONFLICT',
+    'JSONB',
+    'UUID',
+    'DISTRIBUTE BY',
+    'PARTITION BY'
+  ],
+  oracle: [
+    'ROWNUM',
+    'CONNECT BY',
+    'START WITH',
+    'SYSDATE',
+    'SYSTIMESTAMP',
+    'NVL',
+    'DECODE',
+    'DUAL',
+    'MERGE',
+    'SEQUENCE'
+  ],
+  mongodb: [
+    'db',
+    'find',
+    'aggregate',
+    'countDocuments',
+    'distinct',
+    'sort',
+    'limit',
+    'skip',
+    'ObjectId'
+  ],
+  redis: [
+    'SCAN',
+    'KEYS',
+    'GET',
+    'SET',
+    'HGETALL',
+    'HSET',
+    'LRANGE',
+    'LPUSH',
+    'RPUSH',
+    'SMEMBERS',
+    'SADD',
+    'ZRANGE',
+    'ZADD',
+    'DEL',
+    'EXPIRE',
+    'TTL',
+    'TYPE'
+  ],
+  clickhouse: [
+    'MergeTree',
+    'ReplacingMergeTree',
+    'ORDER BY',
+    'PARTITION BY',
+    'UInt8',
+    'UInt32',
+    'UInt64',
+    'Int64',
+    'String',
+    'DateTime',
+    'Nullable',
+    'SHOW CREATE TABLE',
+    'DESCRIBE TABLE'
+  ]
 }
-
-const SQL_SNIPPETS = [
-  { label: 'select-limit', insertText: 'SELECT * FROM ${1:table} LIMIT ${2:100};', detail: 'SELECT * FROM table LIMIT 100' },
-  { label: 'insert-values', insertText: 'INSERT INTO ${1:table} (${2:columns}) VALUES (${3:values});', detail: 'INSERT INTO table (...) VALUES (...)' },
-  { label: 'update-where', insertText: 'UPDATE ${1:table} SET ${2:column} = ${3:value} WHERE ${4:condition};', detail: 'UPDATE table SET ... WHERE ...' },
-  { label: 'delete-where', insertText: 'DELETE FROM ${1:table} WHERE ${2:condition};', detail: 'DELETE FROM table WHERE ...' },
-  { label: 'create-table', insertText: 'CREATE TABLE ${1:table} (\n  ${2:id} INTEGER PRIMARY KEY\n);', detail: 'CREATE TABLE table (...)' }
-]
 
 const TABLE_CONTEXT_KEYWORDS = ['FROM', 'JOIN', 'UPDATE', 'INTO']
 const COLUMN_CONTEXT_KEYWORDS = ['SELECT', 'WHERE', 'ON', 'ORDER BY', 'GROUP BY', 'HAVING', 'SET']
@@ -237,14 +301,22 @@ const quoteIdentifier = (name: string, dialect?: SqlDialect): string => {
     return name
   }
 
-  if (dialect === 'postgresql' || dialect === 'dm' || dialect === 'gaussdb' || dialect === 'oracle') {
+  if (
+    dialect === 'postgresql' ||
+    dialect === 'dm' ||
+    dialect === 'gaussdb' ||
+    dialect === 'oracle'
+  ) {
     return `"${name.replaceAll('"', '""')}"`
   }
 
   return `\`${name.replaceAll('`', '``')}\``
 }
 
-const getTextBeforePosition = (model: Monaco.editor.ITextModel, position: Monaco.Position): string => {
+const getTextBeforePosition = (
+  model: Monaco.editor.ITextModel,
+  position: Monaco.Position
+): string => {
   const range = {
     startLineNumber: 1,
     startColumn: 1,
@@ -276,15 +348,16 @@ const getDotQualifier = (text: string): string | undefined => {
   return match?.[1]?.replace(/^`|`$/g, '').replace(/^"|"$/g, '')
 }
 
-const toEditorTheme = (theme: 'dark' | 'light'): 'datadjinn-dark' | 'datadjinn-light' => (
+const toEditorTheme = (theme: 'dark' | 'light'): 'datadjinn-dark' | 'datadjinn-light' =>
   theme === 'dark' ? 'datadjinn-dark' : 'datadjinn-light'
-)
 
 const splitSqlStatements = (sql: string): { text: string; start: number; end: number }[] => {
   const statements: { text: string; start: number; end: number }[] = []
   let quote: "'" | '"' | '`' | null = null
   let lineComment = false
-  let blockComment = false
+  let blockCommentDepth = 0
+  let dollarQuoteTag: string | null = null
+  let alternativeQuoteEnd: string | null = null
   let start = 0
 
   for (let index = 0; index < sql.length; index += 1) {
@@ -298,16 +371,37 @@ const splitSqlStatements = (sql: string): { text: string; start: number; end: nu
       continue
     }
 
-    if (blockComment) {
-      if (char === '*' && next === '/') {
-        blockComment = false
+    if (blockCommentDepth > 0) {
+      if (char === '/' && next === '*') {
+        blockCommentDepth += 1
+        index += 1
+      } else if (char === '*' && next === '/') {
+        blockCommentDepth -= 1
+        index += 1
+      }
+      continue
+    }
+
+    if (dollarQuoteTag) {
+      if (sql.startsWith(dollarQuoteTag, index)) {
+        index += dollarQuoteTag.length - 1
+        dollarQuoteTag = null
+      }
+      continue
+    }
+
+    if (alternativeQuoteEnd) {
+      if (char === alternativeQuoteEnd && next === "'") {
+        alternativeQuoteEnd = null
         index += 1
       }
       continue
     }
 
     if (quote) {
-      if (char === quote) {
+      if ((quote === "'" || quote === '"') && char === '\\' && next) {
+        index += 1
+      } else if (char === quote) {
         if ((quote === "'" || quote === '"') && next === quote) {
           index += 1
           continue
@@ -317,16 +411,43 @@ const splitSqlStatements = (sql: string): { text: string; start: number; end: nu
       continue
     }
 
-    if (char === '-' && next === '-') {
+    if ((char === '-' && next === '-') || char === '#') {
       lineComment = true
-      index += 1
+      if (next === '-') {
+        index += 1
+      }
       continue
     }
 
     if (char === '/' && next === '*') {
-      blockComment = true
+      blockCommentDepth = 1
       index += 1
       continue
+    }
+
+    if ((char === 'q' || char === 'Q') && next === "'" && sql[index + 2]) {
+      const opener = sql[index + 2]
+      alternativeQuoteEnd =
+        opener === '['
+          ? ']'
+          : opener === '{'
+            ? '}'
+            : opener === '('
+              ? ')'
+              : opener === '<'
+                ? '>'
+                : opener
+      index += 2
+      continue
+    }
+
+    if (char === '$') {
+      const dollarTag = sql.slice(index).match(/^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/)?.[0]
+      if (dollarTag) {
+        dollarQuoteTag = dollarTag
+        index += dollarTag.length - 1
+        continue
+      }
     }
 
     if (char === "'" || char === '"' || char === '`') {
@@ -341,7 +462,7 @@ const splitSqlStatements = (sql: string): { text: string; start: number; end: nu
         const trimmedStartOffset = raw.search(/\S/)
         const trimmedEndOffset = raw.length - raw.trimEnd().length
         const statementStart = start + Math.max(0, trimmedStartOffset)
-        const statementEnd = (index + 1) - trimmedEndOffset
+        const statementEnd = index + 1 - trimmedEndOffset
         statements.push({ text: trimmed, start: statementStart, end: statementEnd })
       }
       start = index + 1
@@ -377,8 +498,9 @@ const buildStatementInfos = (model: Monaco.editor.ITextModel): SqlStatementInfo[
   })
 }
 
-const normalizeShortcut = (shortcut?: string): string => shortcut?.replace(/\s+/g, '').toLowerCase() ?? ''
-const CONTENT_SYNC_DEBOUNCE_MS = 120
+const normalizeShortcut = (shortcut?: string): string =>
+  shortcut?.replace(/\s+/g, '').toLowerCase() ?? ''
+const CONTENT_SYNC_DEBOUNCE_MS = 220
 
 const parseKeybinding = (shortcut?: string): number | null => {
   const normalized = normalizeShortcut(shortcut)
@@ -422,18 +544,35 @@ const parseKeybinding = (shortcut?: string): number | null => {
     return null
   }
 
-  return keyCode == null ? null : (binding | keyCode)
+  return keyCode == null ? null : binding | keyCode
 }
 
-function SqlEditor({ value, onChange, onExecute, onSelectionChange, onReady, theme, completionContext, readOnly = false, height = '100%', shortcuts }: SqlEditorProps): React.JSX.Element {
+function SqlEditor({
+  value,
+  onChange,
+  onExecute,
+  onSelectionChange,
+  onReady,
+  theme,
+  completionContext,
+  readOnly = false,
+  height = '100%',
+  shortcuts
+}: SqlEditorProps): React.JSX.Element {
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null)
   const monacoRef = useRef<typeof Monaco | null>(null)
   const completionDisposableRef = useRef<Monaco.IDisposable | null>(null)
   const contextRef = useRef<SqlCompletionContext | undefined>(completionContext)
-  const executeRef = useRef<((payload: SqlEditorSelectionPayload & { sql?: string }) => void) | undefined>(onExecute)
-  const selectionChangeRef = useRef<((payload: SqlEditorSelectionPayload) => void) | undefined>(onSelectionChange)
+  const executeRef = useRef<
+    ((payload: SqlEditorSelectionPayload & { sql?: string }) => void) | undefined
+  >(onExecute)
+  const selectionChangeRef = useRef<((payload: SqlEditorSelectionPayload) => void) | undefined>(
+    onSelectionChange
+  )
   const readyRef = useRef<((handle: SqlEditorHandle | null) => void) | undefined>(onReady)
   const statementDecorationIdsRef = useRef<string[]>([])
+  const statementExecuteDecorationIdsRef = useRef<string[]>([])
+  const statementExecuteDecorationKeyRef = useRef('')
   const lastSelectionDispatchKeyRef = useRef('')
   const editorSelectionSyncFrameRef = useRef<number | undefined>(undefined)
   const editorContentSyncTimeoutRef = useRef<number | undefined>(undefined)
@@ -486,6 +625,12 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, onReady, the
       readyRef.current?.(null)
       completionDisposableRef.current?.dispose()
       completionDisposableRef.current = null
+      const editor = editorRef.current
+      if (editor) {
+        editor.deltaDecorations(statementDecorationIdsRef.current, [])
+        editor.deltaDecorations(statementExecuteDecorationIdsRef.current, [])
+      }
+      statementExecuteDecorationKeyRef.current = ''
     }
   }, [])
 
@@ -503,11 +648,13 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, onReady, the
     const selection = editor.getSelection()
     model.pushEditOperations(
       selection ? [selection] : [],
-      [{
-        range: model.getFullModelRange(),
-        text: value
-      }],
-      () => selection ? [selection] : null
+      [
+        {
+          range: model.getFullModelRange(),
+          text: value
+        }
+      ],
+      () => (selection ? [selection] : null)
     )
     scheduleEditorContentSync(editor)
   }, [value])
@@ -533,41 +680,59 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, onReady, the
         const tableSort = mode === 'table' ? '0' : '2'
         const columnSort = mode === 'column' || qualifier ? '0' : '3'
 
-        for (const keyword of uniqueBy([...COMMON_KEYWORDS, ...DIALECT_KEYWORDS[context.dialect ?? 'sqlite']], (item) => item)) {
-          suggestions.push({ label: keyword, kind: monaco.languages.CompletionItemKind.Keyword, insertText: keyword, sortText: `${keywordSort}_${keyword}`, range })
-        }
-
-        for (const snippet of SQL_SNIPPETS) {
+        for (const keyword of uniqueBy(
+          [...COMMON_KEYWORDS, ...DIALECT_KEYWORDS[context.dialect ?? 'sqlite']],
+          (item) => item
+        )) {
           suggestions.push({
-            label: snippet.label,
-            kind: monaco.languages.CompletionItemKind.Snippet,
-            insertText: snippet.insertText,
-            insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-            detail: snippet.detail,
-            sortText: `1_${snippet.label}`,
+            label: keyword,
+            kind: monaco.languages.CompletionItemKind.Keyword,
+            insertText: keyword,
+            sortText: `${keywordSort}_${keyword}`,
             range
           })
         }
 
-        for (const database of uniqueBy(context.databases ?? [], (item) => item)) {
-          suggestions.push({ label: database, kind: monaco.languages.CompletionItemKind.Module, insertText: quoteIdentifier(database, context.dialect), detail: '数据库', sortText: `5_${database}`, range })
-        }
-
-        for (const schema of uniqueBy(context.schemas ?? [], (item) => item)) {
-          suggestions.push({ label: schema, kind: monaco.languages.CompletionItemKind.Module, insertText: quoteIdentifier(schema, context.dialect), detail: 'Schema', sortText: `5_${schema}`, range })
-        }
-
-        const tables = uniqueBy(context.tables ?? [], (table) => `${table.databaseName ?? ''}.${table.schemaName ?? ''}.${table.name}`)
-        const qualifiedTables = qualifier ? tables.filter((table) => table.schemaName === qualifier || table.databaseName === qualifier) : tables
+        const tables = uniqueBy(
+          context.tables ?? [],
+          (table) => `${table.databaseName ?? ''}.${table.schemaName ?? ''}.${table.name}`
+        )
+        const qualifiedTables = qualifier
+          ? tables.filter(
+              (table) => table.schemaName === qualifier || table.databaseName === qualifier
+            )
+          : tables
         for (const table of qualifiedTables) {
-          suggestions.push({ label: table.name, kind: monaco.languages.CompletionItemKind.Struct, insertText: quoteIdentifier(table.name, context.dialect), detail: [table.schemaName, table.databaseName].filter(Boolean).join('.') || '表', sortText: `${tableSort}_${table.name}`, range })
+          suggestions.push({
+            label: table.name,
+            kind: monaco.languages.CompletionItemKind.Struct,
+            insertText: quoteIdentifier(table.name, context.dialect),
+            detail: [table.schemaName, table.databaseName].filter(Boolean).join('.') || '表',
+            sortText: `${tableSort}_${table.name}`,
+            range
+          })
         }
 
         const tableColumns = tables.flatMap((table) => table.columns ?? [])
-        const columns = uniqueBy([...(context.columns ?? []), ...tableColumns], (column) => `${column.databaseName ?? ''}.${column.schemaName ?? ''}.${column.tableName ?? ''}.${column.name}`)
-        const qualifiedColumns = qualifier ? columns.filter((column) => column.tableName === qualifier || column.schemaName === qualifier) : columns
+        const columns = uniqueBy(
+          [...(context.columns ?? []), ...tableColumns],
+          (column) =>
+            `${column.databaseName ?? ''}.${column.schemaName ?? ''}.${column.tableName ?? ''}.${column.name}`
+        )
+        const qualifiedColumns = qualifier
+          ? columns.filter(
+              (column) => column.tableName === qualifier || column.schemaName === qualifier
+            )
+          : columns
         for (const column of qualifiedColumns) {
-          suggestions.push({ label: column.name, kind: monaco.languages.CompletionItemKind.Field, insertText: quoteIdentifier(column.name, context.dialect), detail: [column.tableName, column.type].filter(Boolean).join(' · ') || '字段', sortText: `${columnSort}_${column.name}`, range })
+          suggestions.push({
+            label: column.name,
+            kind: monaco.languages.CompletionItemKind.Field,
+            insertText: quoteIdentifier(column.name, context.dialect),
+            detail: [column.tableName, column.type].filter(Boolean).join(' · ') || '字段',
+            sortText: `${columnSort}_${column.name}`,
+            range
+          })
         }
 
         return { suggestions }
@@ -585,7 +750,10 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, onReady, the
     return model.getValueInRange(selection).trim()
   }
 
-  const getCurrentStatementInfo = (editor: Monaco.editor.IStandaloneCodeEditor, knownStatements?: SqlStatementInfo[]): SqlStatementInfo | null => {
+  const getCurrentStatementInfo = (
+    editor: Monaco.editor.IStandaloneCodeEditor,
+    knownStatements?: SqlStatementInfo[]
+  ): SqlStatementInfo | null => {
     const model = editor.getModel()
     const position = editor.getPosition()
     if (!model || !position) {
@@ -642,11 +810,15 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, onReady, the
   ): SqlEditorSelectionPayload => {
     const model = editor.getModel()
     const statements = knownStatements ?? (model ? buildStatementInfos(model) : [])
-    const currentStatement = knownCurrentStatement === undefined
-      ? getCurrentStatementInfo(editor, statements)
-      : knownCurrentStatement
+    const currentStatement =
+      knownCurrentStatement === undefined
+        ? getCurrentStatementInfo(editor, statements)
+        : knownCurrentStatement
     const currentStatementIndex = currentStatement
-      ? statements.findIndex((statement) => statement.start === currentStatement.start && statement.end === currentStatement.end)
+      ? statements.findIndex(
+          (statement) =>
+            statement.start === currentStatement.start && statement.end === currentStatement.end
+        )
       : -1
 
     return {
@@ -682,9 +854,8 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, onReady, the
     return statements
   }
 
-  const getStatementIdentity = (statement: SqlStatementInfo | null | undefined): string => (
+  const getStatementIdentity = (statement: SqlStatementInfo | null | undefined): string =>
     statement ? `${statement.start}:${statement.end}` : ''
-  )
 
   const updateStatementDecorations = (
     editor: Monaco.editor.IStandaloneCodeEditor,
@@ -696,25 +867,32 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, onReady, the
       return
     }
 
-    const currentStatement = knownCurrentStatement === undefined
-      ? getCurrentStatementInfo(editor)
-      : knownCurrentStatement
+    const currentStatement =
+      knownCurrentStatement === undefined ? getCurrentStatementInfo(editor) : knownCurrentStatement
     if (!currentStatement) {
-      statementDecorationIdsRef.current = editor.deltaDecorations(statementDecorationIdsRef.current, [])
+      statementDecorationIdsRef.current = editor.deltaDecorations(
+        statementDecorationIdsRef.current,
+        []
+      )
       return
     }
 
     const nextDecorations: Monaco.editor.IModelDeltaDecoration[] = []
-    for (let lineNumber = currentStatement.startLineNumber; lineNumber <= currentStatement.endLineNumber; lineNumber += 1) {
+    for (
+      let lineNumber = currentStatement.startLineNumber;
+      lineNumber <= currentStatement.endLineNumber;
+      lineNumber += 1
+    ) {
       const isFirstLine = lineNumber === currentStatement.startLineNumber
       const isLastLine = lineNumber === currentStatement.endLineNumber
-      const lineClassName = isFirstLine && isLastLine
-        ? 'sql-editor-active-statement-inline sql-editor-active-statement-inline-single'
-        : isFirstLine
-          ? 'sql-editor-active-statement-inline sql-editor-active-statement-inline-start'
-          : isLastLine
-            ? 'sql-editor-active-statement-inline sql-editor-active-statement-inline-end'
-            : 'sql-editor-active-statement-inline sql-editor-active-statement-inline-middle'
+      const lineClassName =
+        isFirstLine && isLastLine
+          ? 'sql-editor-active-statement-inline sql-editor-active-statement-inline-single'
+          : isFirstLine
+            ? 'sql-editor-active-statement-inline sql-editor-active-statement-inline-start'
+            : isLastLine
+              ? 'sql-editor-active-statement-inline sql-editor-active-statement-inline-end'
+              : 'sql-editor-active-statement-inline sql-editor-active-statement-inline-middle'
       const startColumn = isFirstLine ? currentStatement.startColumn : 1
       const endColumn = isLastLine ? currentStatement.endColumn : model.getLineMaxColumn(lineNumber)
       if (endColumn <= startColumn) {
@@ -730,7 +908,47 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, onReady, the
       })
     }
 
-    statementDecorationIdsRef.current = editor.deltaDecorations(statementDecorationIdsRef.current, nextDecorations)
+    statementDecorationIdsRef.current = editor.deltaDecorations(
+      statementDecorationIdsRef.current,
+      nextDecorations
+    )
+  }
+
+  const updateStatementExecuteDecorations = (
+    editor: Monaco.editor.IStandaloneCodeEditor,
+    statements: SqlStatementInfo[]
+  ): void => {
+    const monacoInstance = monacoRef.current
+    if (!monacoInstance || readOnly || !executeRef.current) {
+      if (statementExecuteDecorationKeyRef.current) {
+        statementExecuteDecorationIdsRef.current = editor.deltaDecorations(
+          statementExecuteDecorationIdsRef.current,
+          []
+        )
+        statementExecuteDecorationKeyRef.current = ''
+      }
+      return
+    }
+
+    const nextDecorationKey = statements
+      .map((statement) => `${statement.startLineNumber}:${statement.startColumn}`)
+      .join('|')
+    if (nextDecorationKey === statementExecuteDecorationKeyRef.current) {
+      return
+    }
+
+    statementExecuteDecorationIdsRef.current = editor.deltaDecorations(
+      statementExecuteDecorationIdsRef.current,
+      statements.map((statement) => ({
+        range: new monacoInstance.Range(statement.startLineNumber, 1, statement.startLineNumber, 1),
+        options: {
+          linesDecorationsClassName: 'sql-editor-statement-execute',
+          linesDecorationsTooltip: '执行此语句',
+          stickiness: monacoInstance.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges
+        }
+      }))
+    )
+    statementExecuteDecorationKeyRef.current = nextDecorationKey
   }
 
   const syncEditorState = (editor: Monaco.editor.IStandaloneCodeEditor): void => {
@@ -740,6 +958,7 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, onReady, the
     activeStatementKeyRef.current = getStatementIdentity(currentStatement)
     lastSelectionDispatchKeyRef.current = `${activeStatementKeyRef.current}:${statements.length}`
     updateStatementDecorations(editor, currentStatement)
+    updateStatementExecuteDecorations(editor, statements)
     selectionChangeRef.current?.(buildSelectionPayload(editor, statements, currentStatement, false))
   }
 
@@ -766,10 +985,7 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, onReady, the
     if (editorContentSyncTimeoutRef.current != null) {
       return
     }
-    if (
-      model
-      && cachedStatementsRef.current.versionId === model.getVersionId()
-    ) {
+    if (model && cachedStatementsRef.current.versionId === model.getVersionId()) {
       syncEditorSelectionState(editor)
       return
     }
@@ -779,7 +995,7 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, onReady, the
     })
   }
 
-  const scheduleEditorContentSync = (editor: Monaco.editor.IStandaloneCodeEditor): void => {
+  function scheduleEditorContentSync(editor: Monaco.editor.IStandaloneCodeEditor): void {
     if (editorContentSyncTimeoutRef.current) {
       window.clearTimeout(editorContentSyncTimeoutRef.current)
     }
@@ -808,10 +1024,37 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, onReady, the
 
     editor.onDidChangeModelContent(() => scheduleEditorContentSync(editor))
 
+    editor.onMouseDown((event) => {
+      if (
+        readOnly ||
+        event.target.type !== monaco.editor.MouseTargetType.GUTTER_LINE_DECORATIONS ||
+        !event.target.element?.closest('.sql-editor-statement-execute') ||
+        !event.target.position
+      ) {
+        return
+      }
+
+      const statements = getCachedStatements(editor.getModel())
+      const statement = statements.find(
+        (item) => item.startLineNumber === event.target.position?.lineNumber
+      )
+      if (!statement) {
+        return
+      }
+
+      event.event.preventDefault()
+      const payload = buildSelectionPayload(editor, statements, statement, false)
+      executeRef.current?.({ ...payload, sql: statement.text })
+    })
+
     if (!readOnly) {
-      const executeKeybinding = parseKeybinding(shortcuts?.execute) ?? (monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter)
-      const deleteLineKeybinding = parseKeybinding(shortcuts?.deleteLine) ?? (monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyD)
-      const duplicateLineDownKeybinding = parseKeybinding(shortcuts?.duplicateLineDown) ?? (monaco.KeyMod.CtrlCmd | monaco.KeyMod.Alt | monaco.KeyCode.DownArrow)
+      const executeKeybinding =
+        parseKeybinding(shortcuts?.execute) ?? monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter
+      const deleteLineKeybinding =
+        parseKeybinding(shortcuts?.deleteLine) ?? monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyD
+      const duplicateLineDownKeybinding =
+        parseKeybinding(shortcuts?.duplicateLineDown) ??
+        monaco.KeyMod.CtrlCmd | monaco.KeyMod.Alt | monaco.KeyCode.DownArrow
       editor.addAction({
         id: 'execute-query',
         label: 'Execute Query',
@@ -857,7 +1100,7 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, onReady, the
       }}
       onMount={handleMount}
       options={{
-        fixedOverflowWidgets: true,
+        fixedOverflowWidgets: false,
         minimap: { enabled: false },
         fontSize: 13,
         lineNumbers: 'on',
@@ -875,9 +1118,17 @@ function SqlEditor({ value, onChange, onExecute, onSelectionChange, onReady, the
         automaticLayout: true,
         padding: { top: 6 },
         lineNumbersMinChars: 2,
-        lineDecorationsWidth: 8,
-        suggest: { showKeywords: !readOnly, showSnippets: !readOnly, showFields: !readOnly, showStructs: !readOnly, preview: !readOnly },
-        tabCompletion: readOnly ? 'off' : 'on',
+        lineDecorationsWidth: 18,
+        suggest: {
+          showKeywords: !readOnly,
+          showSnippets: false,
+          showFields: !readOnly,
+          showStructs: !readOnly,
+          showWords: false,
+          preview: false
+        },
+        inlineSuggest: { enabled: false },
+        tabCompletion: 'off',
         quickSuggestions: readOnly ? false : { other: true, comments: false, strings: false },
         tabSize: 2,
         renderWhitespace: 'boundary',

@@ -1,18 +1,5 @@
-import {
-  CloseOutlined,
-  DownOutlined,
-  FilterOutlined,
-  UpOutlined
-} from '@ant-design/icons'
-import {
-  Button,
-  Checkbox,
-  Flex,
-  Input,
-  Space,
-  Table,
-  Typography
-} from 'antd'
+import { CloseOutlined, DownOutlined, FilterOutlined, UpOutlined } from '@ant-design/icons'
+import { Button, Checkbox, Flex, Input, Space, Table, Typography } from 'antd'
 import type { InputRef } from 'antd'
 import type { ColumnsType, TableRef } from 'antd/es/table'
 import { createPortal } from 'react-dom'
@@ -76,18 +63,20 @@ const WHERE_HIGHLIGHT_KEYWORDS = [
   'END'
 ]
 
-const escapeHtml = (value: string): string => value
-  .replaceAll('&', '&amp;')
-  .replaceAll('<', '&lt;')
-  .replaceAll('>', '&gt;')
-  .replaceAll('"', '&quot;')
-  .replaceAll("'", '&#39;')
+const escapeHtml = (value: string): string =>
+  value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
 
 const buildWhereHighlightedHtml = (text: string): string | null => {
   if (!text) {
     return null
   }
-  const pattern = /'(?:''|[^'])*'|"(?:[^"\\]|\\.)*"|\b\d+(?:\.\d+)?\b|\b(?:AND|OR|NOT|IN|EXISTS|BETWEEN|LIKE|IS|NULL|TRUE|FALSE|CASE|WHEN|THEN|ELSE|END)\b/gi
+  const pattern =
+    /'(?:''|[^'])*'|"(?:[^"\\]|\\.)*"|\b\d+(?:\.\d+)?\b|\b(?:AND|OR|NOT|IN|EXISTS|BETWEEN|LIKE|IS|NULL|TRUE|FALSE|CASE|WHEN|THEN|ELSE|END)\b/gi
   const matches = [...text.matchAll(pattern)]
   if (matches.length === 0) {
     return null
@@ -111,9 +100,10 @@ const buildWhereHighlightedHtml = (text: string): string | null => {
     } else if (/^\d+(?:\.\d+)?$/.test(matchedText)) {
       className = 'where-token where-token-number'
     } else if (WHERE_HIGHLIGHT_KEYWORDS.includes(upper)) {
-      className = upper === 'NULL' || upper === 'TRUE' || upper === 'FALSE'
-        ? 'where-token where-token-constant'
-        : 'where-token where-token-keyword'
+      className =
+        upper === 'NULL' || upper === 'TRUE' || upper === 'FALSE'
+          ? 'where-token where-token-constant'
+          : 'where-token where-token-keyword'
     }
     html += `<span class="${className}">${escapeHtml(matchedText)}</span>`
     cursor = matchIndex + matchedText.length
@@ -152,7 +142,11 @@ const buildHighlightedHtml = (text: string, regex: RegExp): string | null => {
   return html.length > 0 ? html : null
 }
 
-const buildPlainHighlightedHtml = (text: string, query: string, caseSensitive: boolean): string | null => {
+const buildPlainHighlightedHtml = (
+  text: string,
+  query: string,
+  caseSensitive: boolean
+): string | null => {
   if (!query || !text) {
     return null
   }
@@ -186,12 +180,11 @@ const buildPlainHighlightedHtml = (text: string, query: string, caseSensitive: b
   return html
 }
 
-const isDefaultValueMarker = (value: unknown): value is DefaultValueMarker => (
-  value !== null
-  && typeof value === 'object'
-  && '__datadjinn_action__' in value
-  && (value as DefaultValueMarker).__datadjinn_action__ === 'default'
-)
+const isDefaultValueMarker = (value: unknown): value is DefaultValueMarker =>
+  value !== null &&
+  typeof value === 'object' &&
+  '__datadjinn_action__' in value &&
+  (value as DefaultValueMarker).__datadjinn_action__ === 'default'
 
 const tableFilterValueKey = (value: unknown): string => {
   if (isDefaultValueMarker(value)) {
@@ -210,28 +203,40 @@ const tableFilterValueLabel = (value: string): string => {
   return value
 }
 
-const sortFilterOptions = (options: Array<{ value: string; label: string; count: number }>): Array<{ value: string; label: string; count: number }> =>
-  options.sort((left, right) => left.label.localeCompare(right.label, 'zh-Hans-CN', { numeric: true, sensitivity: 'base' }))
+const sortFilterOptions = (
+  options: Array<{ value: string; label: string; count: number }>
+): Array<{ value: string; label: string; count: number }> =>
+  options.sort((left, right) =>
+    left.label.localeCompare(right.label, 'zh-Hans-CN', { numeric: true, sensitivity: 'base' })
+  )
 
-const buildColumnFilterOptions = (rows: EditableRowLike[], column: string): Array<{ value: string; label: string; count: number }> => {
+const buildColumnFilterOptions = (
+  rows: EditableRowLike[],
+  column: string
+): Array<{ value: string; label: string; count: number }> => {
   const filterCounts = new Map<string, number>()
   for (const row of rows) {
     const valueKey = tableFilterValueKey(row[column])
     filterCounts.set(valueKey, (filterCounts.get(valueKey) ?? 0) + 1)
   }
 
-  return sortFilterOptions([...filterCounts.entries()].map(([value, count]) => ({
-    value,
-    label: tableFilterValueLabel(value),
-    count
-  })))
+  return sortFilterOptions(
+    [...filterCounts.entries()].map(([value, count]) => ({
+      value,
+      label: tableFilterValueLabel(value),
+      count
+    }))
+  )
 }
 
-export const createSearchMatcher = (query: string, options: {
-  regex: boolean
-  wholeWord: boolean
-  caseSensitive: boolean
-}): SearchMatcher | null => {
+export const createSearchMatcher = (
+  query: string,
+  options: {
+    regex: boolean
+    wholeWord: boolean
+    caseSensitive: boolean
+  }
+): SearchMatcher | null => {
   const trimmedQuery = query.trim()
   if (!trimmedQuery) {
     return null
@@ -247,7 +252,8 @@ export const createSearchMatcher = (query: string, options: {
         const normalizedText = options.caseSensitive ? text : text.toLocaleLowerCase()
         return normalizedText.includes(normalizedQuery)
       },
-      highlight: (text: string) => buildPlainHighlightedHtml(text, trimmedQuery, options.caseSensitive)
+      highlight: (text: string) =>
+        buildPlainHighlightedHtml(text, trimmedQuery, options.caseSensitive)
     }
   }
 
@@ -288,172 +294,183 @@ export const scheduleSelectionRenderSync = (callback: () => void): void => {
   })
 }
 
-export const WhereClauseInput = memo(function WhereClauseInput({
-  tabKey,
-  columns,
-  value,
-  label,
-  placeholder,
-  disableSuggestions,
-  onSubmit
-}: {
-  tabKey: string
-  columns: string[]
-  value?: string
-  label?: string
-  placeholder?: string
-  disableSuggestions?: boolean
-  onSubmit: (value: string) => void
-}) {
-  const [inputValue, setInputValue] = useState(value ?? '')
-  const [highlightedIndex, setHighlightedIndex] = useState(0)
-  const [suggestionsDismissed, setSuggestionsDismissed] = useState(false)
-  const inputRef = useRef<InputRef | null>(null)
+export const WhereClauseInput = memo(
+  function WhereClauseInput({
+    tabKey,
+    columns,
+    value,
+    label,
+    placeholder,
+    disableSuggestions,
+    onSubmit
+  }: {
+    tabKey: string
+    columns: string[]
+    value?: string
+    label?: string
+    placeholder?: string
+    disableSuggestions?: boolean
+    onSubmit: (value: string) => void
+  }) {
+    const [inputValue, setInputValue] = useState(value ?? '')
+    const [highlightedIndex, setHighlightedIndex] = useState(0)
+    const [suggestionsDismissed, setSuggestionsDismissed] = useState(false)
+    const [inputFocused, setInputFocused] = useState(false)
+    const inputRef = useRef<InputRef | null>(null)
 
-  useEffect(() => {
-    setInputValue(value ?? '')
-    setHighlightedIndex(0)
-    setSuggestionsDismissed(false)
-  }, [tabKey, value])
+    useEffect(() => {
+      setInputValue(value ?? '')
+      setHighlightedIndex(0)
+      setSuggestionsDismissed(false)
+    }, [tabKey, value])
 
-  const suggestionState = useMemo(() => {
-    if (disableSuggestions) {
-      return { token: '', start: -1, options: [] as string[] }
-    }
-    const match = /(^|[^A-Za-z0-9_"])([A-Za-z_][A-Za-z0-9_]*)$/.exec(inputValue)
-    if (!match) {
-      return { token: '', start: -1, options: [] as string[] }
-    }
-
-    const token = match[2] ?? ''
-    if (!token.trim()) {
-      return { token: '', start: -1, options: [] as string[] }
-    }
-
-    const lowerToken = token.toLowerCase()
-    const options = columns
-      .filter((column) => column !== '__rowKey' && column.toLowerCase().includes(lowerToken))
-      .slice(0, 8)
-
-    return {
-      token,
-      start: inputValue.length - token.length,
-      options
-    }
-  }, [columns, inputValue, disableSuggestions])
-
-  useEffect(() => {
-    setHighlightedIndex((current) => {
-      if (suggestionState.options.length <= 0) {
-        return 0
+    const suggestionState = useMemo(() => {
+      if (disableSuggestions) {
+        return { token: '', start: -1, options: [] as string[] }
       }
-      return Math.min(current, suggestionState.options.length - 1)
-    })
-  }, [suggestionState.options])
+      const match = /([A-Za-z_][A-Za-z0-9_]*)?$/.exec(inputValue)
+      const token = match?.[1] ?? ''
+      const lowerToken = token.toLowerCase()
+      const options = [...new Set(columns)]
+        .filter((column) => column !== '__rowKey' && column.toLowerCase().includes(lowerToken))
+        .slice(0, 8)
 
-  const applySuggestion = (nextColumn: string): void => {
-    if (!nextColumn || suggestionState.start < 0) {
-      return
-    }
-    const nextValue = `${inputValue.slice(0, suggestionState.start)}${nextColumn}`
-    setInputValue(nextValue)
-    setHighlightedIndex(0)
-    setSuggestionsDismissed(true)
-  }
+      return {
+        token,
+        start: inputValue.length - token.length,
+        options
+      }
+    }, [columns, inputValue, disableSuggestions])
 
-  const suggestionsOpen = !suggestionsDismissed && suggestionState.options.length > 0
-  const highlightedWhereHtml = useMemo(() => {
-    if (!inputValue) {
-      return ''
-    }
-    return buildWhereHighlightedHtml(inputValue) ?? escapeHtml(inputValue)
-  }, [inputValue])
+    useEffect(() => {
+      setHighlightedIndex((current) => {
+        if (suggestionState.options.length <= 0) {
+          return 0
+        }
+        return Math.min(current, suggestionState.options.length - 1)
+      })
+    }, [suggestionState.options])
 
-  const handleWhereInputKeyDown = (event: React.KeyboardEvent<HTMLInputElement>): void => {
-    if (suggestionsOpen && event.key === 'ArrowDown') {
-      event.preventDefault()
-      setHighlightedIndex((current) => (current + 1) % suggestionState.options.length)
-      return
+    const applySuggestion = (nextColumn: string): void => {
+      if (!nextColumn || suggestionState.start < 0) {
+        return
+      }
+      const nextValue = `${inputValue.slice(0, suggestionState.start)}${nextColumn}`
+      setInputValue(nextValue)
+      setHighlightedIndex(0)
+      setSuggestionsDismissed(true)
     }
-    if (suggestionsOpen && event.key === 'ArrowUp') {
-      event.preventDefault()
-      setHighlightedIndex((current) => (current - 1 + suggestionState.options.length) % suggestionState.options.length)
-      return
-    }
-    if (suggestionsOpen && event.key === 'Enter') {
-      event.preventDefault()
-      event.stopPropagation()
-      applySuggestion(suggestionState.options[highlightedIndex] ?? suggestionState.options[0] ?? '')
-      return
-    }
-    if (event.key === 'Enter') {
-      event.preventDefault()
-      onSubmit(inputValue)
-    }
-  }
 
-  return (
-    <div className="preview-where-shell">
-      <div className="preview-where-inline">
-        <span className="preview-where-label">{label ?? 'WHERE'}</span>
-        <div className="preview-where-editor">
-          {inputValue && (
-            <span
-              className="preview-where-highlight"
-              aria-hidden="true"
-              dangerouslySetInnerHTML={{ __html: highlightedWhereHtml }}
-            />
-          )}
-          <Input
-            ref={inputRef}
-            className="preview-where-field"
-            size="small"
-            variant="borderless"
-            value={inputValue}
-            placeholder={placeholder ?? '输入过滤条件，例如：id = 2，回车查询'}
-            allowClear
-            onChange={(event) => {
-              setInputValue(event.currentTarget.value)
-              setHighlightedIndex(0)
-              setSuggestionsDismissed(false)
-            }}
-            onClear={() => {
-              setInputValue('')
-              setHighlightedIndex(0)
-              setSuggestionsDismissed(false)
-              requestAnimationFrame(() => {
-                inputRef.current?.focus()
-              })
-            }}
-            onKeyDown={handleWhereInputKeyDown}
-            onPressEnter={() => undefined}
-          />
-        </div>
-      </div>
-      {suggestionsOpen && (
-        <div className="preview-where-suggestions">
-          {suggestionState.options.map((option, index) => (
-            <button
-              key={`${tabKey}-${option}`}
-              type="button"
-              className={index === highlightedIndex ? 'preview-where-option is-active' : 'preview-where-option'}
-              onMouseDown={(event) => {
-                event.preventDefault()
-                applySuggestion(option)
+    const suggestionsOpen =
+      inputFocused && !suggestionsDismissed && suggestionState.options.length > 0
+    const highlightedWhereHtml = useMemo(() => {
+      if (!inputValue) {
+        return ''
+      }
+      return buildWhereHighlightedHtml(inputValue) ?? escapeHtml(inputValue)
+    }, [inputValue])
+
+    const handleWhereInputKeyDown = (event: React.KeyboardEvent<HTMLInputElement>): void => {
+      if (suggestionsOpen && event.key === 'ArrowDown') {
+        event.preventDefault()
+        setHighlightedIndex((current) => (current + 1) % suggestionState.options.length)
+        return
+      }
+      if (suggestionsOpen && event.key === 'ArrowUp') {
+        event.preventDefault()
+        setHighlightedIndex(
+          (current) =>
+            (current - 1 + suggestionState.options.length) % suggestionState.options.length
+        )
+        return
+      }
+      if (suggestionsOpen && event.key === 'Enter') {
+        event.preventDefault()
+        event.stopPropagation()
+        applySuggestion(
+          suggestionState.options[highlightedIndex] ?? suggestionState.options[0] ?? ''
+        )
+        return
+      }
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        onSubmit(inputValue)
+      }
+      if (event.key === 'Escape') {
+        setSuggestionsDismissed(true)
+      }
+    }
+
+    return (
+      <div className="preview-where-shell">
+        <div className="preview-where-inline">
+          <span className="preview-where-label">{label ?? 'WHERE'}</span>
+          <div className="preview-where-editor">
+            {inputValue && (
+              <span
+                className="preview-where-highlight"
+                aria-hidden="true"
+                dangerouslySetInnerHTML={{ __html: highlightedWhereHtml }}
+              />
+            )}
+            <Input
+              ref={inputRef}
+              className="preview-where-field"
+              size="small"
+              variant="borderless"
+              value={inputValue}
+              placeholder={placeholder ?? '输入过滤条件，例如：id = 2，回车查询'}
+              allowClear
+              onChange={(event) => {
+                setInputValue(event.currentTarget.value)
+                setHighlightedIndex(0)
+                setSuggestionsDismissed(false)
               }}
-            >
-              {option}
-            </button>
-          ))}
+              onFocus={() => {
+                setInputFocused(true)
+                setSuggestionsDismissed(false)
+              }}
+              onBlur={() => setInputFocused(false)}
+              onClear={() => {
+                setInputValue('')
+                setHighlightedIndex(0)
+                setSuggestionsDismissed(false)
+                requestAnimationFrame(() => {
+                  inputRef.current?.focus()
+                })
+              }}
+              onKeyDown={handleWhereInputKeyDown}
+              onPressEnter={() => undefined}
+            />
+          </div>
         </div>
-      )}
-    </div>
-  )
-}, (prev, next) => (
-  prev.tabKey === next.tabKey &&
-  prev.value === next.value &&
-  prev.columns === next.columns
-))
+        {suggestionsOpen && (
+          <div className="preview-where-suggestions">
+            {suggestionState.options.map((option, index) => (
+              <button
+                key={`${tabKey}-${option}`}
+                type="button"
+                className={
+                  index === highlightedIndex
+                    ? 'preview-where-option is-active'
+                    : 'preview-where-option'
+                }
+                onMouseDown={(event) => {
+                  event.preventDefault()
+                  applySuggestion(option)
+                }}
+              >
+                {option}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  },
+  (prev, next) =>
+    prev.tabKey === next.tabKey && prev.value === next.value && prev.columns === next.columns
+)
 
 export const SearchHighlightedText = memo(function SearchHighlightedText({
   text,
@@ -593,7 +610,11 @@ export const PageSearchControls = memo(function PageSearchControls({
         <Button
           size="small"
           type="text"
-          className={state.caseSensitive ? 'table-search-icon-btn table-search-option is-active' : 'table-search-icon-btn table-search-option'}
+          className={
+            state.caseSensitive
+              ? 'table-search-icon-btn table-search-option is-active'
+              : 'table-search-icon-btn table-search-option'
+          }
           title="区分大小写"
           aria-label="区分大小写"
           onClick={() => {
@@ -610,7 +631,11 @@ export const PageSearchControls = memo(function PageSearchControls({
         <Button
           size="small"
           type="text"
-          className={state.regex ? 'table-search-icon-btn table-search-option is-active' : 'table-search-icon-btn table-search-option'}
+          className={
+            state.regex
+              ? 'table-search-icon-btn table-search-option is-active'
+              : 'table-search-icon-btn table-search-option'
+          }
           title="正则表达式"
           aria-label="正则表达式"
           onClick={() => {
@@ -627,7 +652,11 @@ export const PageSearchControls = memo(function PageSearchControls({
         <Button
           size="small"
           type="text"
-          className={state.wholeWord ? 'table-search-icon-btn table-search-option is-active' : 'table-search-icon-btn table-search-option'}
+          className={
+            state.wholeWord
+              ? 'table-search-icon-btn table-search-option is-active'
+              : 'table-search-icon-btn table-search-option'
+          }
           title="整词匹配"
           aria-label="整词匹配"
           onClick={() => {
@@ -644,10 +673,16 @@ export const PageSearchControls = memo(function PageSearchControls({
         <Button
           size="small"
           type="text"
-          className={state.filterRows ? 'table-search-icon-btn table-search-option is-active' : 'table-search-icon-btn table-search-option'}
+          className={
+            state.filterRows
+              ? 'table-search-icon-btn table-search-option is-active'
+              : 'table-search-icon-btn table-search-option'
+          }
           title="只显示命中行"
           aria-label="只显示命中行"
-          onClick={() => onStateChange({ query: draftQuery, filterRows: !state.filterRows, activeMatchIndex: 0 })}
+          onClick={() =>
+            onStateChange({ query: draftQuery, filterRows: !state.filterRows, activeMatchIndex: 0 })
+          }
         >
           <FilterOutlined />
         </Button>
@@ -781,11 +816,7 @@ export const ColumnFilterTrigger = memo(function ColumnFilterTrigger({
       >
         <FilterOutlined />
       </button>
-      <LightweightPopover
-        open={open}
-        anchorRef={buttonRef}
-        onClose={() => setOpen(false)}
-      >
+      <LightweightPopover open={open} anchorRef={buttonRef} onClose={() => setOpen(false)}>
         <div className="column-filter-popover">
           <Space direction="vertical" className="column-filter-popover">
             <Typography.Text strong>{column} 筛选</Typography.Text>
@@ -794,19 +825,27 @@ export const ColumnFilterTrigger = memo(function ColumnFilterTrigger({
                 checked={allChecked}
                 indeterminate={partiallyChecked}
                 onChange={(event) => {
-                  applyFilterChange(event.target.checked ? options.map((option) => option.value) : [])
+                  applyFilterChange(
+                    event.target.checked ? options.map((option) => option.value) : []
+                  )
                 }}
               >
                 全选
               </Checkbox>
             )}
-            <Checkbox.Group value={draftValues} onChange={(values) => applyFilterChange(values.map(String))}>
+            <Checkbox.Group
+              value={draftValues}
+              onChange={(values) => applyFilterChange(values.map(String))}
+            >
               <Space direction="vertical" className="column-filter-options">
-                {options.length > 0 ? options.map((option) => (
-                  <Checkbox key={option.value} value={option.value}>
-                    {option.label} <Typography.Text type="secondary">({option.count})</Typography.Text>
-                  </Checkbox>
-                )) : (
+                {options.length > 0 ? (
+                  options.map((option) => (
+                    <Checkbox key={option.value} value={option.value}>
+                      {option.label}{' '}
+                      <Typography.Text type="secondary">({option.count})</Typography.Text>
+                    </Checkbox>
+                  ))
+                ) : (
                   <Typography.Text type="secondary">暂无可筛选项</Typography.Text>
                 )}
               </Space>
@@ -818,107 +857,115 @@ export const ColumnFilterTrigger = memo(function ColumnFilterTrigger({
   )
 })
 
-export const ResultTableBodyView = memo(function ResultTableBodyView({
-  tab,
-  searchSignature,
-  tableColumns,
-  tableRows,
-  tableScrollX,
-  tableScrollY,
-  virtual,
-  setTableRef,
-  setBodyRef,
-  setHeaderRef,
-  onScrollCapture,
-  onKeyDown,
-  onMouseDown,
-  onMouseUp,
-  onMouseLeave
-}: {
-  tab: WorkspaceTabLike
-  searchSignature: string
-  tableColumns: ColumnsType<EditableRowLike>
-  tableRows: EditableRowLike[]
-  tableScrollX: number
-  tableScrollY: number
-  virtual: boolean
-  setTableRef: (instance: TableRef | null) => void
-  setBodyRef: (element: HTMLDivElement | null) => void
-  setHeaderRef: (element: HTMLDivElement | null) => void
-  onScrollCapture: () => void
-  onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void
-  onMouseDown: (event: React.MouseEvent<HTMLDivElement>) => void
-  onMouseUp: (event: React.MouseEvent<HTMLDivElement>) => void
-  onMouseLeave: () => void
-}) {
-  void searchSignature
-  void tab.tableRenderVersion
-  const bodyRef = useRef<HTMLDivElement | null>(null)
-  const effectiveTableScrollY = tableScrollY
+export const ResultTableBodyView = memo(
+  function ResultTableBodyView({
+    tab,
+    searchSignature,
+    tableColumns,
+    tableRows,
+    tableScrollX,
+    tableScrollY,
+    virtual,
+    setTableRef,
+    setBodyRef,
+    setHeaderRef,
+    onScrollCapture,
+    onKeyDown,
+    onMouseDown,
+    onMouseUp,
+    onMouseLeave
+  }: {
+    tab: WorkspaceTabLike
+    searchSignature: string
+    tableColumns: ColumnsType<EditableRowLike>
+    tableRows: EditableRowLike[]
+    tableScrollX: number
+    tableScrollY: number
+    virtual: boolean
+    setTableRef: (instance: TableRef | null) => void
+    setBodyRef: (element: HTMLDivElement | null) => void
+    setHeaderRef: (element: HTMLDivElement | null) => void
+    onScrollCapture: () => void
+    onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void
+    onMouseDown: (event: React.MouseEvent<HTMLDivElement>) => void
+    onMouseUp: (event: React.MouseEvent<HTMLDivElement>) => void
+    onMouseLeave: () => void
+  }) {
+    void searchSignature
+    void tab.tableRenderVersion
+    const bodyRef = useRef<HTMLDivElement | null>(null)
+    const effectiveTableScrollY = tableScrollY
 
-  return (
-    <div
-      ref={(element) => {
-        bodyRef.current = element
-        setBodyRef(element)
-      }}
-      className="result-table-body"
-      tabIndex={0}
-      style={{ '--result-table-scroll-y': `${effectiveTableScrollY}px` } as React.CSSProperties}
-      onDragStart={(event) => {
-        event.preventDefault()
-      }}
-      onMouseDownCapture={(event) => {
-        if (event.button !== 0) {
-          return
-        }
-        const target = event.target as HTMLElement | null
-        if (!target) {
-          return
-        }
-        if (target.closest('.row-number-button, .row-number-select-all, .column-select-button, .column-sort-button, .column-resize-handle')) {
+    return (
+      <div
+        ref={(element) => {
+          bodyRef.current = element
+          setBodyRef(element)
+        }}
+        className="result-table-body"
+        tabIndex={0}
+        style={{ '--result-table-scroll-y': `${effectiveTableScrollY}px` } as React.CSSProperties}
+        onDragStart={(event) => {
           event.preventDefault()
-        }
-      }}
-      onMouseEnter={(event) => {
-        const currentTarget = event.currentTarget
-        setHeaderRef(currentTarget.querySelector<HTMLDivElement>('.ant-table-header'))
-      }}
-      onScrollCapture={onScrollCapture}
-      onKeyDown={onKeyDown}
-      onMouseDown={onMouseDown}
-      onMouseUp={onMouseUp}
-      onMouseLeave={onMouseLeave}
-    >
-      <Table
-        key={`${tab.key}:${tab.tableRenderVersion ?? 0}`}
-        ref={setTableRef}
-        className="result-table"
-        rowClassName={(row) => [
-          row.__deleted ? 'row-deleted' : row.__state ? `row-${row.__state}` : ''
-        ].filter(Boolean).join(' ')}
-        size="small"
-        columns={tableColumns}
-        dataSource={tableRows}
-        rowKey="__rowKey"
-        pagination={false}
-        tableLayout="fixed"
-        virtual={virtual}
-        scroll={{ x: tableScrollX, y: effectiveTableScrollY }}
-        locale={{ emptyText: tab.kind === 'query' ? '暂无查询结果' : '暂无表数据' }}
-      />
-    </div>
-  )
-}, (prev, next) => (
-  prev.tab === next.tab
-  && prev.tab.tableRenderVersion === next.tab.tableRenderVersion
-  && prev.searchSignature === next.searchSignature
-  && prev.tableScrollX === next.tableScrollX
-  && prev.tableScrollY === next.tableScrollY
-  && prev.tableRows === next.tableRows
-  && prev.tableColumns === next.tableColumns
-  && prev.virtual === next.virtual
-))
+        }}
+        onMouseDownCapture={(event) => {
+          if (event.button !== 0) {
+            return
+          }
+          const target = event.target as HTMLElement | null
+          if (!target) {
+            return
+          }
+          if (
+            target.closest(
+              '.row-number-button, .row-number-select-all, .column-select-button, .column-sort-button, .column-resize-handle'
+            )
+          ) {
+            event.preventDefault()
+          }
+        }}
+        onMouseEnter={(event) => {
+          const currentTarget = event.currentTarget
+          setHeaderRef(currentTarget.querySelector<HTMLDivElement>('.ant-table-header'))
+        }}
+        onScrollCapture={onScrollCapture}
+        onKeyDown={onKeyDown}
+        onMouseDown={onMouseDown}
+        onMouseUp={onMouseUp}
+        onMouseLeave={onMouseLeave}
+      >
+        <Table
+          key={`${tab.key}:${tab.tableRenderVersion ?? 0}`}
+          ref={setTableRef}
+          className="result-table"
+          rowClassName={(row) =>
+            [row.__deleted ? 'row-deleted' : row.__state ? `row-${row.__state}` : '']
+              .filter(Boolean)
+              .join(' ')
+          }
+          size="small"
+          columns={tableColumns}
+          dataSource={tableRows}
+          rowKey="__rowKey"
+          pagination={false}
+          tableLayout="fixed"
+          virtual={virtual}
+          scroll={{ x: tableScrollX, y: effectiveTableScrollY }}
+          locale={{ emptyText: tab.kind === 'query' ? '暂无查询结果' : '暂无表数据' }}
+        />
+      </div>
+    )
+  },
+  (prev, next) =>
+    prev.tab === next.tab &&
+    prev.tab.tableRenderVersion === next.tab.tableRenderVersion &&
+    prev.searchSignature === next.searchSignature &&
+    prev.tableScrollX === next.tableScrollX &&
+    prev.tableScrollY === next.tableScrollY &&
+    prev.tableRows === next.tableRows &&
+    prev.tableColumns === next.tableColumns &&
+    prev.virtual === next.virtual
+)
 
 export const ResultTableHeader = memo(function ResultTableHeader({
   leftActions,
@@ -944,13 +991,9 @@ export const ResultTableHeader = memo(function ResultTableHeader({
   searchVisible: boolean
 }) {
   const hasToolbarContent = Boolean(leftActions || whereInput || rightActions)
-  if (!hasToolbarContent && !searchVisible) {
-    return null
-  }
   const matchCount = searchMeta.matchCount
-  const activeMatchIndex = matchCount > 0
-    ? Math.min(searchState.activeMatchIndex, matchCount - 1)
-    : 0
+  const activeMatchIndex =
+    matchCount > 0 ? Math.min(searchState.activeMatchIndex, matchCount - 1) : 0
 
   const closeSearch = useCallback(() => {
     onClearActiveHighlight()
@@ -962,14 +1005,17 @@ export const ResultTableHeader = memo(function ResultTableHeader({
     })
   }, [onClearActiveHighlight, onSearchStateChange])
 
-  const moveSearchMatch = useCallback((direction: -1 | 1) => {
-    if (matchCount <= 0) {
-      return
-    }
-    const nextMatchIndex = (activeMatchIndex + direction + matchCount) % matchCount
-    onSearchStateChange({ activeMatchIndex: nextMatchIndex })
-    searchMeta.focusSearchMatch(nextMatchIndex)
-  }, [activeMatchIndex, matchCount, onSearchStateChange, searchMeta])
+  const moveSearchMatch = useCallback(
+    (direction: -1 | 1) => {
+      if (matchCount <= 0) {
+        return
+      }
+      const nextMatchIndex = (activeMatchIndex + direction + matchCount) % matchCount
+      onSearchStateChange({ activeMatchIndex: nextMatchIndex })
+      searchMeta.focusSearchMatch(nextMatchIndex)
+    },
+    [activeMatchIndex, matchCount, onSearchStateChange, searchMeta]
+  )
 
   useEffect(() => {
     if (!searchVisible) {
@@ -990,6 +1036,10 @@ export const ResultTableHeader = memo(function ResultTableHeader({
       window.removeEventListener('keydown', handleKeyDown, true)
     }
   }, [closeSearch, searchVisible])
+
+  if (!hasToolbarContent && !searchVisible) {
+    return null
+  }
 
   return (
     <div className="result-table-header-shell">

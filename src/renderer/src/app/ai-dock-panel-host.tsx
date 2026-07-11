@@ -46,14 +46,16 @@ type AIDockPanelHostProps = {
   shortcutStop: string
 }
 
-const MemoAIPanel = memo(AIPanel, (prev, next) => (
-  prev.requestJson === next.requestJson
-  && prev.hasDatabaseContext === next.hasDatabaseContext
-  && prev.getConnectionContext === next.getConnectionContext
-  && prev.getWorkspaceSnapshot === next.getWorkspaceSnapshot
-  && prev.contextSources === next.contextSources
-  && prev.primaryContextSourceId === next.primaryContextSourceId
-))
+const MemoAIPanel = memo(
+  AIPanel,
+  (prev, next) =>
+    prev.requestJson === next.requestJson &&
+    prev.hasDatabaseContext === next.hasDatabaseContext &&
+    prev.getConnectionContext === next.getConnectionContext &&
+    prev.getWorkspaceSnapshot === next.getWorkspaceSnapshot &&
+    prev.contextSources === next.contextSources &&
+    prev.primaryContextSourceId === next.primaryContextSourceId
+)
 
 const AIDockPanelHost = memo(function AIDockPanelHost({
   requestJson,
@@ -102,25 +104,30 @@ const AIDockPanelHost = memo(function AIDockPanelHost({
     focusedResource
   ])
 
-  const hasDatabaseContext = Boolean(aiContextConnection?.is_open && aiContextConnection.connection_id)
-  const getConnectionContext = useCallback(() => ({
-    connectionId: aiContextConnection?.is_open ? aiContextConnection.connection_id : undefined,
-    dbType: aiContextConnection?.database_type,
-    dbName: aiDbName,
-    database: aiDatabase,
-    pgDatabase: aiPgDatabase,
-    connectionName: aiContextConnection?.name,
-    serverVersion: aiContextConnection?.server_version
-  }), [
-    aiContextConnection?.connection_id,
-    aiContextConnection?.database_type,
-    aiContextConnection?.is_open,
-    aiContextConnection?.name,
-    aiContextConnection?.server_version,
-    aiDbName,
-    aiDatabase,
-    aiPgDatabase
-  ])
+  const hasDatabaseContext = Boolean(
+    aiContextConnection?.is_open && aiContextConnection.connection_id
+  )
+  const getConnectionContext = useCallback(
+    () => ({
+      connectionId: aiContextConnection?.is_open ? aiContextConnection.connection_id : undefined,
+      dbType: aiContextConnection?.database_type,
+      dbName: aiDbName,
+      database: aiDatabase,
+      pgDatabase: aiPgDatabase,
+      connectionName: aiContextConnection?.name,
+      serverVersion: aiContextConnection?.server_version
+    }),
+    [
+      aiContextConnection?.connection_id,
+      aiContextConnection?.database_type,
+      aiContextConnection?.is_open,
+      aiContextConnection?.name,
+      aiContextConnection?.server_version,
+      aiDbName,
+      aiDatabase,
+      aiPgDatabase
+    ]
+  )
 
   return (
     <MemoAIPanel

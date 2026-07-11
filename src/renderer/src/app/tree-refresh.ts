@@ -8,7 +8,10 @@ type TreeRefreshOptions = {
   selectedDatabaseOverride?: string[]
   getConnection: (connectionId?: string) => ConnectionInfo | undefined
   expandedKeys: React.Key[]
-  preloadConnectionTree: (connection: ConnectionInfo, selectedDatabaseOverride?: string[]) => Promise<DatabaseTreeNode[]>
+  preloadConnectionTree: (
+    connection: ConnectionInfo,
+    selectedDatabaseOverride?: string[]
+  ) => Promise<DatabaseTreeNode[]>
   buildConnectionNode: (connection: ConnectionInfo) => DatabaseTreeNode
   setTreeData: React.Dispatch<React.SetStateAction<DatabaseTreeNode[]>>
   setExpandedKeys: React.Dispatch<React.SetStateAction<React.Key[]>>
@@ -21,7 +24,11 @@ type DatabaseRefreshOptions = {
   databaseName: string
   selectedSchemaOverride?: string[]
   getConnection: (connectionId?: string) => ConnectionInfo | undefined
-  preloadDatabaseChildren: (connection: ConnectionInfo, databaseName: string, selectedSchemaOverride?: string[]) => Promise<DatabaseTreeNode[]>
+  preloadDatabaseChildren: (
+    connection: ConnectionInfo,
+    databaseName: string,
+    selectedSchemaOverride?: string[]
+  ) => Promise<DatabaseTreeNode[]>
   setTreeData: React.Dispatch<React.SetStateAction<DatabaseTreeNode[]>>
   setConnectionTreeLoadingText: (connectionId: string, text?: string) => void
   showError: (error: unknown, fallback?: string) => void
@@ -63,7 +70,9 @@ export const refreshConnectionTreeNode = ({
 
       if (DATABASE_LEVEL_TYPES.has(connection.database_type)) {
         const databaseNodes = await preloadConnectionTree(connection, selectedDatabaseOverride)
-        const selectedNames = new Set(databaseNodes.map((node) => node.databaseName).filter(Boolean))
+        const selectedNames = new Set(
+          databaseNodes.map((node) => node.databaseName).filter(Boolean)
+        )
         const stillExpanded = snapshot.filter((key) => {
           if (key === connectionKey) {
             return false
@@ -75,9 +84,11 @@ export const refreshConnectionTreeNode = ({
             const dbName = key.slice(`database:${connectionId}:`.length).split(':')[0]
             return selectedNames.has(dbName)
           }
-          return key.startsWith(`pg-schema:${connectionId}:`)
-            || key.startsWith(`object-group:${connectionId}:`)
-            || key.startsWith(`table:${connectionId}:`)
+          return (
+            key.startsWith(`pg-schema:${connectionId}:`) ||
+            key.startsWith(`object-group:${connectionId}:`) ||
+            key.startsWith(`table:${connectionId}:`)
+          )
         })
         setExpandedKeys(Array.from(new Set([connectionKey, ...stillExpanded])))
         return
@@ -118,8 +129,14 @@ export const refreshDatabaseTreeNode = ({
   void (async () => {
     setConnectionTreeLoadingText(connectionId, '正在加载表列表...')
     try {
-      const children = await preloadDatabaseChildren(connection, databaseName, selectedSchemaOverride)
-      setTreeData((current) => updateTreeNode(current, `database:${connectionId}:${databaseName}`, children))
+      const children = await preloadDatabaseChildren(
+        connection,
+        databaseName,
+        selectedSchemaOverride
+      )
+      setTreeData((current) =>
+        updateTreeNode(current, `database:${connectionId}:${databaseName}`, children)
+      )
     } catch (error) {
       showError(error instanceof Error ? error.message : '加载表列表失败')
     } finally {

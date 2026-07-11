@@ -30,10 +30,10 @@ export const readPersisted = (key: string): Record<string, string[]> => {
   }
 }
 
-export const readPersistedJson = <T,>(key: string, fallback: T): T => {
+export const readPersistedJson = <T>(key: string, fallback: T): T => {
   try {
     const stored = localStorage.getItem(key)
-    return stored ? JSON.parse(stored) as T : fallback
+    return stored ? (JSON.parse(stored) as T) : fallback
   } catch {
     return fallback
   }
@@ -49,16 +49,27 @@ export const mergeOrderedIds = (availableIds: string[], preferredIds: string[]):
 export const stringArrayEquals = (left: string[], right: string[]): boolean =>
   left.length === right.length && left.every((item, index) => item === right[index])
 
-export const stringRecordArrayEquals = (left: Record<string, string[]>, right: Record<string, string[]>): boolean => {
+export const stringRecordArrayEquals = (
+  left: Record<string, string[]>,
+  right: Record<string, string[]>
+): boolean => {
   const leftKeys = Object.keys(left).sort()
   const rightKeys = Object.keys(right).sort()
-  return stringArrayEquals(leftKeys, rightKeys) && leftKeys.every((key) => stringArrayEquals(left[key] ?? [], right[key] ?? []))
+  return (
+    stringArrayEquals(leftKeys, rightKeys) &&
+    leftKeys.every((key) => stringArrayEquals(left[key] ?? [], right[key] ?? []))
+  )
 }
 
 export const rootFolderOrderId = (folderId: string): string => `folder:${folderId}`
 export const rootConnectionOrderId = (connectionId: string): string => `connection:${connectionId}`
 
-export const insertIdsAroundTarget = (ids: string[], movingIds: string[], targetId: string, placeAfter: boolean): string[] => {
+export const insertIdsAroundTarget = (
+  ids: string[],
+  movingIds: string[],
+  targetId: string,
+  placeAfter: boolean
+): string[] => {
   const movingSet = new Set(movingIds)
   const filtered = ids.filter((id) => !movingSet.has(id))
   const targetIndex = filtered.indexOf(targetId)
@@ -80,7 +91,9 @@ export const defaultSelectedDatabases = (
   databases: DatabaseSelectionItem[] = []
 ): string[] => {
   if (connection.database_type === 'redis') {
-    const nonEmpty = databases.filter((database) => (database.size_bytes ?? 0) > 0).map((database) => database.name)
+    const nonEmpty = databases
+      .filter((database) => (database.size_bytes ?? 0) > 0)
+      .map((database) => database.name)
     const configured = connection.database?.split('@')[0]
     if (configured && available.includes(configured) && !nonEmpty.includes(configured)) {
       nonEmpty.unshift(configured)

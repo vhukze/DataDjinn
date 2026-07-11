@@ -27,13 +27,13 @@ export const patchTableSearchUiState = (
   }
 
   if (
-    previousState.visible === nextState.visible
-    && previousState.query === nextState.query
-    && previousState.caseSensitive === nextState.caseSensitive
-    && previousState.regex === nextState.regex
-    && previousState.wholeWord === nextState.wholeWord
-    && previousState.filterRows === nextState.filterRows
-    && previousState.activeMatchIndex === nextState.activeMatchIndex
+    previousState.visible === nextState.visible &&
+    previousState.query === nextState.query &&
+    previousState.caseSensitive === nextState.caseSensitive &&
+    previousState.regex === nextState.regex &&
+    previousState.wholeWord === nextState.wholeWord &&
+    previousState.filterRows === nextState.filterRows &&
+    previousState.activeMatchIndex === nextState.activeMatchIndex
   ) {
     return state
   }

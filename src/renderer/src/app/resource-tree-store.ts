@@ -26,11 +26,8 @@ type ResourceTreeState = {
   resetTreeUiState: () => void
 }
 
-const resolveUpdater = <T,>(value: T | ((current: T) => T), current: T): T => (
-  typeof value === 'function'
-    ? (value as (current: T) => T)(current)
-    : value
-)
+const resolveUpdater = <T>(value: T | ((current: T) => T), current: T): T =>
+  typeof value === 'function' ? (value as (current: T) => T)(current) : value
 
 export const useResourceTreeStore = create<ResourceTreeState>((set) => ({
   expandedKeys: [],
@@ -40,22 +37,28 @@ export const useResourceTreeStore = create<ResourceTreeState>((set) => ({
   treeSearchOpen: false,
   treeSearchText: '',
   treeContextMenu: null,
-  setExpandedKeys: (keys) => set((state) => ({ expandedKeys: resolveUpdater(keys, state.expandedKeys) })),
-  setSelectedTreeKeys: (keys) => set((state) => ({ selectedTreeKeys: resolveUpdater(keys, state.selectedTreeKeys) })),
-  setSelectedConnectionIds: (ids) => set((state) => ({ selectedConnectionIds: resolveUpdater(ids, state.selectedConnectionIds) })),
+  setExpandedKeys: (keys) =>
+    set((state) => ({ expandedKeys: resolveUpdater(keys, state.expandedKeys) })),
+  setSelectedTreeKeys: (keys) =>
+    set((state) => ({ selectedTreeKeys: resolveUpdater(keys, state.selectedTreeKeys) })),
+  setSelectedConnectionIds: (ids) =>
+    set((state) => ({ selectedConnectionIds: resolveUpdater(ids, state.selectedConnectionIds) })),
   setConnectionSelectionAnchorId: (id) => set({ connectionSelectionAnchorId: id }),
-  setTreeSearchOpen: (open) => set((state) => ({ treeSearchOpen: resolveUpdater(open, state.treeSearchOpen) })),
-  setTreeSearchText: (text) => set((state) => ({ treeSearchText: resolveUpdater(text, state.treeSearchText) })),
+  setTreeSearchOpen: (open) =>
+    set((state) => ({ treeSearchOpen: resolveUpdater(open, state.treeSearchOpen) })),
+  setTreeSearchText: (text) =>
+    set((state) => ({ treeSearchText: resolveUpdater(text, state.treeSearchText) })),
   setTreeContextMenu: (value) => set({ treeContextMenu: value }),
-  resetTreeUiState: () => set({
-    expandedKeys: [],
-    selectedTreeKeys: [],
-    selectedConnectionIds: [],
-    connectionSelectionAnchorId: undefined,
-    treeSearchOpen: false,
-    treeSearchText: '',
-    treeContextMenu: null
-  })
+  resetTreeUiState: () =>
+    set({
+      expandedKeys: [],
+      selectedTreeKeys: [],
+      selectedConnectionIds: [],
+      connectionSelectionAnchorId: undefined,
+      treeSearchOpen: false,
+      treeSearchText: '',
+      treeContextMenu: null
+    })
 }))
 
 export type { TreeContextMenuState }

@@ -34,6 +34,7 @@ import {
   Flex,
   Form,
   Input,
+  InputNumber,
   Layout,
   Menu,
   Modal,
@@ -52,12 +53,48 @@ import { ApartmentOutlined } from '@ant-design/icons'
 import type { MenuProps } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { flushSync } from 'react-dom'
-import { memo, startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  memo,
+  startTransition,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
 import { useTheme } from './context/ThemeContext'
-import type { SqlCompletionColumn, SqlCompletionContext, SqlCompletionTable, SqlDialect, SqlEditorHandle } from './components/SqlEditor'
+import type {
+  SqlCompletionColumn,
+  SqlCompletionContext,
+  SqlCompletionTable,
+  SqlDialect,
+  SqlEditorHandle
+} from './components/SqlEditor'
 import AIDockPanelHost from './app/ai-dock-panel-host'
-import type { AppInfo, BackendStatus, SettingsSection, ShortcutAction, ShortcutSettings, UpdateInfo, UpdateProgress, UpdateSettings } from './app/app-model'
-import type { ColumnsResponse, ConnectionInfo, ConnectionTestResponse, DatabaseInfo, DbObjectInfo, HealthStatus, ObjectDdlResponse, QueryResponse, SqlFileRunResponse, TableInfo } from './app/connection-model'
+import type {
+  AppInfo,
+  BackendStatus,
+  QuerySettings,
+  SettingsSection,
+  ShortcutAction,
+  ShortcutSettings,
+  UpdateInfo,
+  UpdateProgress,
+  UpdateSettings
+} from './app/app-model'
+import type {
+  ColumnsResponse,
+  ConnectionInfo,
+  ConnectionTestResponse,
+  DatabaseInfo,
+  DbObjectInfo,
+  HealthStatus,
+  ObjectDdlResponse,
+  QueryResponse,
+  SqlFileRunResponse,
+  TableInfo
+} from './app/connection-model'
 import type { DatabaseType } from './app/data-sources'
 import MainWorkspacePanel from './app/main-workspace-panel'
 import {
@@ -111,28 +148,27 @@ import {
 } from './app/modal-region'
 import { ConnectionEditorModal } from './app/connection-editor-modal'
 import ResultTablePanel, { type HorizontalScrollTableRef } from './app/result-table-panel'
-import {
-  clampResultColumnWidth,
-} from './app/query-utils'
+import { clampResultColumnWidth } from './app/query-utils'
 import TableDesignerPanel from './app/table-designer-panel'
-import {
-  buildActiveTreePath,
-  locateTreePathInView
-} from './app/tree-navigation'
-import {
-  refreshConnectionTreeNode,
-  refreshDatabaseTreeNode
-} from './app/tree-refresh'
+import { buildActiveTreePath, locateTreePathInView } from './app/tree-navigation'
+import { refreshConnectionTreeNode, refreshDatabaseTreeNode } from './app/tree-refresh'
 import { handleTreeSelectionChange, selectConnectionTreeNodes } from './app/tree-selection'
-import {
-  createTreeRuntime,
-  getVisibleConnectionIdsFromTree
-} from './app/tree-runtime'
+import { createTreeRuntime, getVisibleConnectionIdsFromTree } from './app/tree-runtime'
 import { useResourceTreeViewport } from './app/tree-viewport'
 import { renderWorkspaceTabContent } from './app/workspace-content'
 import ResourceTreePanel from './app/resource-tree-panel'
 import { type CellInspectorPanelHandle } from './app/cell-inspector-panel'
-import type { AIActiveContext, AIContextSource, AIWorkspaceAction, EditableRow, PersistedQueryWorkspace, RedisKeyEdit, SqlEditorExecutionContext, TableSearchUiState, WorkspaceTab } from './app/workspace-model'
+import type {
+  AIActiveContext,
+  AIContextSource,
+  AIWorkspaceAction,
+  EditableRow,
+  PersistedQueryWorkspace,
+  RedisKeyEdit,
+  SqlEditorExecutionContext,
+  TableSearchUiState,
+  WorkspaceTab
+} from './app/workspace-model'
 import {
   type DataDjinnConnectionTransferBundle,
   buildDataDjinnImportCandidates,
@@ -157,7 +193,12 @@ import {
   treeIconBadge,
   updateTreeNode
 } from './app/tree-model'
-import type { ConnectionFolder, DatabaseTreeNode, DbObjectType, TreeNodeKind } from './app/tree-model'
+import type {
+  ConnectionFolder,
+  DatabaseTreeNode,
+  DbObjectType,
+  TreeNodeKind
+} from './app/tree-model'
 import mysqlIcon from './assets/icons/mysql.png'
 import postgresIcon from './assets/icons/postgres.png'
 import sqliteIcon from './assets/icons/sqllite.png'
@@ -191,7 +232,10 @@ type ConnectionTransferTestWindow = typeof window & {
   __DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_FILE_PATH__?: string
   __DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_CONTENT__?: string
   __DATADJINN_TEST_CONNECTION_TRANSFER_EXPORT_PATH__?: string
-  __DATADJINN_TEST_CONNECTION_TRANSFER_EXPORT_HANDLER__?: (payload: { filePath: string; content: string }) => void | Promise<void>
+  __DATADJINN_TEST_CONNECTION_TRANSFER_EXPORT_HANDLER__?: (payload: {
+    filePath: string
+    content: string
+  }) => void | Promise<void>
 }
 
 type TreeSelectorPopoverProps = {
@@ -353,7 +397,10 @@ const BACKEND_LABELS: Record<BackendStatus['state'], string> = {
   crashed: '服务已崩溃'
 }
 
-const BACKEND_COLORS: Record<BackendStatus['state'], 'success' | 'processing' | 'error' | 'default'> = {
+const BACKEND_COLORS: Record<
+  BackendStatus['state'],
+  'success' | 'processing' | 'error' | 'default'
+> = {
   starting: 'processing',
   online: 'success',
   failed: 'error',
@@ -384,7 +431,7 @@ const readPersisted = (key: string): Record<string, string[]> => {
 const readPersistedJson = <T,>(key: string, fallback: T): T => {
   try {
     const stored = localStorage.getItem(key)
-    return stored ? JSON.parse(stored) as T : fallback
+    return stored ? (JSON.parse(stored) as T) : fallback
   } catch {
     return fallback
   }
@@ -400,16 +447,27 @@ const mergeOrderedIds = (availableIds: string[], preferredIds: string[]): string
 const stringArrayEquals = (left: string[], right: string[]): boolean =>
   left.length === right.length && left.every((item, index) => item === right[index])
 
-const stringRecordArrayEquals = (left: Record<string, string[]>, right: Record<string, string[]>): boolean => {
+const stringRecordArrayEquals = (
+  left: Record<string, string[]>,
+  right: Record<string, string[]>
+): boolean => {
   const leftKeys = Object.keys(left).sort()
   const rightKeys = Object.keys(right).sort()
-  return stringArrayEquals(leftKeys, rightKeys) && leftKeys.every((key) => stringArrayEquals(left[key] ?? [], right[key] ?? []))
+  return (
+    stringArrayEquals(leftKeys, rightKeys) &&
+    leftKeys.every((key) => stringArrayEquals(left[key] ?? [], right[key] ?? []))
+  )
 }
 
 const rootFolderOrderId = (folderId: string): string => `folder:${folderId}`
 const rootConnectionOrderId = (connectionId: string): string => `connection:${connectionId}`
 
-const insertIdsAroundTarget = (ids: string[], movingIds: string[], targetId: string, placeAfter: boolean): string[] => {
+const insertIdsAroundTarget = (
+  ids: string[],
+  movingIds: string[],
+  targetId: string,
+  placeAfter: boolean
+): string[] => {
   const movingSet = new Set(movingIds)
   const filtered = ids.filter((id) => !movingSet.has(id))
   const targetIndex = filtered.indexOf(targetId)
@@ -423,11 +481,13 @@ const insertIdsAroundTarget = (ids: string[], movingIds: string[], targetId: str
 function App(): React.JSX.Element {
   const [form] = Form.useForm<ConnectionFormValues>()
   const [driverForm] = Form.useForm<DriverFormValues>()
-  const [connectionModalDatabaseType, setConnectionModalDatabaseType] = useState<DatabaseType>('sqlite')
+  const [connectionModalDatabaseType, setConnectionModalDatabaseType] =
+    useState<DatabaseType>('sqlite')
   const driverType = Form.useWatch('driver_type', driverForm) ?? 'jdbc'
   const [messageApi, contextHolder] = message.useMessage()
   const showError = (error: unknown, fallback = '操作失败'): void => {
-    const content = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
+    const content =
+      error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
     Modal.error({
       title: '操作失败',
       centered: true,
@@ -440,7 +500,10 @@ function App(): React.JSX.Element {
       )
     })
   }
-  const [backendStatus, setBackendStatus] = useState<BackendStatus>({ state: 'starting', message: '后端状态初始化中' })
+  const [backendStatus, setBackendStatus] = useState<BackendStatus>({
+    state: 'starting',
+    message: '后端状态初始化中'
+  })
   const [healthLoading, setHealthLoading] = useState(false)
   const [connections, setConnections] = useState<ConnectionInfo[]>([])
   const [selectedConnectionId, setSelectedConnectionId] = useState<string>()
@@ -460,8 +523,10 @@ function App(): React.JSX.Element {
   const [testingConnection, setTestingConnection] = useState(false)
   const [testingSshConnection, setTestingSshConnection] = useState(false)
   const [connectionPasswordPromptOpen, setConnectionPasswordPromptOpen] = useState(false)
-  const [connectionPasswordPromptConnectionId, setConnectionPasswordPromptConnectionId] = useState<string>('')
-  const [connectionPasswordPromptConnectionName, setConnectionPasswordPromptConnectionName] = useState('')
+  const [connectionPasswordPromptConnectionId, setConnectionPasswordPromptConnectionId] =
+    useState<string>('')
+  const [connectionPasswordPromptConnectionName, setConnectionPasswordPromptConnectionName] =
+    useState('')
   const [connectionPasswordPromptReason, setConnectionPasswordPromptReason] = useState('')
   const [connectionPasswordDraft, setConnectionPasswordDraft] = useState('')
   const setWorkspaceTabs = useWorkspaceStore((state) => state.setTabs)
@@ -469,7 +534,9 @@ function App(): React.JSX.Element {
   const setWorkspaceTabsAndActiveTabKey = useWorkspaceStore((state) => state.setTabsAndActiveTabKey)
   const workspaceTabSummaryCount = useWorkspaceStore((state) => state.tabSummaries.length)
   const getWorkspaceTabs = useCallback(() => useWorkspaceStore.getState().tabs, [])
-  const [sqlExecutionContextByTab, setSqlExecutionContextByTab] = useState<Record<string, SqlEditorExecutionContext>>({})
+  const [sqlExecutionContextByTab, setSqlExecutionContextByTab] = useState<
+    Record<string, SqlEditorExecutionContext>
+  >({})
   const sqlExecutionContextRef = useRef<Record<string, SqlEditorExecutionContext>>({})
   const sqlExecutionContextStructureKeyRef = useRef<Record<string, string>>({})
   const sqlEditorHandleRefs = useRef<Record<string, SqlEditorHandle | null | undefined>>({})
@@ -488,7 +555,11 @@ function App(): React.JSX.Element {
   const [aiContextSources, setAiContextSources] = useState<AIContextSource[]>([])
   const [aiActiveContext, setAiActiveContext] = useState<AIActiveContext | undefined>()
   const [focusedTreeNode, setFocusedTreeNode] = useState<DatabaseTreeNode | undefined>()
-  const [treeContextMenu, setTreeContextMenu] = useState<{ x: number; y: number; node: DatabaseTreeNode } | null>(null)
+  const [treeContextMenu, setTreeContextMenu] = useState<{
+    x: number
+    y: number
+    node: DatabaseTreeNode
+  } | null>(null)
   const [queryCounter, setQueryCounter] = useState(1)
   const [tableEditorOpen, setTableEditorOpen] = useState(false)
   const [tableEditorLoading, setTableEditorLoading] = useState(false)
@@ -520,7 +591,9 @@ function App(): React.JSX.Element {
   const [exportTable, setExportTable] = useState<string>('')
   const [exportScope, setExportScope] = useState<'database' | 'schema' | 'table'>('database')
   const [exportFormat, setExportFormat] = useState<'sql' | 'csv' | 'json'>('sql')
-  const [exportContent, setExportContent] = useState<'schema' | 'data' | 'schema_data'>('schema_data')
+  const [exportContent, setExportContent] = useState<'schema' | 'data' | 'schema_data'>(
+    'schema_data'
+  )
   const [exportLoading, setExportLoading] = useState(false)
   const [importModalOpen, setImportModalOpen] = useState(false)
   const [importConnectionId, setImportConnectionId] = useState<string>('')
@@ -530,17 +603,23 @@ function App(): React.JSX.Element {
   const [importPath, setImportPath] = useState<string>('')
   const [importLoading, setImportLoading] = useState(false)
   const [importConnectionModalOpen, setImportConnectionModalOpen] = useState(false)
-  const [importConnectionSource, setImportConnectionSource] = useState<ImportConnectionSource>('datagrip')
+  const [importConnectionSource, setImportConnectionSource] =
+    useState<ImportConnectionSource>('datagrip')
   const [importConnectionRawText, setImportConnectionRawText] = useState('')
   const [importConnectionFilePath, setImportConnectionFilePath] = useState('')
   const [importConnectionSecret, setImportConnectionSecret] = useState('')
-  const [importConnectionCandidates, setImportConnectionCandidates] = useState<ImportConnectionCandidate[]>([])
-  const [importConnectionFolderPlan, setImportConnectionFolderPlan] = useState<ImportConnectionFolderPlan | null>(null)
+  const [importConnectionCandidates, setImportConnectionCandidates] = useState<
+    ImportConnectionCandidate[]
+  >([])
+  const [importConnectionFolderPlan, setImportConnectionFolderPlan] =
+    useState<ImportConnectionFolderPlan | null>(null)
   const [importConnectionParsing, setImportConnectionParsing] = useState(false)
   const [importingConnections, setImportingConnections] = useState(false)
-  const [importConnectionResult, setImportConnectionResult] = useState<ImportConnectionResult | null>(null)
+  const [importConnectionResult, setImportConnectionResult] =
+    useState<ImportConnectionResult | null>(null)
   const [importConnectionResultOpen, setImportConnectionResultOpen] = useState(false)
-  const [importConnectionBundle, setImportConnectionBundle] = useState<DataDjinnConnectionTransferBundle | null>(null)
+  const [importConnectionBundle, setImportConnectionBundle] =
+    useState<DataDjinnConnectionTransferBundle | null>(null)
   const [exportConnectionModalOpen, setExportConnectionModalOpen] = useState(false)
   const [exportConnectionSecret, setExportConnectionSecret] = useState('')
   const [exportConnectionSecretConfirm, setExportConnectionSecretConfirm] = useState('')
@@ -563,14 +642,29 @@ function App(): React.JSX.Element {
     ...DEFAULT_SHORTCUT_SETTINGS,
     ...readPersistedJson<Partial<ShortcutSettings>>(STORAGE_SHORTCUT_SETTINGS, {})
   }))
-  const [recordingShortcutAction, setRecordingShortcutAction] = useState<ShortcutAction | null>(null)
-  const [selectedDriverDatabaseType, setSelectedDriverDatabaseType] = useState<DriverDatabaseType>('dm')
-  const [connectionFolders, setConnectionFolders] = useState<ConnectionFolder[]>(() => readPersistedJson<ConnectionFolder[]>(STORAGE_CONNECTION_FOLDERS, []))
-  const [connectionFolderAssignments, setConnectionFolderAssignments] = useState<Record<string, string>>(() => readPersistedJson<Record<string, string>>(STORAGE_CONNECTION_FOLDER_ASSIGNMENTS, {}))
-  const [connectionFolderOrder, setConnectionFolderOrder] = useState<string[]>(() => readPersistedJson<string[]>(STORAGE_CONNECTION_FOLDER_ORDER, []))
-  const [rootConnectionOrder, setRootConnectionOrder] = useState<string[]>(() => readPersistedJson<string[]>(STORAGE_ROOT_CONNECTION_ORDER, []))
-  const [rootItemOrder, setRootItemOrder] = useState<string[]>(() => readPersistedJson<string[]>(STORAGE_ROOT_ITEM_ORDER, []))
-  const [folderConnectionOrder, setFolderConnectionOrder] = useState<Record<string, string[]>>(() => readPersistedJson<Record<string, string[]>>(STORAGE_FOLDER_CONNECTION_ORDER, {}))
+  const [recordingShortcutAction, setRecordingShortcutAction] = useState<ShortcutAction | null>(
+    null
+  )
+  const [selectedDriverDatabaseType, setSelectedDriverDatabaseType] =
+    useState<DriverDatabaseType>('dm')
+  const [connectionFolders, setConnectionFolders] = useState<ConnectionFolder[]>(() =>
+    readPersistedJson<ConnectionFolder[]>(STORAGE_CONNECTION_FOLDERS, [])
+  )
+  const [connectionFolderAssignments, setConnectionFolderAssignments] = useState<
+    Record<string, string>
+  >(() => readPersistedJson<Record<string, string>>(STORAGE_CONNECTION_FOLDER_ASSIGNMENTS, {}))
+  const [connectionFolderOrder, setConnectionFolderOrder] = useState<string[]>(() =>
+    readPersistedJson<string[]>(STORAGE_CONNECTION_FOLDER_ORDER, [])
+  )
+  const [rootConnectionOrder, setRootConnectionOrder] = useState<string[]>(() =>
+    readPersistedJson<string[]>(STORAGE_ROOT_CONNECTION_ORDER, [])
+  )
+  const [rootItemOrder, setRootItemOrder] = useState<string[]>(() =>
+    readPersistedJson<string[]>(STORAGE_ROOT_ITEM_ORDER, [])
+  )
+  const [folderConnectionOrder, setFolderConnectionOrder] = useState<Record<string, string[]>>(() =>
+    readPersistedJson<Record<string, string[]>>(STORAGE_FOLDER_CONNECTION_ORDER, {})
+  )
   const [folderEditorOpen, setFolderEditorOpen] = useState(false)
   const [folderEditorMode, setFolderEditorMode] = useState<'create' | 'rename'>('create')
   const [editingFolderId, setEditingFolderId] = useState<string>()
@@ -578,6 +672,7 @@ function App(): React.JSX.Element {
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
   const [javaRestartRequired, setJavaRestartRequired] = useState(false)
   const [updateSettings, setUpdateSettings] = useState<UpdateSettings | null>(null)
+  const [querySettings, setQuerySettings] = useState<QuerySettings>({ timeoutMinutes: 15 })
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [downloadingUpdate, setDownloadingUpdate] = useState(false)
@@ -592,30 +687,51 @@ function App(): React.JSX.Element {
     label: `Java ${runtime.major ?? '未知版本'} - ${runtime.home}`,
     value: runtime.home
   }))
-  const selectedJavaRuntimeValues = new Set(javaRuntimeOptions.map((option) => option.value.toLowerCase()))
-  const driverDatabaseTypeForConnection = (value?: DatabaseType): DriverDatabaseType | undefined => (
-    value === 'dm' || value === 'gaussdb' ? value : undefined
+  const selectedJavaRuntimeValues = new Set(
+    javaRuntimeOptions.map((option) => option.value.toLowerCase())
   )
+  const driverDatabaseTypeForConnection = (value?: DatabaseType): DriverDatabaseType | undefined =>
+    value === 'dm' || value === 'gaussdb' ? value : undefined
   const currentDriverDatabaseType = driverDatabaseTypeForConnection(connectionModalDatabaseType)
-  const currentAllDrivers = currentDriverDatabaseType ? drivers.filter((driver) => driver.database_type === currentDriverDatabaseType) : []
+  const currentAllDrivers = currentDriverDatabaseType
+    ? drivers.filter((driver) => driver.database_type === currentDriverDatabaseType)
+    : []
   const currentEnabledDrivers = currentAllDrivers.filter((driver) => driver.enabled)
   const watchedDriverId = Form.useWatch('driver_id', form)
   const watchedLegacyDmDriverId = Form.useWatch('dm_driver_id', form)
-  const selectedManualDriverId = currentDriverDatabaseType ? (watchedDriverId ?? watchedLegacyDmDriverId) : undefined
-  const selectedManualDriver = currentAllDrivers.find((driver) => driver.id === selectedManualDriverId)
+  const selectedManualDriverId = currentDriverDatabaseType
+    ? (watchedDriverId ?? watchedLegacyDmDriverId)
+    : undefined
+  const selectedManualDriver = currentAllDrivers.find(
+    (driver) => driver.id === selectedManualDriverId
+  )
   const [driversLoading, setDriversLoading] = useState(false)
   const [driverSaving, setDriverSaving] = useState(false)
   const selectedDriverDatabaseMeta = DRIVER_DATABASE_META[selectedDriverDatabaseType]
-  const selectedDatabaseDrivers = drivers.filter((driver) => driver.database_type === selectedDriverDatabaseType)
-  const selectedManualDriverCount = selectedDatabaseDrivers.filter((driver) => driver.source === 'manual').length
-  const selectedDriverTypeLabels = selectedDriverDatabaseMeta.supportedDriverTypes
-    .map((type) => type === 'python' ? 'dmPython pyd 驱动' : type === 'whl' ? 'dmPython whl 驱动' : 'JDBC jar 驱动')
-    .join('、')
-  const [selectedDatabases, setSelectedDatabases] = useState<Record<string, string[]>>(() => readPersisted(STORAGE_DB))
-  const [selectedSchemas, setSelectedSchemas] = useState<Record<string, string[]>>(() => readPersisted(STORAGE_SCHEMA))
-  const [persistedQueryWorkspaces, setPersistedQueryWorkspaces] = useState<PersistedQueryWorkspace[]>(
-    () => readPersistedJson<PersistedQueryWorkspace[]>(STORAGE_QUERY_WORKSPACES, [])
+  const selectedDatabaseDrivers = drivers.filter(
+    (driver) => driver.database_type === selectedDriverDatabaseType
   )
+  const selectedManualDriverCount = selectedDatabaseDrivers.filter(
+    (driver) => driver.source === 'manual'
+  ).length
+  const selectedDriverTypeLabels = selectedDriverDatabaseMeta.supportedDriverTypes
+    .map((type) =>
+      type === 'python'
+        ? 'dmPython pyd 驱动'
+        : type === 'whl'
+          ? 'dmPython whl 驱动'
+          : 'JDBC jar 驱动'
+    )
+    .join('、')
+  const [selectedDatabases, setSelectedDatabases] = useState<Record<string, string[]>>(() =>
+    readPersisted(STORAGE_DB)
+  )
+  const [selectedSchemas, setSelectedSchemas] = useState<Record<string, string[]>>(() =>
+    readPersisted(STORAGE_SCHEMA)
+  )
+  const [persistedQueryWorkspaces, setPersistedQueryWorkspaces] = useState<
+    PersistedQueryWorkspace[]
+  >(() => readPersistedJson<PersistedQueryWorkspace[]>(STORAGE_QUERY_WORKSPACES, []))
   const selectedDatabasesRef = useRef(selectedDatabases)
   const selectedSchemasRef = useRef(selectedSchemas)
 
@@ -632,7 +748,10 @@ function App(): React.JSX.Element {
   }, [connectionFolders])
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_CONNECTION_FOLDER_ASSIGNMENTS, JSON.stringify(connectionFolderAssignments))
+    localStorage.setItem(
+      STORAGE_CONNECTION_FOLDER_ASSIGNMENTS,
+      JSON.stringify(connectionFolderAssignments)
+    )
   }, [connectionFolderAssignments])
 
   useEffect(() => {
@@ -669,13 +788,15 @@ function App(): React.JSX.Element {
 
     setConnectionFolderAssignments((current) => {
       let changed = false
-      const next = Object.fromEntries(Object.entries(current).filter(([connectionId, folderId]) => {
-        const keep = validConnectionIds.has(connectionId) && validFolderIds.has(folderId)
-        if (!keep) {
-          changed = true
-        }
-        return keep
-      }))
+      const next = Object.fromEntries(
+        Object.entries(current).filter(([connectionId, folderId]) => {
+          const keep = validConnectionIds.has(connectionId) && validFolderIds.has(folderId)
+          if (!keep) {
+            changed = true
+          }
+          return keep
+        })
+      )
       return changed ? next : current
     })
 
@@ -694,33 +815,49 @@ function App(): React.JSX.Element {
         }
         return true
       })
-      return current.length === next.length && current.every((item, index) => item === next[index]) ? current : next
+      return current.length === next.length && current.every((item, index) => item === next[index])
+        ? current
+        : next
     })
-    setConnectionSelectionAnchorId((current) => current && validConnectionIds.has(current) ? current : undefined)
+    setConnectionSelectionAnchorId((current) =>
+      current && validConnectionIds.has(current) ? current : undefined
+    )
     setConnectionFolderOrder((current) => {
-      const next = mergeOrderedIds(connectionFolders.map((folder) => folder.id), current)
+      const next = mergeOrderedIds(
+        connectionFolders.map((folder) => folder.id),
+        current
+      )
       return stringArrayEquals(current, next) ? current : next
     })
     setRootConnectionOrder((current) => {
       const next = mergeOrderedIds(
         connections
-        .filter((connection) => !connectionFolderAssignments[connection.connection_id] || !validFolderIds.has(connectionFolderAssignments[connection.connection_id]))
-        .map((connection) => connection.connection_id),
+          .filter(
+            (connection) =>
+              !connectionFolderAssignments[connection.connection_id] ||
+              !validFolderIds.has(connectionFolderAssignments[connection.connection_id])
+          )
+          .map((connection) => connection.connection_id),
         current
       )
       return stringArrayEquals(current, next) ? current : next
     })
     setRootItemOrder((current) => {
       const rootConnectionIds = connections
-        .filter((connection) => !connectionFolderAssignments[connection.connection_id] || !validFolderIds.has(connectionFolderAssignments[connection.connection_id]))
+        .filter(
+          (connection) =>
+            !connectionFolderAssignments[connection.connection_id] ||
+            !validFolderIds.has(connectionFolderAssignments[connection.connection_id])
+        )
         .map((connection) => rootConnectionOrderId(connection.connection_id))
       const folderIds = connectionFolders.map((folder) => rootFolderOrderId(folder.id))
-      const migratedOrder = current.length > 0
-        ? current
-        : [
-            ...connectionFolderOrder.map(rootFolderOrderId),
-            ...rootConnectionOrder.map(rootConnectionOrderId)
-          ]
+      const migratedOrder =
+        current.length > 0
+          ? current
+          : [
+              ...connectionFolderOrder.map(rootFolderOrderId),
+              ...rootConnectionOrder.map(rootConnectionOrderId)
+            ]
       const next = mergeOrderedIds([...folderIds, ...rootConnectionIds], migratedOrder)
       return stringArrayEquals(current, next) ? current : next
     })
@@ -728,20 +865,38 @@ function App(): React.JSX.Element {
       const next: Record<string, string[]> = {}
       for (const folderId of connectionFolders.map((folder) => folder.id)) {
         const folderConnectionIds = connections
-          .filter((connection) => connectionFolderAssignments[connection.connection_id] === folderId)
+          .filter(
+            (connection) => connectionFolderAssignments[connection.connection_id] === folderId
+          )
           .map((connection) => connection.connection_id)
         next[folderId] = mergeOrderedIds(folderConnectionIds, current[folderId] ?? [])
       }
       return stringRecordArrayEquals(current, next) ? current : next
     })
-  }, [connectionsInitialized, connections, connectionFolders, connectionFolderAssignments, connectionFolderOrder, rootConnectionOrder])
+  }, [
+    connectionsInitialized,
+    connections,
+    connectionFolders,
+    connectionFolderAssignments,
+    connectionFolderOrder,
+    rootConnectionOrder
+  ])
 
   const [allDatabases, setAllDatabases] = useState<Record<string, string[]>>({})
   const [allSchemas, setAllSchemas] = useState<Record<string, string[]>>({})
   const [completionTables, setCompletionTables] = useState<Record<string, string[]>>({})
-  const [dragOverFolderTarget, setDragOverFolderTarget] = useState<{ folderId: string; zone: 'before' | 'after' }>()
-  const [dragOverConnectionTarget, setDragOverConnectionTarget] = useState<{ connectionId: string; folderId?: string; zone: 'before' | 'after' }>()
-  const [tableSearchUiState, setTableSearchUiState] = useState<Record<string, TableSearchUiState>>({})
+  const [dragOverFolderTarget, setDragOverFolderTarget] = useState<{
+    folderId: string
+    zone: 'before' | 'after'
+  }>()
+  const [dragOverConnectionTarget, setDragOverConnectionTarget] = useState<{
+    connectionId: string
+    folderId?: string
+    zone: 'before' | 'after'
+  }>()
+  const [tableSearchUiState, setTableSearchUiState] = useState<Record<string, TableSearchUiState>>(
+    {}
+  )
   const queryWorkspacePersistTimersRef = useRef<Record<string, number | undefined>>({})
   const queryWorkspacePersistSnapshotRef = useRef<Record<string, string | undefined>>({})
   const persistQueryWorkspaceRef = useRef<(tab: WorkspaceTab) => void>(() => undefined)
@@ -752,11 +907,8 @@ function App(): React.JSX.Element {
   const tableComponentRefs = useRef<Record<string, HorizontalScrollTableRef | null>>({})
   const tableBodyRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const tableHeaderRefs = useRef<Record<string, HTMLDivElement | null>>({})
-  const tableNativeHorizontalScrollbarRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const pendingPreviewRowScrollRefs = useRef<Record<string, string | undefined>>({})
   const tableScrollTopRefs = useRef<Record<string, number | undefined>>({})
-  const tableNativeHorizontalScrollbarCleanupRefs = useRef<Record<string, (() => void) | undefined>>({})
-  const tableNativeHorizontalScrollbarFrameRefs = useRef<Record<string, number | undefined>>({})
   const pendingRenderedCellSelectionTimeoutRefs = useRef<Record<string, number | undefined>>({})
   const resourceTreeContainerRef = useRef<HTMLDivElement | null>(null)
   const resourceTreeViewportRef = useRef<HTMLDivElement | null>(null)
@@ -771,9 +923,13 @@ function App(): React.JSX.Element {
   const renderedSelectedCellRefs = useRef<Record<string, string[] | undefined>>({})
   const renderedSelectedRowRefs = useRef<Record<string, string[] | undefined>>({})
   const runtimeSelectedCellRefs = useRef<Record<string, string[] | undefined>>({})
-  const cellDragAnchorRefs = useRef<Record<string, { rowKey: string; column: string } | undefined>>({})
+  const cellDragAnchorRefs = useRef<Record<string, { rowKey: string; column: string } | undefined>>(
+    {}
+  )
   const scrollbarDragRefs = useRef<Record<string, boolean | undefined>>({})
-  const pendingCellDragTargetRefs = useRef<Record<string, { rowKey: string; column: string } | undefined>>({})
+  const pendingCellDragTargetRefs = useRef<
+    Record<string, { rowKey: string; column: string } | undefined>
+  >({})
   const pendingCellDragFrameRefs = useRef<Record<string, number | undefined>>({})
   const pendingRowDragTargetRefs = useRef<Record<string, string | undefined>>({})
   const pendingRowDragFrameRefs = useRef<Record<string, number | undefined>>({})
@@ -784,87 +940,126 @@ function App(): React.JSX.Element {
   const committingEditingCellRefs = useRef<Record<string, boolean | undefined>>({})
   const editingCellRefs = useRef<Record<string, { rowKey: string; column: string } | undefined>>({})
   const suppressInlineEditorCommitRefs = useRef<Record<string, boolean | undefined>>({})
-  const cellClipboardRef = useRef<{ text: string, values: unknown[][] } | null>(null)
+  const cellClipboardRef = useRef<{ text: string; values: unknown[][] } | null>(null)
   const contextMenuCellSelectionRefs = useRef<Record<string, string[] | undefined>>({})
-  const contextMenuCellSelectionSnapshotRefs = useRef<Record<string, { anchorCellKey: string, cellKeys: string[] } | undefined>>({})
+  const contextMenuCellSelectionSnapshotRefs = useRef<
+    Record<string, { anchorCellKey: string; cellKeys: string[] } | undefined>
+  >({})
   const cellInspectorPanelRefs = useRef<Record<string, CellInspectorPanelHandle | null>>({})
-  const inlineCellEditorRefs = useRef<Record<string, {
-    rowKey: string
-    column: string
-    input: HTMLInputElement
-    host: HTMLElement
-    originalContent: string
-    originalValue: unknown
-    initialInputValue: string
-  } | undefined>>({})
+  const inlineCellEditorRefs = useRef<
+    Record<
+      string,
+      | {
+          rowKey: string
+          column: string
+          input: HTMLInputElement
+          host: HTMLElement
+          originalContent: string
+          originalValue: unknown
+          initialInputValue: string
+        }
+      | undefined
+    >
+  >({})
   const committedSelectedCellRangeRefs = useRef<Record<string, string[] | undefined>>({})
   const rowDragAnchorRefs = useRef<Record<string, string | undefined>>({})
   const rowSelectionDraftRefs = useRef<Record<string, React.Key[] | undefined>>({})
   const treeLoadingKeysRef = useRef<Set<React.Key>>(new Set())
-  const dragOverFolderTargetRef = useRef<{ folderId: string; zone: 'before' | 'after' } | undefined>(undefined)
-  const dragOverConnectionTargetRef = useRef<{ connectionId: string; folderId?: string; zone: 'before' | 'after' } | undefined>(undefined)
+  const dragOverFolderTargetRef = useRef<
+    { folderId: string; zone: 'before' | 'after' } | undefined
+  >(undefined)
+  const dragOverConnectionTargetRef = useRef<
+    { connectionId: string; folderId?: string; zone: 'before' | 'after' } | undefined
+  >(undefined)
   const draggingConnectionIdsRef = useRef<string[]>([])
   const queryResultToggleRefs = useRef<Record<string, HTMLButtonElement | null>>({})
-  const aiPanelResizeRef = useRef<{ startX: number; startSize: number; lastSize?: number } | null>(null)
-  const resourcePanelResizeRef = useRef<{ startX: number; startSize: number; lastSize?: number } | null>(null)
+  const aiPanelResizeRef = useRef<{ startX: number; startSize: number; lastSize?: number } | null>(
+    null
+  )
+  const resourcePanelResizeRef = useRef<{
+    startX: number
+    startSize: number
+    lastSize?: number
+  } | null>(null)
   const draggingConnectionFolderIdRef = useRef<string | undefined>(undefined)
   const ddlPreviewModalRef = useRef<DdlPreviewModalHandle | null>(null)
-  const columnResizeRefs = useRef<Record<string, {
-    tabKey: string
-    column: string
-    columnIndex: number
-    pointerId: number
-    startX: number
-    startWidth: number
-    lastWidth: number
-    headerCells: HTMLElement[]
-    headerColElements: HTMLTableColElement[]
-    bodyColElements: HTMLTableColElement[]
-    virtual: boolean
-    virtualCells?: HTMLElement[]
-    pendingWidth?: number
-    frameId?: number
-  } | undefined>>({})
-  const resultTableRefs = useMemo(() => ({
-    tableComponentRefs,
-    tableBodyRefs,
-    tableHeaderRefs,
-    tableNativeHorizontalScrollbarRefs,
-    pendingPreviewRowScrollRefs,
-    tableScrollTopRefs,
-    selectedColumnRefs,
-    selectedCellRefs,
-    selectedRowRefs,
-    renderedSelectedRowRefs,
-    runtimeSelectedCellRefs,
-    cellDragAnchorRefs,
-    scrollbarDragRefs,
-    pendingCellDragTargetRefs,
-    pendingCellDragFrameRefs,
-    pendingRowDragTargetRefs,
-    pendingRowDragFrameRefs,
-    suppressNextShellClickClearRefs,
-    suppressNextCellMouseDownRefs,
-    contextMenuSelectionLockRefs,
-    committingEditingCellRefs,
-    editingCellRefs,
-    suppressInlineEditorCommitRefs,
-    cellClipboardRef,
-    contextMenuCellSelectionRefs,
-    contextMenuCellSelectionSnapshotRefs,
-    cellInspectorPanelRefs,
-    inlineCellEditorRefs,
-    committedSelectedCellRangeRefs,
-    rowDragAnchorRefs,
-    rowSelectionDraftRefs,
-    columnResizeRefs
-  }), [])
+  const columnResizeRefs = useRef<
+    Record<
+      string,
+      | {
+          tabKey: string
+          column: string
+          columnIndex: number
+          pointerId: number
+          startX: number
+          startWidth: number
+          lastWidth: number
+          headerCells: HTMLElement[]
+          headerColElements: HTMLTableColElement[]
+          bodyColElements: HTMLTableColElement[]
+          virtual: boolean
+          virtualCells?: HTMLElement[]
+          pendingWidth?: number
+          frameId?: number
+        }
+      | undefined
+    >
+  >({})
+  const resultTableRefs = useMemo(
+    () => ({
+      tableComponentRefs,
+      tableBodyRefs,
+      tableHeaderRefs,
+      pendingPreviewRowScrollRefs,
+      tableScrollTopRefs,
+      selectedColumnRefs,
+      selectedCellRefs,
+      selectedRowRefs,
+      renderedSelectedRowRefs,
+      runtimeSelectedCellRefs,
+      cellDragAnchorRefs,
+      scrollbarDragRefs,
+      pendingCellDragTargetRefs,
+      pendingCellDragFrameRefs,
+      pendingRowDragTargetRefs,
+      pendingRowDragFrameRefs,
+      suppressNextShellClickClearRefs,
+      suppressNextCellMouseDownRefs,
+      contextMenuSelectionLockRefs,
+      committingEditingCellRefs,
+      editingCellRefs,
+      suppressInlineEditorCommitRefs,
+      cellClipboardRef,
+      contextMenuCellSelectionRefs,
+      contextMenuCellSelectionSnapshotRefs,
+      cellInspectorPanelRefs,
+      inlineCellEditorRefs,
+      committedSelectedCellRangeRefs,
+      rowDragAnchorRefs,
+      rowSelectionDraftRefs,
+      columnResizeRefs
+    }),
+    []
+  )
 
   const { theme, toggleTheme } = useTheme()
 
   const refreshUpdateSettings = async (): Promise<void> => {
     const settings = await window.api.getUpdateSettings()
     setUpdateSettings(settings)
+  }
+
+  const refreshQuerySettings = async (): Promise<void> => {
+    const settings = await window.api.getQuerySettings()
+    setQuerySettings(settings)
+  }
+
+  const updateQueryTimeoutMinutes = async (timeoutMinutes: number | null): Promise<void> => {
+    if (timeoutMinutes === null) {
+      return
+    }
+    const settings = await window.api.setQueryTimeoutMinutes(timeoutMinutes)
+    setQuerySettings(settings)
   }
 
   const handleUpdateAvailable = (info: UpdateInfo, open = true): void => {
@@ -933,7 +1128,9 @@ function App(): React.JSX.Element {
       .replace(/\s*\(Background on this error at:[\s\S]*$/i, '')
       .trim()
 
-    const friendlyPrefixMatch = message.match(/((?:SQL\s*语法错误|SQL\s*语句错误|数据库操作失败|Oracle\s*数据库操作失败|Redis\s*操作失败|PostgreSQL\s*\/\s*高斯数据库[^：:]*|Oracle\s*SQL\s*中引用了不存在的字段|Oracle\s*表或视图不存在|目标数据库不存在|数据表不存在|当前对象类型不支持查看\s*DDL)[：:][\s\S]*)/)
+    const friendlyPrefixMatch = message.match(
+      /((?:SQL\s*语法错误|SQL\s*语句错误|数据库操作失败|Oracle\s*数据库操作失败|Redis\s*操作失败|PostgreSQL\s*\/\s*高斯数据库[^：:]*|Oracle\s*SQL\s*中引用了不存在的字段|Oracle\s*表或视图不存在|目标数据库不存在|数据表不存在|当前对象类型不支持查看\s*DDL)[：:][\s\S]*)/
+    )
     if (friendlyPrefixMatch?.[1]) {
       message = friendlyPrefixMatch[1].trim()
     }
@@ -944,52 +1141,72 @@ function App(): React.JSX.Element {
     return new Error(message || '操作失败')
   }
 
-  const requestJsonRaw = useCallback(async <T,>(path: string, options?: RequestInit): Promise<T> => {
-    if (backendStatus.state !== 'online' || !backendStatus.apiBaseUrl) {
-      throw new Error(backendStatus.message ?? '后端服务正在恢复，请稍后再试')
-    }
-
-    try {
-      return await window.api.requestJson<T>(path, {
-        method: options?.method,
-        headers: options?.headers as Record<string, string> | undefined,
-        body: typeof options?.body === 'string' ? options.body : undefined
-      })
-    } catch (err) {
-      throw normalizeRequestError(err)
-    }
-  }, [backendStatus.apiBaseUrl, backendStatus.message, backendStatus.state])
-
-  const reopenConnectionSilently = useCallback(async (connectionId: string): Promise<void> => {
-    const connection = await requestJsonRaw<ConnectionInfo>(`/connections/${connectionId}/open`, { method: 'POST' })
-    setConnections((current) => current.map((item) => (item.connection_id === connectionId ? connection : item)))
-    setTreeData((current) => replaceConnectionNode(current, connection, buildConnectionNode, true))
-  }, [requestJsonRaw])
-
-  const requestJson = useCallback(async <T,>(path: string, options?: RequestInit): Promise<T> => {
-    try {
-      return await requestJsonRaw<T>(path, options)
-    } catch (err) {
-      const error = normalizeRequestError(err)
-      const match = path.match(/^\/connections\/([^/]+)/)
-
-      if (match && (error.message.includes('连接已关闭') || error.message.includes('连接尚未打开'))) {
-        await reopenConnectionSilently(match[1])
-        return await requestJsonRaw<T>(path, options)
+  const requestJsonRaw = useCallback(
+    async <T,>(path: string, options?: RequestInit): Promise<T> => {
+      if (backendStatus.state !== 'online' || !backendStatus.apiBaseUrl) {
+        throw new Error(backendStatus.message ?? '后端服务正在恢复，请稍后再试')
       }
 
-      throw error
-    }
-  }, [normalizeRequestError, reopenConnectionSilently, requestJsonRaw])
+      try {
+        return await window.api.requestJson<T>(path, {
+          method: options?.method,
+          headers: options?.headers as Record<string, string> | undefined,
+          body: typeof options?.body === 'string' ? options.body : undefined
+        })
+      } catch (err) {
+        throw normalizeRequestError(err)
+      }
+    },
+    [backendStatus.apiBaseUrl, backendStatus.message, backendStatus.state]
+  )
+
+  const reopenConnectionSilently = useCallback(
+    async (connectionId: string): Promise<void> => {
+      const connection = await requestJsonRaw<ConnectionInfo>(`/connections/${connectionId}/open`, {
+        method: 'POST'
+      })
+      setConnections((current) =>
+        current.map((item) => (item.connection_id === connectionId ? connection : item))
+      )
+      setTreeData((current) =>
+        replaceConnectionNode(current, connection, buildConnectionNode, true)
+      )
+    },
+    [requestJsonRaw]
+  )
+
+  const requestJson = useCallback(
+    async <T,>(path: string, options?: RequestInit): Promise<T> => {
+      try {
+        return await requestJsonRaw<T>(path, options)
+      } catch (err) {
+        const error = normalizeRequestError(err)
+        const match = path.match(/^\/connections\/([^/]+)/)
+
+        if (
+          match &&
+          (error.message.includes('连接已关闭') || error.message.includes('连接尚未打开'))
+        ) {
+          await reopenConnectionSilently(match[1])
+          return await requestJsonRaw<T>(path, options)
+        }
+
+        throw error
+      }
+    },
+    [normalizeRequestError, reopenConnectionSilently, requestJsonRaw]
+  )
 
   const buildSqlCompletionContext = (tab: WorkspaceTab): SqlCompletionContext => {
     const connection = getConnection(tab.connectionId)
-    const scopeKey = tab.connectionId ? `${tab.connectionId}:${tab.pgDatabaseName ?? ''}:${tab.databaseName ?? ''}` : ''
+    const scopeKey = tab.connectionId
+      ? `${tab.connectionId}:${tab.pgDatabaseName ?? ''}:${tab.databaseName ?? ''}`
+      : ''
     const loadedScope = scopeKey ? loadedCompletionIndex.get(scopeKey) : undefined
     const tables = loadedScope ? [...loadedScope.tables] : []
     const columns = loadedScope ? [...loadedScope.columns] : []
 
-    const cacheKey = tab.connectionId && tab.databaseName ? `${tab.connectionId}:${tab.databaseName}` : ''
+    const cacheKey = tab.connectionId ? `${tab.connectionId}:${tab.databaseName ?? ''}` : ''
 
     if (cacheKey && completionTables[cacheKey]) {
       const existingTableNames = new Set(tables.map((table) => table.name))
@@ -1001,8 +1218,12 @@ function App(): React.JSX.Element {
       }
     }
 
-    const databaseNames = connection?.database_type === 'sqlite' ? [] : allDatabases[tab.connectionId ?? ''] ?? []
-    const schemaKey = tab.connectionId && (tab.pgDatabaseName ?? tab.databaseName) ? `${tab.connectionId}:${tab.pgDatabaseName ?? tab.databaseName}` : ''
+    const databaseNames =
+      connection?.database_type === 'sqlite' ? [] : (allDatabases[tab.connectionId ?? ''] ?? [])
+    const schemaKey =
+      tab.connectionId && (tab.pgDatabaseName ?? tab.databaseName)
+        ? `${tab.connectionId}:${tab.pgDatabaseName ?? tab.databaseName}`
+        : ''
 
     return {
       dialect: connection?.database_type,
@@ -1011,7 +1232,7 @@ function App(): React.JSX.Element {
       pgDatabaseName: tab.pgDatabaseName,
       schemaName: isSchemaScopedType(connection?.database_type) ? tab.databaseName : undefined,
       databases: databaseNames,
-      schemas: schemaKey ? allSchemas[schemaKey] ?? [] : [],
+      schemas: schemaKey ? (allSchemas[schemaKey] ?? []) : [],
       tables,
       columns
     }
@@ -1020,10 +1241,15 @@ function App(): React.JSX.Element {
   const buildSqlCompletionContextRef = useRef(buildSqlCompletionContext)
   buildSqlCompletionContextRef.current = buildSqlCompletionContext
 
-  const renderConnectionTitle = (node: DatabaseTreeNode, connection: ConnectionInfo): React.ReactNode => {
+  const renderConnectionTitle = (
+    node: DatabaseTreeNode,
+    connection: ConnectionInfo
+  ): React.ReactNode => {
     const loadingText = connectionTreeLoading[connection.connection_id]
     const loading = Boolean(loadingText)
-    const isFocused = focusedTreeNode?.connectionId === connection.connection_id && focusedTreeNode?.kind === 'connection'
+    const isFocused =
+      focusedTreeNode?.connectionId === connection.connection_id &&
+      focusedTreeNode?.kind === 'connection'
     const isSelected = selectedConnectionIds.includes(connection.connection_id)
     const connectionAddress = connection.host?.trim()
       ? `${connection.host}${connection.port ? `:${connection.port}` : ''}`
@@ -1032,9 +1258,10 @@ function App(): React.JSX.Element {
       ? `${connection.name} · ${connectionAddress}`
       : connection.name
     const currentFolderId = connectionFolderAssignments[connection.connection_id]
-    const connectionDropZone = dragOverConnectionTarget?.connectionId === connection.connection_id
-      ? dragOverConnectionTarget.zone
-      : undefined
+    const connectionDropZone =
+      dragOverConnectionTarget?.connectionId === connection.connection_id
+        ? dragOverConnectionTarget.zone
+        : undefined
 
     return (
       <>
@@ -1078,101 +1305,112 @@ function App(): React.JSX.Element {
         }
       }}
         */}
-      <Flex
-        className={`connection-tree-title resource-tree-node-title ${connection.is_open ? 'is-open' : 'is-closed'}${isSelected ? ' is-selected' : ''}${connectionDropZone ? ` connection-drop-${connectionDropZone}` : ''}`}
-        align="center"
-        title={connectionMeta}
-        data-connection-id={connection.connection_id}
-        data-tree-node-key={String(node.key)}
-        onDragOver={(event) => {
-          const movingConnectionIds = draggingConnectionIdsRef.current
-          if (movingConnectionIds.length === 0 || movingConnectionIds.includes(connection.connection_id)) {
-            return
-          }
-          if (!currentFolderId || draggingConnectionFolderIdRef.current !== currentFolderId) {
-            return
-          }
-          event.preventDefault()
-          event.stopPropagation()
-          const rect = event.currentTarget.getBoundingClientRect()
-          updateDragOverConnectionTarget({
-            connectionId: connection.connection_id,
-            folderId: currentFolderId,
-            zone: event.clientY - rect.top >= rect.height / 2 ? 'after' : 'before'
-          })
-        }}
-        onDrop={(event) => {
-          const movingConnectionIds = draggingConnectionIdsRef.current
-          if (movingConnectionIds.length === 0 || movingConnectionIds.includes(connection.connection_id)) {
+        <Flex
+          className={`connection-tree-title resource-tree-node-title ${connection.is_open ? 'is-open' : 'is-closed'}${isSelected ? ' is-selected' : ''}${connectionDropZone ? ` connection-drop-${connectionDropZone}` : ''}`}
+          align="center"
+          title={connectionMeta}
+          data-connection-id={connection.connection_id}
+          data-tree-node-key={String(node.key)}
+          onDragOver={(event) => {
+            const movingConnectionIds = draggingConnectionIdsRef.current
+            if (
+              movingConnectionIds.length === 0 ||
+              movingConnectionIds.includes(connection.connection_id)
+            ) {
+              return
+            }
+            if (!currentFolderId || draggingConnectionFolderIdRef.current !== currentFolderId) {
+              return
+            }
+            event.preventDefault()
+            event.stopPropagation()
+            const rect = event.currentTarget.getBoundingClientRect()
+            updateDragOverConnectionTarget({
+              connectionId: connection.connection_id,
+              folderId: currentFolderId,
+              zone: event.clientY - rect.top >= rect.height / 2 ? 'after' : 'before'
+            })
+          }}
+          onDrop={(event) => {
+            const movingConnectionIds = draggingConnectionIdsRef.current
+            if (
+              movingConnectionIds.length === 0 ||
+              movingConnectionIds.includes(connection.connection_id)
+            ) {
+              clearConnectionDragState()
+              return
+            }
+            if (!currentFolderId || draggingConnectionFolderIdRef.current !== currentFolderId) {
+              clearConnectionDragState()
+              return
+            }
+            event.preventDefault()
+            event.stopPropagation()
+            const rect = event.currentTarget.getBoundingClientRect()
+            reorderFolderConnections(
+              currentFolderId,
+              movingConnectionIds,
+              connection.connection_id,
+              event.clientY - rect.top >= rect.height / 2
+            )
             clearConnectionDragState()
-            return
-          }
-          if (!currentFolderId || draggingConnectionFolderIdRef.current !== currentFolderId) {
-            clearConnectionDragState()
-            return
-          }
-          event.preventDefault()
-          event.stopPropagation()
-          const rect = event.currentTarget.getBoundingClientRect()
-          reorderFolderConnections(
-            currentFolderId,
-            movingConnectionIds,
-            connection.connection_id,
-            event.clientY - rect.top >= rect.height / 2
-          )
-          clearConnectionDragState()
-        }}
-      >
-        <div className="connection-tree-main">
-          <Typography.Text className="connection-tree-name" ellipsis title={connection.name}>
-            {highlightTreeSearchText(connection.name)}
-          </Typography.Text>
-          {connectionAddress && (
-            <Typography.Text type="secondary" className="connection-tree-address" ellipsis title={connectionAddress}>
-              {highlightTreeSearchText(connectionAddress)}
+          }}
+        >
+          <div className="connection-tree-main">
+            <Typography.Text className="connection-tree-name" ellipsis title={connection.name}>
+              {highlightTreeSearchText(connection.name)}
             </Typography.Text>
+            {connectionAddress && (
+              <Typography.Text
+                type="secondary"
+                className="connection-tree-address"
+                ellipsis
+                title={connectionAddress}
+              >
+                {highlightTreeSearchText(connectionAddress)}
+              </Typography.Text>
+            )}
+          </div>
+          {(isFocused || isSelected) && (
+            <Space className="connection-tree-actions" size={2}>
+              {renderDatabaseSelector(connection.connection_id)}
+              <Button
+                className="connection-tree-icon-btn"
+                type="text"
+                size="small"
+                icon={<ReloadOutlined />}
+                loading={loading}
+                disabled={loading}
+                title={loadingText ?? '刷新连接'}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  refreshConnectionNode(connection.connection_id)
+                }}
+              />
+              <Button
+                className="connection-tree-icon-btn"
+                type="text"
+                size="small"
+                icon={<EditOutlined />}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  void openEditConnectionModal(connection)
+                }}
+              />
+              <Button
+                className="connection-tree-icon-btn"
+                type="text"
+                danger
+                size="small"
+                icon={<DeleteOutlined />}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  void deleteConnection(connection.connection_id)
+                }}
+              />
+            </Space>
           )}
-        </div>
-        {(isFocused || isSelected) && (
-          <Space className="connection-tree-actions" size={2}>
-            {renderDatabaseSelector(connection.connection_id)}
-            <Button
-              className="connection-tree-icon-btn"
-              type="text"
-              size="small"
-              icon={<ReloadOutlined />}
-              loading={loading}
-              disabled={loading}
-              title={loadingText ?? '刷新连接'}
-              onClick={(event) => {
-                event.stopPropagation()
-                refreshConnectionNode(connection.connection_id)
-              }}
-            />
-            <Button
-              className="connection-tree-icon-btn"
-              type="text"
-              size="small"
-              icon={<EditOutlined />}
-              onClick={(event) => {
-                event.stopPropagation()
-                void openEditConnectionModal(connection)
-              }}
-            />
-            <Button
-              className="connection-tree-icon-btn"
-              type="text"
-              danger
-              size="small"
-              icon={<DeleteOutlined />}
-              onClick={(event) => {
-                event.stopPropagation()
-                void deleteConnection(connection.connection_id)
-              }}
-            />
-          </Space>
-        )}
-      </Flex>
+        </Flex>
       </>
     )
   }
@@ -1192,7 +1430,10 @@ function App(): React.JSX.Element {
   const buildConnectionNode = (connection: ConnectionInfo): DatabaseTreeNode =>
     buildConnectionNodeFromModule(connection, connectionTypeIcons)
 
-  const buildFolderNode = (folder: ConnectionFolder, children: DatabaseTreeNode[]): DatabaseTreeNode =>
+  const buildFolderNode = (
+    folder: ConnectionFolder,
+    children: DatabaseTreeNode[]
+  ): DatabaseTreeNode =>
     buildFolderNodeFromModule(folder, children, FOLDER_DROP_PLACEHOLDER_KEY_PREFIX)
 
   const highlightTreeSearchText = (text: string): React.ReactNode => {
@@ -1245,7 +1486,9 @@ function App(): React.JSX.Element {
     if (!keyword) {
       return
     }
-    const path = findTreeKeyPathByPredicate(treeData, (node) => getTreeNodeCopyName(node).toLowerCase().includes(keyword))
+    const path = findTreeKeyPathByPredicate(treeData, (node) =>
+      getTreeNodeCopyName(node).toLowerCase().includes(keyword)
+    )
     if (!path || path.length === 0) {
       return
     }
@@ -1271,7 +1514,10 @@ function App(): React.JSX.Element {
     })
   }, [treeSearchOpen])
 
-  const buildResourceTree = (nextConnections: ConnectionInfo[], currentNodes: DatabaseTreeNode[] = []): DatabaseTreeNode[] => {
+  const buildResourceTree = (
+    nextConnections: ConnectionInfo[],
+    currentNodes: DatabaseTreeNode[] = []
+  ): DatabaseTreeNode[] => {
     return buildResourceTreeFromModule(nextConnections, currentNodes, {
       connectionFolderAssignments,
       connectionFolders,
@@ -1291,7 +1537,13 @@ function App(): React.JSX.Element {
 
   useEffect(() => {
     refreshTree(connections)
-  }, [connections, connectionFolders, connectionFolderAssignments, rootItemOrder, folderConnectionOrder])
+  }, [
+    connections,
+    connectionFolders,
+    connectionFolderAssignments,
+    rootItemOrder,
+    folderConnectionOrder
+  ])
 
   useEffect(() => {
     const treeNodesByKey = collectTreeNodesByKey(treeData)
@@ -1311,7 +1563,9 @@ function App(): React.JSX.Element {
         return Boolean(node.childrenLoaded || node.children?.length)
       })
 
-      return current.length === next.length && current.every((item, index) => item === next[index]) ? current : next
+      return current.length === next.length && current.every((item, index) => item === next[index])
+        ? current
+        : next
     })
   }, [treeData])
 
@@ -1335,11 +1589,16 @@ function App(): React.JSX.Element {
         }
         return true
       })
-      return current.length === next.length && current.every((item, index) => item === next[index]) ? current : next
+      return current.length === next.length && current.every((item, index) => item === next[index])
+        ? current
+        : next
     })
   }, [connections])
 
-  const refreshConnectionNode = (connectionId: string, selectedDatabaseOverride?: string[]): void => {
+  const refreshConnectionNode = (
+    connectionId: string,
+    selectedDatabaseOverride?: string[]
+  ): void => {
     refreshConnectionTreeNode({
       connectionId,
       selectedDatabaseOverride,
@@ -1354,7 +1613,11 @@ function App(): React.JSX.Element {
     })
   }
 
-  const refreshDatabaseNode = (connectionId: string, databaseName: string, selectedSchemaOverride?: string[]): void => {
+  const refreshDatabaseNode = (
+    connectionId: string,
+    databaseName: string,
+    selectedSchemaOverride?: string[]
+  ): void => {
     refreshDatabaseTreeNode({
       connectionId,
       databaseName,
@@ -1370,15 +1633,18 @@ function App(): React.JSX.Element {
   const setConnectionTreeLoadingText = (connectionId: string, text?: string): void => {
     setConnectionTreeLoading((current) => {
       if (!text) {
-        const { [connectionId]: _removed, ...rest } = current
-        return rest
+        return Object.fromEntries(Object.entries(current).filter(([id]) => id !== connectionId))
       }
       return { ...current, [connectionId]: text }
     })
   }
 
   const folderNameExists = (name: string, excludeFolderId?: string): boolean =>
-    connectionFolders.some((folder) => folder.id !== excludeFolderId && folder.name.trim().toLowerCase() === name.trim().toLowerCase())
+    connectionFolders.some(
+      (folder) =>
+        folder.id !== excludeFolderId &&
+        folder.name.trim().toLowerCase() === name.trim().toLowerCase()
+    )
 
   const openCreateFolderModal = (): void => {
     setFolderEditorMode('create')
@@ -1410,14 +1676,18 @@ function App(): React.JSX.Element {
     }
 
     if (folderEditorMode === 'rename' && editingFolderId) {
-      setConnectionFolders((current) => current.map((folder) => (
-        folder.id === editingFolderId ? { ...folder, name: nextName } : folder
-      )))
+      setConnectionFolders((current) =>
+        current.map((folder) =>
+          folder.id === editingFolderId ? { ...folder, name: nextName } : folder
+        )
+      )
     } else {
       const folderId = globalThis.crypto?.randomUUID?.() ?? `folder-${Date.now()}`
       setConnectionFolders((current) => [{ id: folderId, name: nextName }, ...current])
       setConnectionFolderOrder((current) => [folderId, ...current.filter((id) => id !== folderId)])
-      setExpandedKeys((current) => current.includes(`folder:${folderId}`) ? current : [...current, `folder:${folderId}`])
+      setExpandedKeys((current) =>
+        current.includes(`folder:${folderId}`) ? current : [...current, `folder:${folderId}`]
+      )
       setSelectedTreeKeys([`folder:${folderId}`])
     }
 
@@ -1443,15 +1713,16 @@ function App(): React.JSX.Element {
         setConnectionFolders((current) => current.filter((item) => item.id !== folderId))
         setConnectionFolderOrder((current) => current.filter((id) => id !== folderId))
         setFolderConnectionOrder((current) => {
-          const { [folderId]: _removed, ...rest } = current
-          return rest
+          return Object.fromEntries(Object.entries(current).filter(([id]) => id !== folderId))
         })
-        setConnectionFolderAssignments((current) => Object.fromEntries(
-          Object.entries(current).filter(([, value]) => value !== folderId)
-        ))
+        setConnectionFolderAssignments((current) =>
+          Object.fromEntries(Object.entries(current).filter(([, value]) => value !== folderId))
+        )
         setExpandedKeys((current) => current.filter((key) => key !== `folder:${folderId}`))
         setSelectedTreeKeys((current) => current.filter((key) => key !== `folder:${folderId}`))
-        setFocusedTreeNode((current) => current?.kind === 'folder' && current.folderId === folderId ? undefined : current)
+        setFocusedTreeNode((current) =>
+          current?.kind === 'folder' && current.folderId === folderId ? undefined : current
+        )
       }
     })
   }
@@ -1492,20 +1763,33 @@ function App(): React.JSX.Element {
 
     setFolderConnectionOrder((current) => {
       const next: Record<string, string[]> = Object.fromEntries(
-        Object.entries(current).map(([currentFolderId, ids]) => [currentFolderId, ids.filter((id) => !connectionIds.includes(id))])
+        Object.entries(current).map(([currentFolderId, ids]) => [
+          currentFolderId,
+          ids.filter((id) => !connectionIds.includes(id))
+        ])
       )
 
       if (folderId) {
-        next[folderId] = [...(next[folderId] ?? []), ...connectionIds.filter((id) => !(next[folderId] ?? []).includes(id))]
+        next[folderId] = [
+          ...(next[folderId] ?? []),
+          ...connectionIds.filter((id) => !(next[folderId] ?? []).includes(id))
+        ]
       }
 
       return next
     })
   }
 
-  const reorderFolderNodes = (movingFolderId: string, targetFolderId: string, placeAfter: boolean): void => {
+  const reorderFolderNodes = (
+    movingFolderId: string,
+    targetFolderId: string,
+    placeAfter: boolean
+  ): void => {
     setConnectionFolderOrder((current) => {
-      const ordered = mergeOrderedIds(connectionFolders.map((folder) => folder.id), current)
+      const ordered = mergeOrderedIds(
+        connectionFolders.map((folder) => folder.id),
+        current
+      )
       return insertIdsAroundTarget(ordered, [movingFolderId], targetFolderId, placeAfter)
     })
     setRootItemOrder((current) => {
@@ -1515,11 +1799,20 @@ function App(): React.JSX.Element {
           .filter((connection) => !connectionFolderAssignments[connection.connection_id])
           .map((connection) => rootConnectionOrderId(connection.connection_id))
       ]
-      return insertIdsAroundTarget(mergeOrderedIds(available, current), [rootFolderOrderId(movingFolderId)], rootFolderOrderId(targetFolderId), placeAfter)
+      return insertIdsAroundTarget(
+        mergeOrderedIds(available, current),
+        [rootFolderOrderId(movingFolderId)],
+        rootFolderOrderId(targetFolderId),
+        placeAfter
+      )
     })
   }
 
-  const reorderRootFolderAroundConnection = (movingFolderId: string, targetConnectionId: string, placeAfter: boolean): void => {
+  const reorderRootFolderAroundConnection = (
+    movingFolderId: string,
+    targetConnectionId: string,
+    placeAfter: boolean
+  ): void => {
     if (connectionFolderAssignments[targetConnectionId]) {
       return
     }
@@ -1531,11 +1824,20 @@ function App(): React.JSX.Element {
           .filter((connection) => !connectionFolderAssignments[connection.connection_id])
           .map((connection) => rootConnectionOrderId(connection.connection_id))
       ]
-      return insertIdsAroundTarget(mergeOrderedIds(available, current), [rootFolderOrderId(movingFolderId)], rootConnectionOrderId(targetConnectionId), placeAfter)
+      return insertIdsAroundTarget(
+        mergeOrderedIds(available, current),
+        [rootFolderOrderId(movingFolderId)],
+        rootConnectionOrderId(targetConnectionId),
+        placeAfter
+      )
     })
   }
 
-  const reorderRootConnections = (movingConnectionIds: string[], targetConnectionId: string, placeAfter: boolean): void => {
+  const reorderRootConnections = (
+    movingConnectionIds: string[],
+    targetConnectionId: string,
+    placeAfter: boolean
+  ): void => {
     setRootConnectionOrder((current) => {
       const rootIds = connections
         .filter((connection) => !connectionFolderAssignments[connection.connection_id])
@@ -1547,15 +1849,30 @@ function App(): React.JSX.Element {
       const available = [
         ...connectionFolders.map((folder) => rootFolderOrderId(folder.id)),
         ...connections
-          .filter((connection) => !connectionFolderAssignments[connection.connection_id] || movingConnectionIds.includes(connection.connection_id))
+          .filter(
+            (connection) =>
+              !connectionFolderAssignments[connection.connection_id] ||
+              movingConnectionIds.includes(connection.connection_id)
+          )
           .map((connection) => rootConnectionOrderId(connection.connection_id))
       ]
-      return insertIdsAroundTarget(mergeOrderedIds(available, current), movingConnectionIds.map(rootConnectionOrderId), rootConnectionOrderId(targetConnectionId), placeAfter)
+      return insertIdsAroundTarget(
+        mergeOrderedIds(available, current),
+        movingConnectionIds.map(rootConnectionOrderId),
+        rootConnectionOrderId(targetConnectionId),
+        placeAfter
+      )
     })
   }
 
-  const reorderRootConnectionsAroundFolder = (movingConnectionIds: string[], targetFolderId: string, placeAfter: boolean): void => {
-    const movableConnectionIds = movingConnectionIds.filter((connectionId) => !connectionFolderAssignments[connectionId])
+  const reorderRootConnectionsAroundFolder = (
+    movingConnectionIds: string[],
+    targetFolderId: string,
+    placeAfter: boolean
+  ): void => {
+    const movableConnectionIds = movingConnectionIds.filter(
+      (connectionId) => !connectionFolderAssignments[connectionId]
+    )
     if (movableConnectionIds.length === 0) {
       return
     }
@@ -1566,55 +1883,89 @@ function App(): React.JSX.Element {
           .filter((connection) => !connectionFolderAssignments[connection.connection_id])
           .map((connection) => rootConnectionOrderId(connection.connection_id))
       ]
-      return insertIdsAroundTarget(mergeOrderedIds(available, current), movableConnectionIds.map(rootConnectionOrderId), rootFolderOrderId(targetFolderId), placeAfter)
+      return insertIdsAroundTarget(
+        mergeOrderedIds(available, current),
+        movableConnectionIds.map(rootConnectionOrderId),
+        rootFolderOrderId(targetFolderId),
+        placeAfter
+      )
     })
   }
 
-  const reorderFolderConnections = (folderId: string, movingConnectionIds: string[], targetConnectionId: string, placeAfter: boolean): void => {
-    const movableConnectionIds = movingConnectionIds.filter((connectionId) => connectionFolderAssignments[connectionId] === folderId)
+  const reorderFolderConnections = (
+    folderId: string,
+    movingConnectionIds: string[],
+    targetConnectionId: string,
+    placeAfter: boolean
+  ): void => {
+    const movableConnectionIds = movingConnectionIds.filter(
+      (connectionId) => connectionFolderAssignments[connectionId] === folderId
+    )
     if (movableConnectionIds.length === 0) {
       return
     }
     setFolderConnectionOrder((current) => {
-      const folderIds = Array.from(new Set([
-        ...(current[folderId] ?? []),
-        ...connections
-          .filter((connection) => connectionFolderAssignments[connection.connection_id] === folderId)
-          .map((connection) => connection.connection_id)
-      ])).filter((connectionId) => connections.some((connection) => connection.connection_id === connectionId))
+      const folderIds = Array.from(
+        new Set([
+          ...(current[folderId] ?? []),
+          ...connections
+            .filter(
+              (connection) => connectionFolderAssignments[connection.connection_id] === folderId
+            )
+            .map((connection) => connection.connection_id)
+        ])
+      ).filter((connectionId) =>
+        connections.some((connection) => connection.connection_id === connectionId)
+      )
       const ordered = mergeOrderedIds(folderIds, current[folderId] ?? [])
       return {
         ...current,
-        [folderId]: insertIdsAroundTarget(ordered, movableConnectionIds, targetConnectionId, placeAfter)
+        [folderId]: insertIdsAroundTarget(
+          ordered,
+          movableConnectionIds,
+          targetConnectionId,
+          placeAfter
+        )
       }
     })
   }
 
-  const getVisibleFolderConnectionOrder = (folderId: string, movingConnectionIds: string[]): string[] => {
+  const getVisibleFolderConnectionOrder = (
+    folderId: string,
+    movingConnectionIds: string[]
+  ): string[] => {
     const movingSet = new Set(movingConnectionIds)
     const treeElement = resourceTreeViewportRef.current
     if (!treeElement) {
       return []
     }
 
-    return Array.from(treeElement.querySelectorAll<HTMLElement>('.connection-tree-title[data-connection-id]'))
+    return Array.from(
+      treeElement.querySelectorAll<HTMLElement>('.connection-tree-title[data-connection-id]')
+    )
       .map((titleElement) => {
         const connectionId = titleElement.dataset.connectionId
         const rect = titleElement.getBoundingClientRect()
-        return connectionId
-          && connectionFolderAssignments[connectionId] === folderId
-          && !movingSet.has(connectionId)
-          && rect.height > 0
-          && rect.width > 0
+        return connectionId &&
+          connectionFolderAssignments[connectionId] === folderId &&
+          !movingSet.has(connectionId) &&
+          rect.height > 0 &&
+          rect.width > 0
           ? { connectionId, titleElement, rect }
           : undefined
       })
-      .filter((item): item is { connectionId: string; titleElement: HTMLElement; rect: DOMRect } => Boolean(item))
+      .filter((item): item is { connectionId: string; titleElement: HTMLElement; rect: DOMRect } =>
+        Boolean(item)
+      )
       .sort((left, right) => left.rect.top - right.rect.top)
       .map((item) => item.connectionId)
   }
 
-  const reorderFolderConnectionsByPointer = (folderId: string, movingConnectionIds: string[], clientY: number): boolean => {
+  const reorderFolderConnectionsByPointer = (
+    folderId: string,
+    movingConnectionIds: string[],
+    clientY: number
+  ): boolean => {
     const visibleOrderedIds = getVisibleFolderConnectionOrder(folderId, movingConnectionIds)
     if (visibleOrderedIds.length === 0) {
       return false
@@ -1629,8 +1980,12 @@ function App(): React.JSX.Element {
       currentOrder
     )
     const stationaryIds = allFolderIds.filter((connectionId) => !movingSet.has(connectionId))
-    const visibleIndexById = new Map(visibleOrderedIds.map((connectionId, index) => [connectionId, index]))
-    const stationaryVisibleIds = stationaryIds.filter((connectionId) => visibleIndexById.has(connectionId))
+    const visibleIndexById = new Map(
+      visibleOrderedIds.map((connectionId, index) => [connectionId, index])
+    )
+    const stationaryVisibleIds = stationaryIds.filter((connectionId) =>
+      visibleIndexById.has(connectionId)
+    )
     if (stationaryVisibleIds.length === 0) {
       return false
     }
@@ -1640,15 +1995,21 @@ function App(): React.JSX.Element {
       return false
     }
 
-    const rowElements = Array.from(treeElement.querySelectorAll<HTMLElement>('.connection-tree-title[data-connection-id]'))
+    const rowElements = Array.from(
+      treeElement.querySelectorAll<HTMLElement>('.connection-tree-title[data-connection-id]')
+    )
       .filter((element) => {
         const connectionId = element.dataset.connectionId
         return connectionId ? stationaryVisibleIds.includes(connectionId) : false
       })
       .sort((left, right) => left.getBoundingClientRect().top - right.getBoundingClientRect().top)
 
-    const insertVisibleIndex = rowElements.findIndex((element) => clientY < element.getBoundingClientRect().top + element.getBoundingClientRect().height / 2)
-    const targetVisibleIndex = insertVisibleIndex >= 0 ? insertVisibleIndex : stationaryVisibleIds.length
+    const insertVisibleIndex = rowElements.findIndex(
+      (element) =>
+        clientY < element.getBoundingClientRect().top + element.getBoundingClientRect().height / 2
+    )
+    const targetVisibleIndex =
+      insertVisibleIndex >= 0 ? insertVisibleIndex : stationaryVisibleIds.length
     const beforeIds = stationaryVisibleIds.slice(0, targetVisibleIndex)
     const afterIds = stationaryVisibleIds.slice(targetVisibleIndex)
     const hiddenIds = stationaryIds.filter((connectionId) => !visibleIndexById.has(connectionId))
@@ -1658,14 +2019,14 @@ function App(): React.JSX.Element {
       return false
     }
 
-    setFolderConnectionOrder((current) => (
+    setFolderConnectionOrder((current) =>
       stringArrayEquals(current[folderId] ?? [], nextOrder)
         ? current
         : {
             ...current,
             [folderId]: nextOrder
           }
-    ))
+    )
     return true
   }
 
@@ -1718,22 +2079,29 @@ function App(): React.JSX.Element {
 
   const allowTreeDrop = (): boolean => true
 
-  const updateDragOverFolderTarget = (target?: { folderId: string; zone: 'before' | 'after' }): void => {
+  const updateDragOverFolderTarget = (target?: {
+    folderId: string
+    zone: 'before' | 'after'
+  }): void => {
     dragOverFolderTargetRef.current = target
-    setDragOverFolderTarget((current) => (
+    setDragOverFolderTarget((current) =>
       current?.folderId === target?.folderId && current?.zone === target?.zone ? current : target
-    ))
+    )
   }
 
-  const updateDragOverConnectionTarget = (target?: { connectionId: string; folderId?: string; zone: 'before' | 'after' }): void => {
+  const updateDragOverConnectionTarget = (target?: {
+    connectionId: string
+    folderId?: string
+    zone: 'before' | 'after'
+  }): void => {
     dragOverConnectionTargetRef.current = target
-    setDragOverConnectionTarget((current) => (
-      current?.connectionId === target?.connectionId
-      && current?.folderId === target?.folderId
-      && current?.zone === target?.zone
+    setDragOverConnectionTarget((current) =>
+      current?.connectionId === target?.connectionId &&
+      current?.folderId === target?.folderId &&
+      current?.zone === target?.zone
         ? current
         : target
-    ))
+    )
   }
 
   const clearConnectionDragState = (): void => {
@@ -1755,15 +2123,32 @@ function App(): React.JSX.Element {
     const relativeDropPosition = getRelativeDropPosition(targetNode, dropPosition)
     const placeAfter = relativeDropPosition > 0
 
-    const targetFolderId = targetNode.folderId ?? (String(targetNode.key).startsWith('folder:') ? String(targetNode.key).slice('folder:'.length) : undefined)
-    const targetConnectionId = targetNode.connectionId ?? (String(targetNode.key).startsWith('connection:') ? String(targetNode.key).slice('connection:'.length) : undefined)
-    const draggedFolderId = draggedNode.folderId ?? (String(draggedNode.key).startsWith('folder:') ? String(draggedNode.key).slice('folder:'.length) : undefined)
-    const draggedConnectionId = draggedNode.connectionId ?? (String(draggedNode.key).startsWith('connection:') ? String(draggedNode.key).slice('connection:'.length) : undefined)
+    const targetFolderId =
+      targetNode.folderId ??
+      (String(targetNode.key).startsWith('folder:')
+        ? String(targetNode.key).slice('folder:'.length)
+        : undefined)
+    const targetConnectionId =
+      targetNode.connectionId ??
+      (String(targetNode.key).startsWith('connection:')
+        ? String(targetNode.key).slice('connection:'.length)
+        : undefined)
+    const draggedFolderId =
+      draggedNode.folderId ??
+      (String(draggedNode.key).startsWith('folder:')
+        ? String(draggedNode.key).slice('folder:'.length)
+        : undefined)
+    const draggedConnectionId =
+      draggedNode.connectionId ??
+      (String(draggedNode.key).startsWith('connection:')
+        ? String(draggedNode.key).slice('connection:'.length)
+        : undefined)
     const targetNodeKind = getTreeNodeKindFromKey(targetNode)
     const folderDragTarget = dragOverFolderTargetRef.current
-    const dropConnectionElement = info.event?.target instanceof HTMLElement
-      ? info.event.target.closest<HTMLElement>('[data-connection-id]')
-      : undefined
+    const dropConnectionElement =
+      info.event?.target instanceof HTMLElement
+        ? info.event.target.closest<HTMLElement>('[data-connection-id]')
+        : undefined
     const dropConnectionId = dropConnectionElement?.dataset.connectionId
     const dropConnectionTarget = dropConnectionId
       ? {
@@ -1771,7 +2156,9 @@ function App(): React.JSX.Element {
           folderId: connectionFolderAssignments[dropConnectionId],
           zone: (() => {
             const rect = dropConnectionElement.getBoundingClientRect()
-            return info.event && info.event.clientY - rect.top >= rect.height / 2 ? 'after' as const : 'before' as const
+            return info.event && info.event.clientY - rect.top >= rect.height / 2
+              ? ('after' as const)
+              : ('before' as const)
           })()
         }
       : undefined
@@ -1781,7 +2168,11 @@ function App(): React.JSX.Element {
 
     if ((draggedNode.kind === 'folder' || draggedFolderId) && draggedFolderId) {
       if (connectionDragTarget) {
-        reorderRootFolderAroundConnection(draggedFolderId, connectionDragTarget.connectionId, connectionDragTarget.zone === 'after')
+        reorderRootFolderAroundConnection(
+          draggedFolderId,
+          connectionDragTarget.connectionId,
+          connectionDragTarget.zone === 'after'
+        )
         return
       }
       if (targetConnectionId) {
@@ -1789,10 +2180,19 @@ function App(): React.JSX.Element {
         return
       }
       if (folderDragTarget && draggedFolderId !== folderDragTarget.folderId) {
-        reorderFolderNodes(draggedFolderId, folderDragTarget.folderId, folderDragTarget.zone === 'after')
+        reorderFolderNodes(
+          draggedFolderId,
+          folderDragTarget.folderId,
+          folderDragTarget.zone === 'after'
+        )
         return
       }
-      if ((targetNodeKind === 'folder' || targetFolderId) && targetFolderId && draggedFolderId !== targetFolderId && relativeDropPosition !== 0) {
+      if (
+        (targetNodeKind === 'folder' || targetFolderId) &&
+        targetFolderId &&
+        draggedFolderId !== targetFolderId &&
+        relativeDropPosition !== 0
+      ) {
         reorderFolderNodes(draggedFolderId, targetFolderId, placeAfter)
       }
       return
@@ -1808,13 +2208,24 @@ function App(): React.JSX.Element {
 
     const draggedConnectionFolderId = connectionFolderAssignments[draggedConnectionId]
     if (connectionDragTarget && !movingConnectionIds.includes(connectionDragTarget.connectionId)) {
-      const targetConnectionFolderId = connectionDragTarget.folderId ?? connectionFolderAssignments[connectionDragTarget.connectionId]
+      const targetConnectionFolderId =
+        connectionDragTarget.folderId ??
+        connectionFolderAssignments[connectionDragTarget.connectionId]
       if (targetConnectionFolderId) {
         if (draggedConnectionFolderId === targetConnectionFolderId) {
-          reorderFolderConnections(targetConnectionFolderId, movingConnectionIds, connectionDragTarget.connectionId, connectionDragTarget.zone === 'after')
+          reorderFolderConnections(
+            targetConnectionFolderId,
+            movingConnectionIds,
+            connectionDragTarget.connectionId,
+            connectionDragTarget.zone === 'after'
+          )
         }
       } else if (!draggedConnectionFolderId) {
-        reorderRootConnections(movingConnectionIds, connectionDragTarget.connectionId, connectionDragTarget.zone === 'after')
+        reorderRootConnections(
+          movingConnectionIds,
+          connectionDragTarget.connectionId,
+          connectionDragTarget.zone === 'after'
+        )
       }
       return
     }
@@ -1823,10 +2234,16 @@ function App(): React.JSX.Element {
       if (!targetConnectionId || movingConnectionIds.includes(targetConnectionId)) {
         return
       }
-      const targetConnectionFolderId = targetNode.folderId ?? connectionFolderAssignments[targetConnectionId]
+      const targetConnectionFolderId =
+        targetNode.folderId ?? connectionFolderAssignments[targetConnectionId]
       if (targetConnectionFolderId) {
         if (draggedConnectionFolderId === targetConnectionFolderId) {
-          reorderFolderConnections(targetConnectionFolderId, movingConnectionIds, targetConnectionId, placeAfter)
+          reorderFolderConnections(
+            targetConnectionFolderId,
+            movingConnectionIds,
+            targetConnectionId,
+            placeAfter
+          )
         }
       } else {
         if (!draggedConnectionFolderId) {
@@ -1837,18 +2254,32 @@ function App(): React.JSX.Element {
     }
 
     if (draggedConnectionFolderId && info.event) {
-      if (reorderFolderConnectionsByPointer(draggedConnectionFolderId, movingConnectionIds, info.event.clientY)) {
+      if (
+        reorderFolderConnectionsByPointer(
+          draggedConnectionFolderId,
+          movingConnectionIds,
+          info.event.clientY
+        )
+      ) {
         return
       }
     }
 
     if (folderDragTarget && !targetConnectionId) {
-      reorderRootConnectionsAroundFolder(movingConnectionIds, folderDragTarget.folderId, folderDragTarget.zone === 'after')
+      reorderRootConnectionsAroundFolder(
+        movingConnectionIds,
+        folderDragTarget.folderId,
+        folderDragTarget.zone === 'after'
+      )
       return
     }
 
     if (info.dropToGap) {
-      if ((targetNodeKind === 'folder' || targetFolderId) && targetFolderId && relativeDropPosition !== 0) {
+      if (
+        (targetNodeKind === 'folder' || targetFolderId) &&
+        targetFolderId &&
+        relativeDropPosition !== 0
+      ) {
         reorderRootConnectionsAroundFolder(movingConnectionIds, targetFolderId, placeAfter)
         return
       }
@@ -1856,18 +2287,22 @@ function App(): React.JSX.Element {
   }
 
   const updateWorkspaceTab = useCallback((key: string, patch: Partial<WorkspaceTab>): void => {
-    setWorkspaceTabs((current) => current.map((tab) => {
-      if (tab.key !== key) {
-        return tab
-      }
+    setWorkspaceTabs((current) =>
+      current.map((tab) => {
+        if (tab.key !== key) {
+          return tab
+        }
 
-      const patchEntries = Object.entries(patch) as Array<[keyof WorkspaceTab, WorkspaceTab[keyof WorkspaceTab]]>
-      if (patchEntries.every(([patchKey, patchValue]) => Object.is(tab[patchKey], patchValue))) {
-        return tab
-      }
+        const patchEntries = Object.entries(patch) as Array<
+          [keyof WorkspaceTab, WorkspaceTab[keyof WorkspaceTab]]
+        >
+        if (patchEntries.every(([patchKey, patchValue]) => Object.is(tab[patchKey], patchValue))) {
+          return tab
+        }
 
-      return { ...tab, ...patch }
-    }))
+        return { ...tab, ...patch }
+      })
+    )
   }, [])
 
   const scheduleQuerySqlDraftCommit = useCallback((key: string, sql: string): void => {
@@ -1877,32 +2312,32 @@ function App(): React.JSX.Element {
     }
     querySqlDraftTimersRef.current[key] = window.setTimeout(() => {
       querySqlDraftTimersRef.current[key] = undefined
-      setWorkspaceTabs((current) => current.map((tab) => (
-        tab.key === key && tab.sql !== sql
-          ? { ...tab, sql }
-          : tab
-      )))
+      setWorkspaceTabs((current) =>
+        current.map((tab) => (tab.key === key && tab.sql !== sql ? { ...tab, sql } : tab))
+      )
     }, 180)
   }, [])
 
   const updateWorkspaceTabColumnWidth = (tabKey: string, column: string, width: number): void => {
     const nextWidth = clampResultColumnWidth(width)
-    setWorkspaceTabs((current) => current.map((tab) => {
-      if (tab.key !== tabKey) {
-        return tab
-      }
-      const currentWidth = tab.columnWidths?.[column]
-      if (currentWidth === nextWidth) {
-        return tab
-      }
-      return {
-        ...tab,
-        columnWidths: {
-          ...(tab.columnWidths ?? {}),
-          [column]: nextWidth
+    setWorkspaceTabs((current) =>
+      current.map((tab) => {
+        if (tab.key !== tabKey) {
+          return tab
         }
-      }
-    }))
+        const currentWidth = tab.columnWidths?.[column]
+        if (currentWidth === nextWidth) {
+          return tab
+        }
+        return {
+          ...tab,
+          columnWidths: {
+            ...(tab.columnWidths ?? {}),
+            [column]: nextWidth
+          }
+        }
+      })
+    )
   }
 
   const applyLiveColumnWidth = (
@@ -1947,9 +2382,12 @@ function App(): React.JSX.Element {
     })
   }
 
-  const renameWorkspaceTab = useCallback((key: string, title: string): void => {
-    updateWorkspaceTab(key, { title })
-  }, [updateWorkspaceTab])
+  const renameWorkspaceTab = useCallback(
+    (key: string, title: string): void => {
+      updateWorkspaceTab(key, { title })
+    },
+    [updateWorkspaceTab]
+  )
 
   const persistQueryWorkspace = (tab: WorkspaceTab): void => {
     if (tab.kind !== 'query') {
@@ -1972,15 +2410,15 @@ function App(): React.JSX.Element {
     setPersistedQueryWorkspaces((current) => {
       const currentItem = current.find((item) => item.key === tab.key)
       if (
-        currentItem
-        && currentItem.title === nextItem.title
-        && currentItem.connectionId === nextItem.connectionId
-        && currentItem.connectionName === nextItem.connectionName
-        && currentItem.databaseName === nextItem.databaseName
-        && currentItem.pgDatabaseName === nextItem.pgDatabaseName
-        && currentItem.sql === nextItem.sql
-        && currentItem.limit === nextItem.limit
-        && currentItem.queryEditorHeight === nextItem.queryEditorHeight
+        currentItem &&
+        currentItem.title === nextItem.title &&
+        currentItem.connectionId === nextItem.connectionId &&
+        currentItem.connectionName === nextItem.connectionName &&
+        currentItem.databaseName === nextItem.databaseName &&
+        currentItem.pgDatabaseName === nextItem.pgDatabaseName &&
+        currentItem.sql === nextItem.sql &&
+        currentItem.limit === nextItem.limit &&
+        currentItem.queryEditorHeight === nextItem.queryEditorHeight
       ) {
         return current
       }
@@ -2024,10 +2462,13 @@ function App(): React.JSX.Element {
       if (currentTimer) {
         window.clearTimeout(currentTimer)
       }
-      queryWorkspacePersistTimersRef.current[tab.key] = window.setTimeout(() => {
-        queryWorkspacePersistTimersRef.current[tab.key] = undefined
-        persistQueryWorkspaceRef.current(tab)
-      }, tab.sql ? 220 : 0)
+      queryWorkspacePersistTimersRef.current[tab.key] = window.setTimeout(
+        () => {
+          queryWorkspacePersistTimersRef.current[tab.key] = undefined
+          persistQueryWorkspaceRef.current(tab)
+        },
+        tab.sql ? 220 : 0
+      )
     }
 
     Object.keys(queryWorkspacePersistTimersRef.current).forEach((tabKey) => {
@@ -2043,18 +2484,21 @@ function App(): React.JSX.Element {
     })
   }, [getWorkspaceTabs, workspaceTabSummaryCount])
 
-  useEffect(() => () => {
-    Object.values(queryWorkspacePersistTimersRef.current).forEach((timer) => {
-      if (timer) {
-        window.clearTimeout(timer)
-      }
-    })
-    Object.values(querySqlDraftTimersRef.current).forEach((timer) => {
-      if (timer) {
-        window.clearTimeout(timer)
-      }
-    })
-  }, [])
+  useEffect(
+    () => () => {
+      Object.values(queryWorkspacePersistTimersRef.current).forEach((timer) => {
+        if (timer) {
+          window.clearTimeout(timer)
+        }
+      })
+      Object.values(querySqlDraftTimersRef.current).forEach((timer) => {
+        if (timer) {
+          window.clearTimeout(timer)
+        }
+      })
+    },
+    []
+  )
 
   const confirmRemovePersistedQueryWorkspace = (item: PersistedQueryWorkspace): void => {
     const schemaPath = [item.pgDatabaseName, item.databaseName].filter(Boolean).join('.')
@@ -2068,9 +2512,14 @@ function App(): React.JSX.Element {
         <div className="query-history-delete-confirm">
           <div className="query-history-delete-confirm-title">{item.title || '未命名查询'}</div>
           <div className="query-history-delete-confirm-meta">
-            {[item.connectionName ?? getConnection(item.connectionId)?.name ?? '未绑定连接', schemaPath || '未选择库'].join(' · ')}
+            {[
+              item.connectionName ?? getConnection(item.connectionId)?.name ?? '未绑定连接',
+              schemaPath || '未选择库'
+            ].join(' · ')}
           </div>
-          <div className="query-history-delete-confirm-hint">删除后将从历史查询列表中移除，且无法恢复。</div>
+          <div className="query-history-delete-confirm-hint">
+            删除后将从历史查询列表中移除，且无法恢复。
+          </div>
         </div>
       ),
       onOk: () => removePersistedQueryWorkspace(item.key)
@@ -2100,13 +2549,13 @@ function App(): React.JSX.Element {
       ...patch
     }
     if (
-      previousState.visible === nextState.visible
-      && previousState.query === nextState.query
-      && previousState.caseSensitive === nextState.caseSensitive
-      && previousState.regex === nextState.regex
-      && previousState.wholeWord === nextState.wholeWord
-      && previousState.filterRows === nextState.filterRows
-      && previousState.activeMatchIndex === nextState.activeMatchIndex
+      previousState.visible === nextState.visible &&
+      previousState.query === nextState.query &&
+      previousState.caseSensitive === nextState.caseSensitive &&
+      previousState.regex === nextState.regex &&
+      previousState.wholeWord === nextState.wholeWord &&
+      previousState.filterRows === nextState.filterRows &&
+      previousState.activeMatchIndex === nextState.activeMatchIndex
     ) {
       return
     }
@@ -2119,7 +2568,10 @@ function App(): React.JSX.Element {
 
   const updateSelectedCells = (tabKey: string, cellKeys: string[]): void => {
     const currentCellKeys = selectedCellRefs.current[tabKey] ?? []
-    if (currentCellKeys.length === cellKeys.length && currentCellKeys.every((key, index) => key === cellKeys[index])) {
+    if (
+      currentCellKeys.length === cellKeys.length &&
+      currentCellKeys.every((key, index) => key === cellKeys[index])
+    ) {
       return
     }
     selectedCellRefs.current[tabKey] = cellKeys.length > 0 ? cellKeys : undefined
@@ -2221,7 +2673,13 @@ function App(): React.JSX.Element {
     closeEditingCell(tabKey, cellDisplayText(nextEditableValue))
   }
 
-  const openInlineCellEditor = (tabKey: string, rowKey: string, column: string, host: HTMLElement, rawValue: unknown): void => {
+  const openInlineCellEditor = (
+    tabKey: string,
+    rowKey: string,
+    column: string,
+    host: HTMLElement,
+    rawValue: unknown
+  ): void => {
     closeInlineCellEditor(tabKey)
     clearRenderedCellSelection(tabKey)
     rowDragAnchorRefs.current[tabKey] = undefined
@@ -2231,7 +2689,10 @@ function App(): React.JSX.Element {
     const originalContent = host.textContent ?? ''
     const input = document.createElement('input')
     input.className = 'editable-cell-dom-input'
-    const initialInputValue = rawValue === null || rawValue === undefined || isDefaultValueMarker(rawValue) ? '' : String(rawValue)
+    const initialInputValue =
+      rawValue === null || rawValue === undefined || isDefaultValueMarker(rawValue)
+        ? ''
+        : String(rawValue)
     input.value = initialInputValue
     input.dataset.columnKey = column
     input.dataset.rowKey = rowKey
@@ -2255,7 +2716,15 @@ function App(): React.JSX.Element {
     host.textContent = ''
     host.classList.add('editable-cell-inline-editing')
     host.appendChild(input)
-    inlineCellEditorRefs.current[tabKey] = { rowKey, column, input, host, originalContent, originalValue: rawValue, initialInputValue }
+    inlineCellEditorRefs.current[tabKey] = {
+      rowKey,
+      column,
+      input,
+      host,
+      originalContent,
+      originalValue: rawValue,
+      initialInputValue
+    }
     editingCellRefs.current[tabKey] = { rowKey, column }
     requestAnimationFrame(() => {
       input.focus()
@@ -2263,117 +2732,20 @@ function App(): React.JSX.Element {
     })
   }
 
-  const getResultTableVirtualInner = (tabKey: string): HTMLDivElement | null => (
-    tableBodyRefs.current[tabKey]?.querySelector<HTMLDivElement>('.ant-table-tbody-virtual-holder-inner') ?? null
-  )
-
-  const getResultTableVirtualHolder = (tabKey: string): HTMLDivElement | null => (
-    tableBodyRefs.current[tabKey]?.querySelector<HTMLDivElement>('.ant-table-tbody-virtual-holder') ?? null
-  )
-
-  const getResultTableVirtualScrollLeft = (tabKey: string): number => {
-    const header = tableHeaderRefs.current[tabKey]
-    if (header && Number.isFinite(header.scrollLeft)) {
-      return Math.max(0, header.scrollLeft)
-    }
-    const holder = getResultTableVirtualHolder(tabKey)
-    if (holder && Number.isFinite(holder.scrollLeft)) {
-      return Math.max(0, holder.scrollLeft)
-    }
-    const virtualInner = getResultTableVirtualInner(tabKey)
-    if (!virtualInner) {
-      return 0
-    }
-    const marginLeft = Number.parseFloat(virtualInner.style.marginLeft || '0')
-    return Number.isFinite(marginLeft) ? Math.max(0, -marginLeft) : 0
-  }
-
-  const detachNativeHorizontalScrollbarSync = (tabKey: string): void => {
-    tableNativeHorizontalScrollbarCleanupRefs.current[tabKey]?.()
-    delete tableNativeHorizontalScrollbarCleanupRefs.current[tabKey]
-    if (tableNativeHorizontalScrollbarFrameRefs.current[tabKey]) {
-      window.cancelAnimationFrame(tableNativeHorizontalScrollbarFrameRefs.current[tabKey]!)
-      delete tableNativeHorizontalScrollbarFrameRefs.current[tabKey]
-    }
-  }
-
-  const attachNativeHorizontalScrollbarSync = (tabKey: string): void => {
-    detachNativeHorizontalScrollbarSync(tabKey)
-    const scrollbar = tableNativeHorizontalScrollbarRefs.current[tabKey]
-    const virtualHolder = getResultTableVirtualHolder(tabKey)
-    const header = tableHeaderRefs.current[tabKey]
-    if (!scrollbar || !virtualHolder) {
-      return
-    }
-
-    let syncingFromNative = false
-    let syncingFromVirtual = false
-
-    const syncNativeFromVirtual = (): void => {
-      if (syncingFromNative) {
-        return
-      }
-      const nextScrollLeft = getResultTableVirtualScrollLeft(tabKey)
-      if (Math.abs(scrollbar.scrollLeft - nextScrollLeft) <= 1) {
-        return
-      }
-      syncingFromVirtual = true
-      scrollbar.scrollLeft = nextScrollLeft
-      syncingFromVirtual = false
-    }
-
-    const syncVirtualFromNative = (): void => {
-      if (syncingFromVirtual) {
-        return
-      }
-      syncingFromNative = true
-      tableComponentRefs.current[tabKey]?.scrollTo?.({ left: scrollbar.scrollLeft })
-      requestAnimationFrame(() => {
-        syncingFromNative = false
-        syncNativeFromVirtual()
-      })
-    }
-
-    scrollbar.addEventListener('scroll', syncVirtualFromNative, { passive: true })
-    virtualHolder.addEventListener('scroll', syncNativeFromVirtual, { passive: true })
-    header?.addEventListener('scroll', syncNativeFromVirtual, { passive: true })
-
-    syncNativeFromVirtual()
-
-    tableNativeHorizontalScrollbarCleanupRefs.current[tabKey] = () => {
-      scrollbar.removeEventListener('scroll', syncVirtualFromNative)
-      virtualHolder.removeEventListener('scroll', syncNativeFromVirtual)
-      header?.removeEventListener('scroll', syncNativeFromVirtual)
-    }
-  }
-
-  const scheduleNativeHorizontalScrollbarSync = (tabKey: string): void => {
-    if (tableNativeHorizontalScrollbarFrameRefs.current[tabKey]) {
-      window.cancelAnimationFrame(tableNativeHorizontalScrollbarFrameRefs.current[tabKey]!)
-    }
-    tableNativeHorizontalScrollbarFrameRefs.current[tabKey] = window.requestAnimationFrame(() => {
-      tableNativeHorizontalScrollbarFrameRefs.current[tabKey] = undefined
-      attachNativeHorizontalScrollbarSync(tabKey)
-    })
-  }
-
-  useEffect(() => () => {
-    Object.keys(tableNativeHorizontalScrollbarCleanupRefs.current).forEach((key) => {
-      detachNativeHorizontalScrollbarSync(key)
-    })
-  }, [])
-
   useEffect(() => {
     const finishColumnResize = (pointerId?: number): void => {
-      const resizeEntries = Object.entries(columnResizeRefs.current).filter((entry): entry is [string, NonNullable<(typeof columnResizeRefs.current)[string]>] => Boolean(entry[1]))
+      const resizeEntries = Object.entries(columnResizeRefs.current).filter(
+        (entry): entry is [string, NonNullable<(typeof columnResizeRefs.current)[string]>] =>
+          Boolean(entry[1])
+      )
       if (resizeEntries.length === 0) {
         document.body.classList.remove('column-resizing')
         return
       }
 
-      const matchedEntries = resizeEntries.filter(([, resizeState]) => (
-        typeof pointerId !== 'number' || resizeState.pointerId === pointerId
-      ))
+      const matchedEntries = resizeEntries.filter(
+        ([, resizeState]) => typeof pointerId !== 'number' || resizeState.pointerId === pointerId
+      )
 
       if (matchedEntries.length === 0) {
         return
@@ -2387,13 +2759,23 @@ function App(): React.JSX.Element {
         const finalWidth = resizeState.pendingWidth ?? resizeState.lastWidth
         resizeState.lastWidth = finalWidth
         if (!resizeState.virtual) {
-          applyLiveColumnWidth(finalWidth, resizeState.columnIndex, resizeState.headerCells, resizeState.headerColElements, resizeState.bodyColElements)
+          applyLiveColumnWidth(
+            finalWidth,
+            resizeState.columnIndex,
+            resizeState.headerCells,
+            resizeState.headerColElements,
+            resizeState.bodyColElements
+          )
         }
       })
 
       flushSync(() => {
         matchedEntries.forEach(([, resizeState]) => {
-          updateWorkspaceTabColumnWidth(resizeState.tabKey, resizeState.column, resizeState.lastWidth)
+          updateWorkspaceTabColumnWidth(
+            resizeState.tabKey,
+            resizeState.column,
+            resizeState.lastWidth
+          )
         })
       })
 
@@ -2407,12 +2789,16 @@ function App(): React.JSX.Element {
     }
 
     const handlePointerMove = (event: PointerEvent): void => {
-      const resizeState = Object.values(columnResizeRefs.current).find((item) => item?.pointerId === event.pointerId)
+      const resizeState = Object.values(columnResizeRefs.current).find(
+        (item) => item?.pointerId === event.pointerId
+      )
       if (!resizeState) {
         return
       }
       event.preventDefault()
-      const nextWidth = clampResultColumnWidth(resizeState.startWidth + (event.clientX - resizeState.startX))
+      const nextWidth = clampResultColumnWidth(
+        resizeState.startWidth + (event.clientX - resizeState.startX)
+      )
       if (nextWidth === resizeState.pendingWidth || nextWidth === resizeState.lastWidth) {
         return
       }
@@ -2437,7 +2823,13 @@ function App(): React.JSX.Element {
           )
           return
         }
-        applyLiveColumnWidth(pendingWidth, resizeState.columnIndex, resizeState.headerCells, resizeState.headerColElements, resizeState.bodyColElements)
+        applyLiveColumnWidth(
+          pendingWidth,
+          resizeState.columnIndex,
+          resizeState.headerCells,
+          resizeState.headerColElements,
+          resizeState.bodyColElements
+        )
       })
     }
 
@@ -2474,7 +2866,10 @@ function App(): React.JSX.Element {
 
     const handleMouseDown = (event: MouseEvent): void => {
       const target = event.target as HTMLElement | null
-      if (target?.closest('.tree-context-menu-panel') || target?.closest('.ant-menu-submenu-popup')) {
+      if (
+        target?.closest('.tree-context-menu-panel') ||
+        target?.closest('.ant-menu-submenu-popup')
+      ) {
         return
       }
       setTreeContextMenu(null)
@@ -2505,8 +2900,17 @@ function App(): React.JSX.Element {
         return
       }
       const shellWidth = shell.getBoundingClientRect().width
-      const nextSize = Math.min(500, Math.max(RESOURCE_PANEL_MIN_WIDTH, resizeState.startSize + (event.clientX - resizeState.startX)))
-      const boundedSize = Math.min(nextSize, Math.max(RESOURCE_PANEL_MIN_WIDTH, shellWidth - (aiPanelOpen ? aiPanelSize : 0) - 260))
+      const nextSize = Math.min(
+        500,
+        Math.max(
+          RESOURCE_PANEL_MIN_WIDTH,
+          resizeState.startSize + (event.clientX - resizeState.startX)
+        )
+      )
+      const boundedSize = Math.min(
+        nextSize,
+        Math.max(RESOURCE_PANEL_MIN_WIDTH, shellWidth - (aiPanelOpen ? aiPanelSize : 0) - 260)
+      )
       if (resourcePanelRef.current) {
         resourcePanelRef.current.style.width = `${boundedSize}px`
         resourcePanelRef.current.style.flex = `0 0 ${boundedSize}px`
@@ -2543,7 +2947,10 @@ function App(): React.JSX.Element {
         return
       }
       const shellWidth = shell.getBoundingClientRect().width
-      const nextSize = Math.min(720, Math.max(260, resizeState.startSize - (event.clientX - resizeState.startX)))
+      const nextSize = Math.min(
+        720,
+        Math.max(260, resizeState.startSize - (event.clientX - resizeState.startX))
+      )
       const boundedSize = Math.min(nextSize, Math.max(260, shellWidth - resourcePanelSize - 260))
       if (aiDockPanelRef.current) {
         aiDockPanelRef.current.style.width = `${boundedSize}px`
@@ -2579,133 +2986,146 @@ function App(): React.JSX.Element {
     }
   }, [])
 
-  const closeWorkspaceTab = useCallback((key: string): void => {
-    setWorkspaceTabs((current) => {
-      const index = current.findIndex((tab) => tab.key === key)
-      const nextTabs = current.filter((tab) => tab.key !== key)
-      const currentActiveTabKey = useWorkspaceStore.getState().activeTabKey
+  const closeWorkspaceTab = useCallback(
+    (key: string): void => {
+      setWorkspaceTabs((current) => {
+        const index = current.findIndex((tab) => tab.key === key)
+        const nextTabs = current.filter((tab) => tab.key !== key)
+        const currentActiveTabKey = useWorkspaceStore.getState().activeTabKey
 
-      if (currentActiveTabKey === key) {
-        setActiveTabKey(nextTabs[index - 1]?.key ?? nextTabs[index]?.key)
-      }
+        if (currentActiveTabKey === key) {
+          setActiveTabKey(nextTabs[index - 1]?.key ?? nextTabs[index]?.key)
+        }
 
-      return nextTabs
-    })
-    setTableSearchUiState((current) => {
-      if (!(key in current)) {
-        return current
+        return nextTabs
+      })
+      setTableSearchUiState((current) => {
+        if (!(key in current)) {
+          return current
+        }
+        const next = { ...current }
+        delete next[key]
+        return next
+      })
+      delete selectedCellRefs.current[key]
+      delete selectedRowRefs.current[key]
+      delete renderedSelectedCellRefs.current[key]
+      delete renderedSelectedRowRefs.current[key]
+      delete runtimeSelectedCellRefs.current[key]
+      delete scrollbarDragRefs.current[key]
+      delete contextMenuCellSelectionRefs.current[key]
+      delete contextMenuCellSelectionSnapshotRefs.current[key]
+      delete rowSelectionDraftRefs.current[key]
+      delete pendingRowDragTargetRefs.current[key]
+      delete pendingRowDragFrameRefs.current[key]
+      delete pendingCellDragTargetRefs.current[key]
+      delete pendingCellDragFrameRefs.current[key]
+      if (pendingRenderedCellSelectionTimeoutRefs.current[key]) {
+        window.clearTimeout(pendingRenderedCellSelectionTimeoutRefs.current[key])
+        delete pendingRenderedCellSelectionTimeoutRefs.current[key]
       }
-      const next = { ...current }
-      delete next[key]
-      return next
-    })
-    delete selectedCellRefs.current[key]
-    delete selectedRowRefs.current[key]
-    delete renderedSelectedCellRefs.current[key]
-    delete renderedSelectedRowRefs.current[key]
-    delete runtimeSelectedCellRefs.current[key]
-    delete scrollbarDragRefs.current[key]
-    delete contextMenuCellSelectionRefs.current[key]
-    delete contextMenuCellSelectionSnapshotRefs.current[key]
-    delete rowSelectionDraftRefs.current[key]
-    delete pendingRowDragTargetRefs.current[key]
-    delete pendingRowDragFrameRefs.current[key]
-    delete pendingCellDragTargetRefs.current[key]
-    delete pendingCellDragFrameRefs.current[key]
-    if (pendingRenderedCellSelectionTimeoutRefs.current[key]) {
-      window.clearTimeout(pendingRenderedCellSelectionTimeoutRefs.current[key])
-      delete pendingRenderedCellSelectionTimeoutRefs.current[key]
-    }
-    detachNativeHorizontalScrollbarSync(key)
-    delete tableComponentRefs.current[key]
-    delete tableNativeHorizontalScrollbarRefs.current[key]
-    cellInspectorPanelRefs.current[key]?.close()
-    delete cellInspectorPanelRefs.current[key]
-    delete selectedColumnRefs.current[key]
-    delete tableBodyRefs.current[key]
-    delete tableHeaderRefs.current[key]
-    delete sqlExecutionContextRef.current[key]
-    delete sqlExecutionContextStructureKeyRef.current[key]
-    delete sqlEditorHandleRefs.current[key]
-    if (querySqlDraftTimersRef.current[key]) {
-      window.clearTimeout(querySqlDraftTimersRef.current[key])
-      delete querySqlDraftTimersRef.current[key]
-    }
-    setSqlExecutionContextByTab((current) => {
-      if (!(key in current)) {
-        return current
+      delete tableComponentRefs.current[key]
+      cellInspectorPanelRefs.current[key]?.close()
+      delete cellInspectorPanelRefs.current[key]
+      delete selectedColumnRefs.current[key]
+      delete tableBodyRefs.current[key]
+      delete tableHeaderRefs.current[key]
+      delete sqlExecutionContextRef.current[key]
+      delete sqlExecutionContextStructureKeyRef.current[key]
+      delete sqlEditorHandleRefs.current[key]
+      if (querySqlDraftTimersRef.current[key]) {
+        window.clearTimeout(querySqlDraftTimersRef.current[key])
+        delete querySqlDraftTimersRef.current[key]
       }
-      const next = { ...current }
-      delete next[key]
-      return next
-    })
-  }, [setActiveTabKey, setWorkspaceTabs])
+      setSqlExecutionContextByTab((current) => {
+        if (!(key in current)) {
+          return current
+        }
+        const next = { ...current }
+        delete next[key]
+        return next
+      })
+    },
+    [setActiveTabKey, setWorkspaceTabs]
+  )
 
-  const handleSqlExecutionContextChange = useCallback((tabKey: string, payload: SqlEditorExecutionContext): void => {
-    const nextStructureKey = buildStatementStructureKey(payload.statements)
-    const previousStructureKey = sqlExecutionContextStructureKeyRef.current[tabKey] ?? ''
-    sqlExecutionContextRef.current[tabKey] = payload
-    sqlExecutionContextStructureKeyRef.current[tabKey] = nextStructureKey
-    setSqlExecutionContextByTab((current) => {
-      const previous = current[tabKey]
-      if (
-        previous
-        && previous.currentStatementIndex === payload.currentStatementIndex
-        && previousStructureKey === nextStructureKey
-      ) {
-        return current
-      }
-      return {
-        ...current,
-        [tabKey]: payload
-      }
-    })
-  }, [])
+  const handleSqlExecutionContextChange = useCallback(
+    (tabKey: string, payload: SqlEditorExecutionContext): void => {
+      const nextStructureKey = buildStatementStructureKey(payload.statements)
+      const previousStructureKey = sqlExecutionContextStructureKeyRef.current[tabKey] ?? ''
+      sqlExecutionContextRef.current[tabKey] = payload
+      sqlExecutionContextStructureKeyRef.current[tabKey] = nextStructureKey
+      setSqlExecutionContextByTab((current) => {
+        const previous = current[tabKey]
+        if (
+          previous &&
+          previous.currentStatementIndex === payload.currentStatementIndex &&
+          previousStructureKey === nextStructureKey
+        ) {
+          return current
+        }
+        return {
+          ...current,
+          [tabKey]: payload
+        }
+      })
+    },
+    []
+  )
 
-  const connectionMap = useMemo(() => new Map(connections.map((connection) => [connection.connection_id, connection])), [connections])
-  const getConnection = useCallback((connectionId?: string): ConnectionInfo | undefined => (
-    connectionId ? connectionMap.get(connectionId) : undefined
-  ), [connectionMap])
-  const {
-    enableVirtualTree,
-    resourceTreeHeight
-  } = useResourceTreeViewport({
+  const connectionMap = useMemo(
+    () => new Map(connections.map((connection) => [connection.connection_id, connection])),
+    [connections]
+  )
+  const getConnection = useCallback(
+    (connectionId?: string): ConnectionInfo | undefined =>
+      connectionId ? connectionMap.get(connectionId) : undefined,
+    [connectionMap]
+  )
+  const { enableVirtualTree, resourceTreeHeight } = useResourceTreeViewport({
     treeData,
     resourceTreeViewportRef
   })
-  const resourceTreeToolbarItems = useMemo(() => ([
-    {
-      key: 'search',
-      icon: <SearchOutlined />,
-      label: '搜索当前树',
-      active: treeSearchOpen,
-      onClick: () => {
-        const nextOpen = !treeSearchOpen
-        setTreeSearchOpen(nextOpen)
-        if (!nextOpen) {
-          setTreeSearchText('')
+  const resourceTreeToolbarItems = useMemo(
+    () => [
+      {
+        key: 'search',
+        icon: <SearchOutlined />,
+        label: '搜索当前树',
+        active: treeSearchOpen,
+        onClick: () => {
+          const nextOpen = !treeSearchOpen
+          setTreeSearchOpen(nextOpen)
+          if (!nextOpen) {
+            setTreeSearchText('')
+          }
+        }
+      },
+      {
+        key: 'locate',
+        icon: <AimOutlined />,
+        label: '定位当前对象',
+        onClick: () => {
+          void locateActiveTreeNode()
         }
       }
-    },
-    {
-      key: 'locate',
-      icon: <AimOutlined />,
-      label: '定位当前对象',
-      onClick: () => {
-        void locateActiveTreeNode()
-      }
-    }
-  ]), [locateActiveTreeNode, treeSearchOpen])
+    ],
+    [locateActiveTreeNode, treeSearchOpen]
+  )
   const deferredTreeData = useDeferredValue(treeData)
   const queryHistoryGroups = useMemo(() => {
-    const groups = persistedQueryWorkspaces.reduce<Record<string, PersistedQueryWorkspace[]>>((current, item) => {
-      const connectionName = getConnection(item.connectionId)?.name ?? item.connectionName ?? '未绑定连接'
-      if (!current[connectionName]) {
-        current[connectionName] = []
-      }
-      current[connectionName].push(item)
-      return current
-    }, {})
+    const groups = persistedQueryWorkspaces.reduce<Record<string, PersistedQueryWorkspace[]>>(
+      (current, item) => {
+        const connectionName =
+          getConnection(item.connectionId)?.name ?? item.connectionName ?? '未绑定连接'
+        if (!current[connectionName]) {
+          current[connectionName] = []
+        }
+        current[connectionName].push(item)
+        return current
+      },
+      {}
+    )
 
     return Object.entries(groups)
       .map(([groupName, items]) => {
@@ -2729,12 +3149,20 @@ function App(): React.JSX.Element {
     expandedKeysRef.current = expandedKeys
   }, [expandedKeys])
   const loadedCompletionIndex = useMemo(() => {
-    const index = new Map<string, { tables: SqlCompletionTable[]; columns: SqlCompletionColumn[] }>()
+    const index = new Map<
+      string,
+      { tables: SqlCompletionTable[]; columns: SqlCompletionColumn[] }
+    >()
 
-    const getScopeKey = (connectionId: string, databaseName?: string, pgDatabaseName?: string): string =>
-      `${connectionId}:${pgDatabaseName ?? ''}:${databaseName ?? ''}`
+    const getScopeKey = (
+      connectionId: string,
+      databaseName?: string,
+      pgDatabaseName?: string
+    ): string => `${connectionId}:${pgDatabaseName ?? ''}:${databaseName ?? ''}`
 
-    const ensureScope = (scopeKey: string): { tables: SqlCompletionTable[]; columns: SqlCompletionColumn[] } => {
+    const ensureScope = (
+      scopeKey: string
+    ): { tables: SqlCompletionTable[]; columns: SqlCompletionColumn[] } => {
       const existing = index.get(scopeKey)
       if (existing) {
         return existing
@@ -2753,9 +3181,15 @@ function App(): React.JSX.Element {
 
         if (node.kind === 'table' && node.tableName && node.connectionId) {
           const connection = connectionMap.get(node.connectionId)
-          const databaseName = isSchemaScopedType(connection?.database_type) ? node.pgDatabaseName : node.databaseName
-          const schemaName = isSchemaScopedType(connection?.database_type) ? node.databaseName : undefined
-          const scope = ensureScope(getScopeKey(node.connectionId, node.databaseName, node.pgDatabaseName))
+          const databaseName = isSchemaScopedType(connection?.database_type)
+            ? node.pgDatabaseName
+            : node.databaseName
+          const schemaName = isSchemaScopedType(connection?.database_type)
+            ? node.databaseName
+            : undefined
+          const scope = ensureScope(
+            getScopeKey(node.connectionId, node.databaseName, node.pgDatabaseName)
+          )
           const tableColumns = ((node.children as DatabaseTreeNode[] | undefined) ?? [])
             .filter((child) => child.kind === 'column' && child.columnName)
             .map<SqlCompletionColumn>((child) => ({
@@ -2804,19 +3238,22 @@ function App(): React.JSX.Element {
     return `${path}?database=${encodeURIComponent(databaseName)}`
   }
 
-  const withPgDatabase = useCallback((path: string, databaseName?: string, pgDatabaseName?: string): string => {
-    const params: string[] = []
+  const withPgDatabase = useCallback(
+    (path: string, databaseName?: string, pgDatabaseName?: string): string => {
+      const params: string[] = []
 
-    if (databaseName) {
-      params.push(`database=${encodeURIComponent(databaseName)}`)
-    }
+      if (databaseName) {
+        params.push(`database=${encodeURIComponent(databaseName)}`)
+      }
 
-    if (pgDatabaseName) {
-      params.push(`pg_database=${encodeURIComponent(pgDatabaseName)}`)
-    }
+      if (pgDatabaseName) {
+        params.push(`pg_database=${encodeURIComponent(pgDatabaseName)}`)
+      }
 
-    return params.length > 0 ? `${path}?${params.join('&')}` : path
-  }, [])
+      return params.length > 0 ? `${path}?${params.join('&')}` : path
+    },
+    []
+  )
 
   const withPageQuery = (path: string, limit: number, page = 1): string => {
     const offset = Math.max(0, page - 1) * limit
@@ -2825,10 +3262,15 @@ function App(): React.JSX.Element {
 
   const withWhereQuery = (path: string, where?: string): string => {
     const condition = where?.trim()
-    return condition ? `${path}${path.includes('?') ? '&' : '?'}where=${encodeURIComponent(condition)}` : path
+    return condition
+      ? `${path}${path.includes('?') ? '&' : '?'}where=${encodeURIComponent(condition)}`
+      : path
   }
 
-  const withSortQuery = (path: string, sortState?: { column: string; direction: 'ascend' | 'descend' }): string => {
+  const withSortQuery = (
+    path: string,
+    sortState?: { column: string; direction: 'ascend' | 'descend' }
+  ): string => {
     if (!sortState?.column) {
       return path
     }
@@ -2839,7 +3281,11 @@ function App(): React.JSX.Element {
     return `${path}${path.includes('?') ? '&' : '?'}${params.join('&')}`
   }
 
-  const quoteTableName = (connectionId: string, tableName: string, databaseName?: string): string => {
+  const quoteTableName = (
+    connectionId: string,
+    tableName: string,
+    databaseName?: string
+  ): string => {
     const connection = getConnection(connectionId)
 
     if (connection?.database_type === 'mysql' || connection?.database_type === 'clickhouse') {
@@ -2874,11 +3320,12 @@ function App(): React.JSX.Element {
 
   const copyTreeNodeNames = async (): Promise<void> => {
     const nodeMap = collectTreeNodesByKey(treeData)
-    const nodeKeys = selectedTreeKeys.length > 0
-      ? selectedTreeKeys.map(String)
-      : focusedTreeNode?.key
-        ? [String(focusedTreeNode.key)]
-        : []
+    const nodeKeys =
+      selectedTreeKeys.length > 0
+        ? selectedTreeKeys.map(String)
+        : focusedTreeNode?.key
+          ? [String(focusedTreeNode.key)]
+          : []
     const names = nodeKeys
       .map((key) => nodeMap.get(key))
       .filter((node): node is DatabaseTreeNode => Boolean(node))
@@ -2894,8 +3341,16 @@ function App(): React.JSX.Element {
     }
   }
 
-  const contextSourceId = (source: Pick<AIContextSource, 'type' | 'connectionId' | 'database' | 'schema' | 'pgDatabase'>): string =>
-    [source.type, source.connectionId, source.pgDatabase ?? '', source.database ?? '', source.schema ?? ''].join(':')
+  const contextSourceId = (
+    source: Pick<AIContextSource, 'type' | 'connectionId' | 'database' | 'schema' | 'pgDatabase'>
+  ): string =>
+    [
+      source.type,
+      source.connectionId,
+      source.pgDatabase ?? '',
+      source.database ?? '',
+      source.schema ?? ''
+    ].join(':')
 
   const buildAIContextSourceFromNode = (node: DatabaseTreeNode): AIContextSource | undefined => {
     if (!node.connectionId || (node.kind !== 'database' && node.kind !== 'pg-schema')) {
@@ -2915,7 +3370,12 @@ function App(): React.JSX.Element {
       dbType: connection.database_type,
       database: node.kind === 'pg-schema' ? node.pgDatabaseName : node.databaseName,
       schema: node.kind === 'pg-schema' ? node.databaseName : undefined,
-      pgDatabase: node.kind === 'pg-schema' ? node.pgDatabaseName : isSchemaScopedType(connection.database_type) ? node.databaseName : undefined,
+      pgDatabase:
+        node.kind === 'pg-schema'
+          ? node.pgDatabaseName
+          : isSchemaScopedType(connection.database_type)
+            ? node.databaseName
+            : undefined,
       sizeDisplay: node.sizeDisplay,
       sizeBytes: node.sizeBytes,
       storageSizeDisplay: node.storageSizeDisplay,
@@ -2962,8 +3422,15 @@ function App(): React.JSX.Element {
       startTransition(() => {
         setAiActiveContext({
           connectionId,
-          databaseName: isDatabaseScopedType(connection.database_type) || connection.database_type === 'dm' || connection.database_type === 'oracle' ? getDefaultDatabaseName(connection) : undefined,
-          pgDatabaseName: isSchemaScopedType(connection.database_type) ? getDefaultPgDatabase(connection) : undefined
+          databaseName:
+            isDatabaseScopedType(connection.database_type) ||
+            connection.database_type === 'dm' ||
+            connection.database_type === 'oracle'
+              ? getDefaultDatabaseName(connection)
+              : undefined,
+          pgDatabaseName: isSchemaScopedType(connection.database_type)
+            ? getDefaultPgDatabase(connection)
+            : undefined
         })
       })
       return
@@ -2975,8 +3442,12 @@ function App(): React.JSX.Element {
       startTransition(() => {
         setAiActiveContext({
           connectionId,
-          databaseName: isSchemaScopedType(connection.database_type) ? getDefaultPgSchema(schemas) : node.databaseName,
-          pgDatabaseName: isSchemaScopedType(connection.database_type) ? node.databaseName : undefined
+          databaseName: isSchemaScopedType(connection.database_type)
+            ? getDefaultPgSchema(schemas)
+            : node.databaseName,
+          pgDatabaseName: isSchemaScopedType(connection.database_type)
+            ? node.databaseName
+            : undefined
         })
       })
       return
@@ -2993,7 +3464,10 @@ function App(): React.JSX.Element {
       return
     }
 
-    if ((node.kind === 'table' || node.kind === 'db-object' || node.kind === 'object-group') && (node.databaseName || node.pgDatabaseName)) {
+    if (
+      (node.kind === 'table' || node.kind === 'db-object' || node.kind === 'object-group') &&
+      (node.databaseName || node.pgDatabaseName)
+    ) {
       startTransition(() => {
         setAiActiveContext({
           connectionId,
@@ -3004,16 +3478,27 @@ function App(): React.JSX.Element {
     }
   }
 
-  const openTableQuery = (connectionId: string, tableName: string, databaseName?: string, pgDatabaseName?: string): void => {
+  const openTableQuery = (
+    connectionId: string,
+    tableName: string,
+    databaseName?: string,
+    pgDatabaseName?: string
+  ): void => {
     setSelectedConnectionId(connectionId)
     const connection = getConnection(connectionId)
-    const sql = connection?.database_type === 'mongodb' || connection?.database_type === 'redis'
-      ? quoteTableName(connectionId, tableName, databaseName)
-      : `select * from ${quoteTableName(connectionId, tableName, databaseName)} limit 1000;`
+    const sql =
+      connection?.database_type === 'mongodb' || connection?.database_type === 'redis'
+        ? quoteTableName(connectionId, tableName, databaseName)
+        : `select * from ${quoteTableName(connectionId, tableName, databaseName)} limit 1000;`
     openQueryWorkspace(sql, `${tableName} 查询`, connectionId, databaseName, pgDatabaseName)
   }
 
-  const openTableEditor = async (connectionId: string, tableName: string, databaseName?: string, pgDatabaseName?: string): Promise<void> => {
+  const openTableEditor = async (
+    connectionId: string,
+    tableName: string,
+    databaseName?: string,
+    pgDatabaseName?: string
+  ): Promise<void> => {
     if (!ensureConnectionOpen(connectionId)) {
       return
     }
@@ -3028,7 +3513,13 @@ function App(): React.JSX.Element {
     setTableEditorLoading(true)
 
     try {
-      const data = await requestJson<ColumnsResponse>(withPgDatabase(`/connections/${connectionId}/tables/${encodeURIComponent(tableName)}/columns`, databaseName, pgDatabaseName))
+      const data = await requestJson<ColumnsResponse>(
+        withPgDatabase(
+          `/connections/${connectionId}/tables/${encodeURIComponent(tableName)}/columns`,
+          databaseName,
+          pgDatabaseName
+        )
+      )
       setEditingTableComment(data.table_comment ?? '')
       setEditingColumns(data.columns.map(toColumnDef))
     } catch (err) {
@@ -3050,24 +3541,31 @@ function App(): React.JSX.Element {
     setTableEditorLoading(true)
 
     try {
-      const data = await requestJson<ColumnsResponse>(withPgDatabase(`/connections/${editingConnectionId}/tables/${encodeURIComponent(editingTableName)}/columns`, editingDatabaseName, editingPgDatabaseName), {
-        method: 'PUT',
-        body: JSON.stringify({
-          table_comment: editingTableComment.trim() || null,
-          columns: editingColumns.map((column) => ({
-            name: column.name,
-            type: column.type,
-            nullable: column.nullable,
-            primary_key: column.primaryKey,
-            comment: column.comment.trim() || null,
-            unique: column.unique,
-            auto_increment: column.autoIncrement,
-            auto_increment_step: column.autoIncrementStep ?? null,
-            minimum: column.minimum.trim() || null,
-            maximum: column.maximum.trim() || null
-          }))
-        })
-      })
+      const data = await requestJson<ColumnsResponse>(
+        withPgDatabase(
+          `/connections/${editingConnectionId}/tables/${encodeURIComponent(editingTableName)}/columns`,
+          editingDatabaseName,
+          editingPgDatabaseName
+        ),
+        {
+          method: 'PUT',
+          body: JSON.stringify({
+            table_comment: editingTableComment.trim() || null,
+            columns: editingColumns.map((column) => ({
+              name: column.name,
+              type: column.type,
+              nullable: column.nullable,
+              primary_key: column.primaryKey,
+              comment: column.comment.trim() || null,
+              unique: column.unique,
+              auto_increment: column.autoIncrement,
+              auto_increment_step: column.autoIncrementStep ?? null,
+              minimum: column.minimum.trim() || null,
+              maximum: column.maximum.trim() || null
+            }))
+          })
+        }
+      )
       setEditingTableComment(data.table_comment ?? '')
       setEditingColumns(data.columns.map(toColumnDef))
       setTableEditorOpen(false)
@@ -3094,8 +3592,12 @@ function App(): React.JSX.Element {
     const handleCommit = (nextSelected: string[]): void => {
       const currentSelected = selectedDatabasesRef.current[connectionId] ?? selected
       const changed = !stringArrayEquals(
-        [...currentSelected].sort((left, right) => left.localeCompare(right, 'zh-Hans-CN', { numeric: true, sensitivity: 'base' })),
-        [...nextSelected].sort((left, right) => left.localeCompare(right, 'zh-Hans-CN', { numeric: true, sensitivity: 'base' }))
+        [...currentSelected].sort((left, right) =>
+          left.localeCompare(right, 'zh-Hans-CN', { numeric: true, sensitivity: 'base' })
+        ),
+        [...nextSelected].sort((left, right) =>
+          left.localeCompare(right, 'zh-Hans-CN', { numeric: true, sensitivity: 'base' })
+        )
       )
       setSelectedDatabases((current) => {
         const next = { ...current, [connectionId]: nextSelected }
@@ -3164,13 +3666,19 @@ function App(): React.JSX.Element {
       const folderId = key.slice('move-folder:'.length)
       if (connectionFolders.some((folder) => folder.id === folderId)) {
         moveConnectionsToFolder(targetConnectionIds, folderId)
-        setExpandedKeys((current) => current.includes(`folder:${folderId}`) ? current : [...current, `folder:${folderId}`])
+        setExpandedKeys((current) =>
+          current.includes(`folder:${folderId}`) ? current : [...current, `folder:${folderId}`]
+        )
       }
     }
   }
 
   const getDatabaseContextMenu = (node: DatabaseTreeNode): MenuProps['items'] => {
-    if ((!node.connectionId || !node.databaseName) || (node.kind !== 'database' && node.kind !== 'pg-schema')) {
+    if (
+      !node.connectionId ||
+      !node.databaseName ||
+      (node.kind !== 'database' && node.kind !== 'pg-schema')
+    ) {
       return []
     }
 
@@ -3181,7 +3689,13 @@ function App(): React.JSX.Element {
       { key: 'refresh', label: '刷新', icon: <ReloadOutlined /> },
       ...(isPgDb ? [{ key: 'new-schema', label: '新建模式', icon: <PlusOutlined /> }] : []),
       ...(!isPgDb && connection?.database_type !== 'redis'
-        ? [{ key: 'new-table', label: connection?.database_type === 'mongodb' ? '新建集合' : '新建表', icon: <PlusOutlined /> }]
+        ? [
+            {
+              key: 'new-table',
+              label: connection?.database_type === 'mongodb' ? '新建集合' : '新建表',
+              icon: <PlusOutlined />
+            }
+          ]
         : []),
       ...(connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis'
         ? [{ key: 'run-sql', label: '运行 SQL 文件', icon: <PlayCircleOutlined /> }]
@@ -3194,14 +3708,24 @@ function App(): React.JSX.Element {
       ...(connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis'
         ? [{ key: 'import', label: '导入', icon: <PlayCircleOutlined /> }]
         : []),
-      ...(!isPgDb && (connection?.database_type === 'mysql' || connection?.database_type === 'postgresql' || connection?.database_type === 'gaussdb')
-        ? [{ type: 'divider' as const }, { key: 'delete', label: '删除', danger: true, icon: <DeleteOutlined /> }]
+      ...(!isPgDb &&
+      (connection?.database_type === 'mysql' ||
+        connection?.database_type === 'postgresql' ||
+        connection?.database_type === 'gaussdb')
+        ? [
+            { type: 'divider' as const },
+            { key: 'delete', label: '删除', danger: true, icon: <DeleteOutlined /> }
+          ]
         : [])
     ]
   }
 
   const handleDatabaseContextMenuClick = (key: string, node: DatabaseTreeNode): void => {
-    if (!node.connectionId || !node.databaseName || (node.kind !== 'database' && node.kind !== 'pg-schema')) {
+    if (
+      !node.connectionId ||
+      !node.databaseName ||
+      (node.kind !== 'database' && node.kind !== 'pg-schema')
+    ) {
       return
     }
 
@@ -3226,36 +3750,68 @@ function App(): React.JSX.Element {
       setCreateTablePgDatabaseName(pgDbName ?? '')
       setNewTableName('')
       setNewTableComment('')
-      setNewTableColumns(connection?.database_type === 'mongodb'
-        ? [{ key: 'col-0', name: '_id', type: 'ObjectId', nullable: false, primaryKey: true, comment: '', unique: false, autoIncrement: false, autoIncrementStep: undefined, minimum: '', maximum: '' }]
-        : [
-            {
-              key: 'col-0',
-              name: 'id',
-              type: isSchemaScopedType(connection?.database_type) || connection?.database_type === 'oracle' ? 'INTEGER' : connection?.database_type === 'clickhouse' ? 'UInt64' : 'INT',
-              nullable: false,
-              primaryKey: connection?.database_type !== 'clickhouse',
-              comment: '',
-              unique: false,
-              autoIncrement: connection?.database_type === 'mysql' || connection?.database_type === 'postgresql' || connection?.database_type === 'gaussdb' || connection?.database_type === 'oracle' || connection?.database_type === 'sqlite',
-              autoIncrementStep: connection?.database_type === 'postgresql' || connection?.database_type === 'gaussdb' || connection?.database_type === 'oracle' ? 1 : undefined,
-              minimum: '',
-              maximum: ''
-            },
-            {
-              key: 'col-1',
-              name: 'name',
-              type: connection?.database_type === 'clickhouse' ? 'String' : 'VARCHAR(100)',
-              nullable: false,
-              primaryKey: false,
-              comment: '',
-              unique: false,
-              autoIncrement: false,
-              autoIncrementStep: undefined,
-              minimum: '',
-              maximum: ''
-            }
-          ])
+      setNewTableColumns(
+        connection?.database_type === 'mongodb'
+          ? [
+              {
+                key: 'col-0',
+                name: '_id',
+                type: 'ObjectId',
+                nullable: false,
+                primaryKey: true,
+                comment: '',
+                unique: false,
+                autoIncrement: false,
+                autoIncrementStep: undefined,
+                minimum: '',
+                maximum: ''
+              }
+            ]
+          : [
+              {
+                key: 'col-0',
+                name: 'id',
+                type:
+                  isSchemaScopedType(connection?.database_type) ||
+                  connection?.database_type === 'oracle'
+                    ? 'INTEGER'
+                    : connection?.database_type === 'clickhouse'
+                      ? 'UInt64'
+                      : 'INT',
+                nullable: false,
+                primaryKey: connection?.database_type !== 'clickhouse',
+                comment: '',
+                unique: false,
+                autoIncrement:
+                  connection?.database_type === 'mysql' ||
+                  connection?.database_type === 'postgresql' ||
+                  connection?.database_type === 'gaussdb' ||
+                  connection?.database_type === 'oracle' ||
+                  connection?.database_type === 'sqlite',
+                autoIncrementStep:
+                  connection?.database_type === 'postgresql' ||
+                  connection?.database_type === 'gaussdb' ||
+                  connection?.database_type === 'oracle'
+                    ? 1
+                    : undefined,
+                minimum: '',
+                maximum: ''
+              },
+              {
+                key: 'col-1',
+                name: 'name',
+                type: connection?.database_type === 'clickhouse' ? 'String' : 'VARCHAR(100)',
+                nullable: false,
+                primaryKey: false,
+                comment: '',
+                unique: false,
+                autoIncrement: false,
+                autoIncrementStep: undefined,
+                minimum: '',
+                maximum: ''
+              }
+            ]
+      )
       setCreateTableModalOpen(true)
     }
     if (key === 'run-sql') {
@@ -3276,7 +3832,11 @@ function App(): React.JSX.Element {
   }
 
   const getObjectContextMenu = (node: DatabaseTreeNode): MenuProps['items'] => {
-    if ((node.kind !== 'table' && node.kind !== 'db-object') || !node.connectionId || !node.tableName) {
+    if (
+      (node.kind !== 'table' && node.kind !== 'db-object') ||
+      !node.connectionId ||
+      !node.tableName
+    ) {
       return []
     }
 
@@ -3287,7 +3847,9 @@ function App(): React.JSX.Element {
     return [
       ...(canPreview ? [{ key: 'select', label: '生成 SELECT 查询' }] : []),
       { key: 'ddl', label: '查看 DDL' },
-      ...(objectType === 'table' && connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis'
+      ...(objectType === 'table' &&
+      connection?.database_type !== 'mongodb' &&
+      connection?.database_type !== 'redis'
         ? [{ key: 'edit', label: '修改表' }]
         : []),
       { key: 'copy', label: '复制对象名' },
@@ -3296,12 +3858,21 @@ function App(): React.JSX.Element {
       ...(connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis'
         ? [{ key: 'import', label: '导入', icon: <PlayCircleOutlined /> }]
         : []),
-      ...(canPreview ? [{ type: 'divider' as const }, { key: 'delete', label: '删除', danger: true, icon: <DeleteOutlined /> }] : [])
+      ...(canPreview
+        ? [
+            { type: 'divider' as const },
+            { key: 'delete', label: '删除', danger: true, icon: <DeleteOutlined /> }
+          ]
+        : [])
     ]
   }
 
   const handleObjectContextMenuClick = (key: string, node: DatabaseTreeNode): void => {
-    if ((node.kind !== 'table' && node.kind !== 'db-object') || !node.connectionId || !node.tableName) {
+    if (
+      (node.kind !== 'table' && node.kind !== 'db-object') ||
+      !node.connectionId ||
+      !node.tableName
+    ) {
       return
     }
 
@@ -3347,32 +3918,46 @@ function App(): React.JSX.Element {
       ...(connection.is_open
         ? [{ key: 'close', label: '关闭连接', icon: <CloseCircleOutlined />, disabled: loading }]
         : [{ key: 'open', label: '打开连接', icon: <PlayCircleOutlined />, disabled: loading }]),
-      ...(connection.database_type === 'redis' || connection.database_type === 'sqlite' ? [] : [{
-        key: 'new-database',
-        label: connection.database_type === 'oracle' ? '新建用户' : '新建库',
-        icon: <PlusOutlined />
-      }]),
+      ...(connection.database_type === 'redis' || connection.database_type === 'sqlite'
+        ? []
+        : [
+            {
+              key: 'new-database',
+              label: connection.database_type === 'oracle' ? '新建用户' : '新建库',
+              icon: <PlusOutlined />
+            }
+          ]),
       ...(connection.database_type !== 'mongodb' && connection.database_type !== 'redis'
         ? [{ key: 'run-sql', label: '运行 SQL 文件', icon: <PlayCircleOutlined /> }]
         : []),
       ...(connectionFolders.length > 0
-        ? [{
-            type: 'divider' as const
-          }, {
-            key: 'move-folder',
-            label: '添加到分组',
-            icon: <FolderAddOutlined />,
-            children: folderMenuItems
-          }]
+        ? [
+            {
+              type: 'divider' as const
+            },
+            {
+              key: 'move-folder',
+              label: '添加到分组',
+              icon: <FolderAddOutlined />,
+              children: folderMenuItems
+            }
+          ]
         : []),
       ...(currentFolderId
-        ? [{ type: 'divider' as const }, { key: 'move-root', label: '移出分组', icon: <FolderOpenOutlined /> }]
+        ? [
+            { type: 'divider' as const },
+            { key: 'move-root', label: '移出分组', icon: <FolderOpenOutlined /> }
+          ]
         : [])
     ]
   }
 
   const getObjectGroupContextMenu = (node: DatabaseTreeNode): MenuProps['items'] => {
-    if (node.kind !== 'object-group' || !node.objectType || (node.objectType !== 'table' && node.objectType !== 'view')) {
+    if (
+      node.kind !== 'object-group' ||
+      !node.objectType ||
+      (node.objectType !== 'table' && node.objectType !== 'view')
+    ) {
       return []
     }
 
@@ -3430,8 +4015,18 @@ function App(): React.JSX.Element {
       }
     } else if (node.kind === 'database' || node.kind === 'pg-schema') {
       handleDatabaseContextMenuClick(key, node)
-    } else if (node.kind === 'object-group' && key === 'catalog' && node.connectionId && (node.objectType === 'table' || node.objectType === 'view')) {
-      void openTableCatalog(node.connectionId, node.databaseName, node.pgDatabaseName, node.objectType)
+    } else if (
+      node.kind === 'object-group' &&
+      key === 'catalog' &&
+      node.connectionId &&
+      (node.objectType === 'table' || node.objectType === 'view')
+    ) {
+      void openTableCatalog(
+        node.connectionId,
+        node.databaseName,
+        node.pgDatabaseName,
+        node.objectType
+      )
     } else if (node.kind === 'table' || node.kind === 'db-object') {
       handleObjectContextMenuClick(key, node)
     }
@@ -3444,7 +4039,8 @@ function App(): React.JSX.Element {
     if (node.kind === 'folder' && node.folderId) {
       const folderChildren = (node.children as DatabaseTreeNode[] | undefined) ?? []
       const connectionCount = folderChildren.filter((child) => child.kind === 'connection').length
-      const folderDropZone = dragOverFolderTarget?.folderId === node.folderId ? dragOverFolderTarget.zone : undefined
+      const folderDropZone =
+        dragOverFolderTarget?.folderId === node.folderId ? dragOverFolderTarget.zone : undefined
       return (
         <Flex
           align="center"
@@ -3467,32 +4063,56 @@ function App(): React.JSX.Element {
             }
           }}
         >
-          <span className={`table-tree-title${loading ? ' is-loading' : ''}`}>{highlightTreeSearchText(String(node.title ?? ''))}</span>
+          <span className={`table-tree-title${loading ? ' is-loading' : ''}`}>
+            {highlightTreeSearchText(String(node.title ?? ''))}
+          </span>
           <Tag className="folder-count-tag">{connectionCount}</Tag>
         </Flex>
       )
     }
 
     if (node.kind === 'folder-drop-placeholder') {
-      return <span className="folder-drop-placeholder-title resource-tree-node-title" data-tree-node-key={String(node.key)} />
+      return (
+        <span
+          className="folder-drop-placeholder-title resource-tree-node-title"
+          data-tree-node-key={String(node.key)}
+        />
+      )
     }
 
     if (node.kind === 'connection' && node.connectionId) {
       const connection = getConnection(node.connectionId)
-      return connection
-        ? renderConnectionTitle(node, connection)
-        : <span className="resource-tree-node-title" data-tree-node-key={String(node.key)}>{node.title as React.ReactNode}</span>
+      return connection ? (
+        renderConnectionTitle(node, connection)
+      ) : (
+        <span className="resource-tree-node-title" data-tree-node-key={String(node.key)}>
+          {node.title as React.ReactNode}
+        </span>
+      )
     }
 
     if (node.kind === 'column') {
       const title = String(node.title ?? '')
-      return <span className={`table-tree-title resource-tree-node-title${loading ? ' is-loading' : ''}`} title={title} data-tree-node-key={String(node.key)}>{highlightTreeSearchText(title)}</span>
+      return (
+        <span
+          className={`table-tree-title resource-tree-node-title${loading ? ' is-loading' : ''}`}
+          title={title}
+          data-tree-node-key={String(node.key)}
+        >
+          {highlightTreeSearchText(title)}
+        </span>
+      )
     }
 
-    if ((node.kind === 'database' || node.kind === 'pg-schema') && node.connectionId && node.databaseName) {
+    if (
+      (node.kind === 'database' || node.kind === 'pg-schema') &&
+      node.connectionId &&
+      node.databaseName
+    ) {
       const connectionId = node.connectionId
       const databaseName = node.databaseName
-      const isPgDb = node.kind === 'database' && isSchemaScopedType(getConnection(connectionId)?.database_type)
+      const isPgDb =
+        node.kind === 'database' && isSchemaScopedType(getConnection(connectionId)?.database_type)
       const selKey = `${connectionId}:${databaseName}`
       const schemas = allSchemas[selKey] ?? []
       const selectedSchemaList = selectedSchemas[selKey] ?? schemas
@@ -3500,8 +4120,12 @@ function App(): React.JSX.Element {
       const handleSchemaCommit = (nextSelected: string[]): void => {
         const currentSelected = selectedSchemasRef.current[selKey] ?? selectedSchemaList
         const changed = !stringArrayEquals(
-          [...currentSelected].sort((left, right) => left.localeCompare(right, 'zh-Hans-CN', { numeric: true, sensitivity: 'base' })),
-          [...nextSelected].sort((left, right) => left.localeCompare(right, 'zh-Hans-CN', { numeric: true, sensitivity: 'base' }))
+          [...currentSelected].sort((left, right) =>
+            left.localeCompare(right, 'zh-Hans-CN', { numeric: true, sensitivity: 'base' })
+          ),
+          [...nextSelected].sort((left, right) =>
+            left.localeCompare(right, 'zh-Hans-CN', { numeric: true, sensitivity: 'base' })
+          )
         )
         setSelectedSchemas((current) => {
           const next = { ...current, [selKey]: nextSelected }
@@ -3514,22 +4138,44 @@ function App(): React.JSX.Element {
       }
 
       return (
-        <Flex align="center" justify="space-between" className="tree-title-row resource-tree-node-title" data-tree-node-key={String(node.key)}>
+        <Flex
+          align="center"
+          justify="space-between"
+          className="tree-title-row resource-tree-node-title"
+          data-tree-node-key={String(node.key)}
+        >
           <div className="tree-title-with-size">
-            <span className={`table-tree-title${loading ? ' is-loading' : ''}`}>{highlightTreeSearchText(String(node.title ?? ''))}</span>
+            <span className={`table-tree-title${loading ? ' is-loading' : ''}`}>
+              {highlightTreeSearchText(String(node.title ?? ''))}
+            </span>
             <span className="tree-node-actions">
               {renderAIContextButton(node)}
-              {node.sizeDisplay && <span className="tree-size-badge" title={`数据大小：${node.sizeDisplay}${node.storageSizeDisplay ? `，物理占用：${node.storageSizeDisplay}` : ''}`}>{node.sizeDisplay}</span>}
+              {node.sizeDisplay && (
+                <span
+                  className="tree-size-badge"
+                  title={`数据大小：${node.sizeDisplay}${node.storageSizeDisplay ? `，物理占用：${node.storageSizeDisplay}` : ''}`}
+                >
+                  {node.sizeDisplay}
+                </span>
+              )}
             </span>
           </div>
           {isPgDb && schemaCount > 0 && (
-            <TreeSelectorPopover options={schemas} selectedValues={selectedSchemaList} onCommit={handleSchemaCommit} />
+            <TreeSelectorPopover
+              options={schemas}
+              selectedValues={selectedSchemaList}
+              onCommit={handleSchemaCommit}
+            />
           )}
         </Flex>
       )
     }
 
-    if ((node.kind !== 'table' && node.kind !== 'db-object') || !node.connectionId || !node.tableName) {
+    if (
+      (node.kind !== 'table' && node.kind !== 'db-object') ||
+      !node.connectionId ||
+      !node.tableName
+    ) {
       return (
         <span className="resource-tree-node-title" data-tree-node-key={String(node.key)}>
           {highlightTreeSearchText(String(node.title ?? ''))}
@@ -3538,48 +4184,71 @@ function App(): React.JSX.Element {
     }
 
     return (
-      <Flex align="center" justify="space-between" className="tree-title-with-size resource-tree-node-title" data-tree-node-key={String(node.key)}>
-        <span className="table-tree-title" title={node.kind === 'table' ? (node.comment?.trim() || String(node.title ?? '')) : String(node.title ?? '')}>
+      <Flex
+        align="center"
+        justify="space-between"
+        className="tree-title-with-size resource-tree-node-title"
+        data-tree-node-key={String(node.key)}
+      >
+        <span
+          className="table-tree-title"
+          title={
+            node.kind === 'table'
+              ? node.comment?.trim() || String(node.title ?? '')
+              : String(node.title ?? '')
+          }
+        >
           {highlightTreeSearchText(String(node.title ?? ''))}
         </span>
         <span className="tree-node-actions">
-          {node.sizeDisplay && <span className="tree-size-badge" title={`数据大小：${node.sizeDisplay}${node.storageSizeDisplay ? `，物理占用：${node.storageSizeDisplay}` : ''}`}>{node.sizeDisplay}</span>}
+          {node.sizeDisplay && (
+            <span
+              className="tree-size-badge"
+              title={`数据大小：${node.sizeDisplay}${node.storageSizeDisplay ? `，物理占用：${node.storageSizeDisplay}` : ''}`}
+            >
+              {node.sizeDisplay}
+            </span>
+          )}
         </span>
       </Flex>
     )
   }
 
   const toggleRedisValue = (tabKey: string, rowKey: string): void => {
-    setWorkspaceTabs((current) => current.map((tab) => {
-      if (tab.key !== tabKey) {
-        return tab
-      }
-      const expanded = { ...(tab.redisExpandedValues ?? {}) }
-      if (expanded[rowKey]) {
-        delete expanded[rowKey]
-      } else {
-        expanded[rowKey] = true
-      }
-      return { ...tab, redisExpandedValues: expanded }
-    }))
+    setWorkspaceTabs((current) =>
+      current.map((tab) => {
+        if (tab.key !== tabKey) {
+          return tab
+        }
+        const expanded = { ...(tab.redisExpandedValues ?? {}) }
+        if (expanded[rowKey]) {
+          delete expanded[rowKey]
+        } else {
+          expanded[rowKey] = true
+        }
+        return { ...tab, redisExpandedValues: expanded }
+      })
+    )
   }
 
   const updateRedisEdit = (tabKey: string, rowKey: string, patch: Partial<RedisKeyEdit>): void => {
-    setWorkspaceTabs((current) => current.map((tab) => {
-      if (tab.key !== tabKey) {
-        return tab
-      }
-      const currentEdit = tab.redisEdits?.[rowKey]
-      if (!currentEdit) {
-        return tab
-      }
-      const nextEdit: RedisKeyEdit = {
-        ...currentEdit,
-        ...patch,
-        state: currentEdit.state === 'inserted' ? 'inserted' : 'updated'
-      }
-      return { ...tab, redisEdits: { ...(tab.redisEdits ?? {}), [rowKey]: nextEdit } }
-    }))
+    setWorkspaceTabs((current) =>
+      current.map((tab) => {
+        if (tab.key !== tabKey) {
+          return tab
+        }
+        const currentEdit = tab.redisEdits?.[rowKey]
+        if (!currentEdit) {
+          return tab
+        }
+        const nextEdit: RedisKeyEdit = {
+          ...currentEdit,
+          ...patch,
+          state: currentEdit.state === 'inserted' ? 'inserted' : 'updated'
+        }
+        return { ...tab, redisEdits: { ...(tab.redisEdits ?? {}), [rowKey]: nextEdit } }
+      })
+    )
   }
 
   const addRedisRow = (tab: WorkspaceTab): void => {
@@ -3601,22 +4270,24 @@ function App(): React.JSX.Element {
   }
 
   const deleteRedisRow = (tabKey: string, rowKey: string): void => {
-    setWorkspaceTabs((current) => current.map((tab) => {
-      if (tab.key !== tabKey) {
-        return tab
-      }
-      const edits = { ...(tab.redisEdits ?? {}) }
-      const currentEdit = edits[rowKey]
-      if (!currentEdit) {
-        return tab
-      }
-      if (currentEdit.state === 'inserted') {
-        delete edits[rowKey]
-      } else {
-        edits[rowKey] = { ...currentEdit, deleted: true }
-      }
-      return { ...tab, redisEdits: edits }
-    }))
+    setWorkspaceTabs((current) =>
+      current.map((tab) => {
+        if (tab.key !== tabKey) {
+          return tab
+        }
+        const edits = { ...(tab.redisEdits ?? {}) }
+        const currentEdit = edits[rowKey]
+        if (!currentEdit) {
+          return tab
+        }
+        if (currentEdit.state === 'inserted') {
+          delete edits[rowKey]
+        } else {
+          edits[rowKey] = { ...currentEdit, deleted: true }
+        }
+        return { ...tab, redisEdits: edits }
+      })
+    )
   }
 
   const clearRuntimeColumnSelection = (tabKey: string): void => {
@@ -3629,13 +4300,21 @@ function App(): React.JSX.Element {
     if (!container) {
       return
     }
-    container.querySelectorAll<HTMLElement>(`[data-column-key="${CSS.escape(selectedColumn)}"]`).forEach((element) => {
-      element.classList.remove('column-selected-runtime')
-    })
-    container.querySelectorAll<HTMLElement>(`.editable-cell[data-cell-column-key="${CSS.escape(selectedColumn)}"]`).forEach((element) => {
-      element.classList.remove('column-selected-runtime-inner')
-    })
-    container.querySelectorAll(`[data-column-button="${CSS.escape(selectedColumn)}"]`).forEach((element) => element.classList.remove('column-select-button-runtime-selected'))
+    container
+      .querySelectorAll<HTMLElement>(`[data-column-key="${CSS.escape(selectedColumn)}"]`)
+      .forEach((element) => {
+        element.classList.remove('column-selected-runtime')
+      })
+    container
+      .querySelectorAll<HTMLElement>(
+        `.editable-cell[data-cell-column-key="${CSS.escape(selectedColumn)}"]`
+      )
+      .forEach((element) => {
+        element.classList.remove('column-selected-runtime-inner')
+      })
+    container
+      .querySelectorAll(`[data-column-button="${CSS.escape(selectedColumn)}"]`)
+      .forEach((element) => element.classList.remove('column-select-button-runtime-selected'))
   }
 
   const clearRenderedCellSelection = (tabKey: string): void => {
@@ -3643,10 +4322,14 @@ function App(): React.JSX.Element {
     if (!container) {
       return
     }
-    container.querySelectorAll<HTMLElement>('.editable-cell.cell-selected-runtime, td.cell-selected-runtime-host, .ant-table-cell.cell-selected-runtime-host').forEach((element) => {
-      element.classList.remove('cell-selected-runtime')
-      element.classList.remove('cell-selected-runtime-host')
-    })
+    container
+      .querySelectorAll<HTMLElement>(
+        '.editable-cell.cell-selected-runtime, td.cell-selected-runtime-host, .ant-table-cell.cell-selected-runtime-host'
+      )
+      .forEach((element) => {
+        element.classList.remove('cell-selected-runtime')
+        element.classList.remove('cell-selected-runtime-host')
+      })
     renderedSelectedCellRefs.current[tabKey] = undefined
   }
 
@@ -3655,7 +4338,9 @@ function App(): React.JSX.Element {
     if (!container) {
       return
     }
-    container.querySelectorAll('.cell-search-active').forEach((element) => element.classList.remove('cell-search-active'))
+    container
+      .querySelectorAll('.cell-search-active')
+      .forEach((element) => element.classList.remove('cell-search-active'))
   }
 
   const updateRenderedCellSelection = (tabKey: string, cellKeys: string[]): void => {
@@ -3672,26 +4357,40 @@ function App(): React.JSX.Element {
       if (nextCellKeySet.has(cellKey)) {
         return
       }
-      container.querySelectorAll<HTMLElement>(`.editable-cell[data-cell-key="${CSS.escape(cellKey)}"]`).forEach((element) => {
-        element.classList.remove('cell-selected-runtime')
-        element.closest<HTMLElement>('td, .ant-table-cell')?.classList.remove('cell-selected-runtime-host')
-      })
+      container
+        .querySelectorAll<HTMLElement>(`.editable-cell[data-cell-key="${CSS.escape(cellKey)}"]`)
+        .forEach((element) => {
+          element.classList.remove('cell-selected-runtime')
+          element
+            .closest<HTMLElement>('td, .ant-table-cell')
+            ?.classList.remove('cell-selected-runtime-host')
+        })
     })
 
     cellKeys.forEach((cellKey) => {
-      container.querySelectorAll<HTMLElement>(`.editable-cell[data-cell-key="${CSS.escape(cellKey)}"]`).forEach((element) => {
-        if (!previousRenderedKeySet.has(cellKey) || !element.classList.contains('cell-selected-runtime')) {
-          element.classList.add('cell-selected-runtime')
-        }
-        const host = element.closest<HTMLElement>('td, .ant-table-cell')
-        if (host && (!previousRenderedKeySet.has(cellKey) || !host.classList.contains('cell-selected-runtime-host'))) {
-          host.classList.add('cell-selected-runtime-host')
-        }
-      })
+      container
+        .querySelectorAll<HTMLElement>(`.editable-cell[data-cell-key="${CSS.escape(cellKey)}"]`)
+        .forEach((element) => {
+          if (
+            !previousRenderedKeySet.has(cellKey) ||
+            !element.classList.contains('cell-selected-runtime')
+          ) {
+            element.classList.add('cell-selected-runtime')
+          }
+          const host = element.closest<HTMLElement>('td, .ant-table-cell')
+          if (
+            host &&
+            (!previousRenderedKeySet.has(cellKey) ||
+              !host.classList.contains('cell-selected-runtime-host'))
+          ) {
+            host.classList.add('cell-selected-runtime-host')
+          }
+        })
       nextRenderedKeys.push(cellKey)
     })
 
-    renderedSelectedCellRefs.current[tabKey] = nextRenderedKeys.length > 0 ? nextRenderedKeys : undefined
+    renderedSelectedCellRefs.current[tabKey] =
+      nextRenderedKeys.length > 0 ? nextRenderedKeys : undefined
   }
 
   const applyRuntimeColumnSelection = (tabKey: string, column: string): void => {
@@ -3701,15 +4400,23 @@ function App(): React.JSX.Element {
     }
     clearRuntimeColumnSelection(tabKey)
     selectedColumnRefs.current[tabKey] = column
-    container.querySelectorAll<HTMLElement>(`[data-column-key="${CSS.escape(column)}"]`).forEach((element) => {
-      element.classList.add('column-selected-runtime')
-      element.querySelectorAll<HTMLElement>(`.editable-cell[data-cell-column-key="${CSS.escape(column)}"]`).forEach((cell) => {
-        cell.classList.add('column-selected-runtime-inner')
+    container
+      .querySelectorAll<HTMLElement>(`[data-column-key="${CSS.escape(column)}"]`)
+      .forEach((element) => {
+        element.classList.add('column-selected-runtime')
+        element
+          .querySelectorAll<HTMLElement>(
+            `.editable-cell[data-cell-column-key="${CSS.escape(column)}"]`
+          )
+          .forEach((cell) => {
+            cell.classList.add('column-selected-runtime-inner')
+          })
       })
-    })
-    container.querySelectorAll<HTMLElement>(`[data-column-button="${CSS.escape(column)}"]`).forEach((element) => {
-      element.classList.add('column-select-button-runtime-selected')
-    })
+    container
+      .querySelectorAll<HTMLElement>(`[data-column-button="${CSS.escape(column)}"]`)
+      .forEach((element) => {
+        element.classList.add('column-select-button-runtime-selected')
+      })
   }
 
   const syncRuntimeSortButtons = (
@@ -3775,9 +4482,19 @@ function App(): React.JSX.Element {
     const hasRuntimeSelection = Boolean(runtimeSelectedCellRefs.current[tabKey]?.length)
     const hasCommittedSelection = Boolean(selectedCellRefs.current[tabKey]?.length)
     const hasContextSelection = Boolean(contextMenuCellSelectionRefs.current[tabKey])
-    const hasRenderedSelection = Boolean(renderedSelectedCellRefs.current[tabKey]?.length)
-      || Boolean(tableBodyRefs.current[tabKey]?.querySelector('.editable-cell.cell-selected-runtime, td.cell-selected-runtime-host, .ant-table-cell.cell-selected-runtime-host'))
-    if (!hasRuntimeSelection && !hasCommittedSelection && !hasContextSelection && !hasRenderedSelection) {
+    const hasRenderedSelection =
+      Boolean(renderedSelectedCellRefs.current[tabKey]?.length) ||
+      Boolean(
+        tableBodyRefs.current[tabKey]?.querySelector(
+          '.editable-cell.cell-selected-runtime, td.cell-selected-runtime-host, .ant-table-cell.cell-selected-runtime-host'
+        )
+      )
+    if (
+      !hasRuntimeSelection &&
+      !hasCommittedSelection &&
+      !hasContextSelection &&
+      !hasRenderedSelection
+    ) {
       cancelPendingCellSelectionInteractions(tabKey)
       return
     }
@@ -3800,7 +4517,11 @@ function App(): React.JSX.Element {
   }
 
   const clearSelectedRowsForTab = (tabKey: string): void => {
-    const selectedRowKeys = (rowSelectionDraftRefs.current[tabKey] ?? selectedRowRefs.current[tabKey] ?? []).map((key) => String(key))
+    const selectedRowKeys = (
+      rowSelectionDraftRefs.current[tabKey] ??
+      selectedRowRefs.current[tabKey] ??
+      []
+    ).map((key) => String(key))
     if (selectedRowKeys.length === 0) {
       return
     }
@@ -3810,8 +4531,14 @@ function App(): React.JSX.Element {
     if (container) {
       const renderedRowKeys = renderedSelectedRowRefs.current[tabKey] ?? []
       for (const rowKey of renderedRowKeys) {
-        const trs = container.querySelectorAll<HTMLElement>('tr[data-row-key="' + CSS.escape(rowKey) + '"], .ant-table-row[data-row-key="' + CSS.escape(rowKey) + '"]')
-        trs.forEach(function(el) {
+        const trs = container.querySelectorAll<HTMLElement>(
+          'tr[data-row-key="' +
+            CSS.escape(rowKey) +
+            '"], .ant-table-row[data-row-key="' +
+            CSS.escape(rowKey) +
+            '"]'
+        )
+        trs.forEach(function (el) {
           el.classList.remove('row-selected')
           el.querySelector<HTMLElement>('.row-number-button')?.classList.remove('selected')
         })
@@ -3819,6 +4546,11 @@ function App(): React.JSX.Element {
     }
     renderedSelectedRowRefs.current[tabKey] = undefined
   }
+
+  const getResultTableVirtualHolder = (tabKey: string): HTMLDivElement | null =>
+    tableBodyRefs.current[tabKey]?.querySelector<HTMLDivElement>(
+      '.ant-table-tbody-virtual-holder'
+    ) ?? null
 
   const scheduleRenderedCellSelectionSync = (tabKey: string): void => {
     const isVirtualTable = Boolean(getResultTableVirtualHolder(tabKey))
@@ -3899,7 +4631,6 @@ function App(): React.JSX.Element {
       commitInlineCellEditor={commitInlineCellEditor}
       openInlineCellEditor={openInlineCellEditor}
       scheduleRenderedCellSelectionSync={scheduleRenderedCellSelectionSync}
-      scheduleNativeHorizontalScrollbarSync={scheduleNativeHorizontalScrollbarSync}
       clearRuntimeColumnSelection={clearRuntimeColumnSelection}
       clearActiveSearchCellHighlight={clearActiveSearchCellHighlight}
       clearAllCellSelection={clearAllCellSelection}
@@ -3920,66 +4651,85 @@ function App(): React.JSX.Element {
   const renderResultTableRef = useRef(renderResultTable)
   renderResultTableRef.current = renderResultTable
 
-  const getDefaultDatabaseName = useCallback((connection?: ConnectionInfo): string | undefined => {
-    if (!connection) {
-      return undefined
-    }
-    if (connection.database_type !== 'mysql' && connection.database_type !== 'dm' && connection.database_type !== 'oracle' && connection.database_type !== 'mongodb' && connection.database_type !== 'redis' && connection.database_type !== 'clickhouse') {
-      return undefined
-    }
+  const getDefaultDatabaseName = useCallback(
+    (connection?: ConnectionInfo): string | undefined => {
+      if (!connection) {
+        return undefined
+      }
+      if (
+        connection.database_type !== 'mysql' &&
+        connection.database_type !== 'dm' &&
+        connection.database_type !== 'oracle' &&
+        connection.database_type !== 'mongodb' &&
+        connection.database_type !== 'redis' &&
+        connection.database_type !== 'clickhouse'
+      ) {
+        return undefined
+      }
 
-    if (connection.database_type === 'oracle') {
+      if (connection.database_type === 'oracle') {
+        const dbNames = allDatabases[connection.connection_id] ?? []
+        return dbNames[0]
+      }
+
+      if (connection.database && !connection.database.includes(':')) {
+        return connection.database
+      }
+
       const dbNames = allDatabases[connection.connection_id] ?? []
-      return dbNames[0]
-    }
+      if (dbNames.length > 0) {
+        return dbNames[0]
+      }
 
-    if (connection.database && !connection.database.includes(':')) {
-      return connection.database
-    }
-
-    const dbNames = allDatabases[connection.connection_id] ?? []
-    if (dbNames.length > 0) {
-      return dbNames[0]
-    }
-
-    return undefined
-  }, [allDatabases])
-
-  const getDefaultPgDatabase = useCallback((connection: ConnectionInfo): string | undefined => {
-    if (connection.database_type !== 'postgresql' && connection.database_type !== 'gaussdb') {
       return undefined
-    }
+    },
+    [allDatabases]
+  )
 
-    const connectionDb = connection.database?.split('@')[0]
-    const dbNames = allDatabases[connection.connection_id] ?? []
+  const getDefaultPgDatabase = useCallback(
+    (connection: ConnectionInfo): string | undefined => {
+      if (connection.database_type !== 'postgresql' && connection.database_type !== 'gaussdb') {
+        return undefined
+      }
 
-    if (connectionDb && dbNames.includes(connectionDb)) {
-      return connectionDb
-    }
+      const connectionDb = connection.database?.split('@')[0]
+      const dbNames = allDatabases[connection.connection_id] ?? []
 
-    return connectionDb || dbNames[0]
-  }, [allDatabases])
+      if (connectionDb && dbNames.includes(connectionDb)) {
+        return connectionDb
+      }
+
+      return connectionDb || dbNames[0]
+    },
+    [allDatabases]
+  )
 
   const getDefaultPgSchema = useCallback((schemas: string[]): string | undefined => {
     return schemas.includes('public') ? 'public' : schemas[0]
   }, [])
 
-  const preloadCompletionForDatabase = useCallback(async (connectionId: string, databaseName: string): Promise<void> => {
-    const cacheKey = `${connectionId}:${databaseName}`
-    const connection = getConnection(connectionId)
+  const preloadCompletionForDatabase = useCallback(
+    async (connectionId: string, databaseName?: string): Promise<void> => {
+      const cacheKey = `${connectionId}:${databaseName ?? ''}`
+      const connection = getConnection(connectionId)
 
-    if (!connection?.is_open || completionTables[cacheKey]) {
-      return
-    }
+      if (!connection?.is_open || completionTables[cacheKey]) {
+        return
+      }
 
-    try {
-      const data = await requestJson<{ tables: TableInfo[] }>(`/connections/${connectionId}/tables?database=${encodeURIComponent(databaseName)}`)
-      const tableNames = data.tables.map((t) => t.name)
-      setCompletionTables((current) => ({ ...current, [cacheKey]: tableNames }))
-    } catch {
-      // ignore
-    }
-  }, [completionTables, getConnection, requestJson])
+      try {
+        const databaseQuery = databaseName ? `?database=${encodeURIComponent(databaseName)}` : ''
+        const data = await requestJson<{ tables: TableInfo[] }>(
+          `/connections/${connectionId}/tables${databaseQuery}`
+        )
+        const tableNames = data.tables.map((t) => t.name)
+        setCompletionTables((current) => ({ ...current, [cacheKey]: tableNames }))
+      } catch {
+        // ignore
+      }
+    },
+    [completionTables, getConnection, requestJson]
+  )
 
   const preloadCompletionForDatabaseRef = useRef(preloadCompletionForDatabase)
   preloadCompletionForDatabaseRef.current = preloadCompletionForDatabase
@@ -4001,71 +4751,88 @@ function App(): React.JSX.Element {
   const showErrorRef = useRef(showError)
   showErrorRef.current = showError
 
-  const treeRuntime = useMemo(() => createTreeRuntime({
-    requestJson: (path, options) => requestJsonRef.current(path, options),
-    withPgDatabase,
-    getConnection: (connectionId) => getConnectionRef.current(connectionId),
-    isSchemaScopedType,
-    preloadCompletionForDatabase: (connectionId, databaseName) => preloadCompletionForDatabaseRef.current(connectionId, databaseName),
-    setAllDatabases,
-    setSelectedDatabases,
-    selectedDatabasesRef,
-    setAllSchemas,
-    setSelectedSchemas,
-    selectedSchemasRef,
-    setTreeData,
-    treeDataRef,
-    treeLoadingKeysRef,
-    expandedKeysRef,
-    setExpandedKeys,
-    notifyTreeLoadingStateChanged: () => {
-      setTreeLoadingVersion((current) => current + 1)
+  const treeRuntime = useMemo(
+    () =>
+      createTreeRuntime({
+        requestJson: (path, options) => requestJsonRef.current(path, options),
+        withPgDatabase,
+        getConnection: (connectionId) => getConnectionRef.current(connectionId),
+        isSchemaScopedType,
+        preloadCompletionForDatabase: (connectionId, databaseName) =>
+          preloadCompletionForDatabaseRef.current(connectionId, databaseName),
+        setAllDatabases,
+        setSelectedDatabases,
+        selectedDatabasesRef,
+        setAllSchemas,
+        setSelectedSchemas,
+        selectedSchemasRef,
+        setTreeData,
+        treeDataRef,
+        treeLoadingKeysRef,
+        expandedKeysRef,
+        setExpandedKeys,
+        notifyTreeLoadingStateChanged: () => {
+          setTreeLoadingVersion((current) => current + 1)
+        },
+        showError: (error, fallback) => showErrorRef.current(error, fallback),
+        connectionTypeIcons
+      }),
+    [withPgDatabase, isSchemaScopedType]
+  )
+
+  const ensureDatabasesLoaded = useCallback(
+    async (connectionId: string, connectionOverride?: ConnectionInfo): Promise<void> => {
+      const connection = connectionOverride ?? getConnection(connectionId)
+      if (!connection?.is_open || allDatabases[connectionId]) {
+        return
+      }
+
+      try {
+        const data = await requestJson<{ databases: DatabaseInfo[] }>(
+          `/connections/${connectionId}/databases`
+        )
+        const dbNames = data.databases.map((d) => d.name)
+        setAllDatabases((current) => ({ ...current, [connectionId]: dbNames }))
+      } catch {
+        // ignore
+      }
     },
-    showError: (error, fallback) => showErrorRef.current(error, fallback),
-    connectionTypeIcons
-  }), [
-    withPgDatabase,
-    isSchemaScopedType
-  ])
+    [allDatabases, getConnection, requestJson]
+  )
 
-  const ensureDatabasesLoaded = useCallback(async (connectionId: string, connectionOverride?: ConnectionInfo): Promise<void> => {
-    const connection = connectionOverride ?? getConnection(connectionId)
-    if (!connection?.is_open || allDatabases[connectionId]) {
-      return
-    }
+  const ensureSchemasLoaded = useCallback(
+    async (connectionId: string, pgDatabaseName: string): Promise<string[]> => {
+      const key = `${connectionId}:${pgDatabaseName}`
+      const connection = getConnection(connectionId)
 
-    try {
-      const data = await requestJson<{ databases: DatabaseInfo[] }>(`/connections/${connectionId}/databases`)
-      const dbNames = data.databases.map((d) => d.name)
-      setAllDatabases((current) => ({ ...current, [connectionId]: dbNames }))
-    } catch {
-      // ignore
-    }
-  }, [allDatabases, getConnection, requestJson])
+      if (!connection?.is_open) {
+        return []
+      }
 
-  const ensureSchemasLoaded = useCallback(async (connectionId: string, pgDatabaseName: string): Promise<string[]> => {
-    const key = `${connectionId}:${pgDatabaseName}`
-    const connection = getConnection(connectionId)
+      if (allSchemas[key]) {
+        return allSchemas[key]
+      }
 
-    if (!connection?.is_open) {
-      return []
-    }
+      try {
+        const data = await requestJson<{ databases: DatabaseInfo[] }>(
+          `/connections/${connectionId}/schemas?database=${encodeURIComponent(pgDatabaseName)}`
+        )
+        const schemaNames = data.databases.map((s) => s.name)
+        setAllSchemas((current) => ({ ...current, [key]: schemaNames }))
+        return schemaNames
+      } catch {
+        return []
+      }
+    },
+    [allSchemas, getConnection, requestJson]
+  )
 
-    if (allSchemas[key]) {
-      return allSchemas[key]
-    }
-
-    try {
-      const data = await requestJson<{ databases: DatabaseInfo[] }>(`/connections/${connectionId}/schemas?database=${encodeURIComponent(pgDatabaseName)}`)
-      const schemaNames = data.databases.map((s) => s.name)
-      setAllSchemas((current) => ({ ...current, [key]: schemaNames }))
-      return schemaNames
-    } catch {
-      return []
-    }
-  }, [allSchemas, getConnection, requestJson])
-
-  const openRedisDatabaseBrowser = async (connectionId: string, databaseName: string, limit = REDIS_DEFAULT_LIMIT, page = 1): Promise<void> => {
+  const openRedisDatabaseBrowser = async (
+    connectionId: string,
+    databaseName: string,
+    limit = REDIS_DEFAULT_LIMIT,
+    page = 1
+  ): Promise<void> => {
     if (!ensureConnectionOpen(connectionId)) {
       return
     }
@@ -4078,7 +4845,9 @@ function App(): React.JSX.Element {
     setWorkspaceTabs((current) => {
       const exists = current.some((tab) => tab.key === tabKey)
       if (exists) {
-        return current.map((tab) => (tab.key === tabKey ? { ...tab, limit, page, loading: true, error: undefined } : tab))
+        return current.map((tab) =>
+          tab.key === tabKey ? { ...tab, limit, page, loading: true, error: undefined } : tab
+        )
       }
       return [
         ...current,
@@ -4103,13 +4872,42 @@ function App(): React.JSX.Element {
     await previewRedisDatabase(connectionId, databaseName, limit, page, tabKey, '')
   }
 
-  const previewRedisDatabase = async (connectionId: string, databaseName: string, limit = REDIS_DEFAULT_LIMIT, page = 1, tabKey = `redis:${connectionId}:${databaseName}`, where = ''): Promise<void> => {
+  const previewRedisDatabase = async (
+    connectionId: string,
+    databaseName: string,
+    limit = REDIS_DEFAULT_LIMIT,
+    page = 1,
+    tabKey = `redis:${connectionId}:${databaseName}`,
+    where = ''
+  ): Promise<void> => {
     try {
-      const previewPath = withWhereQuery(withPageQuery(withPgDatabase(`/connections/${connectionId}/tables/__DATADJINN_REDIS_DATABASE__/preview`, databaseName), limit, page), where)
+      const previewPath = withWhereQuery(
+        withPageQuery(
+          withPgDatabase(
+            `/connections/${connectionId}/tables/__DATADJINN_REDIS_DATABASE__/preview`,
+            databaseName
+          ),
+          limit,
+          page
+        ),
+        where
+      )
       const result = await requestJson<QueryResponse>(previewPath)
-      updateWorkspaceTab(tabKey, { result, redisEdits: buildRedisEdits(result.rows), redisExpandedValues: {}, page, limit, where, loading: false, error: undefined })
+      updateWorkspaceTab(tabKey, {
+        result,
+        redisEdits: buildRedisEdits(result.rows),
+        redisExpandedValues: {},
+        page,
+        limit,
+        where,
+        loading: false,
+        error: undefined
+      })
     } catch (err) {
-      updateWorkspaceTab(tabKey, { loading: false, error: err instanceof Error ? err.message : '加载 Redis Key 失败' })
+      updateWorkspaceTab(tabKey, {
+        loading: false,
+        error: err instanceof Error ? err.message : '加载 Redis Key 失败'
+      })
       showError(err instanceof Error ? err.message : '加载 Redis Key 失败')
     }
   }
@@ -4133,8 +4931,20 @@ function App(): React.JSX.Element {
     setConnections(data.connections)
     setConnectionsInitialized(true)
     setSelectedConnectionId((current) => current ?? data.connections[0]?.connection_id)
-    setSelectedConnectionIds((current) => current.length > 0 ? current : (data.connections[0]?.connection_id ? [data.connections[0].connection_id] : []))
-    setSelectedTreeKeys((current) => current.length > 0 ? current : (data.connections[0]?.connection_id ? [`connection:${data.connections[0].connection_id}`] : []))
+    setSelectedConnectionIds((current) =>
+      current.length > 0
+        ? current
+        : data.connections[0]?.connection_id
+          ? [data.connections[0].connection_id]
+          : []
+    )
+    setSelectedTreeKeys((current) =>
+      current.length > 0
+        ? current
+        : data.connections[0]?.connection_id
+          ? [`connection:${data.connections[0].connection_id}`]
+          : []
+    )
 
     refreshTree(data.connections)
   }
@@ -4148,8 +4958,13 @@ function App(): React.JSX.Element {
     toggleOrLoadTreeNode
   } = treeRuntime
 
-  const openConnectionModalRef = useRef<(nextDatabaseType: DatabaseType) => Promise<void>>(async () => undefined)
-  const buildConnectionSshDefaults = (): Pick<ConnectionFormValues, 'ssh_enabled' | 'ssh_port' | 'ssh_auth_type'> => ({
+  const openConnectionModalRef = useRef<(nextDatabaseType: DatabaseType) => Promise<void>>(
+    async () => undefined
+  )
+  const buildConnectionSshDefaults = (): Pick<
+    ConnectionFormValues,
+    'ssh_enabled' | 'ssh_port' | 'ssh_auth_type'
+  > => ({
     ssh_enabled: false,
     ssh_port: 22,
     ssh_auth_type: 'password'
@@ -4293,7 +5108,9 @@ function App(): React.JSX.Element {
     setConnectionModalOpen(true)
 
     try {
-      const data = await requestJson<ConnectionFormValues>(`/connections/${connection.connection_id}`)
+      const data = await requestJson<ConnectionFormValues>(
+        `/connections/${connection.connection_id}`
+      )
       const formValues: ConnectionFormValues = {
         ...data,
         ssh_enabled: Boolean(data.ssh_enabled),
@@ -4356,25 +5173,60 @@ function App(): React.JSX.Element {
     }
   }
 
-  const stableConnectionCreateMenuItems = useMemo<NonNullable<MenuProps['items']>>(() => [
-      { key: 'sqlite', label: 'SQLite', icon: <img src={sqliteIcon} alt="" style={{ width: 16, height: 16 }} /> },
-      { key: 'mysql', label: 'MySQL', icon: <img src={mysqlIcon} alt="" style={{ width: 16, height: 16 }} /> },
-      { key: 'postgresql', label: 'PostgreSQL', icon: <img src={postgresIcon} alt="" style={{ width: 16, height: 16 }} /> },
-      { key: 'oracle', label: 'Oracle', icon: <img src={oracleIcon} alt="Oracle" style={{ width: 16, height: 16 }} /> },
-      { key: 'mongodb', label: 'MongoDB', icon: <img src={mongoIcon} alt="" style={{ width: 16, height: 16 }} /> },
-      { key: 'redis', label: 'Redis', icon: <img src={redisIcon} alt="Redis" style={{ width: 16, height: 16 }} /> },
-      { key: 'clickhouse', label: 'ClickHouse', icon: <img src={clickhouseIcon} alt="ClickHouse" style={{ width: 16, height: 16 }} /> },
+  const stableConnectionCreateMenuItems = useMemo<NonNullable<MenuProps['items']>>(
+    () => [
+      {
+        key: 'sqlite',
+        label: 'SQLite',
+        icon: <img src={sqliteIcon} alt="" style={{ width: 16, height: 16 }} />
+      },
+      {
+        key: 'mysql',
+        label: 'MySQL',
+        icon: <img src={mysqlIcon} alt="" style={{ width: 16, height: 16 }} />
+      },
+      {
+        key: 'postgresql',
+        label: 'PostgreSQL',
+        icon: <img src={postgresIcon} alt="" style={{ width: 16, height: 16 }} />
+      },
+      {
+        key: 'oracle',
+        label: 'Oracle',
+        icon: <img src={oracleIcon} alt="Oracle" style={{ width: 16, height: 16 }} />
+      },
+      {
+        key: 'mongodb',
+        label: 'MongoDB',
+        icon: <img src={mongoIcon} alt="" style={{ width: 16, height: 16 }} />
+      },
+      {
+        key: 'redis',
+        label: 'Redis',
+        icon: <img src={redisIcon} alt="Redis" style={{ width: 16, height: 16 }} />
+      },
+      {
+        key: 'clickhouse',
+        label: 'ClickHouse',
+        icon: <img src={clickhouseIcon} alt="ClickHouse" style={{ width: 16, height: 16 }} />
+      },
       {
         key: 'others',
         label: '其他',
         icon: <DatabaseOutlined />,
         popupClassName: 'resource-create-submenu-popup',
         children: [
-          { key: 'dm', label: '达梦', icon: <img src={dmIcon} alt="" style={{ width: 16, height: 16 }} /> },
+          {
+            key: 'dm',
+            label: '达梦',
+            icon: <img src={dmIcon} alt="" style={{ width: 16, height: 16 }} />
+          },
           { key: 'gaussdb', label: '高斯数据库', icon: <DatabaseOutlined /> }
         ]
       }
-    ], [])
+    ],
+    []
+  )
 
   const importConnectionPreviewColumns: ColumnsType<ImportConnectionCandidate> = [
     {
@@ -4389,7 +5241,7 @@ function App(): React.JSX.Element {
       dataIndex: 'database_type',
       key: 'database_type',
       width: 100,
-      render: (value?: DatabaseType) => value ? DATABASE_TYPE_LABELS[value] : '-'
+      render: (value?: DatabaseType) => (value ? DATABASE_TYPE_LABELS[value] : '-')
     },
     {
       title: '分组',
@@ -4450,22 +5302,27 @@ function App(): React.JSX.Element {
     }
   ]
 
-  const resourceCreateMenu = useMemo(() => ({
-    items: [
-      { key: 'folder', label: '新建分组', icon: <FolderAddOutlined /> },
-      { type: 'divider' as const },
-      ...stableConnectionCreateMenuItems
-    ],
-    onClick: ({ key }: { key: string }) => {
-      if (key === 'folder') {
-        openCreateFolderModal()
-        return
+  const resourceCreateMenu = useMemo(
+    () => ({
+      items: [
+        { key: 'folder', label: '新建分组', icon: <FolderAddOutlined /> },
+        { type: 'divider' as const },
+        ...stableConnectionCreateMenuItems
+      ],
+      onClick: ({ key }: { key: string }) => {
+        if (key === 'folder') {
+          openCreateFolderModal()
+          return
+        }
+        void openConnectionModalRef.current(key as DatabaseType)
       }
-      void openConnectionModalRef.current(key as DatabaseType)
-    }
-  }), [openCreateFolderModal, stableConnectionCreateMenuItems])
+    }),
+    [openCreateFolderModal, stableConnectionCreateMenuItems]
+  )
 
-  const buildConnectionSshPayload = (values: ConnectionFormValues): Partial<ConnectionFormValues> => {
+  const buildConnectionSshPayload = (
+    values: ConnectionFormValues
+  ): Partial<ConnectionFormValues> => {
     if (values.database_type === 'sqlite') {
       return {}
     }
@@ -4482,7 +5339,8 @@ function App(): React.JSX.Element {
       ssh_username: trimToUndefined(values.ssh_username),
       ssh_auth_type: sshAuthType,
       ssh_password: sshAuthType === 'password' ? values.ssh_password : undefined,
-      ssh_private_key_path: sshAuthType === 'private_key' ? trimToUndefined(values.ssh_private_key_path) : undefined,
+      ssh_private_key_path:
+        sshAuthType === 'private_key' ? trimToUndefined(values.ssh_private_key_path) : undefined,
       ssh_passphrase: sshAuthType === 'private_key' ? values.ssh_passphrase : undefined
     }
   }
@@ -4633,14 +5491,20 @@ function App(): React.JSX.Element {
 
     if (savedJavaHome !== previousJavaHome || savedEnabled !== previousEnabled) {
       Modal.confirm({
-        title: '需要重启应用',
-        content: 'JDBC Java 环境已修改。由于 JVM 启动后不能切换 Java 版本，重启应用后才能生效。是否现在重启？',
-        okText: '确认并重启',
+        title: '需要重启后端服务',
+        content:
+          'JDBC Java 环境已修改。由于 JVM 启动后不能切换 Java 版本，重启后端服务后才能生效。是否现在重启？',
+        okText: '确认并重启服务',
         cancelText: '取消',
         centered: true,
         maskClosable: false,
         onOk: async () => {
-          await window.api.relaunchApp()
+          const restartStatus = await window.api.restartBackend()
+          if (restartStatus.state !== 'online') {
+            throw new Error(restartStatus.message ?? '后端服务重启失败')
+          }
+          setJavaRestartRequired(false)
+          messageApi.success('后端服务已重启，JDBC Java 设置已生效')
         },
         onCancel: () => {
           setJavaRestartRequired(true)
@@ -4649,7 +5513,11 @@ function App(): React.JSX.Element {
       return
     }
 
-    messageApi.success(savedEnabled ? `JDBC Java 环境已设置为 Java ${result.major ?? '未知版本'}` : '已关闭 JDBC Java 环境')
+    messageApi.success(
+      savedEnabled
+        ? `JDBC Java 环境已设置为 Java ${result.major ?? '未知版本'}`
+        : '已关闭 JDBC Java 环境'
+    )
   }
 
   const selectJavaDirectory = async (): Promise<void> => {
@@ -4679,7 +5547,9 @@ function App(): React.JSX.Element {
     try {
       const result = await requestJson<{ drivers: DriverInfo[] }>('/drivers')
       const normalizedDrivers = Array.isArray(result.drivers)
-        ? result.drivers.map((driver) => normalizeDriverInfo(driver)).filter((driver): driver is DriverInfo => driver !== null)
+        ? result.drivers
+            .map((driver) => normalizeDriverInfo(driver))
+            .filter((driver): driver is DriverInfo => driver !== null)
         : []
       setDrivers(normalizedDrivers)
       return normalizedDrivers
@@ -4698,7 +5568,10 @@ function App(): React.JSX.Element {
     if (filePath) {
       form.setFieldValue('sqlite_path', filePath)
       if (connectionMode !== 'edit') {
-        const fileName = filePath.split(/[\\/]/).pop()?.replace(/\.(db|sqlite|sqlite3)$/i, '')
+        const fileName = filePath
+          .split(/[\\/]/)
+          .pop()
+          ?.replace(/\.(db|sqlite|sqlite3)$/i, '')
         if (fileName) {
           const currentName = form.getFieldValue('name')
           if (!currentName || currentName === '本地 SQLite') {
@@ -4714,9 +5587,10 @@ function App(): React.JSX.Element {
     if (!normalized) {
       return false
     }
-    return connections.some((connection) =>
-      connection.connection_id !== editingConnectionId &&
-      connection.name.trim().toLocaleLowerCase() === normalized
+    return connections.some(
+      (connection) =>
+        connection.connection_id !== editingConnectionId &&
+        connection.name.trim().toLocaleLowerCase() === normalized
     )
   }
 
@@ -4742,42 +5616,49 @@ function App(): React.JSX.Element {
     return `datadjinn-connections-${datePart}-${timePart}.ddj`
   }
 
-  const normalizeImportConnectionCandidates = useCallback((rawCandidates: ImportConnectionCandidate[]): ImportConnectionCandidate[] => {
-    const usedNames = new Set(connections.map((connection) => connection.name.trim().toLocaleLowerCase()).filter(Boolean))
-    return rawCandidates.map<ImportConnectionCandidate>((candidate) => {
-      if (!candidate.payload) {
-        return candidate
-      }
+  const normalizeImportConnectionCandidates = useCallback(
+    (rawCandidates: ImportConnectionCandidate[]): ImportConnectionCandidate[] => {
+      const usedNames = new Set(
+        connections.map((connection) => connection.name.trim().toLocaleLowerCase()).filter(Boolean)
+      )
+      return rawCandidates.map<ImportConnectionCandidate>((candidate) => {
+        if (!candidate.payload) {
+          return candidate
+        }
 
-      const originalName = candidate.payload.name
-      const uniqueName = buildImportConnectionUniqueName(originalName, usedNames)
-      if (uniqueName === originalName) {
-        return candidate
-      }
+        const originalName = candidate.payload.name
+        const uniqueName = buildImportConnectionUniqueName(originalName, usedNames)
+        if (uniqueName === originalName) {
+          return candidate
+        }
 
-      const renamedMessage = `名称重复，已自动调整为 ${uniqueName}`
-      return {
-        ...candidate,
-        name: uniqueName,
-        payload: {
-          ...candidate.payload,
-          name: uniqueName
-        },
-        status: 'warning',
-        message: candidate.message ? `${candidate.message}；${renamedMessage}` : renamedMessage
-      }
-    })
-  }, [connections])
+        const renamedMessage = `名称重复，已自动调整为 ${uniqueName}`
+        return {
+          ...candidate,
+          name: uniqueName,
+          payload: {
+            ...candidate.payload,
+            name: uniqueName
+          },
+          status: 'warning',
+          message: candidate.message ? `${candidate.message}；${renamedMessage}` : renamedMessage
+        }
+      })
+    },
+    [connections]
+  )
 
   const isConnectionPasswordRetryError = (message: string): boolean => {
     const normalized = message.toLowerCase()
-    return normalized.includes('密码错误') ||
+    return (
+      normalized.includes('密码错误') ||
       normalized.includes('用户名或密码错误') ||
       normalized.includes('用户名密码错误') ||
       normalized.includes('认证失败') ||
       normalized.includes('authentication failed') ||
       normalized.includes('wrongpass') ||
       normalized.includes('invalid username-password pair')
+    )
   }
 
   const closeConnectionPasswordPrompt = (): void => {
@@ -4820,13 +5701,18 @@ function App(): React.JSX.Element {
 
     setExportConnectionModalOpen(true)
     if (!appInfo) {
-      void window.api.getAppInfo().then(setAppInfo).catch(() => undefined)
+      void window.api
+        .getAppInfo()
+        .then(setAppInfo)
+        .catch(() => undefined)
     }
   }, [appInfo, connections.length, messageApi])
 
   const openImportConnectionModalRef = useRef(openImportConnectionModal)
   openImportConnectionModalRef.current = openImportConnectionModal
-  const handleConnectionCreateMenuClickRef = useRef<(info: { key: string }) => void>(() => undefined)
+  const handleConnectionCreateMenuClickRef = useRef<(info: { key: string }) => void>(
+    () => undefined
+  )
 
   const closeImportConnectionModal = useCallback((): void => {
     setImportConnectionModalOpen(false)
@@ -4844,9 +5730,18 @@ function App(): React.JSX.Element {
   const chooseImportConnectionTransferFile = async (): Promise<void> => {
     const testWindow = window as ConnectionTransferTestWindow
     const importFileSource = importConnectionSource === 'dbeaver' ? 'dbeaver' : 'datadjinn'
-    ;(testWindow as ConnectionTransferTestWindow & { __DATADJINN_TEST_IMPORT_FILE_SOURCE__?: string }).__DATADJINN_TEST_IMPORT_FILE_SOURCE__ = importFileSource
-    if (typeof testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_FILE_PATH__ === 'string' && testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_FILE_PATH__.trim()) {
-      setImportConnectionFilePath(testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_FILE_PATH__)
+    ;(
+      testWindow as ConnectionTransferTestWindow & {
+        __DATADJINN_TEST_IMPORT_FILE_SOURCE__?: string
+      }
+    ).__DATADJINN_TEST_IMPORT_FILE_SOURCE__ = importFileSource
+    if (
+      typeof testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_FILE_PATH__ === 'string' &&
+      testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_FILE_PATH__.trim()
+    ) {
+      setImportConnectionFilePath(
+        testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_FILE_PATH__
+      )
       return
     }
 
@@ -4858,152 +5753,174 @@ function App(): React.JSX.Element {
     setImportConnectionFilePath(filePath)
   }
 
-  const applyImportedConnectionFolderState = useCallback((
-    bundle: Pick<ImportConnectionFolderPlan, 'folders' | 'connection_folder_assignments' | 'connection_folder_order' | 'root_connection_order' | 'root_item_order' | 'folder_connection_order'>,
-    createdByImportKey: Map<string, ConnectionInfo>
-  ): void => {
-    if (createdByImportKey.size === 0) {
-      return
-    }
-
-    const normalizeFolderName = (name: string): string => (name.trim() || '未命名分组').toLocaleLowerCase()
-    const existingFoldersByName = new Map(
-      connectionFolders.map((folder) => [normalizeFolderName(folder.name), folder] as const)
-    )
-    const folderById = new Map(bundle.folders.map((folder) => [folder.id, folder]))
-    const orderedFolderIds = mergeOrderedIds(bundle.folders.map((folder) => folder.id), bundle.connection_folder_order)
-    const folderIdMap = new Map<string, string>()
-    const nextFolders: ConnectionFolder[] = []
-    const appendedFolderIds: string[] = []
-    const reusedFolderIds = new Set<string>()
-
-    for (const folderId of orderedFolderIds) {
-      const folder = folderById.get(folderId)
-      if (!folder) {
-        continue
+  const applyImportedConnectionFolderState = useCallback(
+    (
+      bundle: Pick<
+        ImportConnectionFolderPlan,
+        | 'folders'
+        | 'connection_folder_assignments'
+        | 'connection_folder_order'
+        | 'root_connection_order'
+        | 'root_item_order'
+        | 'folder_connection_order'
+      >,
+      createdByImportKey: Map<string, ConnectionInfo>
+    ): void => {
+      if (createdByImportKey.size === 0) {
+        return
       }
 
-      const normalizedFolderName = normalizeFolderName(folder.name)
-      const existingFolder = existingFoldersByName.get(normalizedFolderName)
-      if (existingFolder) {
-        folderIdMap.set(folderId, existingFolder.id)
-        reusedFolderIds.add(folderId)
-        continue
-      }
+      const normalizeFolderName = (name: string): string =>
+        (name.trim() || '未命名分组').toLocaleLowerCase()
+      const existingFoldersByName = new Map(
+        connectionFolders.map((folder) => [normalizeFolderName(folder.name), folder] as const)
+      )
+      const folderById = new Map(bundle.folders.map((folder) => [folder.id, folder]))
+      const orderedFolderIds = mergeOrderedIds(
+        bundle.folders.map((folder) => folder.id),
+        bundle.connection_folder_order
+      )
+      const folderIdMap = new Map<string, string>()
+      const nextFolders: ConnectionFolder[] = []
+      const appendedFolderIds: string[] = []
+      const reusedFolderIds = new Set<string>()
 
-      const nextFolderId = globalThis.crypto?.randomUUID?.() ?? `folder-${Date.now()}-${nextFolders.length}`
-      const nextFolder: ConnectionFolder = {
-        id: nextFolderId,
-        name: folder.name.trim() || '未命名分组'
-      }
-      folderIdMap.set(folderId, nextFolderId)
-      nextFolders.push(nextFolder)
-      appendedFolderIds.push(nextFolderId)
-      existingFoldersByName.set(normalizedFolderName, nextFolder)
-    }
-
-    const importedConnectionIds = Array.from(createdByImportKey.values()).map((connection) => connection.connection_id)
-    const importedConnectionIdSet = new Set(importedConnectionIds)
-
-    if (nextFolders.length > 0) {
-      setConnectionFolders((current) => [...current, ...nextFolders])
-      setConnectionFolderOrder((current) => [...current, ...appendedFolderIds])
-      setExpandedKeys((current) => {
-        const next = [...current]
-        for (const folder of nextFolders) {
-          const key = `folder:${folder.id}`
-          if (!next.includes(key)) {
-            next.push(key)
-          }
-        }
-        return next
-      })
-    }
-
-    setConnectionFolderAssignments((current) => {
-      let changed = false
-      const next = { ...current }
-      for (const [importKey, folderId] of Object.entries(bundle.connection_folder_assignments)) {
-        const created = createdByImportKey.get(importKey)
-        const mappedFolderId = folderIdMap.get(folderId)
-        if (!created || !mappedFolderId || next[created.connection_id] === mappedFolderId) {
+      for (const folderId of orderedFolderIds) {
+        const folder = folderById.get(folderId)
+        if (!folder) {
           continue
         }
 
-        next[created.connection_id] = mappedFolderId
-        changed = true
-      }
-      return changed ? next : current
-    })
-
-    const orderedRootConnectionIds = mergeOrderedIds(
-      importedConnectionIds.filter((connectionId) => {
-        const importKey = Array.from(createdByImportKey.entries()).find(([, created]) => created.connection_id === connectionId)?.[0]
-        if (!importKey) {
-          return false
+        const normalizedFolderName = normalizeFolderName(folder.name)
+        const existingFolder = existingFoldersByName.get(normalizedFolderName)
+        if (existingFolder) {
+          folderIdMap.set(folderId, existingFolder.id)
+          reusedFolderIds.add(folderId)
+          continue
         }
-        return !bundle.connection_folder_assignments[importKey]
-      }),
-      bundle.root_connection_order
-        .map((importKey) => createdByImportKey.get(importKey)?.connection_id)
-        .filter((connectionId): connectionId is string => Boolean(connectionId))
-    )
 
-    setRootConnectionOrder((current) => [
-      ...current.filter((connectionId) => !importedConnectionIdSet.has(connectionId)),
-      ...orderedRootConnectionIds
-    ])
-
-    const orderedRootItemIds = mergeOrderedIds(
-      [
-        ...nextFolders.map((folder) => rootFolderOrderId(folder.id)),
-        ...orderedRootConnectionIds.map(rootConnectionOrderId)
-      ],
-      bundle.root_item_order
-        .map((itemId) => {
-          if (itemId.startsWith('folder:')) {
-            const sourceFolderId = itemId.slice('folder:'.length)
-            if (reusedFolderIds.has(sourceFolderId)) {
-              return undefined
-            }
-            const nextFolderId = folderIdMap.get(sourceFolderId)
-            return nextFolderId ? rootFolderOrderId(nextFolderId) : undefined
-          }
-          if (itemId.startsWith('connection:')) {
-            const created = createdByImportKey.get(itemId.slice('connection:'.length))
-            return created ? rootConnectionOrderId(created.connection_id) : undefined
-          }
-          return undefined
-        })
-        .filter((itemId): itemId is string => Boolean(itemId))
-    )
-
-    const orderedRootItemIdSet = new Set(orderedRootItemIds)
-    setRootItemOrder((current) => [
-      ...current.filter((itemId) => !orderedRootItemIdSet.has(itemId)),
-      ...orderedRootItemIds
-    ])
-
-    setFolderConnectionOrder((current) => {
-      const next = { ...current }
-      for (const [sourceFolderId, nextFolderId] of folderIdMap.entries()) {
-        const assignedConnectionIds = Array.from(createdByImportKey.entries())
-          .filter(([importKey]) => bundle.connection_folder_assignments[importKey] === sourceFolderId)
-          .map(([, created]) => created.connection_id)
-        const orderedImportedConnectionIds = mergeOrderedIds(
-          assignedConnectionIds,
-          (bundle.folder_connection_order[sourceFolderId] ?? [])
-            .map((importKey) => createdByImportKey.get(importKey)?.connection_id)
-            .filter((connectionId): connectionId is string => Boolean(connectionId))
-        )
-        next[nextFolderId] = mergeOrderedIds(
-          [...(current[nextFolderId] ?? []), ...orderedImportedConnectionIds],
-          current[nextFolderId] ?? []
-        )
+        const nextFolderId =
+          globalThis.crypto?.randomUUID?.() ?? `folder-${Date.now()}-${nextFolders.length}`
+        const nextFolder: ConnectionFolder = {
+          id: nextFolderId,
+          name: folder.name.trim() || '未命名分组'
+        }
+        folderIdMap.set(folderId, nextFolderId)
+        nextFolders.push(nextFolder)
+        appendedFolderIds.push(nextFolderId)
+        existingFoldersByName.set(normalizedFolderName, nextFolder)
       }
-      return next
-    })
-  }, [connectionFolders])
+
+      const importedConnectionIds = Array.from(createdByImportKey.values()).map(
+        (connection) => connection.connection_id
+      )
+      const importedConnectionIdSet = new Set(importedConnectionIds)
+
+      if (nextFolders.length > 0) {
+        setConnectionFolders((current) => [...current, ...nextFolders])
+        setConnectionFolderOrder((current) => [...current, ...appendedFolderIds])
+        setExpandedKeys((current) => {
+          const next = [...current]
+          for (const folder of nextFolders) {
+            const key = `folder:${folder.id}`
+            if (!next.includes(key)) {
+              next.push(key)
+            }
+          }
+          return next
+        })
+      }
+
+      setConnectionFolderAssignments((current) => {
+        let changed = false
+        const next = { ...current }
+        for (const [importKey, folderId] of Object.entries(bundle.connection_folder_assignments)) {
+          const created = createdByImportKey.get(importKey)
+          const mappedFolderId = folderIdMap.get(folderId)
+          if (!created || !mappedFolderId || next[created.connection_id] === mappedFolderId) {
+            continue
+          }
+
+          next[created.connection_id] = mappedFolderId
+          changed = true
+        }
+        return changed ? next : current
+      })
+
+      const orderedRootConnectionIds = mergeOrderedIds(
+        importedConnectionIds.filter((connectionId) => {
+          const importKey = Array.from(createdByImportKey.entries()).find(
+            ([, created]) => created.connection_id === connectionId
+          )?.[0]
+          if (!importKey) {
+            return false
+          }
+          return !bundle.connection_folder_assignments[importKey]
+        }),
+        bundle.root_connection_order
+          .map((importKey) => createdByImportKey.get(importKey)?.connection_id)
+          .filter((connectionId): connectionId is string => Boolean(connectionId))
+      )
+
+      setRootConnectionOrder((current) => [
+        ...current.filter((connectionId) => !importedConnectionIdSet.has(connectionId)),
+        ...orderedRootConnectionIds
+      ])
+
+      const orderedRootItemIds = mergeOrderedIds(
+        [
+          ...nextFolders.map((folder) => rootFolderOrderId(folder.id)),
+          ...orderedRootConnectionIds.map(rootConnectionOrderId)
+        ],
+        bundle.root_item_order
+          .map((itemId) => {
+            if (itemId.startsWith('folder:')) {
+              const sourceFolderId = itemId.slice('folder:'.length)
+              if (reusedFolderIds.has(sourceFolderId)) {
+                return undefined
+              }
+              const nextFolderId = folderIdMap.get(sourceFolderId)
+              return nextFolderId ? rootFolderOrderId(nextFolderId) : undefined
+            }
+            if (itemId.startsWith('connection:')) {
+              const created = createdByImportKey.get(itemId.slice('connection:'.length))
+              return created ? rootConnectionOrderId(created.connection_id) : undefined
+            }
+            return undefined
+          })
+          .filter((itemId): itemId is string => Boolean(itemId))
+      )
+
+      const orderedRootItemIdSet = new Set(orderedRootItemIds)
+      setRootItemOrder((current) => [
+        ...current.filter((itemId) => !orderedRootItemIdSet.has(itemId)),
+        ...orderedRootItemIds
+      ])
+
+      setFolderConnectionOrder((current) => {
+        const next = { ...current }
+        for (const [sourceFolderId, nextFolderId] of folderIdMap.entries()) {
+          const assignedConnectionIds = Array.from(createdByImportKey.entries())
+            .filter(
+              ([importKey]) => bundle.connection_folder_assignments[importKey] === sourceFolderId
+            )
+            .map(([, created]) => created.connection_id)
+          const orderedImportedConnectionIds = mergeOrderedIds(
+            assignedConnectionIds,
+            (bundle.folder_connection_order[sourceFolderId] ?? [])
+              .map((importKey) => createdByImportKey.get(importKey)?.connection_id)
+              .filter((connectionId): connectionId is string => Boolean(connectionId))
+          )
+          next[nextFolderId] = mergeOrderedIds(
+            [...(current[nextFolderId] ?? []), ...orderedImportedConnectionIds],
+            current[nextFolderId] ?? []
+          )
+        }
+        return next
+      })
+    },
+    [connectionFolders]
+  )
 
   const parseImportConnections = async (): Promise<void> => {
     setImportConnectionParsing(true)
@@ -5042,9 +5959,10 @@ function App(): React.JSX.Element {
         }
 
         const testWindow = window as ConnectionTransferTestWindow
-        const rawText = typeof testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_CONTENT__ === 'string'
-          ? testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_CONTENT__
-          : await window.api.readTextFile(importConnectionFilePath)
+        const rawText =
+          typeof testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_CONTENT__ === 'string'
+            ? testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_CONTENT__
+            : await window.api.readTextFile(importConnectionFilePath)
         const bundle = await decryptConnectionTransferBundle(rawText, importConnectionSecret)
         setImportConnectionFolderPlan(null)
         setImportConnectionBundle(bundle)
@@ -5063,7 +5981,9 @@ function App(): React.JSX.Element {
   }
 
   const importParsedConnections = async (): Promise<void> => {
-    const readyCandidates = importConnectionCandidates.filter((candidate) => candidate.payload && candidate.status !== 'error')
+    const readyCandidates = importConnectionCandidates.filter(
+      (candidate) => candidate.payload && candidate.status !== 'error'
+    )
     if (readyCandidates.length === 0) {
       messageApi.warning('没有可导入的连接')
       return
@@ -5075,7 +5995,11 @@ function App(): React.JSX.Element {
       failed: []
     }
     let nextConnections = connections
-    const usedNames = new Set(nextConnections.map((connection) => connection.name.trim().toLocaleLowerCase()).filter(Boolean))
+    const usedNames = new Set(
+      nextConnections
+        .map((connection) => connection.name.trim().toLocaleLowerCase())
+        .filter(Boolean)
+    )
     const createdByImportKey = new Map<string, ConnectionInfo>()
 
     try {
@@ -5097,15 +6021,19 @@ function App(): React.JSX.Element {
         }
 
         try {
-          const finalPayload: ConnectionFormValues = importName === payload.name
-            ? payload
-            : {
-                ...payload,
-                name: importName
-              }
-          const finalMessage = importName === candidate.name
-            ? candidate.message
-            : [candidate.message, `再次导入时名称已自动调整为 ${importName}`].filter(Boolean).join('；')
+          const finalPayload: ConnectionFormValues =
+            importName === payload.name
+              ? payload
+              : {
+                  ...payload,
+                  name: importName
+                }
+          const finalMessage =
+            importName === candidate.name
+              ? candidate.message
+              : [candidate.message, `再次导入时名称已自动调整为 ${importName}`]
+                  .filter(Boolean)
+                  .join('；')
           const created = await requestJson<ConnectionInfo>('/connections', {
             method: 'POST',
             body: JSON.stringify(cleanFormValues(finalPayload))
@@ -5168,10 +6096,14 @@ function App(): React.JSX.Element {
 
     setExportingConnections(true)
     try {
-      const detailedConnections = await Promise.all(connections.map(async (connection) => ({
-        export_id: connection.connection_id,
-        payload: cleanFormValues(await requestJson<ConnectionFormValues>(`/connections/${connection.connection_id}`))
-      })))
+      const detailedConnections = await Promise.all(
+        connections.map(async (connection) => ({
+          export_id: connection.connection_id,
+          payload: cleanFormValues(
+            await requestJson<ConnectionFormValues>(`/connections/${connection.connection_id}`)
+          )
+        }))
+      )
       const connectionIdSet = new Set(detailedConnections.map((connection) => connection.export_id))
       const folderIdSet = new Set(connectionFolders.map((folder) => folder.id))
       const bundle: DataDjinnConnectionTransferBundle = {
@@ -5182,13 +6114,17 @@ function App(): React.JSX.Element {
         connections: detailedConnections,
         folders: connectionFolders.map((folder) => ({ id: folder.id, name: folder.name })),
         connection_folder_assignments: Object.fromEntries(
-          Object.entries(connectionFolderAssignments).filter(([connectionId, folderId]) => (
-            connectionIdSet.has(connectionId) &&
-            folderIdSet.has(folderId)
-          ))
+          Object.entries(connectionFolderAssignments).filter(
+            ([connectionId, folderId]) =>
+              connectionIdSet.has(connectionId) && folderIdSet.has(folderId)
+          )
         ),
-        connection_folder_order: connectionFolderOrder.filter((folderId) => folderIdSet.has(folderId)),
-        root_connection_order: rootConnectionOrder.filter((connectionId) => connectionIdSet.has(connectionId)),
+        connection_folder_order: connectionFolderOrder.filter((folderId) =>
+          folderIdSet.has(folderId)
+        ),
+        root_connection_order: rootConnectionOrder.filter((connectionId) =>
+          connectionIdSet.has(connectionId)
+        ),
         root_item_order: rootItemOrder.filter((itemId) => {
           if (itemId.startsWith('folder:')) {
             return folderIdSet.has(itemId.slice('folder:'.length))
@@ -5201,22 +6137,35 @@ function App(): React.JSX.Element {
         folder_connection_order: Object.fromEntries(
           Object.entries(folderConnectionOrder)
             .filter(([folderId]) => folderIdSet.has(folderId))
-            .map(([folderId, ids]) => [folderId, ids.filter((connectionId) => connectionIdSet.has(connectionId))])
+            .map(([folderId, ids]) => [
+              folderId,
+              ids.filter((connectionId) => connectionIdSet.has(connectionId))
+            ])
         )
       }
 
       const encryptedContent = await encryptConnectionTransferBundle(bundle, normalizedSecret)
       const testWindow = window as ConnectionTransferTestWindow
-      const overrideExportPath = typeof testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_EXPORT_PATH__ === 'string'
-        ? testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_EXPORT_PATH__.trim()
-        : ''
-      const filePath = overrideExportPath || await window.api.selectConnectionTransferExportPath(buildConnectionTransferDefaultFileName())
+      const overrideExportPath =
+        typeof testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_EXPORT_PATH__ === 'string'
+          ? testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_EXPORT_PATH__.trim()
+          : ''
+      const filePath =
+        overrideExportPath ||
+        (await window.api.selectConnectionTransferExportPath(
+          buildConnectionTransferDefaultFileName()
+        ))
       if (!filePath) {
         return
       }
 
       if (typeof testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_EXPORT_HANDLER__ === 'function') {
-        await Promise.resolve(testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_EXPORT_HANDLER__({ filePath, content: encryptedContent }))
+        await Promise.resolve(
+          testWindow.__DATADJINN_TEST_CONNECTION_TRANSFER_EXPORT_HANDLER__({
+            filePath,
+            content: encryptedContent
+          })
+        )
       } else {
         await window.api.writeTextFile(filePath, encryptedContent)
       }
@@ -5229,10 +6178,17 @@ function App(): React.JSX.Element {
     }
   }
 
-  const driverTypeOptionsForDatabase = (databaseType: DriverDatabaseType): { label: string; value: DriverType }[] =>
+  const driverTypeOptionsForDatabase = (
+    databaseType: DriverDatabaseType
+  ): { label: string; value: DriverType }[] =>
     DRIVER_DATABASE_META[databaseType].supportedDriverTypes.map((type) => ({
       value: type,
-      label: type === 'python' ? 'dmPython pyd 驱动' : type === 'whl' ? 'dmPython whl 驱动' : 'JDBC jar 驱动'
+      label:
+        type === 'python'
+          ? 'dmPython pyd 驱动'
+          : type === 'whl'
+            ? 'dmPython whl 驱动'
+            : 'JDBC jar 驱动'
     }))
 
   const resetDriverForm = (databaseType: DriverDatabaseType): void => {
@@ -5255,7 +6211,14 @@ function App(): React.JSX.Element {
     setSettingsSection(section)
     settingsModalRef.current?.open()
     window.setTimeout(() => {
-      void window.api.getAppInfo().then(setAppInfo).catch(() => undefined)
+      void window.api
+        .getAppInfo()
+        .then(setAppInfo)
+        .catch(() => undefined)
+
+      if (section === 'sql') {
+        void refreshQuerySettings().catch(() => undefined)
+      }
 
       if (section === 'drivers') {
         resetDriverForm(selectedDriverDatabaseType)
@@ -5284,13 +6247,22 @@ function App(): React.JSX.Element {
       void loadDrivers()
       void loadJavaRuntimes()
     }
+    if (section === 'sql') {
+      void refreshQuerySettings().catch(() => undefined)
+    }
   }
 
   const addDriver = async (): Promise<void> => {
     setDriverSaving(true)
     try {
       const values = await driverForm.validateFields()
-      const body = { database_type: values.database_type, driver_type: values.driver_type, name: values.name, path: values.path, enabled: values.enabled }
+      const body = {
+        database_type: values.database_type,
+        driver_type: values.driver_type,
+        name: values.name,
+        path: values.path,
+        enabled: values.enabled
+      }
       await requestJson('/drivers', { method: 'POST', body: JSON.stringify(body) })
       resetDriverForm(values.database_type)
       await loadDrivers()
@@ -5330,7 +6302,10 @@ function App(): React.JSX.Element {
     return 'JDBC jar'
   }
 
-  const driverPathLabel = (databaseType: DriverDatabaseType, driverTypeValue: DriverType): string => {
+  const driverPathLabel = (
+    databaseType: DriverDatabaseType,
+    driverTypeValue: DriverType
+  ): string => {
     if (driverTypeValue === 'python') {
       return 'dmPython pyd 文件'
     }
@@ -5340,7 +6315,10 @@ function App(): React.JSX.Element {
     return `${DRIVER_DATABASE_META[databaseType].shortLabel} JDBC jar 文件`
   }
 
-  const driverPathPlaceholder = (databaseType: DriverDatabaseType, driverTypeValue: DriverType): string => {
+  const driverPathPlaceholder = (
+    databaseType: DriverDatabaseType,
+    driverTypeValue: DriverType
+  ): string => {
     if (driverTypeValue === 'python') {
       return '请选择 dmPython.pyd'
     }
@@ -5350,7 +6328,10 @@ function App(): React.JSX.Element {
     return databaseType === 'gaussdb' ? '请选择高斯 JDBC jar' : '请选择 DmJdbcDriver.jar'
   }
 
-  const manualDriverOptionDrivers = selectedManualDriver && !selectedManualDriver.enabled ? [selectedManualDriver, ...currentEnabledDrivers] : currentEnabledDrivers
+  const manualDriverOptionDrivers =
+    selectedManualDriver && !selectedManualDriver.enabled
+      ? [selectedManualDriver, ...currentEnabledDrivers]
+      : currentEnabledDrivers
   const manualDriverOptions = manualDriverOptionDrivers.map((driver) => ({
     label: `${driverTypeLabel(driver.driver_type)} - ${driver.name}${driver.enabled ? '' : '（已禁用）'}`,
     value: driver.id,
@@ -5455,11 +6436,16 @@ function App(): React.JSX.Element {
 
     try {
       if (connectionMode === 'edit' && editingConnectionInfoId) {
-        const connection = await requestJson<ConnectionInfo>(`/connections/${editingConnectionInfoId}`, {
-          method: 'PUT',
-          body: JSON.stringify(payload)
-        })
-        const nextConnections = connections.map((item) => (item.connection_id === connection.connection_id ? connection : item))
+        const connection = await requestJson<ConnectionInfo>(
+          `/connections/${editingConnectionInfoId}`,
+          {
+            method: 'PUT',
+            body: JSON.stringify(payload)
+          }
+        )
+        const nextConnections = connections.map((item) =>
+          item.connection_id === connection.connection_id ? connection : item
+        )
         setConnections(nextConnections)
         setTreeData((current) => replaceConnectionNode(current, connection, buildConnectionNode))
         setConnectionModalOpen(false)
@@ -5477,40 +6463,69 @@ function App(): React.JSX.Element {
       refreshTree(nextConnections)
       setConnectionModalOpen(false)
     } catch (err) {
-      showError(err instanceof Error ? err.message : connectionMode === 'edit' ? '更新连接失败' : '保存连接失败')
+      showError(
+        err instanceof Error
+          ? err.message
+          : connectionMode === 'edit'
+            ? '更新连接失败'
+            : '保存连接失败'
+      )
     } finally {
       setConnectionLoading(false)
     }
   }
 
-  const retryOpenConnectionWithPassword = async (connectionId: string, password: string): Promise<ConnectionInfo> => {
+  const retryOpenConnectionWithPassword = async (
+    connectionId: string,
+    password: string
+  ): Promise<ConnectionInfo> => {
     const request = await requestJson<ConnectionFormValues>(`/connections/${connectionId}`)
     const updated = await requestJson<ConnectionInfo>(`/connections/${connectionId}`, {
       method: 'PUT',
-      body: JSON.stringify(cleanFormValues({
-        ...request,
-        password
-      }))
+      body: JSON.stringify(
+        cleanFormValues({
+          ...request,
+          password
+        })
+      )
     })
-    setConnections((current) => current.map((item) => (item.connection_id === connectionId ? updated : item)))
+    setConnections((current) =>
+      current.map((item) => (item.connection_id === connectionId ? updated : item))
+    )
     setTreeData((current) => replaceConnectionNode(current, updated, buildConnectionNode))
-    return await requestJson<ConnectionInfo>(`/connections/${connectionId}/open`, { method: 'POST' })
+    return await requestJson<ConnectionInfo>(`/connections/${connectionId}/open`, {
+      method: 'POST'
+    })
   }
 
   const openConnectionById = async (connectionId: string): Promise<ConnectionInfo | undefined> => {
     setConnectionTreeLoadingText(connectionId, '正在打开连接...')
     try {
       const currentConnection = getConnection(connectionId)
-      if (currentConnection && !currentConnection.has_password && currentConnection.database_type !== 'sqlite' && currentConnection.database_type !== 'redis') {
+      if (
+        currentConnection &&
+        !currentConnection.has_password &&
+        currentConnection.database_type !== 'sqlite' &&
+        currentConnection.database_type !== 'redis'
+      ) {
         openConnectionPasswordPrompt(currentConnection, '当前连接未保存密码，请输入密码后重试')
         return undefined
       }
 
-      const connection = await requestJson<ConnectionInfo>(`/connections/${connectionId}/open`, { method: 'POST' })
+      const connection = await requestJson<ConnectionInfo>(`/connections/${connectionId}/open`, {
+        method: 'POST'
+      })
 
-      setConnections((current) => current.map((c) => (c.connection_id === connectionId ? connection : c)))
+      setConnections((current) =>
+        current.map((c) => (c.connection_id === connectionId ? connection : c))
+      )
       setTreeData((current) => {
-        const next = replaceConnectionNode(current, connection, buildConnectionNode, connection.database_type !== 'sqlite')
+        const next = replaceConnectionNode(
+          current,
+          connection,
+          buildConnectionNode,
+          connection.database_type !== 'sqlite'
+        )
         treeDataRef.current = next
         return next
       })
@@ -5533,7 +6548,12 @@ function App(): React.JSX.Element {
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : '打开连接失败'
       const currentConnection = getConnection(connectionId)
-      if (currentConnection && currentConnection.database_type !== 'sqlite' && currentConnection.database_type !== 'redis' && isConnectionPasswordRetryError(errorMessage)) {
+      if (
+        currentConnection &&
+        currentConnection.database_type !== 'sqlite' &&
+        currentConnection.database_type !== 'redis' &&
+        isConnectionPasswordRetryError(errorMessage)
+      ) {
         openConnectionPasswordPrompt(currentConnection, errorMessage)
         return undefined
       }
@@ -5558,7 +6578,9 @@ function App(): React.JSX.Element {
     setConnectionTreeLoadingText(connectionId, '正在验证密码...')
     try {
       const connection = await retryOpenConnectionWithPassword(connectionId, password)
-      setConnections((current) => current.map((c) => (c.connection_id === connectionId ? connection : c)))
+      setConnections((current) =>
+        current.map((c) => (c.connection_id === connectionId ? connection : c))
+      )
       setTreeData((current) => replaceConnectionNode(current, connection, buildConnectionNode))
 
       const connKey = `connection:${connectionId}`
@@ -5587,17 +6609,31 @@ function App(): React.JSX.Element {
 
   const closeConnectionById = async (connectionId: string): Promise<void> => {
     try {
-      const connection = await requestJson<ConnectionInfo>(`/connections/${connectionId}/close`, { method: 'POST' })
-      setConnections((current) => current.map((c) => (c.connection_id === connectionId ? connection : c)))
+      const connection = await requestJson<ConnectionInfo>(`/connections/${connectionId}/close`, {
+        method: 'POST'
+      })
+      setConnections((current) =>
+        current.map((c) => (c.connection_id === connectionId ? connection : c))
+      )
       setSelectedConnectionIds((current) => current.filter((id) => id !== connectionId))
-      setSelectedTreeKeys((current) => current.filter((key) => {
-        const value = String(key)
-        return value !== `connection:${connectionId}` && !value.includes(`:${connectionId}:`)
-      }))
-      setFocusedTreeNode((current) => current?.connectionId === connectionId ? undefined : current)
-      setTreeContextMenu((current) => current?.node.connectionId === connectionId ? null : current)
+      setSelectedTreeKeys((current) =>
+        current.filter((key) => {
+          const value = String(key)
+          return value !== `connection:${connectionId}` && !value.includes(`:${connectionId}:`)
+        })
+      )
+      setFocusedTreeNode((current) =>
+        current?.connectionId === connectionId ? undefined : current
+      )
+      setTreeContextMenu((current) =>
+        current?.node.connectionId === connectionId ? null : current
+      )
       setExpandedKeys((keys) => {
-        const next = keys.filter((k) => !String(k).startsWith(`connection:${connectionId}`) && !String(k).includes(`:${connectionId}:`))
+        const next = keys.filter(
+          (k) =>
+            !String(k).startsWith(`connection:${connectionId}`) &&
+            !String(k).includes(`:${connectionId}:`)
+        )
         expandedKeysRef.current = next
         return next
       })
@@ -5610,6 +6646,7 @@ function App(): React.JSX.Element {
   const deleteConnection = async (connectionId: string): Promise<void> => {
     const connection = connections.find((item) => item.connection_id === connectionId)
     Modal.confirm({
+      className: 'connection-delete-confirm-modal',
       title: `确认删除连接：${connection?.name ?? '未命名连接'}？`,
       content: '删除后将移除该连接配置，操作不可撤销。',
       okText: '删除',
@@ -5623,16 +6660,26 @@ function App(): React.JSX.Element {
         })
         const nextConnections = connections.filter((item) => item.connection_id !== connectionId)
         setConnections(nextConnections)
-        setSelectedConnectionId((current) => (current === connectionId ? nextConnections[0]?.connection_id : current))
+        setSelectedConnectionId((current) =>
+          current === connectionId ? nextConnections[0]?.connection_id : current
+        )
         setSelectedConnectionIds((current) => current.filter((id) => id !== connectionId))
-        setSelectedTreeKeys((current) => current.filter((key) => key !== `connection:${connectionId}`))
+        setSelectedTreeKeys((current) =>
+          current.filter((key) => key !== `connection:${connectionId}`)
+        )
         setWorkspaceTabs((current) => current.filter((tab) => tab.connectionId !== connectionId))
         refreshTree(nextConnections)
       }
     })
   }
 
-  const showObjectDdl = async (connectionId: string, name: string, type: DbObjectType, databaseName?: string, pgDatabaseName?: string): Promise<void> => {
+  const showObjectDdl = async (
+    connectionId: string,
+    name: string,
+    type: DbObjectType,
+    databaseName?: string,
+    pgDatabaseName?: string
+  ): Promise<void> => {
     const connection = getConnection(connectionId)
     ddlPreviewModalRef.current?.open({
       title: `${name} DDL`,
@@ -5645,7 +6692,9 @@ function App(): React.JSX.Element {
         if (pgDatabaseName) {
           params.set('pg_database', pgDatabaseName)
         }
-        const result = await requestJson<ObjectDdlResponse>(`/connections/${connectionId}/objects/${encodeURIComponent(name)}/ddl?${params.toString()}`)
+        const result = await requestJson<ObjectDdlResponse>(
+          `/connections/${connectionId}/objects/${encodeURIComponent(name)}/ddl?${params.toString()}`
+        )
         return result.ddl
       }
     })
@@ -5662,12 +6711,19 @@ function App(): React.JSX.Element {
       maskClosable: false,
       onOk: async () => {
         try {
-          await requestJson(`/connections/${connectionId}/databases/${encodeURIComponent(databaseName)}`, { method: 'DELETE' })
+          await requestJson(
+            `/connections/${connectionId}/databases/${encodeURIComponent(databaseName)}`,
+            { method: 'DELETE' }
+          )
           setSelectedDatabases((current) => {
             const nextList = (current[connectionId] ?? []).filter((name) => name !== databaseName)
             return { ...current, [connectionId]: nextList }
           })
-          setWorkspaceTabs((current) => current.filter((tab) => tab.connectionId !== connectionId || tab.databaseName !== databaseName))
+          setWorkspaceTabs((current) =>
+            current.filter(
+              (tab) => tab.connectionId !== connectionId || tab.databaseName !== databaseName
+            )
+          )
           refreshConnectionNode(connectionId)
           messageApi.success('数据库删除成功')
         } catch (err) {
@@ -5677,7 +6733,13 @@ function App(): React.JSX.Element {
     })
   }
 
-  const deleteDbObject = (connectionId: string, objectName: string, objectType: DbObjectType, databaseName?: string, pgDatabaseName?: string): void => {
+  const deleteDbObject = (
+    connectionId: string,
+    objectName: string,
+    objectType: DbObjectType,
+    databaseName?: string,
+    pgDatabaseName?: string
+  ): void => {
     Modal.confirm({
       title: `确认删除${objectType === 'view' ? '视图' : '表'}：${objectName}？`,
       content: '删除后数据无法恢复，操作不可撤销。',
@@ -5696,8 +6758,19 @@ function App(): React.JSX.Element {
         }
 
         try {
-          await requestJson(`/connections/${connectionId}/objects/${encodeURIComponent(objectName)}?${params.toString()}`, { method: 'DELETE' })
-          setWorkspaceTabs((current) => current.filter((tab) => tab.connectionId !== connectionId || tab.tableName !== objectName || tab.databaseName !== databaseName || tab.pgDatabaseName !== pgDatabaseName))
+          await requestJson(
+            `/connections/${connectionId}/objects/${encodeURIComponent(objectName)}?${params.toString()}`,
+            { method: 'DELETE' }
+          )
+          setWorkspaceTabs((current) =>
+            current.filter(
+              (tab) =>
+                tab.connectionId !== connectionId ||
+                tab.tableName !== objectName ||
+                tab.databaseName !== databaseName ||
+                tab.pgDatabaseName !== pgDatabaseName
+            )
+          )
           if (pgDatabaseName) {
             refreshDatabaseNode(connectionId, pgDatabaseName)
           } else if (databaseName) {
@@ -5736,10 +6809,16 @@ function App(): React.JSX.Element {
           body: JSON.stringify({ name: databaseCreateName.trim() })
         })
       } else {
-        const created = await requestJson<{ name: string }>(`/connections/${creatingDatabaseConnectionId}/databases`, {
-          method: 'POST',
-          body: JSON.stringify({ name: createdName, password: isOracleUser ? databaseCreatePassword : undefined })
-        })
+        const created = await requestJson<{ name: string }>(
+          `/connections/${creatingDatabaseConnectionId}/databases`,
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              name: createdName,
+              password: isOracleUser ? databaseCreatePassword : undefined
+            })
+          }
+        )
         createdName = created.name
       }
       setDatabaseCreateModalOpen(false)
@@ -5751,15 +6830,19 @@ function App(): React.JSX.Element {
         const dbKey = `database:${creatingDatabaseConnectionId}:${creatingSchemaDatabaseName}`
 
         try {
-          const schemaData = await requestJson<{ databases: DatabaseInfo[] }>(`/connections/${creatingDatabaseConnectionId}/schemas?database=${encodeURIComponent(creatingSchemaDatabaseName)}`)
+          const schemaData = await requestJson<{ databases: DatabaseInfo[] }>(
+            `/connections/${creatingDatabaseConnectionId}/schemas?database=${encodeURIComponent(creatingSchemaDatabaseName)}`
+          )
           const schemaNames = schemaData.databases.map((s) => s.name)
           setAllSchemas((current) => ({ ...current, [selKey]: schemaNames }))
           setSelectedSchemas((current) => {
             const existing = current[selKey] ?? []
-            const merged = existing.includes(databaseCreateName) ? existing : [...existing, databaseCreateName]
+            const merged = existing.includes(databaseCreateName)
+              ? existing
+              : [...existing, databaseCreateName]
             return { ...current, [selKey]: merged }
           })
-          setExpandedKeys((current) => current.includes(dbKey) ? current : [...current, dbKey])
+          setExpandedKeys((current) => (current.includes(dbKey) ? current : [...current, dbKey]))
 
           const schemaChildren: DatabaseTreeNode[] = schemaNames.map((name) => ({
             key: `pg-schema:${creatingDatabaseConnectionId}:${creatingSchemaDatabaseName}:${name}`,
@@ -5793,7 +6876,15 @@ function App(): React.JSX.Element {
         refreshConnectionNode(connId)
       }
     } catch (err) {
-      showError(err instanceof Error ? err.message : isSchema ? '创建 Schema 失败' : isOracleUser ? '创建用户失败' : '创建数据库失败')
+      showError(
+        err instanceof Error
+          ? err.message
+          : isSchema
+            ? '创建 Schema 失败'
+            : isOracleUser
+              ? '创建用户失败'
+              : '创建数据库失败'
+      )
     } finally {
       setDatabaseCreateLoading(false)
     }
@@ -5801,19 +6892,22 @@ function App(): React.JSX.Element {
 
   const addNewColumn = (): void => {
     const key = `col-${Date.now()}`
-    setNewTableColumns((current) => [...current, {
-      key,
-      name: '',
-      type: 'VARCHAR(100)',
-      nullable: true,
-      primaryKey: false,
-      comment: '',
-      unique: false,
-      autoIncrement: false,
-      autoIncrementStep: undefined,
-      minimum: '',
-      maximum: ''
-    }])
+    setNewTableColumns((current) => [
+      ...current,
+      {
+        key,
+        name: '',
+        type: 'VARCHAR(100)',
+        nullable: true,
+        primaryKey: false,
+        comment: '',
+        unique: false,
+        autoIncrement: false,
+        autoIncrementStep: undefined,
+        minimum: '',
+        maximum: ''
+      }
+    ])
   }
 
   const removeNewColumn = (key: string): void => {
@@ -5821,11 +6915,15 @@ function App(): React.JSX.Element {
   }
 
   const updateNewColumn = (key: string, patch: Partial<ColumnDef>): void => {
-    setNewTableColumns((current) => current.map((col) => (col.key === key ? { ...col, ...patch } : col)))
+    setNewTableColumns((current) =>
+      current.map((col) => (col.key === key ? { ...col, ...patch } : col))
+    )
   }
 
   const updateEditingColumn = (key: string, patch: Partial<ColumnDef>): void => {
-    setEditingColumns((current) => current.map((col) => (col.key === key ? { ...col, ...patch } : col)))
+    setEditingColumns((current) =>
+      current.map((col) => (col.key === key ? { ...col, ...patch } : col))
+    )
   }
 
   const renderTableDesigner = (
@@ -5882,27 +6980,30 @@ function App(): React.JSX.Element {
     const isPg = isSchemaScopedType(conn?.database_type)
 
     try {
-      await requestJson<{ name: string; message: string }>(`/connections/${createTableConnectionId}/tables`, {
-        method: 'POST',
-        body: JSON.stringify({
-          name: newTableName.trim(),
-          database: createTableDatabaseName || undefined,
-          pg_database: createTablePgDatabaseName || undefined,
-          table_comment: newTableComment.trim() || null,
-          columns: validColumns.map((column) => ({
-            name: column.name.trim(),
-            type: column.type.trim(),
-            nullable: column.nullable,
-            primary_key: column.primaryKey,
-            comment: column.comment.trim() || null,
-            unique: column.unique,
-            auto_increment: column.autoIncrement,
-            auto_increment_step: column.autoIncrementStep ?? null,
-            minimum: column.minimum.trim() || null,
-            maximum: column.maximum.trim() || null
-          }))
-        })
-      })
+      await requestJson<{ name: string; message: string }>(
+        `/connections/${createTableConnectionId}/tables`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            name: newTableName.trim(),
+            database: createTableDatabaseName || undefined,
+            pg_database: createTablePgDatabaseName || undefined,
+            table_comment: newTableComment.trim() || null,
+            columns: validColumns.map((column) => ({
+              name: column.name.trim(),
+              type: column.type.trim(),
+              nullable: column.nullable,
+              primary_key: column.primaryKey,
+              comment: column.comment.trim() || null,
+              unique: column.unique,
+              auto_increment: column.autoIncrement,
+              auto_increment_step: column.autoIncrementStep ?? null,
+              minimum: column.minimum.trim() || null,
+              maximum: column.maximum.trim() || null
+            }))
+          })
+        }
+      )
 
       setCreateTableModalOpen(false)
 
@@ -5930,7 +7031,11 @@ function App(): React.JSX.Element {
       setCreateTableLoading(false)
     }
   }
-  const openSqlFileDialog = async (connectionId: string, databaseName?: string, pgDatabaseName?: string): Promise<void> => {
+  const openSqlFileDialog = async (
+    connectionId: string,
+    databaseName?: string,
+    pgDatabaseName?: string
+  ): Promise<void> => {
     if (!ensureConnectionOpen(connectionId)) {
       return
     }
@@ -5949,11 +7054,21 @@ function App(): React.JSX.Element {
     const connection = getConnection(connectionId)
     let databases: DatabaseInfo[] = []
     let defaultDb = databaseName ?? ''
-    let defaultPgDb = pgDatabaseName ?? ''
+    const defaultPgDb = pgDatabaseName ?? ''
 
-    if (connection?.database_type === 'mysql' || connection?.database_type === 'postgresql' || connection?.database_type === 'gaussdb' || connection?.database_type === 'oracle' || connection?.database_type === 'mongodb' || connection?.database_type === 'redis' || connection?.database_type === 'clickhouse') {
+    if (
+      connection?.database_type === 'mysql' ||
+      connection?.database_type === 'postgresql' ||
+      connection?.database_type === 'gaussdb' ||
+      connection?.database_type === 'oracle' ||
+      connection?.database_type === 'mongodb' ||
+      connection?.database_type === 'redis' ||
+      connection?.database_type === 'clickhouse'
+    ) {
       try {
-        const data = await requestJson<{ databases: DatabaseInfo[] }>(`/connections/${connectionId}/databases`)
+        const data = await requestJson<{ databases: DatabaseInfo[] }>(
+          `/connections/${connectionId}/databases`
+        )
         databases = data.databases
       } catch {
         databases = []
@@ -5984,10 +7099,17 @@ function App(): React.JSX.Element {
     setSqlFileResult(null)
 
     try {
-      const result = await requestJson<SqlFileRunResponse>(`/connections/${sqlFileConnectionId}/sql-file`, {
-        method: 'POST',
-        body: JSON.stringify({ sql: sqlFileContent, database: sqlFileDatabase || undefined, pg_database: sqlFilePgDatabase || undefined })
-      })
+      const result = await requestJson<SqlFileRunResponse>(
+        `/connections/${sqlFileConnectionId}/sql-file`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            sql: sqlFileContent,
+            database: sqlFileDatabase || undefined,
+            pg_database: sqlFilePgDatabase || undefined
+          })
+        }
+      )
       setSqlFileResult(result)
 
       refreshConnectionNode(sqlFileConnectionId)
@@ -6002,14 +7124,23 @@ function App(): React.JSX.Element {
     }
   }
 
-  const openExportModal = (connectionId: string, database?: string, pgDatabase?: string, table?: string): void => {
+  const openExportModal = (
+    connectionId: string,
+    database?: string,
+    pgDatabase?: string,
+    table?: string
+  ): void => {
     const connection = getConnection(connectionId)
     setExportConnectionId(connectionId)
     setExportDatabase(database ?? '')
     setExportPgDatabase(pgDatabase ?? '')
     setExportTable(table ?? '')
     setExportScope(table ? 'table' : pgDatabase ? 'schema' : 'database')
-    setExportFormat(connection?.database_type === 'mongodb' || connection?.database_type === 'redis' ? 'json' : 'sql')
+    setExportFormat(
+      connection?.database_type === 'mongodb' || connection?.database_type === 'redis'
+        ? 'json'
+        : 'sql'
+    )
     setExportContent('schema_data')
     setExportModalOpen(true)
   }
@@ -6019,23 +7150,29 @@ function App(): React.JSX.Element {
     try {
       const defaultName = exportTable || exportPgDatabase || exportDatabase || 'export'
       const extension = exportFormat === 'csv' ? 'csv' : exportFormat === 'json' ? 'json' : 'sql'
-      const outputPath = await window.api.selectExportPath(exportFormat, `${defaultName}.${extension}`)
+      const outputPath = await window.api.selectExportPath(
+        exportFormat,
+        `${defaultName}.${extension}`
+      )
       if (!outputPath) {
         return
       }
-      const result = await requestJson<{ success: boolean; message: string; file_path?: string }>('/backup/export', {
-        method: 'POST',
-        body: JSON.stringify({
-          connection_id: exportConnectionId,
-          database: exportDatabase || undefined,
-          pg_database: exportPgDatabase || undefined,
-          table: exportTable || undefined,
-          scope: exportScope,
-          format: exportFormat,
-          content: exportContent,
-          output_path: outputPath
-        })
-      })
+      const result = await requestJson<{ success: boolean; message: string; file_path?: string }>(
+        '/backup/export',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            connection_id: exportConnectionId,
+            database: exportDatabase || undefined,
+            pg_database: exportPgDatabase || undefined,
+            table: exportTable || undefined,
+            scope: exportScope,
+            format: exportFormat,
+            content: exportContent,
+            output_path: outputPath
+          })
+        }
+      )
       messageApi.success(result.message)
       setExportModalOpen(false)
     } catch (err) {
@@ -6045,7 +7182,12 @@ function App(): React.JSX.Element {
     }
   }
 
-  const openImportModal = (connectionId: string, database?: string, pgDatabase?: string, table?: string): void => {
+  const openImportModal = (
+    connectionId: string,
+    database?: string,
+    pgDatabase?: string,
+    table?: string
+  ): void => {
     setImportConnectionId(connectionId)
     setImportDatabase(database ?? '')
     setImportPgDatabase(pgDatabase ?? '')
@@ -6088,7 +7230,11 @@ function App(): React.JSX.Element {
     }
   }
 
-  const openBackupRestoreModal = (connectionId: string, database?: string, pgDatabase?: string): void => {
+  const openBackupRestoreModal = (
+    connectionId: string,
+    database?: string,
+    pgDatabase?: string
+  ): void => {
     setBackupRestoreConnectionId(connectionId)
     setBackupRestoreDatabase(database ?? '')
     setBackupRestorePgDatabase(pgDatabase ?? '')
@@ -6103,16 +7249,21 @@ function App(): React.JSX.Element {
       if (!outputPath) {
         return
       }
-      const result = await requestJson<{ success: boolean; message: string; file_path?: string }>('/backup/create', {
-        method: 'POST',
-        body: JSON.stringify({
-          connection_id: backupRestoreConnectionId,
-          database: backupRestoreDatabase || undefined,
-          pg_database: backupRestorePgDatabase || undefined,
-          output_path: outputPath
-        })
-      })
-      messageApi.success(result.file_path ? `${result.message}：${result.file_path}` : result.message)
+      const result = await requestJson<{ success: boolean; message: string; file_path?: string }>(
+        '/backup/create',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            connection_id: backupRestoreConnectionId,
+            database: backupRestoreDatabase || undefined,
+            pg_database: backupRestorePgDatabase || undefined,
+            output_path: outputPath
+          })
+        }
+      )
+      messageApi.success(
+        result.file_path ? `${result.message}：${result.file_path}` : result.message
+      )
       setBackupRestoreModalOpen(false)
     } catch (err) {
       showError(err instanceof Error ? err.message : '备份失败')
@@ -6121,11 +7272,14 @@ function App(): React.JSX.Element {
     }
   }
 
-  const updatePreviewCells = (tabKey: string, patches: Array<{ rowKey: string, column: string, value: unknown }>): void => {
+  const updatePreviewCells = (
+    tabKey: string,
+    patches: Array<{ rowKey: string; column: string; value: unknown }>
+  ): void => {
     if (patches.length === 0) {
       return
     }
-    const rowPatches = new Map<string, Array<{ column: string, value: unknown }>>()
+    const rowPatches = new Map<string, Array<{ column: string; value: unknown }>>()
     for (const patch of patches) {
       const current = rowPatches.get(patch.rowKey) ?? []
       current.push({ column: patch.column, value: patch.value })
@@ -6168,7 +7322,12 @@ function App(): React.JSX.Element {
     )
   }
 
-  const updatePreviewCell = (tabKey: string, rowKey: string, column: string, value: unknown): void => {
+  const updatePreviewCell = (
+    tabKey: string,
+    rowKey: string,
+    column: string,
+    value: unknown
+  ): void => {
     updatePreviewCells(tabKey, [{ rowKey, column, value }])
     requestAnimationFrame(() => syncRenderedCellSelection(tabKey))
   }
@@ -6181,7 +7340,10 @@ function App(): React.JSX.Element {
       __state: 'inserted'
     })
     pendingPreviewRowScrollRefs.current[tab.key] = rowKey
-    updateWorkspaceTab(tab.key, { editRows: [...(tab.editRows ?? []), row], columnFilterOptions: undefined })
+    updateWorkspaceTab(tab.key, {
+      editRows: [...(tab.editRows ?? []), row],
+      columnFilterOptions: undefined
+    })
   }
 
   const submitRedisChanges = async (tab: WorkspaceTab): Promise<void> => {
@@ -6197,26 +7359,51 @@ function App(): React.JSX.Element {
       value: edit.value,
       ttl: edit.ttl ?? null
     })
-    const inserted = edits.filter((edit) => edit.state === 'inserted' && !edit.deleted).map(toPayload)
+    const inserted = edits
+      .filter((edit) => edit.state === 'inserted' && !edit.deleted)
+      .map(toPayload)
     const updated = edits.filter((edit) => edit.state === 'updated' && !edit.deleted).map(toPayload)
-    const deleted = edits.filter((edit) => edit.deleted && edit.originalKey).map((edit) => edit.originalKey!)
+    const deleted = edits
+      .filter((edit) => edit.deleted && edit.originalKey)
+      .map((edit) => edit.originalKey!)
 
     updateWorkspaceTab(tab.key, { loading: true, error: undefined })
 
     try {
-      const result = await requestJson<QueryResponse>(withPageQuery(withDatabaseQuery(`/connections/${tab.connectionId}/redis/data`, tab.databaseName), tab.limit ?? REDIS_DEFAULT_LIMIT, tab.page ?? 1), {
-        method: 'PUT',
-        body: JSON.stringify({ inserted, updated, deleted })
+      const result = await requestJson<QueryResponse>(
+        withPageQuery(
+          withDatabaseQuery(`/connections/${tab.connectionId}/redis/data`, tab.databaseName),
+          tab.limit ?? REDIS_DEFAULT_LIMIT,
+          tab.page ?? 1
+        ),
+        {
+          method: 'PUT',
+          body: JSON.stringify({ inserted, updated, deleted })
+        }
+      )
+      updateWorkspaceTab(tab.key, {
+        result,
+        redisEdits: buildRedisEdits(result.rows),
+        redisExpandedValues: {},
+        page: tab.page ?? 1,
+        loading: false,
+        error: undefined
       })
-      updateWorkspaceTab(tab.key, { result, redisEdits: buildRedisEdits(result.rows), redisExpandedValues: {}, page: tab.page ?? 1, loading: false, error: undefined })
       refreshDatabaseNode(tab.connectionId, tab.databaseName)
     } catch (err) {
-      updateWorkspaceTab(tab.key, { loading: false, error: err instanceof Error ? err.message : '提交 Redis 数据失败' })
+      updateWorkspaceTab(tab.key, {
+        loading: false,
+        error: err instanceof Error ? err.message : '提交 Redis 数据失败'
+      })
     }
   }
 
   const markSelectedRowsDeleted = (tab: WorkspaceTab, selectedRowKeysOverride?: string[]): void => {
-    const selectedRowKeys = selectedRowKeysOverride ?? (tab.selectedRowKeyMap ? Object.keys(tab.selectedRowKeyMap) : (tab.selectedRowKeys ?? []).map(String))
+    const selectedRowKeys =
+      selectedRowKeysOverride ??
+      (tab.selectedRowKeyMap
+        ? Object.keys(tab.selectedRowKeyMap)
+        : (tab.selectedRowKeys ?? []).map(String))
     const selected = new Set(selectedRowKeys)
     const editRows = (tab.editRows ?? [])
       .filter((row) => !(row.__state === 'inserted' && selected.has(row.__rowKey)))
@@ -6224,7 +7411,12 @@ function App(): React.JSX.Element {
     delete rowSelectionDraftRefs.current[tab.key]
     delete selectedRowRefs.current[tab.key]
     delete renderedSelectedRowRefs.current[tab.key]
-    updateWorkspaceTab(tab.key, { editRows, selectedRowKeys: [], selectedRowKeyMap: {}, columnFilterOptions: undefined })
+    updateWorkspaceTab(tab.key, {
+      editRows,
+      selectedRowKeys: [],
+      selectedRowKeyMap: {},
+      columnFilterOptions: undefined
+    })
   }
 
   const submitPreviewChanges = async (tab: WorkspaceTab): Promise<void> => {
@@ -6238,32 +7430,74 @@ function App(): React.JSX.Element {
     const page = tab.page ?? 1
     const rows = tab.editRows ?? []
     const cleanRow = (row: EditableRow): Record<string, unknown> => {
-      const { __rowKey, __state, __deleted, __original, ...values } = row
-      return values
+      return Object.fromEntries(
+        Object.entries(row).filter(
+          ([key]) => !['__rowKey', '__state', '__deleted', '__original'].includes(key)
+        )
+      )
     }
-    const inserted = rows.filter((row) => row.__state === 'inserted' && !row.__deleted).map(cleanRow)
+    const inserted = rows
+      .filter((row) => row.__state === 'inserted' && !row.__deleted)
+      .map(cleanRow)
     const updated = rows
       .filter((row) => row.__state === 'updated' && !row.__deleted)
       .map((row) => ({ original: row.__original ?? cleanRow(row), values: cleanRow(row) }))
-    const deleted = rows.filter((row) => row.__deleted && row.__state !== 'inserted').map((row) => row.__original ?? cleanRow(row))
+    const deleted = rows
+      .filter((row) => row.__deleted && row.__state !== 'inserted')
+      .map((row) => row.__original ?? cleanRow(row))
 
     updateWorkspaceTab(tab.key, { loading: true, error: undefined })
 
     try {
-      const dataPath = withSortQuery(withWhereQuery(withPageQuery(withPgDatabase(`/connections/${tab.connectionId}/tables/${encodeURIComponent(tab.tableName)}/data`, tab.databaseName, tab.pgDatabaseName), limit, page), tab.where), tab.sortState)
+      const dataPath = withSortQuery(
+        withWhereQuery(
+          withPageQuery(
+            withPgDatabase(
+              `/connections/${tab.connectionId}/tables/${encodeURIComponent(tab.tableName)}/data`,
+              tab.databaseName,
+              tab.pgDatabaseName
+            ),
+            limit,
+            page
+          ),
+          tab.where
+        ),
+        tab.sortState
+      )
       const [result, columnsData] = await Promise.all([
         requestJson<QueryResponse>(dataPath, {
           method: 'PUT',
           body: JSON.stringify({ inserted, updated, deleted })
         }),
-        requestJson<ColumnsResponse>(withPgDatabase(`/connections/${tab.connectionId}/tables/${encodeURIComponent(tab.tableName)}/columns`, tab.databaseName, tab.pgDatabaseName))
+        requestJson<ColumnsResponse>(
+          withPgDatabase(
+            `/connections/${tab.connectionId}/tables/${encodeURIComponent(tab.tableName)}/columns`,
+            tab.databaseName,
+            tab.pgDatabaseName
+          )
+        )
       ])
-      const columnInfoMap = Object.fromEntries(columnsData.columns.map((item) => [item.name, item] as const))
+      const columnInfoMap = Object.fromEntries(
+        columnsData.columns.map((item) => [item.name, item] as const)
+      )
       editingCellRefs.current[tab.key] = undefined
-      updateWorkspaceTab(tab.key, { result, columnInfoMap, editRows: buildEditableRows(result.rows), selectedRowKeys: [], selectedRowKeyMap: {}, columnFilterOptions: undefined, where: tab.where?.trim() ?? '', loading: false, error: undefined })
+      updateWorkspaceTab(tab.key, {
+        result,
+        columnInfoMap,
+        editRows: buildEditableRows(result.rows),
+        selectedRowKeys: [],
+        selectedRowKeyMap: {},
+        columnFilterOptions: undefined,
+        where: tab.where?.trim() ?? '',
+        loading: false,
+        error: undefined
+      })
       requestAnimationFrame(() => syncRenderedCellSelection(tab.key))
     } catch (err) {
-      updateWorkspaceTab(tab.key, { loading: false, error: err instanceof Error ? err.message : '提交表数据失败' })
+      updateWorkspaceTab(tab.key, {
+        loading: false,
+        error: err instanceof Error ? err.message : '提交表数据失败'
+      })
     }
   }
 
@@ -6293,31 +7527,53 @@ function App(): React.JSX.Element {
       setSelectedConnectionId(connectionId)
     })
     if (tabExists) {
-      setWorkspaceTabsAndActiveTabKey((current) => current.map((tab) => (
-        tab.key === tabKey
-          ? {
-            ...tab,
-            limit,
-            page,
-            where: whereCondition,
-            objectType,
-            loading: true,
-            error: undefined,
-            selectedRowKeys: [],
-            selectedRowKeyMap: {},
-            columnFilterOptions: undefined
-          }
-          : tab
-      )), tabKey)
+      setWorkspaceTabsAndActiveTabKey(
+        (current) =>
+          current.map((tab) =>
+            tab.key === tabKey
+              ? {
+                  ...tab,
+                  limit,
+                  page,
+                  where: whereCondition,
+                  objectType,
+                  loading: true,
+                  error: undefined,
+                  selectedRowKeys: [],
+                  selectedRowKeyMap: {},
+                  columnFilterOptions: undefined
+                }
+              : tab
+          ),
+        tabKey
+      )
     }
 
     try {
       const effectiveSortState = sortState !== undefined ? sortState : existingPreviewTab?.sortState
-      const previewPath = withSortQuery(withWhereQuery(withPageQuery(withPgDatabase(`/connections/${connectionId}/tables/${encodeURIComponent(tableName)}/preview`, databaseName, pgDatabaseName), limit, page), whereCondition), effectiveSortState)
+      const previewPath = withSortQuery(
+        withWhereQuery(
+          withPageQuery(
+            withPgDatabase(
+              `/connections/${connectionId}/tables/${encodeURIComponent(tableName)}/preview`,
+              databaseName,
+              pgDatabaseName
+            ),
+            limit,
+            page
+          ),
+          whereCondition
+        ),
+        effectiveSortState
+      )
       const [result, columnsData] = await Promise.all([
         requestJson<QueryResponse>(previewPath),
         requestJson<ColumnsResponse>(
-          withPgDatabase(`/connections/${connectionId}/tables/${encodeURIComponent(tableName)}/columns`, databaseName, pgDatabaseName)
+          withPgDatabase(
+            `/connections/${connectionId}/tables/${encodeURIComponent(tableName)}/columns`,
+            databaseName,
+            pgDatabaseName
+          )
         ).catch(() => undefined)
       ])
       const columnInfoMap = columnsData
@@ -6349,7 +7605,7 @@ function App(): React.JSX.Element {
             selectedRowKeyMap: {},
             columnFilterOptions: undefined,
             tableRenderVersion: tabExists
-              ? ((current.find((tab) => tab.key === tabKey)?.tableRenderVersion ?? 0) + 1)
+              ? (current.find((tab) => tab.key === tabKey)?.tableRenderVersion ?? 0) + 1
               : 1,
             sortState: effectiveSortState
           }
@@ -6358,14 +7614,14 @@ function App(): React.JSX.Element {
             return [...current, nextPreviewTab]
           }
 
-          return current.map((tab) => (
+          return current.map((tab) =>
             tab.key === tabKey
               ? {
-                ...tab,
-                ...nextPreviewTab
-              }
+                  ...tab,
+                  ...nextPreviewTab
+                }
               : tab
-          ))
+          )
         }, tabKey)
       })
       requestAnimationFrame(() => syncRenderedCellSelection(tabKey))
@@ -6381,35 +7637,46 @@ function App(): React.JSX.Element {
         duration: Number((performance.now() - previewStartedAt).toFixed(2))
       })
       if (tabExists) {
-        updateWorkspaceTab(tabKey, { loading: false, error: err instanceof Error ? err.message : '加载表数据失败' })
+        updateWorkspaceTab(tabKey, {
+          loading: false,
+          error: err instanceof Error ? err.message : '加载表数据失败'
+        })
       } else {
         startTransition(() => {
-          setWorkspaceTabsAndActiveTabKey((current) => [
-            ...current,
-            {
-              key: tabKey,
-              title: databaseName ? `${databaseName}.${tableName}` : tableName,
-              kind: 'preview',
-              connectionId,
-              databaseName,
-              pgDatabaseName,
-              tableName,
-              objectType,
-              sql: '',
-              limit,
-              page,
-              where: whereCondition,
-              loading: false,
-              error: err instanceof Error ? err.message : '加载表数据失败',
-              tableRenderVersion: 1
-            }
-          ], tabKey)
+          setWorkspaceTabsAndActiveTabKey(
+            (current) => [
+              ...current,
+              {
+                key: tabKey,
+                title: databaseName ? `${databaseName}.${tableName}` : tableName,
+                kind: 'preview',
+                connectionId,
+                databaseName,
+                pgDatabaseName,
+                tableName,
+                objectType,
+                sql: '',
+                limit,
+                page,
+                where: whereCondition,
+                loading: false,
+                error: err instanceof Error ? err.message : '加载表数据失败',
+                tableRenderVersion: 1
+              }
+            ],
+            tabKey
+          )
         })
       }
     }
   }
 
-  const openTableCatalog = async (connectionId: string, databaseName?: string, pgDatabaseName?: string, objectType: 'table' | 'view' = 'table'): Promise<void> => {
+  const openTableCatalog = async (
+    connectionId: string,
+    databaseName?: string,
+    pgDatabaseName?: string,
+    objectType: 'table' | 'view' = 'table'
+  ): Promise<void> => {
     if (!ensureConnectionOpen(connectionId)) {
       return
     }
@@ -6417,7 +7684,7 @@ function App(): React.JSX.Element {
     const connection = getConnection(connectionId)
     const scopeTitle = isSchemaScopedType(connection?.database_type)
       ? [pgDatabaseName, databaseName].filter(Boolean).join('.')
-      : (databaseName || pgDatabaseName || connection?.database || connection?.name || '当前库')
+      : databaseName || pgDatabaseName || connection?.database || connection?.name || '当前库'
     const tabKey = `table-list:${connectionId}:${pgDatabaseName ?? ''}:${databaseName ?? ''}:${objectType}`
 
     setSelectedConnectionId(connectionId)
@@ -6425,7 +7692,9 @@ function App(): React.JSX.Element {
     setWorkspaceTabs((current) => {
       const exists = current.some((tab) => tab.key === tabKey)
       if (exists) {
-        return current.map((tab) => (tab.key === tabKey ? { ...tab, loading: true, error: undefined } : tab))
+        return current.map((tab) =>
+          tab.key === tabKey ? { ...tab, loading: true, error: undefined } : tab
+        )
       }
 
       return [
@@ -6444,17 +7713,26 @@ function App(): React.JSX.Element {
     })
 
     try {
-      const rows = objectType === 'view'
-        ? (await requestJson<{ objects: DbObjectInfo[] }>(`${withPgDatabase(`/connections/${connectionId}/objects`, databaseName, pgDatabaseName)}${databaseName || pgDatabaseName ? '&' : '?'}type=view`)).objects.map((object, index) => ({
-            __rowKey: `view-list:${index}`,
-            名称: object.name,
-            注释: ''
-          }))
-        : (await requestJson<{ tables: TableInfo[] }>(`${withPgDatabase(`/connections/${connectionId}/tables`, databaseName, pgDatabaseName)}${databaseName || pgDatabaseName ? '&' : '?'}include_comment=true`)).tables.map((table, index) => ({
-        __rowKey: `table-list:${index}`,
-        名称: table.name,
-        注释: table.comment ?? ''
-          }))
+      const rows =
+        objectType === 'view'
+          ? (
+              await requestJson<{ objects: DbObjectInfo[] }>(
+                `${withPgDatabase(`/connections/${connectionId}/objects`, databaseName, pgDatabaseName)}${databaseName || pgDatabaseName ? '&' : '?'}type=view`
+              )
+            ).objects.map((object, index) => ({
+              __rowKey: `view-list:${index}`,
+              名称: object.name,
+              注释: ''
+            }))
+          : (
+              await requestJson<{ tables: TableInfo[] }>(
+                `${withPgDatabase(`/connections/${connectionId}/tables`, databaseName, pgDatabaseName)}${databaseName || pgDatabaseName ? '&' : '?'}include_comment=true`
+              )
+            ).tables.map((table, index) => ({
+              __rowKey: `table-list:${index}`,
+              名称: table.name,
+              注释: table.comment ?? ''
+            }))
       updateWorkspaceTab(tabKey, {
         result: {
           columns: ['名称', '注释'],
@@ -6467,20 +7745,30 @@ function App(): React.JSX.Element {
         error: undefined
       })
     } catch (err) {
-      updateWorkspaceTab(tabKey, { loading: false, error: err instanceof Error ? err.message : '加载表列表失败' })
+      updateWorkspaceTab(tabKey, {
+        loading: false,
+        error: err instanceof Error ? err.message : '加载表列表失败'
+      })
       showError(err instanceof Error ? err.message : '加载表列表失败')
     }
   }
 
-  const resolvePreferredQueryContext = (connectionId?: string): { databaseName?: string; pgDatabaseName?: string } => {
+  const resolvePreferredQueryContext = (
+    connectionId?: string
+  ): { databaseName?: string; pgDatabaseName?: string } => {
     const connId = connectionId ?? selectedConnectionId
     const currentActiveTabKey = useWorkspaceStore.getState().activeTabKey
-    const currentActiveTab = currentActiveTabKey ? useWorkspaceStore.getState().getTabByKey(currentActiveTabKey) : undefined
-    const contextCandidates: Array<{
-      connectionId?: string
-      databaseName?: string
-      pgDatabaseName?: string
-    } | undefined> = [focusedTreeNode, currentActiveTab, aiActiveContext]
+    const currentActiveTab = currentActiveTabKey
+      ? useWorkspaceStore.getState().getTabByKey(currentActiveTabKey)
+      : undefined
+    const contextCandidates: Array<
+      | {
+          connectionId?: string
+          databaseName?: string
+          pgDatabaseName?: string
+        }
+      | undefined
+    > = [focusedTreeNode, currentActiveTab, aiActiveContext]
 
     for (const candidate of contextCandidates) {
       if (!candidate || candidate.connectionId !== connId) {
@@ -6497,7 +7785,13 @@ function App(): React.JSX.Element {
     return {}
   }
 
-  const openQueryWorkspace = (initialSql = 'select * from users;', title?: string, connectionId?: string, databaseName?: string, pgDatabaseName?: string): string => {
+  const openQueryWorkspace = (
+    initialSql = 'select * from users;',
+    title?: string,
+    connectionId?: string,
+    databaseName?: string,
+    pgDatabaseName?: string
+  ): string => {
     const nextIndex = queryCounter
     const tabKey = `query:${Date.now()}:${nextIndex}`
     const connId = connectionId ?? selectedConnectionId
@@ -6507,7 +7801,12 @@ function App(): React.JSX.Element {
     let finalDb = databaseName ?? preferredContext.databaseName
     let finalPgDb = pgDatabaseName ?? preferredContext.pgDatabaseName
 
-    if ((isDatabaseScopedType(connection?.database_type) || connection?.database_type === 'dm' || connection?.database_type === 'oracle') && !finalDb) {
+    if (
+      (isDatabaseScopedType(connection?.database_type) ||
+        connection?.database_type === 'dm' ||
+        connection?.database_type === 'oracle') &&
+      !finalDb
+    ) {
       finalDb = getDefaultDatabaseName(connection)
     }
 
@@ -6541,15 +7840,17 @@ function App(): React.JSX.Element {
         resultKind: 'query',
         queryEditorHeight: 280,
         persistedAt: Date.now()
-        }
+      }
     ])
     setActiveTabKey(tabKey)
 
     if (connId) {
       void ensureDatabasesLoaded(connId)
 
-      if ((isDatabaseScopedType(connection?.database_type)) && finalDb) {
+      if (isDatabaseScopedType(connection?.database_type) && finalDb) {
         void preloadCompletionForDatabase(connId, finalDb)
+      } else if (connection?.database_type === 'sqlite') {
+        void preloadCompletionForDatabase(connId)
       }
 
       if (isSchemaScopedType(connection?.database_type) && finalPgDb && !finalDb) {
@@ -6606,11 +7907,15 @@ function App(): React.JSX.Element {
       }
       if (item.databaseName && !item.pgDatabaseName) {
         void preloadCompletionForDatabase(item.connectionId, item.databaseName)
+      } else if (connection?.database_type === 'sqlite') {
+        void preloadCompletionForDatabase(item.connectionId)
       }
     }
   }
 
-  const resolveQueryExecutionContext = async (tab: WorkspaceTab): Promise<(WorkspaceTab & { treeOpenedForExecution?: boolean }) | undefined> => {
+  const resolveQueryExecutionContext = async (
+    tab: WorkspaceTab
+  ): Promise<(WorkspaceTab & { treeOpenedForExecution?: boolean }) | undefined> => {
     if (!tab.connectionId) {
       return undefined
     }
@@ -6633,17 +7938,25 @@ function App(): React.JSX.Element {
     let nextDatabaseName = tab.databaseName
     let nextPgDatabaseName = tab.pgDatabaseName
 
-    if (isDatabaseScopedType(connection.database_type) || connection.database_type === 'dm' || connection.database_type === 'oracle') {
+    if (
+      isDatabaseScopedType(connection.database_type) ||
+      connection.database_type === 'dm' ||
+      connection.database_type === 'oracle'
+    ) {
       let loadedDatabases = allDatabases[tab.connectionId] ?? []
       if (loadedDatabases.length === 0) {
         await ensureDatabasesLoaded(tab.connectionId)
         loadedDatabases = allDatabasesRef.current[tab.connectionId] ?? []
       }
-      const availableDatabases = loadedDatabases.length > 0 ? loadedDatabases : (selectedDatabasesRef.current[tab.connectionId] ?? [])
+      const availableDatabases =
+        loadedDatabases.length > 0
+          ? loadedDatabases
+          : (selectedDatabasesRef.current[tab.connectionId] ?? [])
       if (!nextDatabaseName || !availableDatabases.includes(nextDatabaseName)) {
-        nextDatabaseName = selectedDatabasesRef.current[tab.connectionId]?.[0]
-          ?? availableDatabases[0]
-          ?? getDefaultDatabaseName(connection)
+        nextDatabaseName =
+          selectedDatabasesRef.current[tab.connectionId]?.[0] ??
+          availableDatabases[0] ??
+          getDefaultDatabaseName(connection)
       }
     }
 
@@ -6653,11 +7966,15 @@ function App(): React.JSX.Element {
         await ensureDatabasesLoaded(tab.connectionId)
         loadedDatabases = allDatabasesRef.current[tab.connectionId] ?? []
       }
-      const availablePgDatabases = loadedDatabases.length > 0 ? loadedDatabases : (selectedDatabasesRef.current[tab.connectionId] ?? [])
+      const availablePgDatabases =
+        loadedDatabases.length > 0
+          ? loadedDatabases
+          : (selectedDatabasesRef.current[tab.connectionId] ?? [])
       if (!nextPgDatabaseName || !availablePgDatabases.includes(nextPgDatabaseName)) {
-        nextPgDatabaseName = selectedDatabasesRef.current[tab.connectionId]?.[0]
-          ?? availablePgDatabases[0]
-          ?? getDefaultPgDatabase(connection)
+        nextPgDatabaseName =
+          selectedDatabasesRef.current[tab.connectionId]?.[0] ??
+          availablePgDatabases[0] ??
+          getDefaultPgDatabase(connection)
       }
 
       if (nextPgDatabaseName) {
@@ -6692,27 +8009,38 @@ function App(): React.JSX.Element {
     }
   }
 
-  const appendSqlToQueryWorkspace = useCallback((sql: string, title?: string): void => {
-    const nextSql = sql.trimEnd()
-    if (!nextSql) {
-      return
-    }
+  const appendSqlToQueryWorkspace = useCallback(
+    (sql: string, title?: string): void => {
+      const nextSql = sql.trimEnd()
+      if (!nextSql) {
+        return
+      }
 
-    const currentActiveTabKey = useWorkspaceStore.getState().activeTabKey
-    const activeTab = currentActiveTabKey ? useWorkspaceStore.getState().getTabByKey(currentActiveTabKey) : undefined
-    const canReuseActiveQuery = activeTab?.kind === 'query' && (
-      activeTab.connectionId === aiActiveContext?.connectionId &&
-      (activeTab.databaseName ?? '') === (aiActiveContext?.databaseName ?? '') &&
-      (activeTab.pgDatabaseName ?? '') === (aiActiveContext?.pgDatabaseName ?? '')
-    )
-    if (canReuseActiveQuery && activeTab?.kind === 'query') {
-      const separator = activeTab.sql.trim() ? '\n\n' : ''
-      updateWorkspaceTab(activeTab.key, { sql: `${activeTab.sql}${separator}${nextSql}` })
-      return
-    }
+      const currentActiveTabKey = useWorkspaceStore.getState().activeTabKey
+      const activeTab = currentActiveTabKey
+        ? useWorkspaceStore.getState().getTabByKey(currentActiveTabKey)
+        : undefined
+      const canReuseActiveQuery =
+        activeTab?.kind === 'query' &&
+        activeTab.connectionId === aiActiveContext?.connectionId &&
+        (activeTab.databaseName ?? '') === (aiActiveContext?.databaseName ?? '') &&
+        (activeTab.pgDatabaseName ?? '') === (aiActiveContext?.pgDatabaseName ?? '')
+      if (canReuseActiveQuery && activeTab?.kind === 'query') {
+        const separator = activeTab.sql.trim() ? '\n\n' : ''
+        updateWorkspaceTab(activeTab.key, { sql: `${activeTab.sql}${separator}${nextSql}` })
+        return
+      }
 
-    openQueryWorkspaceRef.current(nextSql, title ?? 'AI 生成 SQL', aiActiveContext?.connectionId, aiActiveContext?.databaseName, aiActiveContext?.pgDatabaseName)
-  }, [aiActiveContext, updateWorkspaceTab])
+      openQueryWorkspaceRef.current(
+        nextSql,
+        title ?? 'AI 生成 SQL',
+        aiActiveContext?.connectionId,
+        aiActiveContext?.databaseName,
+        aiActiveContext?.pgDatabaseName
+      )
+    },
+    [aiActiveContext, updateWorkspaceTab]
+  )
 
   const refreshAfterAgentChange = useCallback((): void => {
     if (aiActiveContext?.connectionId) {
@@ -6726,10 +8054,15 @@ function App(): React.JSX.Element {
     }
 
     const currentActiveTabKey = useWorkspaceStore.getState().activeTabKey
-    const activePreviewCandidate = currentActiveTabKey ? useWorkspaceStore.getState().getTabByKey(currentActiveTabKey) : undefined
-    const activePreview = activePreviewCandidate?.kind === 'preview' && activePreviewCandidate.connectionId && activePreviewCandidate.tableName
-      ? activePreviewCandidate
+    const activePreviewCandidate = currentActiveTabKey
+      ? useWorkspaceStore.getState().getTabByKey(currentActiveTabKey)
       : undefined
+    const activePreview =
+      activePreviewCandidate?.kind === 'preview' &&
+      activePreviewCandidate.connectionId &&
+      activePreviewCandidate.tableName
+        ? activePreviewCandidate
+        : undefined
     if (activePreview?.connectionId && activePreview.tableName) {
       void previewTableRef.current(
         activePreview.connectionId,
@@ -6752,16 +8085,22 @@ function App(): React.JSX.Element {
 
   handleConnectionCreateMenuClickRef.current = handleConnectionCreateMenuClick
 
-  const handleAiPanelResizeMouseDown = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    aiPanelResizeRef.current = { startX: event.clientX, startSize: aiPanelSize }
-    setResizingAiPanel(true)
-  }, [aiPanelSize])
+  const handleAiPanelResizeMouseDown = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      aiPanelResizeRef.current = { startX: event.clientX, startSize: aiPanelSize }
+      setResizingAiPanel(true)
+    },
+    [aiPanelSize]
+  )
 
-  const handleAiPanelWorkspaceAction = useCallback((action: AIWorkspaceAction) => {
-    if (action.type === 'append_query_sql') {
-      appendSqlToQueryWorkspace(action.sql, action.title)
-    }
-  }, [appendSqlToQueryWorkspace])
+  const handleAiPanelWorkspaceAction = useCallback(
+    (action: AIWorkspaceAction) => {
+      if (action.type === 'append_query_sql') {
+        appendSqlToQueryWorkspace(action.sql, action.title)
+      }
+    },
+    [appendSqlToQueryWorkspace]
+  )
 
   const handleAiPanelAgentDataChanged = useCallback(() => {
     refreshAfterAgentChange()
@@ -6781,7 +8120,15 @@ function App(): React.JSX.Element {
     }
 
     if (tab.kind === 'preview' && tab.connectionId && tab.tableName) {
-      await previewTable(tab.connectionId, tab.tableName, tab.databaseName, tab.pgDatabaseName, limit, 1, tab.where)
+      await previewTable(
+        tab.connectionId,
+        tab.tableName,
+        tab.databaseName,
+        tab.pgDatabaseName,
+        limit,
+        1,
+        tab.where
+      )
     }
   }
 
@@ -6795,138 +8142,221 @@ function App(): React.JSX.Element {
     }
 
     if (tab.kind === 'redis-browser' && tab.connectionId && tab.databaseName) {
-      await previewRedisDatabase(tab.connectionId, tab.databaseName, tab.limit ?? REDIS_DEFAULT_LIMIT, nextPage, tab.key, tab.where)
+      await previewRedisDatabase(
+        tab.connectionId,
+        tab.databaseName,
+        tab.limit ?? REDIS_DEFAULT_LIMIT,
+        nextPage,
+        tab.key,
+        tab.where
+      )
       return
     }
 
     if (tab.kind === 'preview' && tab.connectionId && tab.tableName) {
-      await previewTable(tab.connectionId, tab.tableName, tab.databaseName, tab.pgDatabaseName, tab.limit ?? PREVIEW_DEFAULT_LIMIT, nextPage, tab.where)
+      await previewTable(
+        tab.connectionId,
+        tab.tableName,
+        tab.databaseName,
+        tab.pgDatabaseName,
+        tab.limit ?? PREVIEW_DEFAULT_LIMIT,
+        nextPage,
+        tab.where
+      )
     }
   }
 
-  const runQuery = useCallback(async (tab: WorkspaceTab, selectedSql?: string): Promise<void> => {
-    const liveSelectionPayload = sqlEditorHandleRefs.current[tab.key]?.getSelectionPayload()
-    const executionContext = liveSelectionPayload ?? sqlExecutionContextRef.current[tab.key] ?? sqlExecutionContextByTab[tab.key]
-    const sqlToExecute = selectedSql?.trim()
-      || executionContext?.selectedSql?.trim()
-      || executionContext?.currentStatementSql?.trim()
-      || tab.sql.trim()
+  const runQuery = useCallback(
+    async (tab: WorkspaceTab, selectedSql?: string): Promise<void> => {
+      const liveSelectionPayload = sqlEditorHandleRefs.current[tab.key]?.getSelectionPayload()
+      const executionContext =
+        liveSelectionPayload ??
+        sqlExecutionContextRef.current[tab.key] ??
+        sqlExecutionContextByTab[tab.key]
+      const sqlToExecute =
+        selectedSql?.trim() ||
+        executionContext?.selectedSql?.trim() ||
+        executionContext?.currentStatementSql?.trim() ||
+        tab.sql.trim()
 
-    if (!tab.connectionId) {
-      return
-    }
+      if (!tab.connectionId) {
+        return
+      }
 
-    if (!sqlToExecute) {
-      return
-    }
+      if (!sqlToExecute) {
+        return
+      }
 
-    const resolvedTab = await resolveQueryExecutionContext(tab)
-    if (!resolvedTab) {
-      return
-    }
-    if (resolvedTab.treeOpenedForExecution) {
-      await locateTreePath([
-        `connection:${resolvedTab.connectionId}`,
-        ...(resolvedTab.pgDatabaseName ? [`database:${resolvedTab.connectionId}:${resolvedTab.pgDatabaseName}`] : []),
-        ...(resolvedTab.databaseName && resolvedTab.pgDatabaseName
-          ? [`pg-schema:${resolvedTab.connectionId}:${resolvedTab.pgDatabaseName}:${resolvedTab.databaseName}`]
-          : resolvedTab.databaseName
-            ? [`database:${resolvedTab.connectionId}:${resolvedTab.databaseName}`]
-            : [])
-      ])
-    }
+      const resolvedTab = await resolveQueryExecutionContext(tab)
+      if (!resolvedTab) {
+        return
+      }
+      if (resolvedTab.treeOpenedForExecution) {
+        await locateTreePath([
+          `connection:${resolvedTab.connectionId}`,
+          ...(resolvedTab.pgDatabaseName
+            ? [`database:${resolvedTab.connectionId}:${resolvedTab.pgDatabaseName}`]
+            : []),
+          ...(resolvedTab.databaseName && resolvedTab.pgDatabaseName
+            ? [
+                `pg-schema:${resolvedTab.connectionId}:${resolvedTab.pgDatabaseName}:${resolvedTab.databaseName}`
+              ]
+            : resolvedTab.databaseName
+              ? [`database:${resolvedTab.connectionId}:${resolvedTab.databaseName}`]
+              : [])
+        ])
+      }
 
-    const connection = getConnection(resolvedTab.connectionId)
-
-    if ((isDatabaseScopedType(connection?.database_type) || connection?.database_type === 'dm' || connection?.database_type === 'oracle') && !resolvedTab.databaseName) {
-      return
-    }
-
-    if (isSchemaScopedType(connection?.database_type) && !resolvedTab.pgDatabaseName) {
-      return
-    }
-
-    if (isSchemaScopedType(connection?.database_type) && !resolvedTab.databaseName) {
-      return
-    }
-
-    updateWorkspaceTab(resolvedTab.key, {
-      loading: true,
-      error: undefined,
-      resultVisible: true,
-      resultCollapsed: false,
-      resultKind: 'query',
-      commandMessage: undefined,
-      commandAffectedRows: undefined
-    })
-
-    try {
       const connection = getConnection(resolvedTab.connectionId)
-      const result = await requestJson<QueryResponse>('/query', {
-        method: 'POST',
-        body: JSON.stringify({
-          connection_id: resolvedTab.connectionId,
-          sql: sqlToExecute,
-          limit: resolvedTab.limit ?? QUERY_DEFAULT_LIMIT,
-          offset: Math.max(0, (resolvedTab.page ?? 1) - 1) * (resolvedTab.limit ?? QUERY_DEFAULT_LIMIT),
-          database: connection?.database_type === 'mysql' || connection?.database_type === 'dm' || connection?.database_type === 'oracle' || isSchemaScopedType(connection?.database_type) || connection?.database_type === 'mongodb' || connection?.database_type === 'redis' || connection?.database_type === 'clickhouse' ? (resolvedTab.databaseName || undefined) : undefined,
-          pg_database: isSchemaScopedType(connection?.database_type) ? (resolvedTab.pgDatabaseName || undefined) : undefined
-        })
-      })
-      const isCommandResult = result.columns.length === 2
-        && result.columns.includes('message')
-        && result.columns.includes('affected_rows')
-        && result.rows.length === 1
-      const commandRow = isCommandResult ? result.rows[0] : undefined
+
+      if (
+        (isDatabaseScopedType(connection?.database_type) ||
+          connection?.database_type === 'dm' ||
+          connection?.database_type === 'oracle') &&
+        !resolvedTab.databaseName
+      ) {
+        return
+      }
+
+      if (isSchemaScopedType(connection?.database_type) && !resolvedTab.pgDatabaseName) {
+        return
+      }
+
+      if (isSchemaScopedType(connection?.database_type) && !resolvedTab.databaseName) {
+        return
+      }
+
       updateWorkspaceTab(resolvedTab.key, {
-        result,
-        page: resolvedTab.page ?? 1,
-        selectedRowKeys: [],
-        selectedRowKeyMap: {},
-        columnFilterOptions: undefined,
-        loading: false,
+        loading: true,
         error: undefined,
         resultVisible: true,
         resultCollapsed: false,
-        resultKind: isCommandResult ? 'command' : 'query',
-        commandMessage: isCommandResult && typeof commandRow?.message === 'string' ? commandRow.message : undefined,
-        commandAffectedRows: isCommandResult && typeof commandRow?.affected_rows === 'number' ? commandRow.affected_rows : null
-      })
-    } catch (err) {
-      updateWorkspaceTab(resolvedTab.key, {
-        loading: false,
-        error: err instanceof Error ? err.message : '查询失败',
-        resultVisible: true,
-        resultCollapsed: false,
-        resultKind: 'error',
+        resultKind: 'query',
         commandMessage: undefined,
         commandAffectedRows: undefined
       })
-    }
-  }, [
-    sqlExecutionContextByTab,
-    isDatabaseScopedType,
-    isSchemaScopedType,
-    getConnection,
-    locateTreePath,
-    requestJson,
-    resolveQueryExecutionContext,
-    updateWorkspaceTab
-  ])
 
-  const renderWorkspaceTab = useCallback((tab: WorkspaceTab): React.ReactNode => {
-    return renderWorkspaceTabContent({
-      tab,
+      try {
+        const connection = getConnection(resolvedTab.connectionId)
+        const result = await requestJson<QueryResponse>('/query', {
+          method: 'POST',
+          body: JSON.stringify({
+            connection_id: resolvedTab.connectionId,
+            sql: sqlToExecute,
+            limit: resolvedTab.limit ?? QUERY_DEFAULT_LIMIT,
+            offset:
+              Math.max(0, (resolvedTab.page ?? 1) - 1) * (resolvedTab.limit ?? QUERY_DEFAULT_LIMIT),
+            database:
+              connection?.database_type === 'mysql' ||
+              connection?.database_type === 'dm' ||
+              connection?.database_type === 'oracle' ||
+              isSchemaScopedType(connection?.database_type) ||
+              connection?.database_type === 'mongodb' ||
+              connection?.database_type === 'redis' ||
+              connection?.database_type === 'clickhouse'
+                ? resolvedTab.databaseName || undefined
+                : undefined,
+            pg_database: isSchemaScopedType(connection?.database_type)
+              ? resolvedTab.pgDatabaseName || undefined
+              : undefined
+          })
+        })
+        const isCommandResult =
+          result.columns.length === 2 &&
+          result.columns.includes('message') &&
+          result.columns.includes('affected_rows') &&
+          result.rows.length === 1
+        const commandRow = isCommandResult ? result.rows[0] : undefined
+        updateWorkspaceTab(resolvedTab.key, {
+          result,
+          page: resolvedTab.page ?? 1,
+          selectedRowKeys: [],
+          selectedRowKeyMap: {},
+          columnFilterOptions: undefined,
+          loading: false,
+          error: undefined,
+          resultVisible: true,
+          resultCollapsed: false,
+          resultKind: isCommandResult ? 'command' : 'query',
+          commandMessage:
+            isCommandResult && typeof commandRow?.message === 'string'
+              ? commandRow.message
+              : undefined,
+          commandAffectedRows:
+            isCommandResult && typeof commandRow?.affected_rows === 'number'
+              ? commandRow.affected_rows
+              : null
+        })
+      } catch (err) {
+        updateWorkspaceTab(resolvedTab.key, {
+          loading: false,
+          error: err instanceof Error ? err.message : '查询失败',
+          resultVisible: true,
+          resultCollapsed: false,
+          resultKind: 'error',
+          commandMessage: undefined,
+          commandAffectedRows: undefined
+        })
+      }
+    },
+    [
+      sqlExecutionContextByTab,
+      isDatabaseScopedType,
+      isSchemaScopedType,
+      getConnection,
+      locateTreePath,
+      requestJson,
+      resolveQueryExecutionContext,
+      updateWorkspaceTab
+    ]
+  )
+
+  const renderWorkspaceTab = useCallback(
+    (tab: WorkspaceTab): React.ReactNode => {
+      return renderWorkspaceTabContent({
+        tab,
+        theme,
+        getConnection,
+        connections,
+        allDatabases,
+        allSchemas,
+        shortcutSettings,
+        executionContext:
+          sqlExecutionContextByTab[tab.key] ?? sqlExecutionContextRef.current[tab.key],
+        setQueryResultToggleRef: (tabKey, element) => {
+          queryResultToggleRefs.current[tabKey] = element
+        },
+        getDefaultDatabaseName,
+        getDefaultPgDatabase,
+        getDefaultPgSchema,
+        isSchemaScopedType,
+        isDatabaseScopedType,
+        ensureDatabasesLoaded,
+        ensureSchemasLoaded,
+        preloadCompletionForDatabase,
+        updateWorkspaceTab,
+        renderResultTable: renderResultTableRef.current,
+        runQuery,
+        buildSqlCompletionContext: buildSqlCompletionContextRef.current,
+        scheduleQuerySqlDraftCommit,
+        handleSqlExecutionContextChange,
+        setSqlEditorHandle: (tabKey, handle) => {
+          if (handle) {
+            sqlEditorHandleRefs.current[tabKey] = handle
+            return
+          }
+          delete sqlEditorHandleRefs.current[tabKey]
+        }
+      })
+    },
+    [
       theme,
       getConnection,
       connections,
       allDatabases,
       allSchemas,
       shortcutSettings,
-      executionContext: sqlExecutionContextByTab[tab.key] ?? sqlExecutionContextRef.current[tab.key],
-      setQueryResultToggleRef: (tabKey, element) => {
-        queryResultToggleRefs.current[tabKey] = element
-      },
+      sqlExecutionContextByTab,
       getDefaultDatabaseName,
       getDefaultPgDatabase,
       getDefaultPgSchema,
@@ -6936,64 +8366,47 @@ function App(): React.JSX.Element {
       ensureSchemasLoaded,
       preloadCompletionForDatabase,
       updateWorkspaceTab,
-      renderResultTable: renderResultTableRef.current,
-      runQuery,
-      buildSqlCompletionContext: buildSqlCompletionContextRef.current,
+      buildSqlCompletionContext,
       scheduleQuerySqlDraftCommit,
-      handleSqlExecutionContextChange,
-      setSqlEditorHandle: (tabKey, handle) => {
-        if (handle) {
-          sqlEditorHandleRefs.current[tabKey] = handle
-          return
-        }
-        delete sqlEditorHandleRefs.current[tabKey]
-      }
-    })
-  }, [
-    theme,
-    getConnection,
-    connections,
-    allDatabases,
-    allSchemas,
-    shortcutSettings,
-    sqlExecutionContextByTab,
-    getDefaultDatabaseName,
-    getDefaultPgDatabase,
-    getDefaultPgSchema,
-    isSchemaScopedType,
-    isDatabaseScopedType,
-    ensureDatabasesLoaded,
-    ensureSchemasLoaded,
-    preloadCompletionForDatabase,
-    updateWorkspaceTab,
-    buildSqlCompletionContext,
-    scheduleQuerySqlDraftCommit,
-    handleSqlExecutionContextChange
-  ])
+      handleSqlExecutionContextChange
+    ]
+  )
 
-  const handleActiveWorkspaceTabChange = useCallback((key: string) => {
-    setActiveTabKey(key)
-  }, [setActiveTabKey])
+  const handleActiveWorkspaceTabChange = useCallback(
+    (key: string) => {
+      setActiveTabKey(key)
+    },
+    [setActiveTabKey]
+  )
 
-  const workspaceRenderVersionToken = useMemo(() => ({}), [workspaceTabSummaryCount, tableSearchUiState])
+  const workspaceRenderVersionToken = useMemo(
+    () => ({}),
+    [workspaceTabSummaryCount, tableSearchUiState]
+  )
 
   const stableRenderWorkspaceTabRef = useRef(renderWorkspaceTab)
   stableRenderWorkspaceTabRef.current = renderWorkspaceTab
 
-  const stableRenderWorkspaceTab = useCallback((tab: WorkspaceTab, _active: boolean): React.ReactNode => {
-    return stableRenderWorkspaceTabRef.current(tab)
-  }, [])
+  const stableRenderWorkspaceTab = useCallback(
+    (tab: WorkspaceTab, _active: boolean): React.ReactNode => {
+      return stableRenderWorkspaceTabRef.current(tab)
+    },
+    []
+  )
 
   const stableConnectionCreateMenuHandler = useCallback((info: { key: string }) => {
     handleConnectionCreateMenuClickRef.current(info)
   }, [])
 
-  const handleConnectionDriverChange = useCallback((value: string): void => {
-    form.setFieldsValue({
-      driver_id: value,
-      dm_driver_id: connectionModalDatabaseType === 'dm' ? value : undefined
-    })
-  }, [connectionModalDatabaseType, form])
+  const handleConnectionDriverChange = useCallback(
+    (value: string): void => {
+      form.setFieldsValue({
+        driver_id: value,
+        dm_driver_id: connectionModalDatabaseType === 'dm' ? value : undefined
+      })
+    },
+    [connectionModalDatabaseType, form]
+  )
 
   useEffect(() => {
     return () => {
@@ -7033,7 +8446,11 @@ function App(): React.JSX.Element {
       window.api.onUpdateDownloaded((info) => {
         setDownloadingUpdate(false)
         setUpdateInfo(info)
-        setUpdateProgress((current) => ({ percent: 100, transferred: current?.transferred ?? 0, total: current?.total }))
+        setUpdateProgress((current) => ({
+          percent: 100,
+          transferred: current?.transferred ?? 0,
+          total: current?.total
+        }))
         openUpdateModal()
       }),
       window.api.onUpdateError((error) => {
@@ -7083,80 +8500,122 @@ function App(): React.JSX.Element {
   }, [selectedSchemas])
 
   const updateMode = updateSettings?.mode ?? updateInfo?.mode ?? 'installer'
-  const updateDownloaded = updateMode === 'portable'
-    ? Boolean(updateInfo?.downloadedPath)
-    : Boolean(updateInfo?.installerDownloaded)
+  const updateDownloaded =
+    updateMode === 'portable'
+      ? Boolean(updateInfo?.downloadedPath)
+      : Boolean(updateInfo?.installerDownloaded)
   const updateActionText = updateMode === 'portable' ? '下载绿色版' : '下载并安装'
   const updateStatusMessage = updateInfo?.available
     ? `发现新版本 ${updateInfo.latestVersion ?? ''}`
     : `当前版本 ${updateSettings?.currentVersion ?? updateInfo?.currentVersion ?? ''}`
 
   const backendReady = backendStatus.state === 'online'
-  const showBackendStatusTag = startupUiReady || backendStatus.state === 'failed' || backendStatus.state === 'crashed'
+  const showBackendStatusTag =
+    startupUiReady || backendStatus.state === 'failed' || backendStatus.state === 'crashed'
   const backendStatusIcon = backendReady ? <CheckCircleOutlined /> : <CloseCircleOutlined />
   const activeAIConnection = getConnection(aiActiveContext?.connectionId)
   const aiContextConnection = activeAIConnection?.is_open ? activeAIConnection : undefined
   const aiDatabase = isSchemaScopedType(aiContextConnection?.database_type)
     ? aiActiveContext?.databaseName
     : aiActiveContext?.databaseName
-  const aiPgDatabase = isSchemaScopedType(aiContextConnection?.database_type) && aiContextConnection
-    ? aiActiveContext?.pgDatabaseName
-    : undefined
+  const aiPgDatabase =
+    isSchemaScopedType(aiContextConnection?.database_type) && aiContextConnection
+      ? aiActiveContext?.pgDatabaseName
+      : undefined
   const aiDbName = isSchemaScopedType(aiContextConnection?.database_type)
     ? [aiPgDatabase, aiDatabase].filter(Boolean).join('.')
     : aiDatabase
-  const primaryAIContextSource: AIContextSource | undefined = useMemo(() => (
-    aiContextConnection && aiDbName
-      ? {
-          id: contextSourceId({
-            type: isSchemaScopedType(aiContextConnection.database_type) && aiDatabase ? 'schema' : 'database',
+  const primaryAIContextSource: AIContextSource | undefined = useMemo(
+    () =>
+      aiContextConnection && aiDbName
+        ? {
+            id: contextSourceId({
+              type:
+                isSchemaScopedType(aiContextConnection.database_type) && aiDatabase
+                  ? 'schema'
+                  : 'database',
+              connectionId: aiContextConnection.connection_id,
+              database: isSchemaScopedType(aiContextConnection.database_type)
+                ? aiPgDatabase
+                : aiDatabase,
+              schema: isSchemaScopedType(aiContextConnection.database_type)
+                ? aiDatabase
+                : undefined,
+              pgDatabase: isSchemaScopedType(aiContextConnection.database_type)
+                ? aiPgDatabase
+                : undefined
+            }),
+            type:
+              isSchemaScopedType(aiContextConnection.database_type) && aiDatabase
+                ? 'schema'
+                : 'database',
             connectionId: aiContextConnection.connection_id,
-            database: isSchemaScopedType(aiContextConnection.database_type) ? aiPgDatabase : aiDatabase,
+            connectionName: aiContextConnection.name,
+            dbType: aiContextConnection.database_type,
+            database: isSchemaScopedType(aiContextConnection.database_type)
+              ? aiPgDatabase
+              : aiDatabase,
             schema: isSchemaScopedType(aiContextConnection.database_type) ? aiDatabase : undefined,
-            pgDatabase: isSchemaScopedType(aiContextConnection.database_type) ? aiPgDatabase : undefined
-          }),
-          type: isSchemaScopedType(aiContextConnection.database_type) && aiDatabase ? 'schema' : 'database',
-          connectionId: aiContextConnection.connection_id,
-          connectionName: aiContextConnection.name,
-          dbType: aiContextConnection.database_type,
-          database: isSchemaScopedType(aiContextConnection.database_type) ? aiPgDatabase : aiDatabase,
-          schema: isSchemaScopedType(aiContextConnection.database_type) ? aiDatabase : undefined,
-          pgDatabase: isSchemaScopedType(aiContextConnection.database_type) ? aiPgDatabase : undefined
-        }
-      : undefined
-  ), [aiContextConnection, aiDatabase, aiDbName, aiPgDatabase, isSchemaScopedType])
-  const effectiveAIContextSources = useMemo(() => (
-    primaryAIContextSource
-      ? [primaryAIContextSource, ...aiContextSources.filter((source) => source.id !== primaryAIContextSource.id)]
-      : aiContextSources
-  ), [aiContextSources, primaryAIContextSource])
+            pgDatabase: isSchemaScopedType(aiContextConnection.database_type)
+              ? aiPgDatabase
+              : undefined
+          }
+        : undefined,
+    [aiContextConnection, aiDatabase, aiDbName, aiPgDatabase, isSchemaScopedType]
+  )
+  const effectiveAIContextSources = useMemo(
+    () =>
+      primaryAIContextSource
+        ? [
+            primaryAIContextSource,
+            ...aiContextSources.filter((source) => source.id !== primaryAIContextSource.id)
+          ]
+        : aiContextSources,
+    [aiContextSources, primaryAIContextSource]
+  )
   const focusedConnection = getConnection(focusedTreeNode?.connectionId)
-  const focusedResource = useMemo(() => (
-    focusedTreeNode
-      ? {
-          kind: focusedTreeNode.kind,
-          connectionId: focusedTreeNode.connectionId,
-          connectionName: focusedConnection?.name,
-          dbType: focusedConnection?.database_type,
-          database: isSchemaScopedType(focusedConnection?.database_type) ? focusedTreeNode.pgDatabaseName : focusedTreeNode.databaseName,
-          schema: isSchemaScopedType(focusedConnection?.database_type) ? focusedTreeNode.databaseName : undefined,
-          pgDatabase: focusedTreeNode.pgDatabaseName,
-          table: focusedTreeNode.tableName,
-          objectType: focusedTreeNode.objectType,
-          name: String(focusedTreeNode.title ?? focusedTreeNode.tableName ?? focusedTreeNode.databaseName ?? focusedConnection?.name ?? ''),
-          sizeDisplay: focusedTreeNode.sizeDisplay,
-          rowCount: focusedTreeNode.rowCount
-        }
-      : undefined
-  ), [focusedConnection?.database_type, focusedConnection?.name, focusedTreeNode])
-  const connectionSummaries = useMemo(() => connections.map((connection) => ({
-    connectionId: connection.connection_id,
-    name: connection.name,
-    dbType: connection.database_type,
-    database: connection.database,
-    isOpen: connection.is_open,
-    serverVersion: connection.server_version
-  })), [connections])
+  const focusedResource = useMemo(
+    () =>
+      focusedTreeNode
+        ? {
+            kind: focusedTreeNode.kind,
+            connectionId: focusedTreeNode.connectionId,
+            connectionName: focusedConnection?.name,
+            dbType: focusedConnection?.database_type,
+            database: isSchemaScopedType(focusedConnection?.database_type)
+              ? focusedTreeNode.pgDatabaseName
+              : focusedTreeNode.databaseName,
+            schema: isSchemaScopedType(focusedConnection?.database_type)
+              ? focusedTreeNode.databaseName
+              : undefined,
+            pgDatabase: focusedTreeNode.pgDatabaseName,
+            table: focusedTreeNode.tableName,
+            objectType: focusedTreeNode.objectType,
+            name: String(
+              focusedTreeNode.title ??
+                focusedTreeNode.tableName ??
+                focusedTreeNode.databaseName ??
+                focusedConnection?.name ??
+                ''
+            ),
+            sizeDisplay: focusedTreeNode.sizeDisplay,
+            rowCount: focusedTreeNode.rowCount
+          }
+        : undefined,
+    [focusedConnection?.database_type, focusedConnection?.name, focusedTreeNode]
+  )
+  const connectionSummaries = useMemo(
+    () =>
+      connections.map((connection) => ({
+        connectionId: connection.connection_id,
+        name: connection.name,
+        dbType: connection.database_type,
+        database: connection.database,
+        isOpen: connection.is_open,
+        serverVersion: connection.server_version
+      })),
+    [connections]
+  )
   const aiPanelContent = useMemo(() => {
     if (!aiPanelOpen) {
       return null
@@ -7226,960 +8685,1790 @@ function App(): React.JSX.Element {
       }}
     >
       <Layout className="app-shell" data-startup-ready={startupUiReady ? 'true' : 'false'}>
-      {contextHolder}
-      <Layout.Header className="app-header">
-        <Flex align="center" justify="space-between" className="app-toolbar">
-          <Space size="middle">
-            <div className="brand-mark"><img src={appIcon} alt="" /></div>
-            <Typography.Title level={4} className="brand-title">DataDjinn</Typography.Title>
-          </Space>
-          <div className="titlebar-spacer" />
-          <Space className="toolbar-actions titlebar-no-drag" size={4}>
-            <Button className="toolbar-query-btn" type="primary" size="small" icon={<FileAddOutlined />} onClick={() => openQueryWorkspace('', '新建查询')} title="新建查询" aria-label="新建查询">
-              新建查询
-            </Button>
-            <Button className="toolbar-icon-btn" type="text" size="small" icon={<HistoryOutlined />} onClick={openQueryHistoryModal} title="历史查询窗口" aria-label="历史查询窗口" />
-            <Button className="toolbar-icon-btn" type="text" size="small" icon={<SettingOutlined />} onClick={() => openSettings('app')} title="设置" aria-label="设置" />
-            <Button className={`toolbar-icon-btn${updateInfo?.available || downloadingUpdate ? ' is-highlighted' : ''}`} type={updateInfo?.available || downloadingUpdate ? 'primary' : 'text'} size="small" icon={<CloudDownloadOutlined />} loading={checkingUpdate} onClick={() => { openUpdateModal(); if (!downloadingUpdate) { void checkForUpdates(true) } }} title="检查更新" aria-label="检查更新" />
-            <Button className="toolbar-icon-btn" type="text" size="small" icon={<ReloadOutlined />} loading={healthLoading} onClick={() => void checkHealth()} title="同步状态" aria-label="同步状态" />
-            <Button className={`toolbar-icon-btn${aiPanelOpen ? ' is-highlighted' : ''}`} type={aiPanelOpen ? 'primary' : 'text'} size="small" icon={<MessageOutlined />} onClick={() => setAiPanelOpen((open) => !open)} title={aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'} aria-label={aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'} />
-            <Button className="theme-toggle-btn" type="text" size="small" icon={theme === 'dark' ? <SunOutlined /> : <MoonOutlined />} onClick={toggleTheme} title={theme === 'dark' ? '切换到亮色主题' : '切换到暗色主题'} aria-label={theme === 'dark' ? '切换到亮色主题' : '切换到暗色主题'} />
-            {showBackendStatusTag && (
-              <Tag className="service-pill" icon={backendStatusIcon} color={BACKEND_COLORS[backendStatus.state]} title={backendStatus.message}>{BACKEND_LABELS[backendStatus.state]}</Tag>
-            )}
-          </Space>
-          <Space className="window-controls titlebar-no-drag" size={0}>
-            <Button className="window-control-btn" type="text" onClick={() => void window.api.minimizeWindow()} title="最小化" aria-label="最小化">
-              <span className="window-glyph window-glyph-minimize" aria-hidden="true" />
-            </Button>
-            <Button className="window-control-btn" type="text" onClick={() => void window.api.toggleMaximizeWindow()} title="最大化" aria-label="最大化">
-              <span className="window-glyph window-glyph-maximize" aria-hidden="true" />
-            </Button>
-            <Button className="window-control-btn window-control-close" type="text" danger onClick={() => void window.api.closeWindow()} title="关闭" aria-label="关闭">
-              <span className="window-glyph window-glyph-close" aria-hidden="true" />
-            </Button>
-          </Space>
-        </Flex>
-      </Layout.Header>
-      <Layout.Content className="app-content">
-        <div ref={workspaceShellRef} className="workspace">
-          <div ref={resourcePanelRef} className="resource-panel" style={{ width: resourcePanelSize, flex: `0 0 ${resourcePanelSize}px` }}>
-            <div className="resource-header">
-              <Space className="resource-header-copy" direction="vertical" size={2}>
-                <Typography.Text className="panel-kicker">DATABASE EXPLORER</Typography.Text>
-                <Typography.Title level={5} className="panel-title">数据资产</Typography.Title>
-              </Space>
-              <Space className="resource-header-actions" size={8}>
-                <div className="resource-transfer-group" role="group" aria-label="连接导入导出">
-                  <Button className="resource-transfer-segment resource-transfer-segment-import resource-import" size="small" onClick={openImportConnectionModal}>导入</Button>
-                  <span className="resource-transfer-divider" aria-hidden="true" />
-                  <Button className="resource-transfer-segment resource-transfer-segment-export resource-export" size="small" onClick={openExportConnectionModal}>导出</Button>
-                </div>
-                <Dropdown menu={resourceCreateMenu} trigger={['click']} overlayClassName="resource-create-dropdown" {...FAST_PRELOADED_DROPDOWN_PROPS}>
-                  <Button className="resource-add" type="primary" size="small" icon={<PlusOutlined />}>新建</Button>
-                </Dropdown>
-              </Space>
+        {contextHolder}
+        <Layout.Header className="app-header">
+          <Flex align="center" justify="space-between" className="app-toolbar">
+            <Space size="middle">
+              <div className="brand-mark">
+                <img src={appIcon} alt="" />
+              </div>
+              <Typography.Title level={4} className="brand-title">
+                DataDjinn
+              </Typography.Title>
+            </Space>
+            <div className="titlebar-spacer" />
+            <Space className="toolbar-actions titlebar-no-drag" size={4}>
+              <Button
+                className="toolbar-query-btn"
+                type="primary"
+                size="small"
+                icon={<FileAddOutlined />}
+                onClick={() => openQueryWorkspace('', '新建查询')}
+                title="新建查询"
+                aria-label="新建查询"
+              >
+                新建查询
+              </Button>
+              <Button
+                className="toolbar-icon-btn"
+                type="text"
+                size="small"
+                icon={<HistoryOutlined />}
+                onClick={openQueryHistoryModal}
+                title="历史查询窗口"
+                aria-label="历史查询窗口"
+              />
+              <Button
+                className="toolbar-icon-btn"
+                type="text"
+                size="small"
+                icon={<SettingOutlined />}
+                onClick={() => openSettings('app')}
+                title="设置"
+                aria-label="设置"
+              />
+              <Button
+                className={`toolbar-icon-btn${updateInfo?.available || downloadingUpdate ? ' is-highlighted' : ''}`}
+                type={updateInfo?.available || downloadingUpdate ? 'primary' : 'text'}
+                size="small"
+                icon={<CloudDownloadOutlined />}
+                loading={checkingUpdate}
+                onClick={() => {
+                  openUpdateModal()
+                  if (!downloadingUpdate) {
+                    void checkForUpdates(true)
+                  }
+                }}
+                title="检查更新"
+                aria-label="检查更新"
+              />
+              <Button
+                className="toolbar-icon-btn"
+                type="text"
+                size="small"
+                icon={<ReloadOutlined />}
+                loading={healthLoading}
+                onClick={() => void checkHealth()}
+                title="同步状态"
+                aria-label="同步状态"
+              />
+              <Button
+                className={`toolbar-icon-btn${aiPanelOpen ? ' is-highlighted' : ''}`}
+                type={aiPanelOpen ? 'primary' : 'text'}
+                size="small"
+                icon={<MessageOutlined />}
+                onClick={() => setAiPanelOpen((open) => !open)}
+                title={aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'}
+                aria-label={aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'}
+              />
+              <Button
+                className="theme-toggle-btn"
+                type="text"
+                size="small"
+                icon={theme === 'dark' ? <SunOutlined /> : <MoonOutlined />}
+                onClick={toggleTheme}
+                title={theme === 'dark' ? '切换到亮色主题' : '切换到暗色主题'}
+                aria-label={theme === 'dark' ? '切换到亮色主题' : '切换到暗色主题'}
+              />
+              {showBackendStatusTag && (
+                <Tag
+                  className="service-pill"
+                  icon={backendStatusIcon}
+                  color={BACKEND_COLORS[backendStatus.state]}
+                  title={backendStatus.message}
+                >
+                  {BACKEND_LABELS[backendStatus.state]}
+                </Tag>
+              )}
+            </Space>
+            <Space className="window-controls titlebar-no-drag" size={0}>
+              <Button
+                className="window-control-btn"
+                type="text"
+                onClick={() => void window.api.minimizeWindow()}
+                title="最小化"
+                aria-label="最小化"
+              >
+                <span className="window-glyph window-glyph-minimize" aria-hidden="true" />
+              </Button>
+              <Button
+                className="window-control-btn"
+                type="text"
+                onClick={() => void window.api.toggleMaximizeWindow()}
+                title="最大化"
+                aria-label="最大化"
+              >
+                <span className="window-glyph window-glyph-maximize" aria-hidden="true" />
+              </Button>
+              <Button
+                className="window-control-btn window-control-close"
+                type="text"
+                danger
+                onClick={() => void window.api.closeWindow()}
+                title="关闭"
+                aria-label="关闭"
+              >
+                <span className="window-glyph window-glyph-close" aria-hidden="true" />
+              </Button>
+            </Space>
+          </Flex>
+        </Layout.Header>
+        <Layout.Content className="app-content">
+          <div ref={workspaceShellRef} className="workspace">
+            <div
+              ref={resourcePanelRef}
+              className="resource-panel"
+              style={{ width: resourcePanelSize, flex: `0 0 ${resourcePanelSize}px` }}
+            >
+              <div className="resource-header">
+                <Space className="resource-header-copy" direction="vertical" size={2}>
+                  <Typography.Text className="panel-kicker">DATABASE EXPLORER</Typography.Text>
+                  <Typography.Title level={5} className="panel-title">
+                    数据资产
+                  </Typography.Title>
+                </Space>
+                <Space className="resource-header-actions" size={8}>
+                  <div className="resource-transfer-group" role="group" aria-label="连接导入导出">
+                    <Button
+                      className="resource-transfer-segment resource-transfer-segment-import resource-import"
+                      size="small"
+                      onClick={openImportConnectionModal}
+                    >
+                      导入
+                    </Button>
+                    <span className="resource-transfer-divider" aria-hidden="true" />
+                    <Button
+                      className="resource-transfer-segment resource-transfer-segment-export resource-export"
+                      size="small"
+                      onClick={openExportConnectionModal}
+                    >
+                      导出
+                    </Button>
+                  </div>
+                  <Dropdown
+                    menu={resourceCreateMenu}
+                    trigger={['click']}
+                    overlayClassName="resource-create-dropdown"
+                    {...FAST_PRELOADED_DROPDOWN_PROPS}
+                  >
+                    <Button
+                      className="resource-add"
+                      type="primary"
+                      size="small"
+                      icon={<PlusOutlined />}
+                    >
+                      新建
+                    </Button>
+                  </Dropdown>
+                </Space>
+              </div>
+              <div className="connection-summary-strip">
+                <span className="summary-pill summary-pill-connections">
+                  <strong>{connections.length}</strong>
+                  <span className="summary-label">连接</span>
+                </span>
+                <span className="summary-pill summary-pill-folders">
+                  <strong>{connectionFolders.length}</strong>
+                  <span className="summary-label">分组</span>
+                </span>
+                <WorkspaceTabCountBadge />
+              </div>
+              <ResourceTreePanel
+                resourceTreeContainerRef={resourceTreeContainerRef}
+                resourceTreeViewportRef={resourceTreeViewportRef}
+                resourceTreeRef={resourceTreeRef}
+                treeSearchInputRef={treeSearchInputRef}
+                connectionsInitialized={connectionsInitialized}
+                backendReady={backendReady}
+                treeData={treeData}
+                itemHeight={RESOURCE_TREE_ITEM_HEIGHT}
+                enableVirtualTree={enableVirtualTree}
+                resourceTreeHeight={resourceTreeHeight}
+                expandedKeys={expandedKeys}
+                selectedTreeKeys={selectedTreeKeys}
+                selectedConnectionIds={selectedConnectionIds}
+                treeSearchOpen={treeSearchOpen}
+                treeSearchText={treeSearchText}
+                setTreeSearchText={setTreeSearchText}
+                treeContextMenu={treeContextMenu}
+                treeLoadingVersion={treeLoadingVersion}
+                treeLoadingKeysRef={treeLoadingKeysRef}
+                connectionFolderAssignments={connectionFolderAssignments}
+                draggingConnectionIdsRef={draggingConnectionIdsRef}
+                draggingConnectionFolderIdRef={draggingConnectionFolderIdRef}
+                resourceCreateToolbarItems={resourceTreeToolbarItems}
+                getConnection={getConnection}
+                getTreeNodeKindFromKey={getTreeNodeKindFromKey}
+                folderDropPlaceholderKeyPrefix={FOLDER_DROP_PLACEHOLDER_KEY_PREFIX}
+                isTreeNodeChildrenLoaded={isTreeNodeChildrenLoaded}
+                isLoadableTreeNode={isLoadableTreeNode}
+                allowTreeDrop={allowTreeDrop}
+                updateDragOverConnectionTarget={updateDragOverConnectionTarget}
+                updateDragOverFolderTarget={updateDragOverFolderTarget}
+                clearConnectionDragState={clearConnectionDragState}
+                activateAIContextFromNode={activateAIContextFromNode}
+                collapseTreeNode={collapseTreeNode}
+                reloadNodeChildren={reloadNodeChildren}
+                renderTreeTitle={renderTreeTitle}
+                handleTreeSelection={handleTreeSelection}
+                selectConnectionNodes={selectConnectionNodes}
+                setFocusedTreeNode={setFocusedTreeNode}
+                setSelectedConnectionId={setSelectedConnectionId}
+                setExpandedKeys={setExpandedKeys}
+                setSelectedTreeKeys={setSelectedTreeKeys}
+                setTreeContextMenu={setTreeContextMenu}
+                getTreeContextMenuItems={getTreeContextMenuItems}
+                handleTreeContextMenuClick={handleTreeContextMenuClick}
+                handleTreeDrop={handleTreeDrop}
+                toggleOrLoadTreeNode={toggleOrLoadTreeNode}
+                openConnectionById={openConnectionById}
+                openRedisDatabaseBrowser={openRedisDatabaseBrowser}
+                getDefaultDatabaseName={getDefaultDatabaseName}
+                previewTable={previewTable}
+                previewDefaultLimit={PREVIEW_DEFAULT_LIMIT}
+                copyTreeNodeNames={copyTreeNodeNames}
+              />
             </div>
-            <div className="connection-summary-strip">
-              <span className="summary-pill summary-pill-connections">
-                <strong>{connections.length}</strong>
-                <span className="summary-label">连接</span>
-              </span>
-              <span className="summary-pill summary-pill-folders">
-                <strong>{connectionFolders.length}</strong>
-                <span className="summary-label">分组</span>
-              </span>
-              <WorkspaceTabCountBadge />
-            </div>
-            <ResourceTreePanel
-              resourceTreeContainerRef={resourceTreeContainerRef}
-              resourceTreeViewportRef={resourceTreeViewportRef}
-              resourceTreeRef={resourceTreeRef}
-              treeSearchInputRef={treeSearchInputRef}
-              connectionsInitialized={connectionsInitialized}
-              backendReady={backendReady}
-              treeData={treeData}
-              itemHeight={RESOURCE_TREE_ITEM_HEIGHT}
-              enableVirtualTree={enableVirtualTree}
-              resourceTreeHeight={resourceTreeHeight}
-              expandedKeys={expandedKeys}
-              selectedTreeKeys={selectedTreeKeys}
-              selectedConnectionIds={selectedConnectionIds}
-              treeSearchOpen={treeSearchOpen}
-              treeSearchText={treeSearchText}
-              setTreeSearchText={setTreeSearchText}
-              treeContextMenu={treeContextMenu}
-              treeLoadingVersion={treeLoadingVersion}
-              treeLoadingKeysRef={treeLoadingKeysRef}
-              connectionFolderAssignments={connectionFolderAssignments}
-              draggingConnectionIdsRef={draggingConnectionIdsRef}
-              draggingConnectionFolderIdRef={draggingConnectionFolderIdRef}
-              resourceCreateToolbarItems={resourceTreeToolbarItems}
-              getConnection={getConnection}
-              getTreeNodeKindFromKey={getTreeNodeKindFromKey}
-              folderDropPlaceholderKeyPrefix={FOLDER_DROP_PLACEHOLDER_KEY_PREFIX}
-              isTreeNodeChildrenLoaded={isTreeNodeChildrenLoaded}
-              isLoadableTreeNode={isLoadableTreeNode}
-              allowTreeDrop={allowTreeDrop}
-              updateDragOverConnectionTarget={updateDragOverConnectionTarget}
-              updateDragOverFolderTarget={updateDragOverFolderTarget}
-              clearConnectionDragState={clearConnectionDragState}
-              activateAIContextFromNode={activateAIContextFromNode}
-              collapseTreeNode={collapseTreeNode}
-              reloadNodeChildren={reloadNodeChildren}
-              renderTreeTitle={renderTreeTitle}
-              handleTreeSelection={handleTreeSelection}
-              selectConnectionNodes={selectConnectionNodes}
-              setFocusedTreeNode={setFocusedTreeNode}
-              setSelectedConnectionId={setSelectedConnectionId}
-              setExpandedKeys={setExpandedKeys}
-              setSelectedTreeKeys={setSelectedTreeKeys}
-              setTreeContextMenu={setTreeContextMenu}
-              getTreeContextMenuItems={getTreeContextMenuItems}
-              handleTreeContextMenuClick={handleTreeContextMenuClick}
-              handleTreeDrop={handleTreeDrop}
-              toggleOrLoadTreeNode={toggleOrLoadTreeNode}
-              openConnectionById={openConnectionById}
-              openRedisDatabaseBrowser={openRedisDatabaseBrowser}
-              getDefaultDatabaseName={getDefaultDatabaseName}
-              previewTable={previewTable}
-              previewDefaultLimit={PREVIEW_DEFAULT_LIMIT}
-              copyTreeNodeNames={copyTreeNodeNames}
+            <div
+              className={`workspace-side-resizer${resizingResourcePanel ? ' active' : ''}`}
+              onMouseDown={(event) => {
+                resourcePanelResizeRef.current = {
+                  startX: event.clientX,
+                  startSize: resourcePanelSize
+                }
+                setResizingResourcePanel(true)
+              }}
+            />
+            <MainWorkspacePanel
+              mainPanelRef={mainPanelRef}
+              aiDockPanelRef={aiDockPanelRef}
+              theme={theme}
+              aiPanelOpen={aiPanelOpen}
+              aiPanelSize={aiPanelSize}
+              resizingAiPanel={resizingAiPanel}
+              resizingResourcePanel={resizingResourcePanel}
+              renderWorkspaceTab={stableRenderWorkspaceTab}
+              workspaceRenderVersionToken={workspaceRenderVersionToken}
+              onActiveTabChange={handleActiveWorkspaceTabChange}
+              onCloseTab={closeWorkspaceTab}
+              onRenameTab={renameWorkspaceTab}
+              openImportConnectionModal={openImportConnectionModal}
+              connectionCreateMenuItems={stableConnectionCreateMenuItems}
+              onConnectionCreateMenuClick={stableConnectionCreateMenuHandler}
+              onAiPanelResizeMouseDown={handleAiPanelResizeMouseDown}
+              aiPanelContent={aiPanelContent}
             />
           </div>
-          <div
-            className={`workspace-side-resizer${resizingResourcePanel ? ' active' : ''}`}
-            onMouseDown={(event) => {
-              resourcePanelResizeRef.current = { startX: event.clientX, startSize: resourcePanelSize }
-              setResizingResourcePanel(true)
-            }}
-          />
-          <MainWorkspacePanel
-            mainPanelRef={mainPanelRef}
-            aiDockPanelRef={aiDockPanelRef}
-            theme={theme}
-            aiPanelOpen={aiPanelOpen}
-            aiPanelSize={aiPanelSize}
-            resizingAiPanel={resizingAiPanel}
-            resizingResourcePanel={resizingResourcePanel}
-            renderWorkspaceTab={stableRenderWorkspaceTab}
-            workspaceRenderVersionToken={workspaceRenderVersionToken}
-            onActiveTabChange={handleActiveWorkspaceTabChange}
-            onCloseTab={closeWorkspaceTab}
-            onRenameTab={renameWorkspaceTab}
-            openImportConnectionModal={openImportConnectionModal}
-            connectionCreateMenuItems={stableConnectionCreateMenuItems}
-            onConnectionCreateMenuClick={stableConnectionCreateMenuHandler}
-            onAiPanelResizeMouseDown={handleAiPanelResizeMouseDown}
-            aiPanelContent={aiPanelContent}
-          />
-        </div>
-      </Layout.Content>
-      <ImperativeModalHost
-        ref={updateModalRef}
-        title="应用更新"
-        footer={null}
-        width={680}
-        className="update-window-modal"
-        maskClosable={false}
-        deferContentMount
-      >
-        {(contentReady) => contentReady ? (
-        <Space direction="vertical" className="full-width update-modal-layout" size="middle">
-          <Alert
-            className="update-status-alert"
-            type={updateInfo?.available ? 'info' : 'success'}
-            showIcon
-            message={updateStatusMessage}
-            description={updateMode === 'installer' ? '安装版支持自动下载，并在重启后安装更新。' : '绿色版支持检测并下载新版 zip，下载后需要关闭应用并手动解压替换。'}
-          />
-          <Flex justify="space-between" align="center" className="update-meta-strip">
-            <Typography.Text>当前版本：{updateSettings?.currentVersion ?? updateInfo?.currentVersion ?? '-'}</Typography.Text>
-            <Tag color={updateMode === 'installer' ? 'blue' : 'purple'}>{updateMode === 'installer' ? '安装版' : '绿色版'}</Tag>
-          </Flex>
-          {updateInfo?.latestVersion && <Typography.Text className="update-version-line">最新版本：{updateInfo.latestVersion}</Typography.Text>}
-          <Flex justify="space-between" align="center" className="update-toggle-card">
-            <Typography.Text>启动时自动检查更新</Typography.Text>
-            <Switch className="update-auto-check-switch" checked={updateSettings?.autoCheckUpdates ?? true} onChange={(checked) => void window.api.setAutoCheckUpdates(checked).then(refreshUpdateSettings)} />
-          </Flex>
-          {updateInfo?.releaseNotes && (
-            <div className="update-release-notes ai-markdown" dangerouslySetInnerHTML={renderMarkdown(updateInfo.releaseNotes)} />
-          )}
-          {updateProgress && (
-            <Progress percent={updateProgress.percent} status={updateProgress.percent >= 100 ? 'success' : 'active'} />
-          )}
-          {updateInfo?.downloadedPath && (
-            <Alert className="update-status-alert" type="success" showIcon message="绿色版更新包已下载" description={`文件位置：${updateInfo.downloadedPath}。请关闭应用后手动解压替换旧目录。`} />
-          )}
-          <Flex justify="end" gap={8} wrap="wrap" className="update-modal-actions">
-            <Button onClick={() => void checkForUpdates(true)} loading={checkingUpdate}>重新检查</Button>
-            {updateInfo?.releaseUrl && <Button onClick={() => void window.api.openReleasePage(updateInfo.releaseUrl)}>查看发布页</Button>}
-            {updateInfo?.available && <Button onClick={() => void skipUpdate()}>跳过此版本</Button>}
-            {updateInfo?.available && !updateDownloaded && <Button type="primary" loading={downloadingUpdate} onClick={() => void downloadUpdate()}>{updateActionText}</Button>}
-            {updateDownloaded && <Button type="primary" onClick={() => void installUpdate()}>{updateMode === 'installer' ? '重启并安装' : '打开下载位置'}</Button>}
-          </Flex>
-        </Space>
-        ) : (
-          <div className="deferred-modal-loading"><LoadingOutlined spin /></div>
-        )}
-      </ImperativeModalHost>
-      <ImperativeModalHost
-        ref={queryHistoryModalRef}
-        title="历史查询窗口"
-        footer={null}
-        width={760}
-        className="query-history-window-modal"
-        deferContentMount
-      >
-        {(contentReady) => contentReady ? (
-        <div className="query-history-modal">
-          <div className="query-history-summary-card">
-            <div className="query-history-summary-icon"><HistoryOutlined /></div>
-            <div className="query-history-summary-copy">
-              <div className="query-history-summary-title">双击恢复查询窗口</div>
-              <div className="query-history-summary-meta">
-                共 {persistedQueryWorkspaces.length} 个历史查询，按连接分组展示，删除操作会先二次确认。
-              </div>
-            </div>
-          </div>
-          {queryHistoryGroups.length ? queryHistoryGroups.map(({ groupName, items, latestPersistedAt }) => (
-            <div key={groupName} className="query-history-group">
-              <div className="query-history-group-header">
-                <div className="query-history-group-title-wrap">
-                  <div className="query-history-group-title">{groupName}</div>
-                  <div className="query-history-group-meta">最近保存于 {formatQueryHistoryTime(latestPersistedAt)}</div>
-                </div>
-                <div className="query-history-group-count">{items.length}</div>
-              </div>
-              <div className="query-history-group-list">
-                {items.map((item) => (
+        </Layout.Content>
+        <ImperativeModalHost
+          ref={updateModalRef}
+          title="应用更新"
+          footer={null}
+          width={680}
+          className="update-window-modal"
+          maskClosable={false}
+          deferContentMount
+        >
+          {(contentReady) =>
+            contentReady ? (
+              <Space direction="vertical" className="full-width update-modal-layout" size="middle">
+                <Alert
+                  className="update-status-alert"
+                  type={updateInfo?.available ? 'info' : 'success'}
+                  showIcon
+                  message={updateStatusMessage}
+                  description={
+                    updateMode === 'installer'
+                      ? '安装版支持自动下载，并在重启后安装更新。'
+                      : '绿色版支持检测并下载新版 zip，下载后需要关闭应用并手动解压替换。'
+                  }
+                />
+                <Flex justify="space-between" align="center" className="update-meta-strip">
+                  <Typography.Text>
+                    当前版本：{updateSettings?.currentVersion ?? updateInfo?.currentVersion ?? '-'}
+                  </Typography.Text>
+                  <Tag color={updateMode === 'installer' ? 'blue' : 'purple'}>
+                    {updateMode === 'installer' ? '安装版' : '绿色版'}
+                  </Tag>
+                </Flex>
+                {updateInfo?.latestVersion && (
+                  <Typography.Text className="update-version-line">
+                    最新版本：{updateInfo.latestVersion}
+                  </Typography.Text>
+                )}
+                <Flex justify="space-between" align="center" className="update-toggle-card">
+                  <Typography.Text>启动时自动检查更新</Typography.Text>
+                  <Switch
+                    className="update-auto-check-switch"
+                    checked={updateSettings?.autoCheckUpdates ?? true}
+                    onChange={(checked) =>
+                      void window.api.setAutoCheckUpdates(checked).then(refreshUpdateSettings)
+                    }
+                  />
+                </Flex>
+                {updateInfo?.releaseNotes && (
                   <div
-                    key={item.key}
-                    className="query-history-item"
-                    onDoubleClick={() => {
-                      openPersistedQueryWorkspace(item)
-                      queryHistoryModalRef.current?.close()
-                    }}
-                  >
-                    <div className="query-history-item-main">
-                      <div className="query-history-item-head">
-                        <div className="query-history-item-title">{item.title}</div>
-                        <div className="query-history-item-time">{formatQueryHistoryTime(item.persistedAt)}</div>
-                      </div>
-                      <div className="query-history-item-meta">
-                        {[item.pgDatabaseName, item.databaseName].filter(Boolean).join('.') || '未选择库'}
-                      </div>
-                      <div className="query-history-item-sql">{getQueryHistoryPreviewText(item.sql)}</div>
-                    </div>
+                    className="update-release-notes ai-markdown"
+                    dangerouslySetInnerHTML={renderMarkdown(updateInfo.releaseNotes)}
+                  />
+                )}
+                {updateProgress && (
+                  <Progress
+                    percent={updateProgress.percent}
+                    status={updateProgress.percent >= 100 ? 'success' : 'active'}
+                  />
+                )}
+                {updateInfo?.downloadedPath && (
+                  <Alert
+                    className="update-status-alert"
+                    type="success"
+                    showIcon
+                    message="绿色版更新包已下载"
+                    description={`文件位置：${updateInfo.downloadedPath}。请关闭应用后手动解压替换旧目录。`}
+                  />
+                )}
+                <Flex justify="end" gap={8} wrap="wrap" className="update-modal-actions">
+                  <Button onClick={() => void checkForUpdates(true)} loading={checkingUpdate}>
+                    重新检查
+                  </Button>
+                  {updateInfo?.releaseUrl && (
+                    <Button onClick={() => void window.api.openReleasePage(updateInfo.releaseUrl)}>
+                      查看发布页
+                    </Button>
+                  )}
+                  {updateInfo?.available && (
+                    <Button onClick={() => void skipUpdate()}>跳过此版本</Button>
+                  )}
+                  {updateInfo?.available && !updateDownloaded && (
                     <Button
-                      type="text"
-                      size="small"
-                      danger
-                      className="query-history-item-delete"
-                      icon={<DeleteOutlined />}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        confirmRemovePersistedQueryWorkspace(item)
-                      }}
-                    />
-                  </div>
-                ))}
+                      type="primary"
+                      loading={downloadingUpdate}
+                      onClick={() => void downloadUpdate()}
+                    >
+                      {updateActionText}
+                    </Button>
+                  )}
+                  {updateDownloaded && (
+                    <Button type="primary" onClick={() => void installUpdate()}>
+                      {updateMode === 'installer' ? '重启并安装' : '打开下载位置'}
+                    </Button>
+                  )}
+                </Flex>
+              </Space>
+            ) : (
+              <div className="deferred-modal-loading">
+                <LoadingOutlined spin />
               </div>
-            </div>
-          )) : (
-            <div className="query-history-empty">
-              <div className="query-history-empty-title">还没有历史查询</div>
-              <div className="query-history-empty-meta">新建查询窗口后会自动保存到这里，后续可以双击直接恢复。</div>
-            </div>
-          )}
-        </div>
-        ) : (
-          <div className="deferred-modal-loading"><LoadingOutlined spin /></div>
-        )}
-      </ImperativeModalHost>
-      <Modal
-        title="导出连接"
-        open={exportConnectionModalOpen}
-        width={760}
-        className="export-connection-modal"
-        onCancel={closeExportConnectionModal}
-        afterOpenChange={(nextOpen) => {
-          if (!nextOpen) {
-            setExportConnectionSecret('')
-            setExportConnectionSecretConfirm('')
-            setExportingConnections(false)
+            )
           }
-        }}
-        maskClosable={false}
-        {...FAST_MODAL_PROPS}
-        footer={(
-          <Space>
-            <Button onClick={closeExportConnectionModal}>关闭</Button>
-            <Button type="primary" loading={exportingConnections} onClick={() => void exportAllConnections()}>导出</Button>
-          </Space>
-        )}
-      >
-        <Space direction="vertical" className="full-width import-connection-layout" size={18}>
-          <div className="import-connection-hero">
-            <div className="import-connection-hero-badge">Connection Export</div>
-            <Typography.Title level={4}>导出当前所有连接、密码与分组结构</Typography.Title>
-            <Typography.Text type="secondary">导出文件会使用你设置的口令进行整体加密，可在另一台设备通过 DataDjinn 导入。</Typography.Text>
-          </div>
-          <Form layout="vertical" className="import-connection-form">
-            <Form.Item label="导出口令" className="import-connection-field" extra="请妥善保管此口令，另一台设备导入时需要使用同一个口令解密。">
-              <Input.Password
-                value={exportConnectionSecret}
-                placeholder="请输入导出口令"
-                onChange={(event) => setExportConnectionSecret(event.target.value)}
-              />
-            </Form.Item>
-            <Form.Item label="确认导出口令" className="import-connection-field">
-              <Input.Password
-                value={exportConnectionSecretConfirm}
-                placeholder="请再次输入导出口令"
-                onChange={(event) => setExportConnectionSecretConfirm(event.target.value)}
-              />
-            </Form.Item>
-          </Form>
-        </Space>
-      </Modal>
-      <Modal
-        title="导入连接"
-        open={importConnectionModalOpen}
-        width={980}
-        className="import-connection-modal"
-        onCancel={closeImportConnectionModal}
-        afterOpenChange={(nextOpen) => {
-          if (!nextOpen) {
-            resetImportConnectionState()
+        </ImperativeModalHost>
+        <ImperativeModalHost
+          ref={queryHistoryModalRef}
+          title="历史查询窗口"
+          footer={null}
+          width={760}
+          className="query-history-window-modal"
+          deferContentMount
+        >
+          {(contentReady) =>
+            contentReady ? (
+              <div className="query-history-modal">
+                <div className="query-history-summary-card">
+                  <div className="query-history-summary-icon">
+                    <HistoryOutlined />
+                  </div>
+                  <div className="query-history-summary-copy">
+                    <div className="query-history-summary-title">双击恢复查询窗口</div>
+                    <div className="query-history-summary-meta">
+                      共 {persistedQueryWorkspaces.length}{' '}
+                      个历史查询，按连接分组展示，删除操作会先二次确认。
+                    </div>
+                  </div>
+                </div>
+                {queryHistoryGroups.length ? (
+                  queryHistoryGroups.map(({ groupName, items, latestPersistedAt }) => (
+                    <div key={groupName} className="query-history-group">
+                      <div className="query-history-group-header">
+                        <div className="query-history-group-title-wrap">
+                          <div className="query-history-group-title">{groupName}</div>
+                          <div className="query-history-group-meta">
+                            最近保存于 {formatQueryHistoryTime(latestPersistedAt)}
+                          </div>
+                        </div>
+                        <div className="query-history-group-count">{items.length}</div>
+                      </div>
+                      <div className="query-history-group-list">
+                        {items.map((item) => (
+                          <div
+                            key={item.key}
+                            className="query-history-item"
+                            onDoubleClick={() => {
+                              openPersistedQueryWorkspace(item)
+                              queryHistoryModalRef.current?.close()
+                            }}
+                          >
+                            <div className="query-history-item-main">
+                              <div className="query-history-item-head">
+                                <div className="query-history-item-title">{item.title}</div>
+                                <div className="query-history-item-time">
+                                  {formatQueryHistoryTime(item.persistedAt)}
+                                </div>
+                              </div>
+                              <div className="query-history-item-meta">
+                                {[item.pgDatabaseName, item.databaseName]
+                                  .filter(Boolean)
+                                  .join('.') || '未选择库'}
+                              </div>
+                              <div className="query-history-item-sql">
+                                {getQueryHistoryPreviewText(item.sql)}
+                              </div>
+                            </div>
+                            <Button
+                              type="text"
+                              size="small"
+                              danger
+                              className="query-history-item-delete"
+                              icon={<DeleteOutlined />}
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                confirmRemovePersistedQueryWorkspace(item)
+                              }}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="query-history-empty">
+                    <div className="query-history-empty-title">还没有历史查询</div>
+                    <div className="query-history-empty-meta">
+                      新建查询窗口后会自动保存到这里，后续可以双击直接恢复。
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="deferred-modal-loading">
+                <LoadingOutlined spin />
+              </div>
+            )
           }
-        }}
-        maskClosable={false}
-        {...FAST_MODAL_PROPS}
-        footer={(
-          <Space>
-            <Button onClick={closeImportConnectionModal}>关闭</Button>
-            <Button loading={importConnectionParsing} onClick={parseImportConnections}>解析</Button>
-            <Button
-              type="primary"
-              loading={importingConnections}
-              disabled={importConnectionCandidates.filter((candidate) => candidate.payload && candidate.status !== 'error').length === 0}
-              onClick={() => void importParsedConnections()}
-            >
-              导入
-            </Button>
+        </ImperativeModalHost>
+        <Modal
+          title="导出连接"
+          open={exportConnectionModalOpen}
+          width={760}
+          className="export-connection-modal"
+          onCancel={closeExportConnectionModal}
+          afterOpenChange={(nextOpen) => {
+            if (!nextOpen) {
+              setExportConnectionSecret('')
+              setExportConnectionSecretConfirm('')
+              setExportingConnections(false)
+            }
+          }}
+          maskClosable={false}
+          {...FAST_MODAL_PROPS}
+          footer={
+            <Space>
+              <Button onClick={closeExportConnectionModal}>关闭</Button>
+              <Button
+                type="primary"
+                loading={exportingConnections}
+                onClick={() => void exportAllConnections()}
+              >
+                导出
+              </Button>
+            </Space>
+          }
+        >
+          <Space direction="vertical" className="full-width import-connection-layout" size={18}>
+            <div className="import-connection-hero">
+              <div className="import-connection-hero-badge">Connection Export</div>
+              <Typography.Title level={4}>导出当前所有连接、密码与分组结构</Typography.Title>
+              <Typography.Text type="secondary">
+                导出文件会使用你设置的口令进行整体加密，可在另一台设备通过 DataDjinn 导入。
+              </Typography.Text>
+            </div>
+            <Form layout="vertical" className="import-connection-form">
+              <Form.Item
+                label="导出口令"
+                className="import-connection-field"
+                extra="请妥善保管此口令，另一台设备导入时需要使用同一个口令解密。"
+              >
+                <Input.Password
+                  value={exportConnectionSecret}
+                  placeholder="请输入导出口令"
+                  onChange={(event) => setExportConnectionSecret(event.target.value)}
+                />
+              </Form.Item>
+              <Form.Item label="确认导出口令" className="import-connection-field">
+                <Input.Password
+                  value={exportConnectionSecretConfirm}
+                  placeholder="请再次输入导出口令"
+                  onChange={(event) => setExportConnectionSecretConfirm(event.target.value)}
+                />
+              </Form.Item>
+            </Form>
           </Space>
-        )}
-      >
-        <Space direction="vertical" className="full-width import-connection-layout" size={18}>
-          <div className="import-connection-hero">
-            <div className="import-connection-hero-badge">Data Source Import</div>
-            <Typography.Title level={4}>
-              {importConnectionSource === 'datadjinn'
-                ? '导入 DataDjinn 连接文件，恢复连接、密码与分组结构'
-                : importConnectionSource === 'dbeaver'
-                  ? '上传 DBeaver 的 data-sources.json，批量导入连接和分组'
-                  : '粘贴 DataGrip / IDEA 数据源配置，批量导入到 DataDjinn'}
-            </Typography.Title>
-            <Typography.Text type="secondary">
-              {importConnectionSource === 'datadjinn'
-                ? '先选择加密导出文件并输入口令，再解析确认导入。'
-                : importConnectionSource === 'dbeaver'
-                  ? '请上传 DBeaver 的 data-sources.json。默认位置通常在：用户目录\\AppData\\Roaming\\DBeaverData\\workspace6\\General\\.dbeaver\\data-sources.json'
-                  : '先解析，再确认导入。解析结果会提前展示可导入状态和失败原因。'}
-            </Typography.Text>
-          </div>
-          <Form layout="vertical" className="import-connection-form">
-            <Form.Item label="来源" className="import-connection-field">
-              <Select
-                value={importConnectionSource}
-                options={IMPORT_CONNECTION_SOURCE_OPTIONS}
-                onChange={(value) => {
-                  setImportConnectionSource(value as ImportConnectionSource)
-                  setImportConnectionRawText('')
-                  setImportConnectionFilePath('')
-                  setImportConnectionSecret('')
-                  setImportConnectionCandidates([])
-                  setImportConnectionFolderPlan(null)
-                  setImportConnectionBundle(null)
-                }}
-              />
-            </Form.Item>
-            {importConnectionSource === 'datadjinn' ? (
-              <>
+        </Modal>
+        <Modal
+          title="导入连接"
+          open={importConnectionModalOpen}
+          width={980}
+          className="import-connection-modal"
+          onCancel={closeImportConnectionModal}
+          afterOpenChange={(nextOpen) => {
+            if (!nextOpen) {
+              resetImportConnectionState()
+            }
+          }}
+          maskClosable={false}
+          {...FAST_MODAL_PROPS}
+          footer={
+            <Space>
+              <Button onClick={closeImportConnectionModal}>关闭</Button>
+              <Button loading={importConnectionParsing} onClick={parseImportConnections}>
+                解析
+              </Button>
+              <Button
+                type="primary"
+                loading={importingConnections}
+                disabled={
+                  importConnectionCandidates.filter(
+                    (candidate) => candidate.payload && candidate.status !== 'error'
+                  ).length === 0
+                }
+                onClick={() => void importParsedConnections()}
+              >
+                导入
+              </Button>
+            </Space>
+          }
+        >
+          <Space direction="vertical" className="full-width import-connection-layout" size={18}>
+            <div className="import-connection-hero">
+              <div className="import-connection-hero-badge">Data Source Import</div>
+              <Typography.Title level={4}>
+                {importConnectionSource === 'datadjinn'
+                  ? '导入 DataDjinn 连接文件，恢复连接、密码与分组结构'
+                  : importConnectionSource === 'dbeaver'
+                    ? '上传 DBeaver 的 data-sources.json，批量导入连接和分组'
+                    : '粘贴 DataGrip / IDEA 数据源配置，批量导入到 DataDjinn'}
+              </Typography.Title>
+              <Typography.Text type="secondary">
+                {importConnectionSource === 'datadjinn'
+                  ? '先选择加密导出文件并输入口令，再解析确认导入。'
+                  : importConnectionSource === 'dbeaver'
+                    ? '请上传 DBeaver 的 data-sources.json。默认位置通常在：用户目录\\AppData\\Roaming\\DBeaverData\\workspace6\\General\\.dbeaver\\data-sources.json'
+                    : '先解析，再确认导入。解析结果会提前展示可导入状态和失败原因。'}
+              </Typography.Text>
+            </div>
+            <Form layout="vertical" className="import-connection-form">
+              <Form.Item label="来源" className="import-connection-field">
+                <Select
+                  value={importConnectionSource}
+                  options={IMPORT_CONNECTION_SOURCE_OPTIONS}
+                  onChange={(value) => {
+                    setImportConnectionSource(value as ImportConnectionSource)
+                    setImportConnectionRawText('')
+                    setImportConnectionFilePath('')
+                    setImportConnectionSecret('')
+                    setImportConnectionCandidates([])
+                    setImportConnectionFolderPlan(null)
+                    setImportConnectionBundle(null)
+                  }}
+                />
+              </Form.Item>
+              {importConnectionSource === 'datadjinn' ? (
+                <>
+                  <Form.Item
+                    label="连接文件"
+                    className="import-connection-field"
+                    extra="选择通过 DataDjinn 导出的 .ddj 加密连接文件。"
+                  >
+                    <div className="import-connection-file-row">
+                      <Input
+                        value={importConnectionFilePath}
+                        readOnly
+                        placeholder="请选择 .ddj 文件"
+                      />
+                      <Button onClick={() => void chooseImportConnectionTransferFile()}>
+                        选择文件
+                      </Button>
+                    </div>
+                  </Form.Item>
+                  <Form.Item
+                    label="导入口令"
+                    className="import-connection-field"
+                    extra="请输入导出时设置的口令，用于解密连接文件。"
+                  >
+                    <Input.Password
+                      value={importConnectionSecret}
+                      placeholder="请输入导入口令"
+                      onChange={(event) => setImportConnectionSecret(event.target.value)}
+                    />
+                  </Form.Item>
+                </>
+              ) : importConnectionSource === 'dbeaver' ? (
                 <Form.Item
-                  label="连接文件"
+                  label="DBeaver 连接文件"
                   className="import-connection-field"
-                  extra="选择通过 DataDjinn 导出的 .ddj 加密连接文件。"
+                  extra="请选择 DBeaver 导出的 data-sources.json，分组信息也会一并解析。"
                 >
                   <div className="import-connection-file-row">
                     <Input
                       value={importConnectionFilePath}
                       readOnly
-                      placeholder="请选择 .ddj 文件"
+                      placeholder="请选择 data-sources.json 文件"
                     />
-                    <Button onClick={() => void chooseImportConnectionTransferFile()}>选择文件</Button>
+                    <Button onClick={() => void chooseImportConnectionTransferFile()}>
+                      选择文件
+                    </Button>
                   </div>
                 </Form.Item>
+              ) : (
                 <Form.Item
-                  label="导入口令"
-                  className="import-connection-field"
-                  extra="请输入导出时设置的口令，用于解密连接文件。"
+                  label="连接配置文本"
+                  className="import-connection-field import-connection-field-textarea"
+                  extra="选中复制 DataGrip / IDEA 中的数据源并复制粘贴到上方。"
                 >
-                  <Input.Password
-                    value={importConnectionSecret}
-                    placeholder="请输入导入口令"
-                    onChange={(event) => setImportConnectionSecret(event.target.value)}
+                  <Input.TextArea
+                    value={importConnectionRawText}
+                    autoSize={{ minRows: 10, maxRows: 18 }}
+                    placeholder="#DataSourceSettings# ..."
+                    onChange={(event) => setImportConnectionRawText(event.target.value)}
                   />
                 </Form.Item>
-              </>
-            ) : importConnectionSource === 'dbeaver' ? (
-              <Form.Item
-                label="DBeaver 连接文件"
-                className="import-connection-field"
-                extra="请选择 DBeaver 导出的 data-sources.json，分组信息也会一并解析。"
+              )}
+            </Form>
+            {importConnectionCandidates.length > 0 && (
+              <Space
+                direction="vertical"
+                className="full-width import-connection-preview"
+                size={12}
               >
-                <div className="import-connection-file-row">
-                  <Input
-                    value={importConnectionFilePath}
-                    readOnly
-                    placeholder="请选择 data-sources.json 文件"
-                  />
-                  <Button onClick={() => void chooseImportConnectionTransferFile()}>选择文件</Button>
-                </div>
-              </Form.Item>
-            ) : (
-              <Form.Item
-                label="连接配置文本"
-                className="import-connection-field import-connection-field-textarea"
-                extra="选中复制 DataGrip / IDEA 中的数据源并复制粘贴到上方。"
-              >
-                <Input.TextArea
-                  value={importConnectionRawText}
-                  autoSize={{ minRows: 10, maxRows: 18 }}
-                  placeholder="#DataSourceSettings# ..."
-                  onChange={(event) => setImportConnectionRawText(event.target.value)}
+                <Flex
+                  justify="space-between"
+                  align="center"
+                  className="import-connection-preview-header"
+                >
+                  <Typography.Text strong>解析结果</Typography.Text>
+                  <Typography.Text type="secondary">
+                    共 {importConnectionCandidates.length} 个，
+                    {
+                      importConnectionCandidates.filter(
+                        (candidate) => candidate.status !== 'error' && candidate.payload
+                      ).length
+                    }{' '}
+                    个可导入
+                  </Typography.Text>
+                </Flex>
+                <Table
+                  rowKey="key"
+                  size="small"
+                  pagination={false}
+                  scroll={{ y: 280 }}
+                  columns={importConnectionPreviewColumns}
+                  dataSource={importConnectionCandidates}
                 />
-              </Form.Item>
+              </Space>
             )}
-          </Form>
-          {importConnectionCandidates.length > 0 && (
-            <Space direction="vertical" className="full-width import-connection-preview" size={12}>
-              <Flex justify="space-between" align="center" className="import-connection-preview-header">
-                <Typography.Text strong>解析结果</Typography.Text>
-                <Typography.Text type="secondary">
-                  共 {importConnectionCandidates.length} 个，{importConnectionCandidates.filter((candidate) => candidate.status !== 'error' && candidate.payload).length} 个可导入
-                </Typography.Text>
-              </Flex>
-              <Table
-                rowKey="key"
-                size="small"
-                pagination={false}
-                scroll={{ y: 280 }}
-                columns={importConnectionPreviewColumns}
-                dataSource={importConnectionCandidates}
+          </Space>
+        </Modal>
+        <Modal
+          title="导入结果"
+          open={importConnectionResultOpen}
+          width={880}
+          className="import-connection-result-modal"
+          onCancel={closeImportConnectionResultModal}
+          footer={
+            <Button type="primary" onClick={closeImportConnectionResultModal}>
+              关闭
+            </Button>
+          }
+          maskClosable={false}
+          {...FAST_MODAL_PROPS}
+        >
+          {importConnectionResult && (
+            <Space
+              direction="vertical"
+              className="full-width import-connection-result-layout"
+              size={14}
+            >
+              <Alert
+                type={importConnectionResult.failed.length > 0 ? 'warning' : 'success'}
+                showIcon
+                message={`成功 ${importConnectionResult.success.length} 个，失败 ${importConnectionResult.failed.length} 个`}
               />
+              {importConnectionResult.success.length > 0 && (
+                <Space
+                  direction="vertical"
+                  className="full-width import-connection-result-section"
+                  size={8}
+                >
+                  <Typography.Text strong>导入成功</Typography.Text>
+                  <Table
+                    rowKey={(record) =>
+                      `${record.name}-${record.database_type ?? 'unknown'}-success`
+                    }
+                    size="small"
+                    pagination={false}
+                    columns={[
+                      { title: '名称', dataIndex: 'name', key: 'name', width: 220, ellipsis: true },
+                      {
+                        title: '类型',
+                        dataIndex: 'database_type',
+                        key: 'database_type',
+                        width: 100,
+                        render: (value?: DatabaseType) =>
+                          value ? DATABASE_TYPE_LABELS[value] : '-'
+                      },
+                      {
+                        title: '说明',
+                        dataIndex: 'message',
+                        key: 'message',
+                        ellipsis: true,
+                        render: (value?: string) => value || '-'
+                      }
+                    ]}
+                    dataSource={importConnectionResult.success}
+                  />
+                </Space>
+              )}
+              {importConnectionResult.failed.length > 0 && (
+                <Space
+                  direction="vertical"
+                  className="full-width import-connection-result-section import-connection-result-section-danger"
+                  size={8}
+                >
+                  <Typography.Text strong>导入失败</Typography.Text>
+                  <Table
+                    rowKey={(record) =>
+                      `${record.name}-${record.database_type ?? 'unknown'}-failed`
+                    }
+                    size="small"
+                    pagination={false}
+                    columns={[
+                      { title: '名称', dataIndex: 'name', key: 'name', width: 220, ellipsis: true },
+                      {
+                        title: '类型',
+                        dataIndex: 'database_type',
+                        key: 'database_type',
+                        width: 100,
+                        render: (value?: DatabaseType) =>
+                          value ? DATABASE_TYPE_LABELS[value] : '-'
+                      },
+                      {
+                        title: '失败原因',
+                        dataIndex: 'message',
+                        key: 'message',
+                        ellipsis: true,
+                        render: (value?: string) => value || '-'
+                      }
+                    ]}
+                    dataSource={importConnectionResult.failed}
+                  />
+                </Space>
+              )}
             </Space>
           )}
-        </Space>
-      </Modal>
-      <Modal
-        title="导入结果"
-        open={importConnectionResultOpen}
-        width={880}
-        className="import-connection-result-modal"
-        onCancel={closeImportConnectionResultModal}
-        footer={<Button type="primary" onClick={closeImportConnectionResultModal}>关闭</Button>}
-        maskClosable={false}
-        {...FAST_MODAL_PROPS}
-      >
-        {importConnectionResult && (
-          <Space direction="vertical" className="full-width import-connection-result-layout" size={14}>
+        </Modal>
+        <Modal
+          title="输入连接密码"
+          open={connectionPasswordPromptOpen}
+          onCancel={closeConnectionPasswordPrompt}
+          onOk={() => void submitConnectionPasswordPrompt()}
+          okText="重试连接"
+          cancelText="取消"
+          maskClosable={false}
+          {...FAST_MODAL_PROPS}
+        >
+          <Space direction="vertical" className="full-width" size={12}>
+            <Typography.Text>
+              <Typography.Text strong>连接：</Typography.Text>
+              {connectionPasswordPromptConnectionName}
+            </Typography.Text>
             <Alert
-              type={importConnectionResult.failed.length > 0 ? 'warning' : 'success'}
+              type="warning"
               showIcon
-              message={`成功 ${importConnectionResult.success.length} 个，失败 ${importConnectionResult.failed.length} 个`}
+              message={connectionPasswordPromptReason || '请输入密码后重试连接'}
             />
-            {importConnectionResult.success.length > 0 && (
-              <Space direction="vertical" className="full-width import-connection-result-section" size={8}>
-                <Typography.Text strong>导入成功</Typography.Text>
-                <Table
-                  rowKey={(record) => `${record.name}-${record.database_type ?? 'unknown'}-success`}
-                  size="small"
-                  pagination={false}
-                  columns={[
-                    { title: '名称', dataIndex: 'name', key: 'name', width: 220, ellipsis: true },
-                    { title: '类型', dataIndex: 'database_type', key: 'database_type', width: 100, render: (value?: DatabaseType) => value ? DATABASE_TYPE_LABELS[value] : '-' },
-                    { title: '说明', dataIndex: 'message', key: 'message', ellipsis: true, render: (value?: string) => value || '-' }
-                  ]}
-                  dataSource={importConnectionResult.success}
-                />
-              </Space>
-            )}
-            {importConnectionResult.failed.length > 0 && (
-              <Space direction="vertical" className="full-width import-connection-result-section import-connection-result-section-danger" size={8}>
-                <Typography.Text strong>导入失败</Typography.Text>
-                <Table
-                  rowKey={(record) => `${record.name}-${record.database_type ?? 'unknown'}-failed`}
-                  size="small"
-                  pagination={false}
-                  columns={[
-                    { title: '名称', dataIndex: 'name', key: 'name', width: 220, ellipsis: true },
-                    { title: '类型', dataIndex: 'database_type', key: 'database_type', width: 100, render: (value?: DatabaseType) => value ? DATABASE_TYPE_LABELS[value] : '-' },
-                    { title: '失败原因', dataIndex: 'message', key: 'message', ellipsis: true, render: (value?: string) => value || '-' }
-                  ]}
-                  dataSource={importConnectionResult.failed}
-                />
-              </Space>
-            )}
+            <Input.Password
+              autoFocus
+              value={connectionPasswordDraft}
+              placeholder="请输入密码"
+              onChange={(event) => setConnectionPasswordDraft(event.target.value)}
+              onPressEnter={() => void submitConnectionPasswordPrompt()}
+            />
           </Space>
-        )}
-      </Modal>
-      <Modal
-        title="输入连接密码"
-        open={connectionPasswordPromptOpen}
-        onCancel={closeConnectionPasswordPrompt}
-        onOk={() => void submitConnectionPasswordPrompt()}
-        okText="重试连接"
-        cancelText="取消"
-        maskClosable={false}
-        {...FAST_MODAL_PROPS}
-      >
-        <Space direction="vertical" className="full-width" size={12}>
-          <Typography.Text>
-            <Typography.Text strong>连接：</Typography.Text>
-            {connectionPasswordPromptConnectionName}
-          </Typography.Text>
-          <Alert type="warning" showIcon message={connectionPasswordPromptReason || '请输入密码后重试连接'} />
-          <Input.Password
-            autoFocus
-            value={connectionPasswordDraft}
-            placeholder="请输入密码"
-            onChange={(event) => setConnectionPasswordDraft(event.target.value)}
-            onPressEnter={() => void submitConnectionPasswordPrompt()}
-          />
-        </Space>
-      </Modal>
-      <ImperativeModalHost
-        ref={settingsModalRef}
-        title="设置"
-        footer={null}
-        width={1040}
-        className="settings-window-modal"
-        maskClosable={false}
-        deferContentMount
-      >
-        {(contentReady) => contentReady ? (
-        <Flex gap={18} align="stretch" className="settings-layout">
-          <div className="settings-sidebar">
-            <Menu
-              mode="inline"
-              selectedKeys={[settingsSection]}
-              onClick={({ key }) => switchSettingsSection(key as SettingsSection)}
-              items={[
-                { key: 'app', icon: <SettingOutlined />, label: '应用' },
-                { key: 'shortcuts', icon: <ThunderboltOutlined />, label: '快捷键' },
-                { key: 'drivers', icon: <DatabaseOutlined />, label: '驱动管理' }
-              ]}
-            />
-          </div>
-          <div className="settings-content">
-            {settingsSection === 'app' ? (
-              <Space direction="vertical" className="full-width settings-section-stack" size="large">
-                <div className="settings-about-card">
-                  <img className="settings-about-logo" src={appLogoHorizontal} alt="DataDjinn" />
-                  <Typography.Text type="secondary">当前版本：{appInfo?.version ?? updateSettings?.currentVersion ?? '-'}</Typography.Text>
+        </Modal>
+        <ImperativeModalHost
+          ref={settingsModalRef}
+          title="设置"
+          footer={null}
+          width={1040}
+          className="settings-window-modal"
+          maskClosable={false}
+          deferContentMount
+        >
+          {(contentReady) =>
+            contentReady ? (
+              <Flex gap={18} align="stretch" className="settings-layout">
+                <div className="settings-sidebar">
+                  <Menu
+                    mode="inline"
+                    selectedKeys={[settingsSection]}
+                    onClick={({ key }) => switchSettingsSection(key as SettingsSection)}
+                    items={[
+                      { key: 'app', icon: <SettingOutlined />, label: '应用' },
+                      { key: 'sql', icon: <PlayCircleOutlined />, label: 'SQL' },
+                      { key: 'shortcuts', icon: <ThunderboltOutlined />, label: '快捷键' },
+                      { key: 'drivers', icon: <DatabaseOutlined />, label: '驱动管理' }
+                    ]}
+                  />
                 </div>
-                <Button className="settings-glass-action" icon={<GithubOutlined />} onClick={() => void window.api.openProjectHome()}>
-                  GitHub
-                </Button>
-              </Space>
-            ) : settingsSection === 'shortcuts' ? (
-              <Space direction="vertical" className="full-width settings-section-stack" size="large">
-                <div className="settings-section-card settings-shortcut-card">
-                  <Typography.Title level={5} style={{ marginTop: 0 }}>SQL 编辑器</Typography.Title>
-                  <Space direction="vertical" className="full-width" size="middle">
-                    <ShortcutRecorder
-                      label={SHORTCUT_SETTING_LABELS.sql_execute}
-                      value={shortcutSettings.sql_execute}
-                      defaultValue={DEFAULT_SHORTCUT_SETTINGS.sql_execute}
-                      recording={recordingShortcutAction === 'sql_execute'}
-                      onStartRecord={() => setRecordingShortcutAction('sql_execute')}
-                      onCancel={() => setRecordingShortcutAction(null)}
-                      onChange={(value) => {
-                        setShortcutSettings((current) => ({ ...current, sql_execute: value }))
-                        setRecordingShortcutAction(null)
-                      }}
-                      onReset={() => setShortcutSettings((current) => ({ ...current, sql_execute: DEFAULT_SHORTCUT_SETTINGS.sql_execute }))}
-                    />
-                    <ShortcutRecorder
-                      label={SHORTCUT_SETTING_LABELS.sql_delete_line}
-                      value={shortcutSettings.sql_delete_line}
-                      defaultValue={DEFAULT_SHORTCUT_SETTINGS.sql_delete_line}
-                      recording={recordingShortcutAction === 'sql_delete_line'}
-                      onStartRecord={() => setRecordingShortcutAction('sql_delete_line')}
-                      onCancel={() => setRecordingShortcutAction(null)}
-                      onChange={(value) => {
-                        setShortcutSettings((current) => ({ ...current, sql_delete_line: value }))
-                        setRecordingShortcutAction(null)
-                      }}
-                      onReset={() => setShortcutSettings((current) => ({ ...current, sql_delete_line: DEFAULT_SHORTCUT_SETTINGS.sql_delete_line }))}
-                    />
-                    <ShortcutRecorder
-                      label={SHORTCUT_SETTING_LABELS.sql_duplicate_line_down}
-                      value={shortcutSettings.sql_duplicate_line_down}
-                      defaultValue={DEFAULT_SHORTCUT_SETTINGS.sql_duplicate_line_down}
-                      recording={recordingShortcutAction === 'sql_duplicate_line_down'}
-                      onStartRecord={() => setRecordingShortcutAction('sql_duplicate_line_down')}
-                      onCancel={() => setRecordingShortcutAction(null)}
-                      onChange={(value) => {
-                        setShortcutSettings((current) => ({ ...current, sql_duplicate_line_down: value }))
-                        setRecordingShortcutAction(null)
-                      }}
-                      onReset={() => setShortcutSettings((current) => ({ ...current, sql_duplicate_line_down: DEFAULT_SHORTCUT_SETTINGS.sql_duplicate_line_down }))}
-                    />
-                    <ShortcutRecorder
-                      label={SHORTCUT_SETTING_LABELS.table_search}
-                      value={shortcutSettings.table_search}
-                      defaultValue={DEFAULT_SHORTCUT_SETTINGS.table_search}
-                      recording={recordingShortcutAction === 'table_search'}
-                      onStartRecord={() => setRecordingShortcutAction('table_search')}
-                      onCancel={() => setRecordingShortcutAction(null)}
-                      onChange={(value) => {
-                        setShortcutSettings((current) => ({ ...current, table_search: value }))
-                        setRecordingShortcutAction(null)
-                      }}
-                      onReset={() => setShortcutSettings((current) => ({ ...current, table_search: DEFAULT_SHORTCUT_SETTINGS.table_search }))}
-                    />
-                  </Space>
+                <div className="settings-content">
+                  {settingsSection === 'app' ? (
+                    <Space
+                      direction="vertical"
+                      className="full-width settings-section-stack"
+                      size="large"
+                    >
+                      <div className="settings-about-card">
+                        <img
+                          className="settings-about-logo"
+                          src={appLogoHorizontal}
+                          alt="DataDjinn"
+                        />
+                        <Typography.Text type="secondary">
+                          当前版本：{appInfo?.version ?? updateSettings?.currentVersion ?? '-'}
+                        </Typography.Text>
+                      </div>
+                      <Button
+                        className="settings-glass-action"
+                        icon={<GithubOutlined />}
+                        onClick={() => void window.api.openProjectHome()}
+                      >
+                        GitHub
+                      </Button>
+                    </Space>
+                  ) : settingsSection === 'sql' ? (
+                    <Space
+                      direction="vertical"
+                      className="full-width settings-section-stack"
+                      size="large"
+                    >
+                      <div className="settings-section-card">
+                        <Typography.Title level={5} style={{ marginTop: 0 }}>
+                          SQL 超时
+                        </Typography.Title>
+                        <Typography.Text type="secondary">
+                          单条 SQL 最长执行时间。超时后会中断当前执行，默认 15 分钟。
+                        </Typography.Text>
+                        <InputNumber
+                          min={1}
+                          max={120}
+                          precision={0}
+                          value={querySettings.timeoutMinutes}
+                          addonAfter="分钟"
+                          onChange={(value) => void updateQueryTimeoutMinutes(value)}
+                        />
+                      </div>
+                    </Space>
+                  ) : settingsSection === 'shortcuts' ? (
+                    <Space
+                      direction="vertical"
+                      className="full-width settings-section-stack"
+                      size="large"
+                    >
+                      <div className="settings-section-card settings-shortcut-card">
+                        <Typography.Title level={5} style={{ marginTop: 0 }}>
+                          SQL 编辑器
+                        </Typography.Title>
+                        <Space direction="vertical" className="full-width" size="middle">
+                          <ShortcutRecorder
+                            label={SHORTCUT_SETTING_LABELS.sql_execute}
+                            value={shortcutSettings.sql_execute}
+                            defaultValue={DEFAULT_SHORTCUT_SETTINGS.sql_execute}
+                            recording={recordingShortcutAction === 'sql_execute'}
+                            onStartRecord={() => setRecordingShortcutAction('sql_execute')}
+                            onCancel={() => setRecordingShortcutAction(null)}
+                            onChange={(value) => {
+                              setShortcutSettings((current) => ({ ...current, sql_execute: value }))
+                              setRecordingShortcutAction(null)
+                            }}
+                            onReset={() =>
+                              setShortcutSettings((current) => ({
+                                ...current,
+                                sql_execute: DEFAULT_SHORTCUT_SETTINGS.sql_execute
+                              }))
+                            }
+                          />
+                          <ShortcutRecorder
+                            label={SHORTCUT_SETTING_LABELS.sql_delete_line}
+                            value={shortcutSettings.sql_delete_line}
+                            defaultValue={DEFAULT_SHORTCUT_SETTINGS.sql_delete_line}
+                            recording={recordingShortcutAction === 'sql_delete_line'}
+                            onStartRecord={() => setRecordingShortcutAction('sql_delete_line')}
+                            onCancel={() => setRecordingShortcutAction(null)}
+                            onChange={(value) => {
+                              setShortcutSettings((current) => ({
+                                ...current,
+                                sql_delete_line: value
+                              }))
+                              setRecordingShortcutAction(null)
+                            }}
+                            onReset={() =>
+                              setShortcutSettings((current) => ({
+                                ...current,
+                                sql_delete_line: DEFAULT_SHORTCUT_SETTINGS.sql_delete_line
+                              }))
+                            }
+                          />
+                          <ShortcutRecorder
+                            label={SHORTCUT_SETTING_LABELS.sql_duplicate_line_down}
+                            value={shortcutSettings.sql_duplicate_line_down}
+                            defaultValue={DEFAULT_SHORTCUT_SETTINGS.sql_duplicate_line_down}
+                            recording={recordingShortcutAction === 'sql_duplicate_line_down'}
+                            onStartRecord={() =>
+                              setRecordingShortcutAction('sql_duplicate_line_down')
+                            }
+                            onCancel={() => setRecordingShortcutAction(null)}
+                            onChange={(value) => {
+                              setShortcutSettings((current) => ({
+                                ...current,
+                                sql_duplicate_line_down: value
+                              }))
+                              setRecordingShortcutAction(null)
+                            }}
+                            onReset={() =>
+                              setShortcutSettings((current) => ({
+                                ...current,
+                                sql_duplicate_line_down:
+                                  DEFAULT_SHORTCUT_SETTINGS.sql_duplicate_line_down
+                              }))
+                            }
+                          />
+                          <ShortcutRecorder
+                            label={SHORTCUT_SETTING_LABELS.table_search}
+                            value={shortcutSettings.table_search}
+                            defaultValue={DEFAULT_SHORTCUT_SETTINGS.table_search}
+                            recording={recordingShortcutAction === 'table_search'}
+                            onStartRecord={() => setRecordingShortcutAction('table_search')}
+                            onCancel={() => setRecordingShortcutAction(null)}
+                            onChange={(value) => {
+                              setShortcutSettings((current) => ({
+                                ...current,
+                                table_search: value
+                              }))
+                              setRecordingShortcutAction(null)
+                            }}
+                            onReset={() =>
+                              setShortcutSettings((current) => ({
+                                ...current,
+                                table_search: DEFAULT_SHORTCUT_SETTINGS.table_search
+                              }))
+                            }
+                          />
+                        </Space>
+                      </div>
+                      <div className="settings-section-card settings-shortcut-card">
+                        <Typography.Title level={5} style={{ marginTop: 0 }}>
+                          AI 窗口
+                        </Typography.Title>
+                        <Space direction="vertical" className="full-width" size="middle">
+                          <ShortcutRecorder
+                            label={SHORTCUT_SETTING_LABELS.ai_send}
+                            value={shortcutSettings.ai_send}
+                            defaultValue={DEFAULT_SHORTCUT_SETTINGS.ai_send}
+                            recording={recordingShortcutAction === 'ai_send'}
+                            onStartRecord={() => setRecordingShortcutAction('ai_send')}
+                            onCancel={() => setRecordingShortcutAction(null)}
+                            onChange={(value) => {
+                              setShortcutSettings((current) => ({ ...current, ai_send: value }))
+                              setRecordingShortcutAction(null)
+                            }}
+                            onReset={() =>
+                              setShortcutSettings((current) => ({
+                                ...current,
+                                ai_send: DEFAULT_SHORTCUT_SETTINGS.ai_send
+                              }))
+                            }
+                          />
+                          <ShortcutRecorder
+                            label={SHORTCUT_SETTING_LABELS.ai_newline}
+                            value={shortcutSettings.ai_newline}
+                            defaultValue={DEFAULT_SHORTCUT_SETTINGS.ai_newline}
+                            recording={recordingShortcutAction === 'ai_newline'}
+                            onStartRecord={() => setRecordingShortcutAction('ai_newline')}
+                            onCancel={() => setRecordingShortcutAction(null)}
+                            onChange={(value) => {
+                              setShortcutSettings((current) => ({ ...current, ai_newline: value }))
+                              setRecordingShortcutAction(null)
+                            }}
+                            onReset={() =>
+                              setShortcutSettings((current) => ({
+                                ...current,
+                                ai_newline: DEFAULT_SHORTCUT_SETTINGS.ai_newline
+                              }))
+                            }
+                          />
+                          <ShortcutRecorder
+                            label={SHORTCUT_SETTING_LABELS.ai_stop}
+                            value={shortcutSettings.ai_stop}
+                            defaultValue={DEFAULT_SHORTCUT_SETTINGS.ai_stop}
+                            recording={recordingShortcutAction === 'ai_stop'}
+                            onStartRecord={() => setRecordingShortcutAction('ai_stop')}
+                            onCancel={() => setRecordingShortcutAction(null)}
+                            onChange={(value) => {
+                              setShortcutSettings((current) => ({ ...current, ai_stop: value }))
+                              setRecordingShortcutAction(null)
+                            }}
+                            onReset={() =>
+                              setShortcutSettings((current) => ({
+                                ...current,
+                                ai_stop: DEFAULT_SHORTCUT_SETTINGS.ai_stop
+                              }))
+                            }
+                          />
+                        </Space>
+                      </div>
+                    </Space>
+                  ) : (
+                    <Space
+                      direction="vertical"
+                      className="full-width settings-section-stack"
+                      size="middle"
+                    >
+                      <Space
+                        direction="vertical"
+                        className="full-width settings-section-card settings-jdbc-card"
+                        size="small"
+                      >
+                        <Typography.Title level={5} style={{ margin: 0 }}>
+                          全局 JDBC Java 环境
+                        </Typography.Title>
+                        {javaRestartRequired && (
+                          <Alert
+                            type="warning"
+                            showIcon
+                            message="需要重启应用"
+                            description="JDBC Java 环境已修改，但当前应用尚未重启。重启后新的 Java 环境才会生效。"
+                          />
+                        )}
+                        <Flex justify="space-between" align="center">
+                          <Space direction="vertical" size={0}>
+                            <Typography.Text>启用 JDBC Java 环境</Typography.Text>
+                            <Typography.Text type="secondary">
+                              关闭后应用启动时不会加载 Java，使用 JDBC 驱动连接时需要先开启并配置。
+                            </Typography.Text>
+                          </Space>
+                          <Switch checked={jdbcJavaEnabled} onChange={setJdbcJavaEnabled} />
+                        </Flex>
+                        <Space.Compact className="full-width">
+                          <AutoComplete
+                            value={jdbcJavaHome}
+                            options={javaRuntimeOptions}
+                            popupClassName="settings-glass-select-dropdown"
+                            placeholder="请选择项目启动后 JDBC 统一使用的 JDK/JRE 目录"
+                            onChange={setJdbcJavaHome}
+                            disabled={!jdbcJavaEnabled}
+                            filterOption={(inputValue, option) => {
+                              const normalizedInput = inputValue.trim().toLowerCase()
+                              if (
+                                !normalizedInput ||
+                                selectedJavaRuntimeValues.has(normalizedInput)
+                              ) {
+                                return true
+                              }
+                              return (
+                                String(option?.value ?? '')
+                                  .toLowerCase()
+                                  .includes(normalizedInput) ||
+                                String(option?.label ?? '')
+                                  .toLowerCase()
+                                  .includes(normalizedInput)
+                              )
+                            }}
+                            className="full-width"
+                          />
+                          <Button
+                            disabled={!jdbcJavaEnabled}
+                            onClick={() => void selectJavaDirectory()}
+                          >
+                            选择
+                          </Button>
+                          <Button type="primary" onClick={() => void saveJdbcJavaConfig()}>
+                            保存
+                          </Button>
+                        </Space.Compact>
+                      </Space>
+                      <div className="driver-manager-shell">
+                        <div className="driver-manager-nav">
+                          <div className="driver-manager-nav-panel">
+                            <Typography.Text strong>数据库类型</Typography.Text>
+                          </div>
+                          {DRIVER_DATABASE_ORDER.map((databaseType) => {
+                            const meta = DRIVER_DATABASE_META[databaseType]
+                            const databaseDrivers = drivers.filter(
+                              (driver) => driver.database_type === databaseType
+                            )
+                            return (
+                              <button
+                                key={databaseType}
+                                type="button"
+                                className={`driver-manager-nav-item${selectedDriverDatabaseType === databaseType ? ' active' : ''}`}
+                                onClick={() => selectDriverDatabaseType(databaseType)}
+                              >
+                                <span className="driver-manager-nav-icon">{meta.icon}</span>
+                                <span className="driver-manager-nav-copy">
+                                  <Typography.Text strong>{meta.shortLabel}</Typography.Text>
+                                </span>
+                                <span className="driver-manager-nav-meta">
+                                  <Tag>{databaseDrivers.length}</Tag>
+                                </span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                        <div className="driver-manager-main">
+                          <div className="driver-manager-summary-grid">
+                            <div className="driver-manager-summary-card">
+                              <span>{selectedDatabaseDrivers.length}</span>
+                              <small>当前已配置</small>
+                            </div>
+                            <div className="driver-manager-summary-card accent">
+                              <span>{selectedManualDriverCount}</span>
+                              <small>手动添加</small>
+                            </div>
+                            <div className="driver-manager-summary-card">
+                              <span>
+                                {driverTypeOptionsForDatabase(selectedDriverDatabaseType).length}
+                              </span>
+                              <small>支持格式</small>
+                            </div>
+                          </div>
+                          <div className="driver-manager-section-card">
+                            <Flex justify="space-between" align="center" gap={12}>
+                              <Space direction="vertical" size={2}>
+                                <Typography.Title level={5} style={{ margin: 0 }}>
+                                  {selectedDriverDatabaseMeta.label}驱动
+                                </Typography.Title>
+                              </Space>
+                              <Space size={8} wrap>
+                                <Tag>{selectedDriverDatabaseMeta.shortLabel}</Tag>
+                                <Button loading={driversLoading} onClick={() => void loadDrivers()}>
+                                  刷新
+                                </Button>
+                              </Space>
+                            </Flex>
+                            <Table<DriverInfo>
+                              size="small"
+                              rowKey="id"
+                              loading={driversLoading}
+                              pagination={false}
+                              tableLayout="fixed"
+                              locale={{
+                                emptyText: `${selectedDriverDatabaseMeta.shortLabel} 暂无已配置驱动`
+                              }}
+                              dataSource={selectedDatabaseDrivers}
+                              columns={[
+                                {
+                                  title: '名称',
+                                  dataIndex: 'name',
+                                  width: 180,
+                                  ellipsis: true,
+                                  render: (value: string) => (
+                                    <Typography.Text ellipsis title={value}>
+                                      {value}
+                                    </Typography.Text>
+                                  )
+                                },
+                                {
+                                  title: '驱动类型',
+                                  dataIndex: 'driver_type',
+                                  width: 110,
+                                  render: (value: DriverInfo['driver_type']) =>
+                                    driverTypeLabel(value)
+                                },
+                                {
+                                  title: '驱动文件',
+                                  ellipsis: true,
+                                  render: (_: unknown, driver) => (
+                                    <Typography.Text ellipsis title={driver.path ?? undefined}>
+                                      {driver.path}
+                                    </Typography.Text>
+                                  )
+                                },
+                                {
+                                  title: '操作',
+                                  width: 132,
+                                  render: (_: unknown, driver) => (
+                                    <Space size={4} wrap={false}>
+                                      <Button size="small" onClick={() => void testDriver(driver)}>
+                                        测试
+                                      </Button>
+                                      <Button
+                                        danger
+                                        size="small"
+                                        onClick={() => void deleteDriver(driver)}
+                                      >
+                                        删除
+                                      </Button>
+                                    </Space>
+                                  )
+                                }
+                              ]}
+                            />
+                          </div>
+                          <div className="driver-manager-section-card">
+                            <Space direction="vertical" size={2} className="full-width">
+                              <Typography.Title level={5} style={{ margin: 0 }}>
+                                添加 {selectedDriverDatabaseMeta.shortLabel} 驱动
+                              </Typography.Title>
+                              <Typography.Text type="secondary">
+                                支持 {selectedDriverTypeLabels}
+                              </Typography.Text>
+                            </Space>
+                            <Form
+                              form={driverForm}
+                              layout="vertical"
+                              initialValues={{
+                                database_type: 'dm',
+                                driver_type: 'jdbc',
+                                enabled: true
+                              }}
+                            >
+                              <Form.Item name="database_type" style={{ display: 'none' }}>
+                                <Input />
+                              </Form.Item>
+                              <Form.Item
+                                name="driver_type"
+                                label="驱动类型"
+                                rules={[{ required: true, message: '请选择驱动类型' }]}
+                              >
+                                <Select
+                                  popupClassName="settings-glass-select-dropdown"
+                                  options={driverTypeOptionsForDatabase(selectedDriverDatabaseType)}
+                                />
+                              </Form.Item>
+                              <Form.Item
+                                name="name"
+                                label="显示名称"
+                                rules={[{ required: true, message: '请输入显示名称' }]}
+                              >
+                                <Input
+                                  placeholder={
+                                    selectedDriverDatabaseType === 'gaussdb'
+                                      ? '例如：高斯 JDBC 生产环境'
+                                      : '例如：达梦 JDBC / 本机 dmPython'
+                                  }
+                                />
+                              </Form.Item>
+                              <Form.Item
+                                name="path"
+                                label={driverPathLabel(selectedDriverDatabaseType, driverType)}
+                                rules={[
+                                  {
+                                    required: true,
+                                    message: `请选择${driverPathLabel(selectedDriverDatabaseType, driverType)}`
+                                  }
+                                ]}
+                              >
+                                <Input
+                                  readOnly
+                                  placeholder={driverPathPlaceholder(
+                                    selectedDriverDatabaseType,
+                                    driverType
+                                  )}
+                                  addonAfter={
+                                    <Button
+                                      type="link"
+                                      size="small"
+                                      onClick={() => void selectDriverFile()}
+                                    >
+                                      选择
+                                    </Button>
+                                  }
+                                />
+                              </Form.Item>
+                              <Button
+                                type="primary"
+                                loading={driverSaving}
+                                onClick={() => void addDriver()}
+                              >
+                                添加驱动
+                              </Button>
+                            </Form>
+                          </div>
+                        </div>
+                      </div>
+                    </Space>
+                  )}
                 </div>
-                <div className="settings-section-card settings-shortcut-card">
-                  <Typography.Title level={5} style={{ marginTop: 0 }}>AI 窗口</Typography.Title>
-                  <Space direction="vertical" className="full-width" size="middle">
-                    <ShortcutRecorder
-                      label={SHORTCUT_SETTING_LABELS.ai_send}
-                      value={shortcutSettings.ai_send}
-                      defaultValue={DEFAULT_SHORTCUT_SETTINGS.ai_send}
-                      recording={recordingShortcutAction === 'ai_send'}
-                      onStartRecord={() => setRecordingShortcutAction('ai_send')}
-                      onCancel={() => setRecordingShortcutAction(null)}
-                      onChange={(value) => {
-                        setShortcutSettings((current) => ({ ...current, ai_send: value }))
-                        setRecordingShortcutAction(null)
-                      }}
-                      onReset={() => setShortcutSettings((current) => ({ ...current, ai_send: DEFAULT_SHORTCUT_SETTINGS.ai_send }))}
-                    />
-                    <ShortcutRecorder
-                      label={SHORTCUT_SETTING_LABELS.ai_newline}
-                      value={shortcutSettings.ai_newline}
-                      defaultValue={DEFAULT_SHORTCUT_SETTINGS.ai_newline}
-                      recording={recordingShortcutAction === 'ai_newline'}
-                      onStartRecord={() => setRecordingShortcutAction('ai_newline')}
-                      onCancel={() => setRecordingShortcutAction(null)}
-                      onChange={(value) => {
-                        setShortcutSettings((current) => ({ ...current, ai_newline: value }))
-                        setRecordingShortcutAction(null)
-                      }}
-                      onReset={() => setShortcutSettings((current) => ({ ...current, ai_newline: DEFAULT_SHORTCUT_SETTINGS.ai_newline }))}
-                    />
-                    <ShortcutRecorder
-                      label={SHORTCUT_SETTING_LABELS.ai_stop}
-                      value={shortcutSettings.ai_stop}
-                      defaultValue={DEFAULT_SHORTCUT_SETTINGS.ai_stop}
-                      recording={recordingShortcutAction === 'ai_stop'}
-                      onStartRecord={() => setRecordingShortcutAction('ai_stop')}
-                      onCancel={() => setRecordingShortcutAction(null)}
-                      onChange={(value) => {
-                        setShortcutSettings((current) => ({ ...current, ai_stop: value }))
-                        setRecordingShortcutAction(null)
-                      }}
-                      onReset={() => setShortcutSettings((current) => ({ ...current, ai_stop: DEFAULT_SHORTCUT_SETTINGS.ai_stop }))}
-                    />
-                  </Space>
-                </div>
-              </Space>
+              </Flex>
             ) : (
-              <Space direction="vertical" className="full-width settings-section-stack" size="middle">
-                <Space direction="vertical" className="full-width settings-section-card settings-jdbc-card" size="small">
-                  <Typography.Title level={5} style={{ margin: 0 }}>全局 JDBC Java 环境</Typography.Title>
-                  {javaRestartRequired && (
-                    <Alert
-                      type="warning"
-                      showIcon
-                      message="需要重启应用"
-                      description="JDBC Java 环境已修改，但当前应用尚未重启。重启后新的 Java 环境才会生效。"
+              <div className="deferred-modal-loading">
+                <LoadingOutlined spin />
+              </div>
+            )
+          }
+        </ImperativeModalHost>
+        <Modal
+          title={editingTableName ? `修改表：${editingTableName}` : '修改表'}
+          open={tableEditorOpen}
+          okText="保存"
+          cancelText="取消"
+          confirmLoading={tableEditorLoading}
+          onOk={() => void saveTableEditor()}
+          onCancel={() => setTableEditorOpen(false)}
+          width={980}
+          okButtonProps={{
+            disabled: !tableDesignerSupportsEdit(getConnection(editingConnectionId)?.database_type)
+          }}
+          maskClosable={false}
+          {...FAST_MODAL_PROPS}
+        >
+          {renderTableDesigner(
+            'edit',
+            editingConnectionId,
+            editingDatabaseName,
+            editingPgDatabaseName,
+            editingTableName ?? '',
+            undefined,
+            editingTableComment,
+            setEditingTableComment,
+            editingColumns,
+            tableEditorLoading
+          )}
+        </Modal>
+        <Modal
+          title={
+            creatingSchemaDatabaseName
+              ? '新建 Schema'
+              : getConnection(creatingDatabaseConnectionId)?.database_type === 'oracle'
+                ? '新建用户'
+                : '新增数据库'
+          }
+          open={databaseCreateModalOpen}
+          className="database-create-modal"
+          okText="创建"
+          cancelText="取消"
+          confirmLoading={databaseCreateLoading}
+          onOk={() => void createDatabase()}
+          onCancel={() => {
+            setDatabaseCreateModalOpen(false)
+            setCreatingSchemaDatabaseName('')
+            setDatabaseCreatePassword('')
+          }}
+          okButtonProps={{
+            disabled:
+              !databaseCreateName.trim() ||
+              (getConnection(creatingDatabaseConnectionId)?.database_type === 'oracle' &&
+                !creatingSchemaDatabaseName &&
+                !databaseCreatePassword.trim())
+          }}
+          maskClosable={false}
+          {...FAST_MODAL_PROPS}
+        >
+          <Form layout="vertical" className="database-create-form">
+            <Form.Item
+              label={
+                creatingSchemaDatabaseName
+                  ? 'Schema 名称'
+                  : getConnection(creatingDatabaseConnectionId)?.database_type === 'oracle'
+                    ? '用户名'
+                    : '数据库名称'
+              }
+              required
+            >
+              <Input
+                placeholder={
+                  creatingSchemaDatabaseName
+                    ? '请输入 Schema 名称'
+                    : getConnection(creatingDatabaseConnectionId)?.database_type === 'oracle'
+                      ? '请输入用户名'
+                      : '请输入数据库名称'
+                }
+                value={databaseCreateName}
+                onChange={(event) => setDatabaseCreateName(event.target.value)}
+                onPressEnter={() => void createDatabase()}
+              />
+            </Form.Item>
+            {getConnection(creatingDatabaseConnectionId)?.database_type === 'oracle' &&
+              !creatingSchemaDatabaseName && (
+                <Form.Item label="用户密码" required>
+                  <Input.Password
+                    placeholder="请输入用户密码"
+                    value={databaseCreatePassword}
+                    onChange={(event) => setDatabaseCreatePassword(event.target.value)}
+                    onPressEnter={() => void createDatabase()}
+                  />
+                </Form.Item>
+              )}
+            <Typography.Text type="secondary">
+              {getConnection(creatingDatabaseConnectionId)?.database_type === 'oracle' &&
+              !creatingSchemaDatabaseName
+                ? '用户名仅允许字母、数字、下划线，首字符不能是数字；创建后会自动授予基础开发权限。'
+                : '仅允许字母、数字、下划线，首字符不能是数字，长度 1-64。'}
+            </Typography.Text>
+          </Form>
+        </Modal>
+        <Modal
+          title="运行 SQL 文件"
+          open={sqlFileModalOpen}
+          okText="执行"
+          cancelText="取消"
+          confirmLoading={sqlFileLoading}
+          onOk={() => void runSqlFile()}
+          onCancel={() => setSqlFileModalOpen(false)}
+          okButtonProps={{
+            danger: true,
+            disabled: sqlFileDatabases.length > 0 && !sqlFileDatabase
+          }}
+          footer={
+            sqlFileResult
+              ? undefined
+              : (_, { OkBtn, CancelBtn }) => (
+                  <Space>
+                    <CancelBtn />
+                    <OkBtn />
+                  </Space>
+                )
+          }
+          maskClosable={false}
+          {...FAST_MODAL_PROPS}
+        >
+          {sqlFileResult ? (
+            <Space direction="vertical" className="full-width">
+              <Alert
+                type={sqlFileResult.failed_count === 0 ? 'success' : 'warning'}
+                message={`执行完成：${sqlFileResult.success_count} 条成功，${sqlFileResult.failed_count} 条失败`}
+                showIcon
+              />
+              {sqlFileResult.errors.length > 0 && (
+                <Space direction="vertical" className="full-width sql-file-errors">
+                  <Typography.Text strong>错误信息：</Typography.Text>
+                  <Input.TextArea
+                    value={sqlFileResult.errors.join('\n\n')}
+                    autoSize={{ minRows: 4, maxRows: 12 }}
+                    readOnly
+                  />
+                </Space>
+              )}
+              <Button type="default" block onClick={() => setSqlFileModalOpen(false)}>
+                关闭
+              </Button>
+            </Space>
+          ) : (
+            <Space direction="vertical" className="full-width">
+              <Alert
+                type="warning"
+                message="SQL 文件可能包含 DDL/DML 写操作，执行后不可撤销，请确认无误后再执行。"
+                showIcon
+              />
+              <Typography.Text>
+                <Typography.Text strong>连接：</Typography.Text>
+                {getConnection(sqlFileConnectionId)?.name ?? sqlFileConnectionId}
+              </Typography.Text>
+              <Typography.Text>
+                <Typography.Text strong>文件：</Typography.Text>
+                {sqlFileName}
+              </Typography.Text>
+              <Typography.Text>
+                <Typography.Text strong>SQL 行数：</Typography.Text>
+                {sqlFileContent ? sqlFileContent.split('\n').length : 0}
+              </Typography.Text>
+              <Form layout="vertical">
+                <Form.Item
+                  label={
+                    isSchemaScopedType(getConnection(sqlFileConnectionId)?.database_type)
+                      ? '目标 Schema'
+                      : '目标数据库'
+                  }
+                  required={sqlFileDatabases.length > 0}
+                  rules={
+                    sqlFileDatabases.length > 0
+                      ? [
+                          {
+                            required: true,
+                            message: isSchemaScopedType(
+                              getConnection(sqlFileConnectionId)?.database_type
+                            )
+                              ? '请选择目标 Schema'
+                              : '请选择目标数据库'
+                          }
+                        ]
+                      : undefined
+                  }
+                >
+                  {sqlFileDatabases.length > 0 ? (
+                    <Select
+                      placeholder={
+                        isSchemaScopedType(getConnection(sqlFileConnectionId)?.database_type)
+                          ? '请选择目标 Schema'
+                          : '请选择目标数据库'
+                      }
+                      value={sqlFileDatabase || undefined}
+                      onChange={(value) => setSqlFileDatabase(value)}
+                      options={sqlFileDatabases.map((db) => ({ label: db.name, value: db.name }))}
+                    />
+                  ) : (
+                    <Input
+                      placeholder="留空则使用连接默认数据库"
+                      value={sqlFileDatabase}
+                      onChange={(event) => setSqlFileDatabase(event.target.value)}
                     />
                   )}
-                  <Flex justify="space-between" align="center">
-                    <Space direction="vertical" size={0}>
-                      <Typography.Text>启用 JDBC Java 环境</Typography.Text>
-                      <Typography.Text type="secondary">关闭后应用启动时不会加载 Java，使用 JDBC 驱动连接时需要先开启并配置。</Typography.Text>
-                    </Space>
-                    <Switch checked={jdbcJavaEnabled} onChange={setJdbcJavaEnabled} />
-                  </Flex>
-                <Space.Compact className="full-width">
-                  <AutoComplete
-                      value={jdbcJavaHome}
-                      options={javaRuntimeOptions}
-                      popupClassName="settings-glass-select-dropdown"
-                      placeholder="请选择项目启动后 JDBC 统一使用的 JDK/JRE 目录"
-                      onChange={setJdbcJavaHome}
-                      disabled={!jdbcJavaEnabled}
-                      filterOption={(inputValue, option) => {
-                        const normalizedInput = inputValue.trim().toLowerCase()
-                        if (!normalizedInput || selectedJavaRuntimeValues.has(normalizedInput)) {
-                          return true
-                        }
-                        return String(option?.value ?? '').toLowerCase().includes(normalizedInput) || String(option?.label ?? '').toLowerCase().includes(normalizedInput)
-                      }}
-                      className="full-width"
-                    />
-                    <Button disabled={!jdbcJavaEnabled} onClick={() => void selectJavaDirectory()}>选择</Button>
-                    <Button type="primary" onClick={() => void saveJdbcJavaConfig()}>保存</Button>
-                  </Space.Compact>
-                </Space>
-                <div className="driver-manager-shell">
-                  <div className="driver-manager-nav">
-                    <div className="driver-manager-nav-panel">
-                      <Typography.Text strong>数据库类型</Typography.Text>
-                    </div>
-                    {DRIVER_DATABASE_ORDER.map((databaseType) => {
-                      const meta = DRIVER_DATABASE_META[databaseType]
-                      const databaseDrivers = drivers.filter((driver) => driver.database_type === databaseType)
-                      return (
-                        <button
-                          key={databaseType}
-                          type="button"
-                          className={`driver-manager-nav-item${selectedDriverDatabaseType === databaseType ? ' active' : ''}`}
-                          onClick={() => selectDriverDatabaseType(databaseType)}
-                        >
-                          <span className="driver-manager-nav-icon">{meta.icon}</span>
-                          <span className="driver-manager-nav-copy">
-                            <Typography.Text strong>{meta.shortLabel}</Typography.Text>
-                          </span>
-                          <span className="driver-manager-nav-meta">
-                            <Tag>{databaseDrivers.length}</Tag>
-                          </span>
-                        </button>
-                      )
-                    })}
-                  </div>
-                  <div className="driver-manager-main">
-                    <div className="driver-manager-summary-grid">
-                      <div className="driver-manager-summary-card">
-                        <span>{selectedDatabaseDrivers.length}</span>
-                        <small>当前已配置</small>
-                      </div>
-                      <div className="driver-manager-summary-card accent">
-                        <span>{selectedManualDriverCount}</span>
-                        <small>手动添加</small>
-                      </div>
-                      <div className="driver-manager-summary-card">
-                        <span>{driverTypeOptionsForDatabase(selectedDriverDatabaseType).length}</span>
-                        <small>支持格式</small>
-                      </div>
-                    </div>
-                    <div className="driver-manager-section-card">
-                      <Flex justify="space-between" align="center" gap={12}>
-                        <Space direction="vertical" size={2}>
-                          <Typography.Title level={5} style={{ margin: 0 }}>{selectedDriverDatabaseMeta.label}驱动</Typography.Title>
-                        </Space>
-                        <Space size={8} wrap>
-                          <Tag>{selectedDriverDatabaseMeta.shortLabel}</Tag>
-                          <Button loading={driversLoading} onClick={() => void loadDrivers()}>刷新</Button>
-                        </Space>
-                      </Flex>
-                      <Table<DriverInfo>
-                        size="small"
-                        rowKey="id"
-                        loading={driversLoading}
-                        pagination={false}
-                        tableLayout="fixed"
-                        locale={{ emptyText: `${selectedDriverDatabaseMeta.shortLabel} 暂无已配置驱动` }}
-                        dataSource={selectedDatabaseDrivers}
-                        columns={[
-                          { title: '名称', dataIndex: 'name', width: 180, ellipsis: true, render: (value: string) => <Typography.Text ellipsis title={value}>{value}</Typography.Text> },
-                          { title: '驱动类型', dataIndex: 'driver_type', width: 110, render: (value: DriverInfo['driver_type']) => driverTypeLabel(value) },
-                          { title: '驱动文件', ellipsis: true, render: (_: unknown, driver) => <Typography.Text ellipsis title={driver.path ?? undefined}>{driver.path}</Typography.Text> },
-                          { title: '操作', width: 132, render: (_: unknown, driver) => <Space size={4} wrap={false}><Button size="small" onClick={() => void testDriver(driver)}>测试</Button><Button danger size="small" onClick={() => void deleteDriver(driver)}>删除</Button></Space> }
-                        ]}
-                      />
-                    </div>
-                    <div className="driver-manager-section-card">
-                      <Space direction="vertical" size={2} className="full-width">
-                        <Typography.Title level={5} style={{ margin: 0 }}>添加 {selectedDriverDatabaseMeta.shortLabel} 驱动</Typography.Title>
-                        <Typography.Text type="secondary">支持 {selectedDriverTypeLabels}</Typography.Text>
-                      </Space>
-                      <Form form={driverForm} layout="vertical" initialValues={{ database_type: 'dm', driver_type: 'jdbc', enabled: true }}>
-                        <Form.Item name="database_type" style={{ display: 'none' }}>
-                          <Input />
-                        </Form.Item>
-                        <Form.Item name="driver_type" label="驱动类型" rules={[{ required: true, message: '请选择驱动类型' }]}>
-                          <Select popupClassName="settings-glass-select-dropdown" options={driverTypeOptionsForDatabase(selectedDriverDatabaseType)} />
-                        </Form.Item>
-                        <Form.Item name="name" label="显示名称" rules={[{ required: true, message: '请输入显示名称' }]}>
-                          <Input placeholder={selectedDriverDatabaseType === 'gaussdb' ? '例如：高斯 JDBC 生产环境' : '例如：达梦 JDBC / 本机 dmPython'} />
-                        </Form.Item>
-                        <Form.Item
-                          name="path"
-                          label={driverPathLabel(selectedDriverDatabaseType, driverType)}
-                          rules={[{ required: true, message: `请选择${driverPathLabel(selectedDriverDatabaseType, driverType)}` }]}
-                        >
-                          <Input readOnly placeholder={driverPathPlaceholder(selectedDriverDatabaseType, driverType)} addonAfter={<Button type="link" size="small" onClick={() => void selectDriverFile()}>选择</Button>} />
-                        </Form.Item>
-                        <Button type="primary" loading={driverSaving} onClick={() => void addDriver()}>添加驱动</Button>
-                      </Form>
-                    </div>
-                  </div>
-                </div>
-              </Space>
-            )}
-          </div>
-        </Flex>
-        ) : (
-          <div className="deferred-modal-loading"><LoadingOutlined spin /></div>
-        )}
-      </ImperativeModalHost>
-      <Modal title={editingTableName ? `修改表：${editingTableName}` : '修改表'} open={tableEditorOpen} okText="保存" cancelText="取消" confirmLoading={tableEditorLoading} onOk={() => void saveTableEditor()} onCancel={() => setTableEditorOpen(false)} width={980} okButtonProps={{ disabled: !tableDesignerSupportsEdit(getConnection(editingConnectionId)?.database_type) }} maskClosable={false} {...FAST_MODAL_PROPS}>
-        {renderTableDesigner('edit', editingConnectionId, editingDatabaseName, editingPgDatabaseName, editingTableName ?? '', undefined, editingTableComment, setEditingTableComment, editingColumns, tableEditorLoading)}
-      </Modal>
-      <Modal title={creatingSchemaDatabaseName ? '新建 Schema' : getConnection(creatingDatabaseConnectionId)?.database_type === 'oracle' ? '新建用户' : '新增数据库'} open={databaseCreateModalOpen} className="database-create-modal" okText="创建" cancelText="取消" confirmLoading={databaseCreateLoading} onOk={() => void createDatabase()} onCancel={() => { setDatabaseCreateModalOpen(false); setCreatingSchemaDatabaseName(''); setDatabaseCreatePassword('') }} okButtonProps={{ disabled: !databaseCreateName.trim() || (getConnection(creatingDatabaseConnectionId)?.database_type === 'oracle' && !creatingSchemaDatabaseName && !databaseCreatePassword.trim()) }} maskClosable={false} {...FAST_MODAL_PROPS}>
-        <Form layout="vertical" className="database-create-form">
-          <Form.Item label={creatingSchemaDatabaseName ? 'Schema 名称' : getConnection(creatingDatabaseConnectionId)?.database_type === 'oracle' ? '用户名' : '数据库名称'} required>
-            <Input placeholder={creatingSchemaDatabaseName ? '请输入 Schema 名称' : getConnection(creatingDatabaseConnectionId)?.database_type === 'oracle' ? '请输入用户名' : '请输入数据库名称'} value={databaseCreateName} onChange={(event) => setDatabaseCreateName(event.target.value)} onPressEnter={() => void createDatabase()} />
-          </Form.Item>
-          {getConnection(creatingDatabaseConnectionId)?.database_type === 'oracle' && !creatingSchemaDatabaseName && (
-            <Form.Item label="用户密码" required>
-              <Input.Password placeholder="请输入用户密码" value={databaseCreatePassword} onChange={(event) => setDatabaseCreatePassword(event.target.value)} onPressEnter={() => void createDatabase()} />
-            </Form.Item>
+                </Form.Item>
+              </Form>
+            </Space>
           )}
-          <Typography.Text type="secondary">{getConnection(creatingDatabaseConnectionId)?.database_type === 'oracle' && !creatingSchemaDatabaseName ? '用户名仅允许字母、数字、下划线，首字符不能是数字；创建后会自动授予基础开发权限。' : '仅允许字母、数字、下划线，首字符不能是数字，长度 1-64。'}</Typography.Text>
-        </Form>
-      </Modal>
-      <Modal title="运行 SQL 文件" open={sqlFileModalOpen} okText="执行" cancelText="取消" confirmLoading={sqlFileLoading} onOk={() => void runSqlFile()} onCancel={() => setSqlFileModalOpen(false)} okButtonProps={{ danger: true, disabled: sqlFileDatabases.length > 0 && !sqlFileDatabase }} footer={sqlFileResult ? undefined : (_, { OkBtn, CancelBtn }) => (<Space><CancelBtn /><OkBtn /></Space>)} maskClosable={false} {...FAST_MODAL_PROPS}>
-        {sqlFileResult ? (
+        </Modal>
+        <DdlPreviewModal
+          ref={ddlPreviewModalRef}
+          theme={theme}
+          onError={(errorMessage) => showError(errorMessage)}
+        />
+        <Modal
+          title={folderEditorMode === 'rename' ? '重命名分组' : '新建分组'}
+          open={folderEditorOpen}
+          className="folder-editor-modal"
+          okText={folderEditorMode === 'rename' ? '保存' : '创建'}
+          cancelText="取消"
+          onOk={saveFolder}
+          onCancel={() => {
+            setFolderEditorOpen(false)
+            setEditingFolderId(undefined)
+            setFolderNameDraft('')
+          }}
+          okButtonProps={{ disabled: !folderNameDraft.trim() }}
+          centered
+          maskClosable={false}
+          {...FAST_MODAL_PROPS}
+        >
+          <Form layout="vertical" className="folder-editor-form">
+            <Form.Item label="分组名称" required>
+              <Input
+                value={folderNameDraft}
+                placeholder="例如：生产环境 / 测试环境 / 客户项目"
+                onChange={(event) => setFolderNameDraft(event.target.value)}
+                onPressEnter={(event) => {
+                  event.preventDefault()
+                  saveFolder()
+                }}
+              />
+            </Form.Item>
+          </Form>
+        </Modal>
+        <Modal
+          title={
+            getConnection(createTableConnectionId)?.database_type === 'mongodb'
+              ? '新建集合'
+              : '新建表'
+          }
+          open={createTableModalOpen}
+          okText="创建"
+          cancelText="取消"
+          confirmLoading={createTableLoading}
+          onOk={() => void createTable()}
+          onCancel={() => setCreateTableModalOpen(false)}
+          width={980}
+          okButtonProps={{
+            disabled:
+              !newTableName.trim() ||
+              (getConnection(createTableConnectionId)?.database_type !== 'mongodb' &&
+                newTableColumns.filter((c) => c.name.trim()).length === 0)
+          }}
+          maskClosable={false}
+          {...FAST_MODAL_PROPS}
+        >
+          {renderTableDesigner(
+            'create',
+            createTableConnectionId,
+            createTableDatabaseName,
+            createTablePgDatabaseName || undefined,
+            newTableName,
+            setNewTableName,
+            newTableComment,
+            setNewTableComment,
+            newTableColumns,
+            createTableLoading
+          )}
+        </Modal>
+        <ConnectionEditorModal
+          form={form}
+          open={connectionModalOpen}
+          mode={connectionMode}
+          databaseType={connectionModalDatabaseType}
+          loading={connectionLoading}
+          testingConnection={testingConnection}
+          testingSshConnection={testingSshConnection}
+          driversLoading={driversLoading}
+          manualDriverOptions={manualDriverOptions}
+          selectedManualDriver={selectedManualDriver}
+          driverLabel={
+            selectedManualDriver ? driverTypeLabel(selectedManualDriver.driver_type) : ''
+          }
+          onOk={() => void saveConnection()}
+          onCancel={() => setConnectionModalOpen(false)}
+          onTestConnection={() => void testConnection()}
+          onTestSshConnection={() => void testSshConnection()}
+          onSelectSqliteFile={() => void selectSqliteFile()}
+          onOpenDriverManager={openDriverManager}
+          onDriverChange={handleConnectionDriverChange}
+        />
+        <Modal
+          title="备份"
+          open={backupRestoreModalOpen}
+          okText="选择路径并备份"
+          cancelText="取消"
+          confirmLoading={backupRestoreLoading}
+          onOk={() => void runBackup()}
+          onCancel={() => setBackupRestoreModalOpen(false)}
+          maskClosable={false}
+          {...FAST_MODAL_PROPS}
+        >
           <Space direction="vertical" className="full-width">
-            <Alert type={sqlFileResult.failed_count === 0 ? 'success' : 'warning'} message={`执行完成：${sqlFileResult.success_count} 条成功，${sqlFileResult.failed_count} 条失败`} showIcon />
-            {sqlFileResult.errors.length > 0 && (
-              <Space direction="vertical" className="full-width sql-file-errors">
-                <Typography.Text strong>错误信息：</Typography.Text>
-                <Input.TextArea value={sqlFileResult.errors.join('\n\n')} autoSize={{ minRows: 4, maxRows: 12 }} readOnly />
-              </Space>
-            )}
-            <Button type="default" block onClick={() => setSqlFileModalOpen(false)}>关闭</Button>
+            <Typography.Text>
+              <Typography.Text strong>连接：</Typography.Text>
+              {getConnection(backupRestoreConnectionId)?.name}
+            </Typography.Text>
+            <Typography.Text>
+              <Typography.Text strong>数据库：</Typography.Text>
+              {backupRestorePgDatabase || backupRestoreDatabase || '默认'}
+            </Typography.Text>
+            <Alert
+              type="info"
+              message="备份会生成 SQL 脚本，包含建表语句和数据，可随时通过导入功能恢复。"
+              showIcon
+            />
           </Space>
-        ) : (
+        </Modal>
+        <Modal
+          title="导出"
+          open={exportModalOpen}
+          okText="选择路径并导出"
+          cancelText="取消"
+          confirmLoading={exportLoading}
+          onOk={() => void runExport()}
+          onCancel={() => setExportModalOpen(false)}
+          maskClosable={false}
+          {...FAST_MODAL_PROPS}
+        >
           <Space direction="vertical" className="full-width">
-            <Alert type="warning" message="SQL 文件可能包含 DDL/DML 写操作，执行后不可撤销，请确认无误后再执行。" showIcon />
-            <Typography.Text><Typography.Text strong>连接：</Typography.Text>{getConnection(sqlFileConnectionId)?.name ?? sqlFileConnectionId}</Typography.Text>
-            <Typography.Text><Typography.Text strong>文件：</Typography.Text>{sqlFileName}</Typography.Text>
-            <Typography.Text><Typography.Text strong>SQL 行数：</Typography.Text>{sqlFileContent ? sqlFileContent.split('\n').length : 0}</Typography.Text>
+            <Typography.Text>
+              <Typography.Text strong>连接：</Typography.Text>
+              {getConnection(exportConnectionId)?.name}
+            </Typography.Text>
+            <Typography.Text>
+              <Typography.Text strong>范围：</Typography.Text>
+              {exportScope === 'table'
+                ? `表 ${exportTable}`
+                : exportScope === 'schema'
+                  ? `Schema ${exportPgDatabase}`
+                  : `数据库 ${exportDatabase || '默认'}`}
+            </Typography.Text>
             <Form layout="vertical">
-              <Form.Item label={isSchemaScopedType(getConnection(sqlFileConnectionId)?.database_type) ? '目标 Schema' : '目标数据库'} required={sqlFileDatabases.length > 0} rules={sqlFileDatabases.length > 0 ? [{ required: true, message: isSchemaScopedType(getConnection(sqlFileConnectionId)?.database_type) ? '请选择目标 Schema' : '请选择目标数据库' }] : undefined}>
-                {sqlFileDatabases.length > 0 ? (<Select placeholder={isSchemaScopedType(getConnection(sqlFileConnectionId)?.database_type) ? '请选择目标 Schema' : '请选择目标数据库'} value={sqlFileDatabase || undefined} onChange={(value) => setSqlFileDatabase(value)} options={sqlFileDatabases.map((db) => ({ label: db.name, value: db.name }))} />) : (<Input placeholder="留空则使用连接默认数据库" value={sqlFileDatabase} onChange={(event) => setSqlFileDatabase(event.target.value)} />)}
+              <Form.Item label="导出格式">
+                <Select
+                  value={exportFormat}
+                  onChange={(value) => setExportFormat(value)}
+                  options={
+                    getConnection(exportConnectionId)?.database_type === 'mongodb' ||
+                    getConnection(exportConnectionId)?.database_type === 'redis'
+                      ? [{ label: 'JSON', value: 'json' }]
+                      : [
+                          { label: 'SQL 脚本', value: 'sql' },
+                          { label: 'CSV', value: 'csv' }
+                        ]
+                  }
+                />
+              </Form.Item>
+              {exportFormat === 'sql' && (
+                <Form.Item label="导出内容">
+                  <Select
+                    value={exportContent}
+                    onChange={(value) => setExportContent(value)}
+                    options={[
+                      { label: '结构 + 数据', value: 'schema_data' },
+                      { label: '仅结构', value: 'schema' },
+                      { label: '仅数据', value: 'data' }
+                    ]}
+                  />
+                </Form.Item>
+              )}
+            </Form>
+            {exportFormat === 'csv' && exportScope !== 'table' && (
+              <Alert type="info" message="CSV 多表导出会创建目录，每张表一个 CSV 文件。" showIcon />
+            )}
+            {exportFormat === 'json' && (
+              <Alert
+                type="info"
+                message="Redis / MongoDB 会导出为 JSON 文件，便于留档或迁移前查看。"
+                showIcon
+              />
+            )}
+            {exportFormat === 'sql' && (
+              <Alert
+                type="info"
+                message="SQL 导出用于迁移或查看，可选仅结构、仅数据或结构加数据；完整恢复请使用备份。"
+                showIcon
+              />
+            )}
+          </Space>
+        </Modal>
+        <Modal
+          title="导入"
+          open={importModalOpen}
+          okText="导入"
+          cancelText="取消"
+          confirmLoading={importLoading}
+          onOk={() => void runImport()}
+          onCancel={() => setImportModalOpen(false)}
+          okButtonProps={{ disabled: !importPath }}
+          maskClosable={false}
+          {...FAST_MODAL_PROPS}
+        >
+          <Space direction="vertical" className="full-width">
+            <Typography.Text>
+              <Typography.Text strong>连接：</Typography.Text>
+              {getConnection(importConnectionId)?.name}
+            </Typography.Text>
+            <Typography.Text>
+              <Typography.Text strong>目标：</Typography.Text>
+              {importTable
+                ? `表 ${importTable}`
+                : importPgDatabase
+                  ? `Schema ${importPgDatabase}`
+                  : `数据库 ${importDatabase || '默认'}`}
+            </Typography.Text>
+            <Form layout="vertical">
+              <Form.Item label="导入文件（SQL/CSV，自动按扩展名识别）" required>
+                <Input
+                  readOnly
+                  placeholder="请选择导入文件"
+                  value={importPath}
+                  addonAfter={
+                    <Button type="link" size="small" onClick={() => void selectImportFilePath()}>
+                      选择
+                    </Button>
+                  }
+                />
               </Form.Item>
             </Form>
-          </Space>
-        )}
-      </Modal>
-      <DdlPreviewModal ref={ddlPreviewModalRef} theme={theme} onError={(errorMessage) => showError(errorMessage)} />
-      <Modal
-        title={folderEditorMode === 'rename' ? '重命名分组' : '新建分组'}
-        open={folderEditorOpen}
-        className="folder-editor-modal"
-        okText={folderEditorMode === 'rename' ? '保存' : '创建'}
-        cancelText="取消"
-        onOk={saveFolder}
-        onCancel={() => {
-          setFolderEditorOpen(false)
-          setEditingFolderId(undefined)
-          setFolderNameDraft('')
-        }}
-        okButtonProps={{ disabled: !folderNameDraft.trim() }}
-        centered
-        maskClosable={false}
-        {...FAST_MODAL_PROPS}
-      >
-        <Form layout="vertical" className="folder-editor-form">
-          <Form.Item label="分组名称" required>
-            <Input
-              value={folderNameDraft}
-              placeholder="例如：生产环境 / 测试环境 / 客户项目"
-              onChange={(event) => setFolderNameDraft(event.target.value)}
-              onPressEnter={(event) => {
-                event.preventDefault()
-                saveFolder()
-              }}
+            <Alert
+              type="warning"
+              message="导入 SQL 会逐条执行文件中的语句；导入 CSV 会 INSERT 到目标表，请确保表结构与 CSV 表头一致。"
+              showIcon
             />
-          </Form.Item>
-        </Form>
-      </Modal>
-      <Modal title={getConnection(createTableConnectionId)?.database_type === 'mongodb' ? '新建集合' : '新建表'} open={createTableModalOpen} okText="创建" cancelText="取消" confirmLoading={createTableLoading} onOk={() => void createTable()} onCancel={() => setCreateTableModalOpen(false)} width={980} okButtonProps={{ disabled: !newTableName.trim() || (getConnection(createTableConnectionId)?.database_type !== 'mongodb' && newTableColumns.filter((c) => c.name.trim()).length === 0) }} maskClosable={false} {...FAST_MODAL_PROPS}>
-        {renderTableDesigner('create', createTableConnectionId, createTableDatabaseName, createTablePgDatabaseName || undefined, newTableName, setNewTableName, newTableComment, setNewTableComment, newTableColumns, createTableLoading)}
-      </Modal>
-      <ConnectionEditorModal
-        form={form}
-        open={connectionModalOpen}
-        mode={connectionMode}
-        databaseType={connectionModalDatabaseType}
-        loading={connectionLoading}
-        testingConnection={testingConnection}
-        testingSshConnection={testingSshConnection}
-        driversLoading={driversLoading}
-        manualDriverOptions={manualDriverOptions}
-        selectedManualDriver={selectedManualDriver}
-        driverLabel={selectedManualDriver ? driverTypeLabel(selectedManualDriver.driver_type) : ''}
-        onOk={() => void saveConnection()}
-        onCancel={() => setConnectionModalOpen(false)}
-        onTestConnection={() => void testConnection()}
-        onTestSshConnection={() => void testSshConnection()}
-        onSelectSqliteFile={() => void selectSqliteFile()}
-        onOpenDriverManager={openDriverManager}
-        onDriverChange={handleConnectionDriverChange}
-      />
-      <Modal title="备份" open={backupRestoreModalOpen} okText="选择路径并备份" cancelText="取消" confirmLoading={backupRestoreLoading} onOk={() => void runBackup()} onCancel={() => setBackupRestoreModalOpen(false)} maskClosable={false} {...FAST_MODAL_PROPS}>
-        <Space direction="vertical" className="full-width">
-          <Typography.Text><Typography.Text strong>连接：</Typography.Text>{getConnection(backupRestoreConnectionId)?.name}</Typography.Text>
-          <Typography.Text><Typography.Text strong>数据库：</Typography.Text>{backupRestorePgDatabase || backupRestoreDatabase || '默认'}</Typography.Text>
-          <Alert type="info" message="备份会生成 SQL 脚本，包含建表语句和数据，可随时通过导入功能恢复。" showIcon />
-        </Space>
-      </Modal>
-      <Modal title="导出" open={exportModalOpen} okText="选择路径并导出" cancelText="取消" confirmLoading={exportLoading} onOk={() => void runExport()} onCancel={() => setExportModalOpen(false)} maskClosable={false} {...FAST_MODAL_PROPS}>
-        <Space direction="vertical" className="full-width">
-          <Typography.Text><Typography.Text strong>连接：</Typography.Text>{getConnection(exportConnectionId)?.name}</Typography.Text>
-          <Typography.Text><Typography.Text strong>范围：</Typography.Text>{exportScope === 'table' ? `表 ${exportTable}` : exportScope === 'schema' ? `Schema ${exportPgDatabase}` : `数据库 ${exportDatabase || '默认'}`}</Typography.Text>
-          <Form layout="vertical">
-            <Form.Item label="导出格式">
-              <Select value={exportFormat} onChange={(value) => setExportFormat(value)} options={getConnection(exportConnectionId)?.database_type === 'mongodb' || getConnection(exportConnectionId)?.database_type === 'redis' ? [{ label: 'JSON', value: 'json' }] : [{ label: 'SQL 脚本', value: 'sql' }, { label: 'CSV', value: 'csv' }]} />
-            </Form.Item>
-            {exportFormat === 'sql' && (
-              <Form.Item label="导出内容">
-                <Select value={exportContent} onChange={(value) => setExportContent(value)} options={[{ label: '结构 + 数据', value: 'schema_data' }, { label: '仅结构', value: 'schema' }, { label: '仅数据', value: 'data' }]} />
-              </Form.Item>
-            )}
-          </Form>
-          {exportFormat === 'csv' && exportScope !== 'table' && <Alert type="info" message="CSV 多表导出会创建目录，每张表一个 CSV 文件。" showIcon />}
-          {exportFormat === 'json' && <Alert type="info" message="Redis / MongoDB 会导出为 JSON 文件，便于留档或迁移前查看。" showIcon />}
-          {exportFormat === 'sql' && <Alert type="info" message="SQL 导出用于迁移或查看，可选仅结构、仅数据或结构加数据；完整恢复请使用备份。" showIcon />}
-        </Space>
-      </Modal>
-      <Modal title="导入" open={importModalOpen} okText="导入" cancelText="取消" confirmLoading={importLoading} onOk={() => void runImport()} onCancel={() => setImportModalOpen(false)} okButtonProps={{ disabled: !importPath }} maskClosable={false} {...FAST_MODAL_PROPS}>
-        <Space direction="vertical" className="full-width">
-          <Typography.Text><Typography.Text strong>连接：</Typography.Text>{getConnection(importConnectionId)?.name}</Typography.Text>
-          <Typography.Text><Typography.Text strong>目标：</Typography.Text>{importTable ? `表 ${importTable}` : importPgDatabase ? `Schema ${importPgDatabase}` : `数据库 ${importDatabase || '默认'}`}</Typography.Text>
-          <Form layout="vertical">
-            <Form.Item label="导入文件（SQL/CSV，自动按扩展名识别）" required>
-              <Input readOnly placeholder="请选择导入文件" value={importPath} addonAfter={<Button type="link" size="small" onClick={() => void selectImportFilePath()}>选择</Button>} />
-            </Form.Item>
-          </Form>
-          <Alert type="warning" message="导入 SQL 会逐条执行文件中的语句；导入 CSV 会 INSERT 到目标表，请确保表结构与 CSV 表头一致。" showIcon />
-        </Space>
-      </Modal>
+          </Space>
+        </Modal>
       </Layout>
     </ConfigProvider>
   )
 }
 
 export default App
-
-

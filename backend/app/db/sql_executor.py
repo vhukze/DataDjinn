@@ -1,6 +1,7 @@
 import sqlparse
 from sqlalchemy import Engine, text
 
+from app.db.query_timeout import apply_query_timeout
 from app.schemas.query import SqlFileRunResponse
 
 
@@ -53,13 +54,14 @@ def execute_sql_file(engine: Engine, sql: str, database: str | None = None, pg_d
                         connection.execute(text(f"USE {quoted}"))
 
                 try:
-                    for statement in statements:
-                        try:
-                            connection.execute(text(statement))
-                        except Exception as exc:
-                            errors.append(str(exc))
-                            rolled_back = True
-                            raise
+                    with apply_query_timeout(connection):
+                        for statement in statements:
+                            try:
+                                connection.execute(text(statement))
+                            except Exception as exc:
+                                errors.append(str(exc))
+                                rolled_back = True
+                                raise
                 finally:
                     if mysql_foreign_key_checks_disabled:
                         connection.execute(text("SET FOREIGN_KEY_CHECKS=1"))

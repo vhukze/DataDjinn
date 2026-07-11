@@ -21,17 +21,19 @@ type WorkspaceState = {
   resetWorkspace: () => void
 }
 
-const resolveUpdater = <T,>(value: T | ((current: T) => T), current: T): T => (
-  typeof value === 'function'
-    ? (value as (current: T) => T)(current)
-    : value
-)
+const resolveUpdater = <T>(value: T | ((current: T) => T), current: T): T =>
+  typeof value === 'function' ? (value as (current: T) => T)(current) : value
 
-const buildTabSummaries = (tabs: WorkspaceTab[], current: WorkspaceTabSummary[]): WorkspaceTabSummary[] => {
+const buildTabSummaries = (
+  tabs: WorkspaceTab[],
+  current: WorkspaceTabSummary[]
+): WorkspaceTabSummary[] => {
   const next = tabs.map((tab) => ({ key: tab.key, title: tab.title }))
   if (
-    next.length === current.length
-    && next.every((item, index) => item.key === current[index]?.key && item.title === current[index]?.title)
+    next.length === current.length &&
+    next.every(
+      (item, index) => item.key === current[index]?.key && item.title === current[index]?.title
+    )
   ) {
     return current
   }
@@ -48,30 +50,34 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     }
     return useWorkspaceStore.getState().tabs.find((tab) => tab.key === key)
   },
-  getRecentQuerySql: () => (
-    useWorkspaceStore.getState().tabs
-      .filter((tab) => tab.kind === 'query' && tab.sql.trim())
+  getRecentQuerySql: () =>
+    useWorkspaceStore
+      .getState()
+      .tabs.filter((tab) => tab.kind === 'query' && tab.sql.trim())
       .slice(-5)
-      .map((tab) => tab.sql)
-  ),
-  setTabs: (tabs) => set((state) => {
-    const nextTabs = resolveUpdater(tabs, state.tabs)
-    return {
-      tabs: nextTabs,
-      tabSummaries: buildTabSummaries(nextTabs, state.tabSummaries)
-    }
-  }),
-  setActiveTabKey: (key) => set((state) => ({ activeTabKey: resolveUpdater(key, state.activeTabKey) })),
-  setTabsAndActiveTabKey: (tabs, activeTabKey) => set((state) => {
-    const nextTabs = resolveUpdater(tabs, state.tabs)
-    const nextActiveTabKey = activeTabKey === undefined
-      ? state.activeTabKey
-      : resolveUpdater(activeTabKey, state.activeTabKey)
-    return {
-      tabs: nextTabs,
-      tabSummaries: buildTabSummaries(nextTabs, state.tabSummaries),
-      activeTabKey: nextActiveTabKey
-    }
-  }),
+      .map((tab) => tab.sql),
+  setTabs: (tabs) =>
+    set((state) => {
+      const nextTabs = resolveUpdater(tabs, state.tabs)
+      return {
+        tabs: nextTabs,
+        tabSummaries: buildTabSummaries(nextTabs, state.tabSummaries)
+      }
+    }),
+  setActiveTabKey: (key) =>
+    set((state) => ({ activeTabKey: resolveUpdater(key, state.activeTabKey) })),
+  setTabsAndActiveTabKey: (tabs, activeTabKey) =>
+    set((state) => {
+      const nextTabs = resolveUpdater(tabs, state.tabs)
+      const nextActiveTabKey =
+        activeTabKey === undefined
+          ? state.activeTabKey
+          : resolveUpdater(activeTabKey, state.activeTabKey)
+      return {
+        tabs: nextTabs,
+        tabSummaries: buildTabSummaries(nextTabs, state.tabSummaries),
+        activeTabKey: nextActiveTabKey
+      }
+    }),
   resetWorkspace: () => set({ tabs: [], tabSummaries: [], activeTabKey: undefined })
 }))

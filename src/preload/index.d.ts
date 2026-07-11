@@ -62,6 +62,10 @@ type UpdateProgress = {
   total?: number
 }
 
+type QuerySettings = {
+  timeoutMinutes: number
+}
+
 type AppInfo = {
   name: string
   version: string
@@ -79,8 +83,16 @@ interface DataDjinnAPI {
   selectJavaDirectory: () => Promise<string | null>
   readTextFile: (filePath: string) => Promise<string>
   writeTextFile: (filePath: string, content: string) => Promise<boolean>
-  requestJson: <T>(path: string, options?: { method?: string; headers?: Record<string, string>; body?: string }) => Promise<T>
-  streamRequest: (streamId: string, path: string, options: { method?: string; headers?: Record<string, string>; body?: string }, onChunk: (chunk: string) => void | Promise<void>) => Promise<void>
+  requestJson: <T>(
+    path: string,
+    options?: { method?: string; headers?: Record<string, string>; body?: string }
+  ) => Promise<T>
+  streamRequest: (
+    streamId: string,
+    path: string,
+    options: { method?: string; headers?: Record<string, string>; body?: string },
+    onChunk: (chunk: string) => void | Promise<void>
+  ) => Promise<void>
   cancelStreamRequest: (streamId: string) => Promise<void>
   getUpdateSettings: () => Promise<UpdateSettings>
   setAutoCheckUpdates: (enabled: boolean) => Promise<boolean>
@@ -92,7 +104,6 @@ interface DataDjinnAPI {
   getAppInfo: () => Promise<AppInfo>
   openProjectHome: () => Promise<void>
   notifyRendererReady: () => void
-  relaunchApp: () => Promise<void>
   onUpdateAvailable: (callback: (info: UpdateInfo) => void) => () => void
   onUpdateNotAvailable: (callback: (info: UpdateInfo) => void) => () => void
   onUpdateDownloadProgress: (callback: (progress: UpdateProgress) => void) => () => void
@@ -106,6 +117,8 @@ interface DataDjinnAPI {
   setAISessions: (sessions: AISession[]) => Promise<AISession[]>
   getBackendStatus: () => Promise<BackendStatus>
   restartBackend: () => Promise<BackendStatus>
+  getQuerySettings: () => Promise<QuerySettings>
+  setQueryTimeoutMinutes: (timeoutMinutes: number) => Promise<QuerySettings>
   minimizeWindow: () => Promise<void>
   toggleMaximizeWindow: () => Promise<boolean>
   closeWindow: () => Promise<void>

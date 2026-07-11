@@ -33,7 +33,9 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
             当前页面遇到运行时错误，已阻止继续白屏。可以先刷新界面恢复，错误信息如下：
           </Typography.Paragraph>
           <pre>{this.state.error.message}</pre>
-          <Button type="primary" onClick={() => window.location.reload()}>刷新界面</Button>
+          <Button type="primary" onClick={() => window.location.reload()}>
+            刷新界面
+          </Button>
         </div>
       </div>
     )

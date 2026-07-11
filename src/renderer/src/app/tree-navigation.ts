@@ -1,10 +1,17 @@
 import type { RefObject } from 'react'
-import { collectTreeNodesByKey, isLoadableTreeNode, isTreeNodeChildrenLoaded, type DatabaseTreeNode, type DbObjectType } from './tree-model'
+import {
+  collectTreeNodesByKey,
+  isLoadableTreeNode,
+  isTreeNodeChildrenLoaded,
+  type DatabaseTreeNode,
+  type DbObjectType
+} from './tree-model'
 import type { WorkspaceTab } from './workspace-model'
 
-const waitForNextFrame = (): Promise<void> => new Promise((resolve) => {
-  requestAnimationFrame(() => resolve())
-})
+const waitForNextFrame = (): Promise<void> =>
+  new Promise((resolve) => {
+    requestAnimationFrame(() => resolve())
+  })
 
 type EnsureTreePathExpandedOptions = {
   targetPath?: string[]
@@ -35,7 +42,11 @@ export const ensureTreePathExpanded = async ({
       await reloadNodeChildren({ ...currentNode, isLeaf: false })
       await waitForNextFrame()
     } else if (!expandedKeysRef.current?.includes(currentNode.key as React.Key)) {
-      setExpandedKeys((current) => current.includes(currentNode.key as React.Key) ? current : [...current, currentNode.key as React.Key])
+      setExpandedKeys((current) =>
+        current.includes(currentNode.key as React.Key)
+          ? current
+          : [...current, currentNode.key as React.Key]
+      )
       await waitForNextFrame()
     }
   }
@@ -46,8 +57,15 @@ export const ensureTreePathExpanded = async ({
     return undefined
   }
 
-  if (isLoadableTreeNode(targetNode) && !expandedKeysRef.current?.includes(targetNode.key as React.Key)) {
-    setExpandedKeys((current) => current.includes(targetNode.key as React.Key) ? current : [...current, targetNode.key as React.Key])
+  if (
+    isLoadableTreeNode(targetNode) &&
+    !expandedKeysRef.current?.includes(targetNode.key as React.Key)
+  ) {
+    setExpandedKeys((current) =>
+      current.includes(targetNode.key as React.Key)
+        ? current
+        : [...current, targetNode.key as React.Key]
+    )
     await waitForNextFrame()
   }
 
@@ -97,7 +115,13 @@ export const locateTreePathInView = async ({
   handleTreeSelection(targetNode)
   resourceTreeContainerRef.current?.focus()
   if (enableVirtualTree) {
-    const treeApi = resourceTreeRef.current as { scrollTo?: (options: { key: React.Key; align?: 'top' | 'bottom' | 'auto'; offset?: number }) => void } | null
+    const treeApi = resourceTreeRef.current as {
+      scrollTo?: (options: {
+        key: React.Key
+        align?: 'top' | 'bottom' | 'auto'
+        offset?: number
+      }) => void
+    } | null
     treeApi?.scrollTo?.({
       key: targetNode.key as React.Key,
       align: 'top',
@@ -107,7 +131,9 @@ export const locateTreePathInView = async ({
   } else {
     await waitForNextFrame()
   }
-  const selectedNode = resourceTreeViewportRef.current?.querySelector('.ant-tree-node-content-wrapper.ant-tree-node-selected')
+  const selectedNode = resourceTreeViewportRef.current?.querySelector(
+    '.ant-tree-node-content-wrapper.ant-tree-node-selected'
+  )
   selectedNode?.scrollIntoView({ block: 'center' })
 }
 
@@ -145,10 +171,7 @@ export const buildActiveTreePath = (tab?: WorkspaceTab): string[] | undefined =>
   }
 
   if (tab.kind === 'redis-browser' && tab.databaseName) {
-    return [
-      `connection:${tab.connectionId}`,
-      `database:${tab.connectionId}:${tab.databaseName}`
-    ]
+    return [`connection:${tab.connectionId}`, `database:${tab.connectionId}:${tab.databaseName}`]
   }
 
   if (tab.kind === 'query') {

@@ -129,62 +129,68 @@ test('DataDjinn 杩炴帴浼犺緭鏂囦欢搴旀敮鎸佺湡瀹炴枃浠跺洖�
 })
 
 test('DBeaver data-sources.json 应解析连接、分组和 SSH 隧道信息 @bug', async () => {
-  const parsed = parseDBeaverImportText(JSON.stringify({
-    folders: {
-      '沈阳信息中心': {},
-      '空分组': {},
-      '实验局': {}
-    },
-    connections: {
-      'mysql8-1': {
-        provider: 'mysql',
-        driver: 'mysql8',
-        name: 'MySQL 主库',
-        folder: '沈阳信息中心',
-        configuration: {
-          host: '10.41.26.8',
-          port: '3306',
-          database: 'analytics',
-          url: 'jdbc:mysql://10.41.26.8:3306/analytics',
-          user: 'root'
-        }
+  const parsed = parseDBeaverImportText(
+    JSON.stringify({
+      folders: {
+        沈阳信息中心: {},
+        空分组: {},
+        实验局: {}
       },
-      'postgres-jdbc-1': {
-        provider: 'postgresql',
-        driver: 'postgres-jdbc',
-        name: 'PG 根节点',
-        configuration: {
-          url: 'jdbc:postgresql://10.41.26.6:15432/reporting',
-          user: 'report'
-        }
-      },
-      'com_clickhouse-1': {
-        provider: 'clickhouse',
-        driver: 'com_clickhouse',
-        name: 'CK SSH',
-        folder: '实验局',
-        configuration: {
-          host: '10.44.86.105',
-          port: '8123',
-          url: 'jdbc:clickhouse://10.44.86.105:8123/default',
-          handlers: {
-            ssh_tunnel: {
-              type: 'TUNNEL',
-              enabled: true,
-              properties: {
-                host: '10.44.86.105',
-                port: 22,
-                authType: 'PASSWORD',
-                user: 'jump-user'
+      connections: {
+        'mysql8-1': {
+          provider: 'mysql',
+          driver: 'mysql8',
+          name: 'MySQL 主库',
+          folder: '沈阳信息中心',
+          configuration: {
+            host: '10.41.26.8',
+            port: '3306',
+            database: 'analytics',
+            url: 'jdbc:mysql://10.41.26.8:3306/analytics',
+            user: 'root'
+          }
+        },
+        'postgres-jdbc-1': {
+          provider: 'postgresql',
+          driver: 'postgres-jdbc',
+          name: 'PG 根节点',
+          configuration: {
+            url: 'jdbc:postgresql://10.41.26.6:15432/reporting',
+            user: 'report'
+          }
+        },
+        'com_clickhouse-1': {
+          provider: 'clickhouse',
+          driver: 'com_clickhouse',
+          name: 'CK SSH',
+          folder: '实验局',
+          configuration: {
+            host: '10.44.86.105',
+            port: '8123',
+            url: 'jdbc:clickhouse://10.44.86.105:8123/default',
+            handlers: {
+              ssh_tunnel: {
+                type: 'TUNNEL',
+                enabled: true,
+                properties: {
+                  host: '10.44.86.105',
+                  port: 22,
+                  authType: 'PASSWORD',
+                  user: 'jump-user'
+                }
               }
             }
           }
         }
       }
-    }
-  }))
+    })
+  )
 
-  expect(parsed.folderPlan.folders.map((folder) => folder.name)).toEqual(['沈阳信息中心', '空分组', '实验局'])
+  expect(parsed.folderPlan.folders.map((folder) => folder.name)).toEqual([
+    '沈阳信息中心',
+    '空分组',
+    '实验局'
+  ])
   expect(parsed.folderPlan.connection_folder_assignments).toEqual({
     'dbeaver-mysql8-1': '沈阳信息中心',
     'dbeaver-com_clickhouse-1': '实验局'

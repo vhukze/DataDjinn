@@ -11,21 +11,20 @@ type SearchMatcherLike = ReturnType<typeof createSearchMatcher>
 
 const tableFilterValueKey = (value: unknown): string => {
   if (
-    value !== null
-    && typeof value === 'object'
-    && '__datadjinn_action__' in value
-    && (value as { __datadjinn_action__?: string }).__datadjinn_action__ === 'default'
+    value !== null &&
+    typeof value === 'object' &&
+    '__datadjinn_action__' in value &&
+    (value as { __datadjinn_action__?: string }).__datadjinn_action__ === 'default'
   ) {
     return '__DATADJINN_DEFAULT__'
   }
   return value === null || value === undefined ? '__DATADJINN_NULL__' : String(value)
 }
 
-const buildBaseTableRows = (tab: WorkspaceTab): EditableRow[] => (
+const buildBaseTableRows = (tab: WorkspaceTab): EditableRow[] =>
   tab.kind === 'preview'
     ? (tab.editRows ?? [])
     : (tab.result?.rows.map((row, index) => ({ ...row, __rowKey: `query:${index}` })) ?? [])
-)
 
 export type ResultTableDerivedState = {
   baseTableRows: EditableRow[]
@@ -66,10 +65,16 @@ export const buildResultTableDerivedState = ({
   const columnWidths = tab.columnWidths ?? {}
   const columnFilters = tab.columnFilters ?? {}
   const filterColumns = Object.keys(columnFilters)
-  const filteredRows = filterColumns.length > 0
-    ? baseTableRows.filter((row) => filterColumns.every((column) => columnFilters[column]?.includes(tableFilterValueKey(row[column]))))
-    : baseTableRows
-  const pageSearchText = (searchState.visible || searchState.query.trim()) ? searchState.query.trim() : ''
+  const filteredRows =
+    filterColumns.length > 0
+      ? baseTableRows.filter((row) =>
+          filterColumns.every((column) =>
+            columnFilters[column]?.includes(tableFilterValueKey(row[column]))
+          )
+        )
+      : baseTableRows
+  const pageSearchText =
+    searchState.visible || searchState.query.trim() ? searchState.query.trim() : ''
   const searchMatcher = createSearchMatcher(pageSearchText, {
     regex: searchState.regex,
     wholeWord: searchState.wholeWord,
@@ -97,14 +102,23 @@ export const buildResultTableDerivedState = ({
   }
 
   const matchedRowKeySet = new Set(allSearchMatches.map((match) => match.rowKey))
-  const tableRows = searchState.filterRows && searchMatcher
-    ? filteredRows.filter((row) => matchedRowKeySet.has(row.__rowKey))
-    : filteredRows
-  const rowNumberOffset = ((tab.page ?? 1) - 1) * (tab.limit ?? (tab.kind === 'preview' ? previewDefaultLimit : queryDefaultLimit))
+  const tableRows =
+    searchState.filterRows && searchMatcher
+      ? filteredRows.filter((row) => matchedRowKeySet.has(row.__rowKey))
+      : filteredRows
+  const rowNumberOffset =
+    ((tab.page ?? 1) - 1) *
+    (tab.limit ?? (tab.kind === 'preview' ? previewDefaultLimit : queryDefaultLimit))
   const orderedRowKeys = tableRows.map((row) => row.__rowKey)
-  const orderedRowIndexMap = Object.fromEntries(orderedRowKeys.map((rowKey, index) => [rowKey, index] as const))
-  const orderedColumnIndexMap = Object.fromEntries(orderedColumns.map((column, index) => [column, index]))
-  const orderedRowKeysByLength = [...orderedRowKeys].sort((left, right) => right.length - left.length)
+  const orderedRowIndexMap = Object.fromEntries(
+    orderedRowKeys.map((rowKey, index) => [rowKey, index] as const)
+  )
+  const orderedColumnIndexMap = Object.fromEntries(
+    orderedColumns.map((column, index) => [column, index])
+  )
+  const orderedRowKeysByLength = [...orderedRowKeys].sort(
+    (left, right) => right.length - left.length
+  )
   const rowByKey = new Map(tableRows.map((row) => [row.__rowKey, row]))
   const visibleRowKeySet = new Set(orderedRowKeys)
   const searchMatches = allSearchMatches.filter((match) => visibleRowKeySet.has(match.rowKey))

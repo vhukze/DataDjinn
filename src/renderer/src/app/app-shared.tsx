@@ -16,25 +16,81 @@ export const renderMarkdown = (content: string): { __html: string } => ({
 })
 
 export const COMMON_TYPES = [
-  'INT', 'INTEGER', 'BIGINT', 'SMALLINT',
-  'VARCHAR(50)', 'VARCHAR(100)', 'VARCHAR(255)', 'TEXT',
-  'DECIMAL(10,2)', 'FLOAT', 'DOUBLE',
+  'INT',
+  'INTEGER',
+  'BIGINT',
+  'SMALLINT',
+  'VARCHAR(50)',
+  'VARCHAR(100)',
+  'VARCHAR(255)',
+  'TEXT',
+  'DECIMAL(10,2)',
+  'FLOAT',
+  'DOUBLE',
   'BOOLEAN',
-  'DATE', 'DATETIME', 'TIMESTAMP',
-  'BLOB', 'BYTEA'
+  'DATE',
+  'DATETIME',
+  'TIMESTAMP',
+  'BLOB',
+  'BYTEA'
 ]
 
-const INTEGER_TYPE_PREFIXES = ['int', 'integer', 'bigint', 'smallint', 'tinyint', 'mediumint', 'serial', 'bigserial', 'smallserial', 'number']
-const NUMERIC_TYPE_PREFIXES = [...INTEGER_TYPE_PREFIXES, 'decimal', 'numeric', 'float', 'double', 'real']
+const INTEGER_TYPE_PREFIXES = [
+  'int',
+  'integer',
+  'bigint',
+  'smallint',
+  'tinyint',
+  'mediumint',
+  'serial',
+  'bigserial',
+  'smallserial',
+  'number'
+]
+const NUMERIC_TYPE_PREFIXES = [
+  ...INTEGER_TYPE_PREFIXES,
+  'decimal',
+  'numeric',
+  'float',
+  'double',
+  'real'
+]
 
-export const tableDesignerSupportsComments = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'gaussdb' || databaseType === 'oracle'
-export const tableDesignerSupportsUnique = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'gaussdb' || databaseType === 'oracle' || databaseType === 'sqlite'
-export const tableDesignerSupportsAutoIncrement = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'gaussdb' || databaseType === 'oracle' || databaseType === 'sqlite'
-export const tableDesignerSupportsAutoIncrementStep = (databaseType?: DatabaseType): boolean => databaseType === 'postgresql' || databaseType === 'gaussdb' || databaseType === 'oracle'
-export const tableDesignerSupportsMinMax = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'gaussdb' || databaseType === 'oracle' || databaseType === 'sqlite'
-export const tableDesignerSupportsEdit = (databaseType?: DatabaseType): boolean => databaseType === 'mysql' || databaseType === 'postgresql' || databaseType === 'gaussdb' || databaseType === 'oracle' || databaseType === 'sqlite'
-export const isIntegerLikeType = (type: string): boolean => INTEGER_TYPE_PREFIXES.some((prefix) => type.trim().toLowerCase().startsWith(prefix))
-export const isNumericLikeType = (type: string): boolean => NUMERIC_TYPE_PREFIXES.some((prefix) => type.trim().toLowerCase().startsWith(prefix))
+export const tableDesignerSupportsComments = (databaseType?: DatabaseType): boolean =>
+  databaseType === 'mysql' ||
+  databaseType === 'postgresql' ||
+  databaseType === 'gaussdb' ||
+  databaseType === 'oracle'
+export const tableDesignerSupportsUnique = (databaseType?: DatabaseType): boolean =>
+  databaseType === 'mysql' ||
+  databaseType === 'postgresql' ||
+  databaseType === 'gaussdb' ||
+  databaseType === 'oracle' ||
+  databaseType === 'sqlite'
+export const tableDesignerSupportsAutoIncrement = (databaseType?: DatabaseType): boolean =>
+  databaseType === 'mysql' ||
+  databaseType === 'postgresql' ||
+  databaseType === 'gaussdb' ||
+  databaseType === 'oracle' ||
+  databaseType === 'sqlite'
+export const tableDesignerSupportsAutoIncrementStep = (databaseType?: DatabaseType): boolean =>
+  databaseType === 'postgresql' || databaseType === 'gaussdb' || databaseType === 'oracle'
+export const tableDesignerSupportsMinMax = (databaseType?: DatabaseType): boolean =>
+  databaseType === 'mysql' ||
+  databaseType === 'postgresql' ||
+  databaseType === 'gaussdb' ||
+  databaseType === 'oracle' ||
+  databaseType === 'sqlite'
+export const tableDesignerSupportsEdit = (databaseType?: DatabaseType): boolean =>
+  databaseType === 'mysql' ||
+  databaseType === 'postgresql' ||
+  databaseType === 'gaussdb' ||
+  databaseType === 'oracle' ||
+  databaseType === 'sqlite'
+export const isIntegerLikeType = (type: string): boolean =>
+  INTEGER_TYPE_PREFIXES.some((prefix) => type.trim().toLowerCase().startsWith(prefix))
+export const isNumericLikeType = (type: string): boolean =>
+  NUMERIC_TYPE_PREFIXES.some((prefix) => type.trim().toLowerCase().startsWith(prefix))
 
 export const PREVIEW_DEFAULT_LIMIT = 300
 export const QUERY_DEFAULT_LIMIT = 1000
@@ -163,7 +219,12 @@ export const inferDataGripDatabaseType = (params: {
   if (fingerprint.includes('clickhouse')) return 'clickhouse'
   if (fingerprint.includes('postgres')) return 'postgresql'
   if (fingerprint.includes('gauss')) return 'gaussdb'
-  if (fingerprint.includes('dm dbms') || fingerprint.includes('dm.jdbc.driver') || fingerprint.includes('jdbc:dm:')) return 'dm'
+  if (
+    fingerprint.includes('dm dbms') ||
+    fingerprint.includes('dm.jdbc.driver') ||
+    fingerprint.includes('jdbc:dm:')
+  )
+    return 'dm'
   if (fingerprint.includes('redis')) return 'redis'
   if (fingerprint.includes('oracle')) return 'oracle'
   if (fingerprint.includes('mysql')) return 'mysql'
@@ -173,10 +234,13 @@ export const inferDataGripDatabaseType = (params: {
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
+    ? (value as Record<string, unknown>)
     : null
 
-const readFirstString = (record: Record<string, unknown> | null, keys: string[]): string | undefined => {
+const readFirstString = (
+  record: Record<string, unknown> | null,
+  keys: string[]
+): string | undefined => {
   if (!record) {
     return undefined
   }
@@ -233,11 +297,7 @@ const inferDBeaverDatabaseType = (params: {
   driver?: string
   jdbcUrl?: string
 }): DatabaseType | undefined => {
-  const fingerprint = [
-    params.provider,
-    params.driver,
-    params.jdbcUrl
-  ]
+  const fingerprint = [params.provider, params.driver, params.jdbcUrl]
     .filter((item): item is string => Boolean(item))
     .join(' ')
     .toLowerCase()
@@ -264,7 +324,10 @@ const parseSqlitePathFromJdbcUrl = (jdbcUrl?: string): string | undefined => {
   return trimToUndefined(match?.[1])
 }
 
-export const parseJdbcUrlToConnectionFields = (jdbcUrl: string, databaseType: DatabaseType): Pick<ConnectionFormValues, 'host' | 'port' | 'database'> => {
+export const parseJdbcUrlToConnectionFields = (
+  jdbcUrl: string,
+  databaseType: DatabaseType
+): Pick<ConnectionFormValues, 'host' | 'port' | 'database'> => {
   const normalized = jdbcUrl.trim()
   if (!normalized.toLowerCase().startsWith('jdbc:')) {
     throw new Error('不是有效的 JDBC URL')
@@ -284,7 +347,9 @@ export const parseJdbcUrlToConnectionFields = (jdbcUrl: string, databaseType: Da
     pathname = decodeURIComponent(runtimeUrl.pathname || '').replace(/^\/+/, '')
     schema = trimToUndefined(runtimeUrl.searchParams.get('schema'))
   } catch {
-    const multiHostMatch = runtimeUrlValue.match(/^[a-z0-9+.-]+:\/\/([^/?#]+)(\/[^?#]*)?(?:\?([^#]*))?$/i)
+    const multiHostMatch = runtimeUrlValue.match(
+      /^[a-z0-9+.-]+:\/\/([^/?#]+)(\/[^?#]*)?(?:\?([^#]*))?$/i
+    )
     if (!multiHostMatch) {
       throw new Error('不是有效的 JDBC URL')
     }
@@ -298,7 +363,7 @@ export const parseJdbcUrlToConnectionFields = (jdbcUrl: string, databaseType: Da
       throw new Error('未解析到主机')
     }
 
-    const firstHostMatch = firstHost.match(/^(?:\[([^\]]+)\]|([^:]+))(?:\:(\d+))?$/)
+    const firstHostMatch = firstHost.match(/^(?:\[([^\]]+)\]|([^:]+))(?::(\d+))?$/)
     if (!firstHostMatch) {
       throw new Error('未解析到主机')
     }
@@ -306,7 +371,7 @@ export const parseJdbcUrlToConnectionFields = (jdbcUrl: string, databaseType: Da
     host = trimToUndefined(firstHostMatch[1] || firstHostMatch[2])
     const portList = hostList
       .map((item) => {
-        const match = item.match(/^(?:\[[^\]]+\]|[^:]+)(?:\:(\d+))?$/)
+        const match = item.match(/^(?:\[[^\]]+\]|[^:]+)(?::(\d+))?$/)
         return match?.[1]
       })
       .filter((item): item is string => Boolean(item))
@@ -336,15 +401,30 @@ export const parseJdbcUrlToConnectionFields = (jdbcUrl: string, databaseType: Da
 }
 
 export const parseDataGripImportText = (rawText: string): ImportConnectionCandidate[] => {
-  const blockMatches = [...rawText.matchAll(/#LocalDataSource:\s*([^\r\n]+)[\r\n]+#BEGIN#([\s\S]*?)#END#/g)]
-  const fallbackMatches = blockMatches.length === 0 ? [...rawText.matchAll(/#BEGIN#([\s\S]*?)#END#/g)] : []
-  const blocks = blockMatches.length > 0
-    ? blockMatches.map((match, index) => ({ key: `dg-${index}`, label: trimToUndefined(match[1]), xml: match[2] }))
-    : fallbackMatches.map((match, index) => ({ key: `dg-${index}`, label: undefined, xml: match[1] }))
+  const blockMatches = [
+    ...rawText.matchAll(/#LocalDataSource:\s*([^\r\n]+)[\r\n]+#BEGIN#([\s\S]*?)#END#/g)
+  ]
+  const fallbackMatches =
+    blockMatches.length === 0 ? [...rawText.matchAll(/#BEGIN#([\s\S]*?)#END#/g)] : []
+  const blocks =
+    blockMatches.length > 0
+      ? blockMatches.map((match, index) => ({
+          key: `dg-${index}`,
+          label: trimToUndefined(match[1]),
+          xml: match[2]
+        }))
+      : fallbackMatches.map((match, index) => ({
+          key: `dg-${index}`,
+          label: undefined,
+          xml: match[1]
+        }))
 
   return blocks.map<ImportConnectionCandidate>((block, index) => {
     try {
-      const parsed = new DOMParser().parseFromString(sanitizeImportedXml(block.xml.trim()), 'application/xml')
+      const parsed = new DOMParser().parseFromString(
+        sanitizeImportedXml(block.xml.trim()),
+        'application/xml'
+      )
       const parserError = parsed.querySelector('parsererror')
       if (parserError) {
         throw new Error('连接配置 XML 解析失败')
@@ -362,8 +442,15 @@ export const parseDataGripImportText = (rawText: string): ImportConnectionCandid
       const jdbcDriver = trimToUndefined(dataSource.querySelector('jdbc-driver')?.textContent)
       const product = trimToUndefined(databaseInfo?.getAttribute('product'))
       const dbms = trimToUndefined(databaseInfo?.getAttribute('dbms'))
-      const databaseType = inferDataGripDatabaseType({ dbms, product, driverRef, jdbcDriver, jdbcUrl })
-      const name = trimToUndefined(dataSource.getAttribute('name')) ?? block.label ?? `导入连接 ${index + 1}`
+      const databaseType = inferDataGripDatabaseType({
+        dbms,
+        product,
+        driverRef,
+        jdbcDriver,
+        jdbcUrl
+      })
+      const name =
+        trimToUndefined(dataSource.getAttribute('name')) ?? block.label ?? `导入连接 ${index + 1}`
 
       if (!jdbcUrl) {
         throw new Error('未解析到 JDBC URL')
@@ -415,7 +502,9 @@ export const parseDataGripImportText = (rawText: string): ImportConnectionCandid
   })
 }
 
-export const parseDBeaverImportText = (rawText: string): {
+export const parseDBeaverImportText = (
+  rawText: string
+): {
   candidates: ImportConnectionCandidate[]
   folderPlan: ImportConnectionFolderPlan
 } => {
@@ -436,119 +525,143 @@ export const parseDBeaverImportText = (rawText: string): {
   const folderNames = folderRecord ? Object.keys(folderRecord) : []
   const connectionFolderAssignments: Record<string, string> = {}
   const rootConnectionOrder: string[] = []
-  const folderConnectionOrder = Object.fromEntries(folderNames.map((folderName) => [folderName, [] as string[]]))
-  const candidates = Object.entries(connectionsRecord).map<ImportConnectionCandidate>(([connectionId, rawConnection], index) => {
-    const candidateKey = `dbeaver-${connectionId}`
-    const connection = asRecord(rawConnection)
-    const configuration = asRecord(connection?.configuration)
-    const sourceFolderName = readFirstString(connection, ['folder'])
+  const folderConnectionOrder = Object.fromEntries(
+    folderNames.map((folderName) => [folderName, [] as string[]])
+  )
+  const candidates = Object.entries(connectionsRecord).map<ImportConnectionCandidate>(
+    ([connectionId, rawConnection], index) => {
+      const candidateKey = `dbeaver-${connectionId}`
+      const connection = asRecord(rawConnection)
+      const configuration = asRecord(connection?.configuration)
+      const sourceFolderName = readFirstString(connection, ['folder'])
 
-    if (sourceFolderName && !(sourceFolderName in folderConnectionOrder)) {
-      folderNames.push(sourceFolderName)
-      folderConnectionOrder[sourceFolderName] = []
-    }
-
-    if (sourceFolderName) {
-      connectionFolderAssignments[candidateKey] = sourceFolderName
-      folderConnectionOrder[sourceFolderName].push(candidateKey)
-    } else {
-      rootConnectionOrder.push(candidateKey)
-    }
-
-    try {
-      const name = readFirstString(connection, ['name']) ?? `导入连接 ${index + 1}`
-      const provider = readFirstString(connection, ['provider'])
-      const driver = readFirstString(connection, ['driver'])
-      const jdbcUrl = readFirstString(configuration, ['url'])
-      const databaseType = inferDBeaverDatabaseType({ provider, driver, jdbcUrl })
-
-      if (!databaseType) {
-        throw new Error('当前仅支持导入已识别的 DBeaver 数据源类型')
+      if (sourceFolderName && !(sourceFolderName in folderConnectionOrder)) {
+        folderNames.push(sourceFolderName)
+        folderConnectionOrder[sourceFolderName] = []
       }
 
-      let host = readFirstString(configuration, ['host', 'server', 'hostname'])
-      let port = readOptionalPort(configuration?.port)
-      let database = readFirstString(configuration, ['database', 'databaseName', 'activeDatabase', 'catalog', 'schema'])
-      let sqlitePath = readFirstString(configuration, ['path', 'file'])
-
-      if (jdbcUrl) {
-        const jdbcFields = parseJdbcUrlToConnectionFields(jdbcUrl, databaseType)
-        host = host ?? jdbcFields.host
-        port = port ?? jdbcFields.port
-        database = database ?? jdbcFields.database
-        sqlitePath = sqlitePath ?? parseSqlitePathFromJdbcUrl(jdbcUrl)
+      if (sourceFolderName) {
+        connectionFolderAssignments[candidateKey] = sourceFolderName
+        folderConnectionOrder[sourceFolderName].push(candidateKey)
+      } else {
+        rootConnectionOrder.push(candidateKey)
       }
 
-      if (databaseType === 'sqlite') {
-        sqlitePath = sqlitePath ?? readFirstString(configuration, ['database'])
-        if (!sqlitePath) {
-          throw new Error('未解析到 SQLite 文件路径')
+      try {
+        const name = readFirstString(connection, ['name']) ?? `导入连接 ${index + 1}`
+        const provider = readFirstString(connection, ['provider'])
+        const driver = readFirstString(connection, ['driver'])
+        const jdbcUrl = readFirstString(configuration, ['url'])
+        const databaseType = inferDBeaverDatabaseType({ provider, driver, jdbcUrl })
+
+        if (!databaseType) {
+          throw new Error('当前仅支持导入已识别的 DBeaver 数据源类型')
         }
-      } else if (!host) {
-        throw new Error('未解析到主机')
-      }
 
-      const payload: ConnectionFormValues = {
-        name,
-        database_type: databaseType,
-        host,
-        port: port ?? defaultPortForDatabaseType(databaseType),
-        username: readFirstString(connection, ['user', 'username', 'userName'])
-          ?? readFirstString(configuration, ['user', 'username', 'userName']),
-        password: readFirstString(connection, ['password']) ?? readFirstString(configuration, ['password']) ?? '',
-        database,
-        sqlite_path: sqlitePath,
-        driver_id: undefined,
-        dm_driver_id: undefined
-      }
+        let host = readFirstString(configuration, ['host', 'server', 'hostname'])
+        let port = readOptionalPort(configuration?.port)
+        let database = readFirstString(configuration, [
+          'database',
+          'databaseName',
+          'activeDatabase',
+          'catalog',
+          'schema'
+        ])
+        let sqlitePath = readFirstString(configuration, ['path', 'file'])
 
-      const sshTunnel = asRecord(asRecord(configuration?.handlers)?.ssh_tunnel)
-      const sshProperties = asRecord(sshTunnel?.properties)
-      if (sshTunnel?.enabled === true) {
-        const authType = readFirstString(sshProperties, ['authType'])
-        const sshAuthType: SshAuthType = authType?.toLowerCase().includes('password') ? 'password' : 'private_key'
-        payload.ssh_enabled = true
-        payload.ssh_host = readFirstString(sshProperties, ['host', 'hostName'])
-        payload.ssh_port = readOptionalNumber(sshProperties?.port) ?? 22
-        payload.ssh_username = readFirstString(sshProperties, ['user', 'username', 'userName'])
-        payload.ssh_auth_type = sshAuthType
-        payload.ssh_password = readFirstString(sshProperties, ['password'])
-        payload.ssh_private_key_path = readFirstString(sshProperties, ['keyPath', 'privateKeyPath', 'privateKey'])
-        payload.ssh_passphrase = readFirstString(sshProperties, ['passphrase', 'keyPassword'])
-      }
+        if (jdbcUrl) {
+          const jdbcFields = parseJdbcUrlToConnectionFields(jdbcUrl, databaseType)
+          host = host ?? jdbcFields.host
+          port = port ?? jdbcFields.port
+          database = database ?? jdbcFields.database
+          sqlitePath = sqlitePath ?? parseSqlitePathFromJdbcUrl(jdbcUrl)
+        }
 
-      const warnings: string[] = []
-      if (databaseType === 'dm' || databaseType === 'gaussdb') {
-        warnings.push(`导入后仍需在编辑连接中选择${DATABASE_TYPE_LABELS[databaseType]}驱动`)
-      }
-      if (payload.ssh_enabled && payload.ssh_auth_type === 'private_key' && !payload.ssh_private_key_path) {
-        warnings.push('SSH 私钥路径未从 DBeaver 文件中解析到，请导入后补充')
-      }
+        if (databaseType === 'sqlite') {
+          sqlitePath = sqlitePath ?? readFirstString(configuration, ['database'])
+          if (!sqlitePath) {
+            throw new Error('未解析到 SQLite 文件路径')
+          }
+        } else if (!host) {
+          throw new Error('未解析到主机')
+        }
 
-      return {
-        key: candidateKey,
-        name,
-        database_type: databaseType,
-        sourceFolderName,
-        host: payload.host,
-        port: payload.port,
-        username: payload.username,
-        database: payload.database,
-        rawJdbcUrl: jdbcUrl,
-        status: warnings.length > 0 ? 'warning' : 'ready',
-        message: warnings.join('；') || undefined,
-        payload
-      }
-    } catch (error) {
-      return {
-        key: candidateKey,
-        name: readFirstString(connection, ['name']) ?? `导入连接 ${index + 1}`,
-        sourceFolderName,
-        status: 'error',
-        message: error instanceof Error ? error.message : '解析失败'
+        const payload: ConnectionFormValues = {
+          name,
+          database_type: databaseType,
+          host,
+          port: port ?? defaultPortForDatabaseType(databaseType),
+          username:
+            readFirstString(connection, ['user', 'username', 'userName']) ??
+            readFirstString(configuration, ['user', 'username', 'userName']),
+          password:
+            readFirstString(connection, ['password']) ??
+            readFirstString(configuration, ['password']) ??
+            '',
+          database,
+          sqlite_path: sqlitePath,
+          driver_id: undefined,
+          dm_driver_id: undefined
+        }
+
+        const sshTunnel = asRecord(asRecord(configuration?.handlers)?.ssh_tunnel)
+        const sshProperties = asRecord(sshTunnel?.properties)
+        if (sshTunnel?.enabled === true) {
+          const authType = readFirstString(sshProperties, ['authType'])
+          const sshAuthType: SshAuthType = authType?.toLowerCase().includes('password')
+            ? 'password'
+            : 'private_key'
+          payload.ssh_enabled = true
+          payload.ssh_host = readFirstString(sshProperties, ['host', 'hostName'])
+          payload.ssh_port = readOptionalNumber(sshProperties?.port) ?? 22
+          payload.ssh_username = readFirstString(sshProperties, ['user', 'username', 'userName'])
+          payload.ssh_auth_type = sshAuthType
+          payload.ssh_password = readFirstString(sshProperties, ['password'])
+          payload.ssh_private_key_path = readFirstString(sshProperties, [
+            'keyPath',
+            'privateKeyPath',
+            'privateKey'
+          ])
+          payload.ssh_passphrase = readFirstString(sshProperties, ['passphrase', 'keyPassword'])
+        }
+
+        const warnings: string[] = []
+        if (databaseType === 'dm' || databaseType === 'gaussdb') {
+          warnings.push(`导入后仍需在编辑连接中选择${DATABASE_TYPE_LABELS[databaseType]}驱动`)
+        }
+        if (
+          payload.ssh_enabled &&
+          payload.ssh_auth_type === 'private_key' &&
+          !payload.ssh_private_key_path
+        ) {
+          warnings.push('SSH 私钥路径未从 DBeaver 文件中解析到，请导入后补充')
+        }
+
+        return {
+          key: candidateKey,
+          name,
+          database_type: databaseType,
+          sourceFolderName,
+          host: payload.host,
+          port: payload.port,
+          username: payload.username,
+          database: payload.database,
+          rawJdbcUrl: jdbcUrl,
+          status: warnings.length > 0 ? 'warning' : 'ready',
+          message: warnings.join('；') || undefined,
+          payload
+        }
+      } catch (error) {
+        return {
+          key: candidateKey,
+          name: readFirstString(connection, ['name']) ?? `导入连接 ${index + 1}`,
+          sourceFolderName,
+          status: 'error',
+          message: error instanceof Error ? error.message : '解析失败'
+        }
       }
     }
-  })
+  )
 
   const folderPlan: ImportConnectionFolderPlan = {
     folders: folderNames.map((folderName) => ({ id: folderName, name: folderName })),
@@ -568,10 +681,17 @@ export const parseDBeaverImportText = (rawText: string): {
   }
 }
 
-export const isDatabaseScopedType = (databaseType?: DatabaseType): databaseType is 'mysql' | 'mongodb' | 'redis' | 'clickhouse' =>
-  databaseType === 'mysql' || databaseType === 'mongodb' || databaseType === 'redis' || databaseType === 'clickhouse'
+export const isDatabaseScopedType = (
+  databaseType?: DatabaseType
+): databaseType is 'mysql' | 'mongodb' | 'redis' | 'clickhouse' =>
+  databaseType === 'mysql' ||
+  databaseType === 'mongodb' ||
+  databaseType === 'redis' ||
+  databaseType === 'clickhouse'
 
-export const isSchemaScopedType = (databaseType?: DatabaseType): databaseType is 'postgresql' | 'gaussdb' =>
+export const isSchemaScopedType = (
+  databaseType?: DatabaseType
+): databaseType is 'postgresql' | 'gaussdb' =>
   databaseType === 'postgresql' || databaseType === 'gaussdb'
 
 export type DriverDatabaseType = 'dm' | 'gaussdb'
@@ -587,9 +707,12 @@ export type DriverInfo = {
   path?: string | null
 }
 
-const isDriverDatabaseType = (value: unknown): value is DriverDatabaseType => value === 'dm' || value === 'gaussdb'
-const isDriverType = (value: unknown): value is DriverType => value === 'jdbc' || value === 'python' || value === 'whl'
-const isDriverSource = (value: unknown): value is DriverInfo['source'] => value === 'auto' || value === 'manual'
+const isDriverDatabaseType = (value: unknown): value is DriverDatabaseType =>
+  value === 'dm' || value === 'gaussdb'
+const isDriverType = (value: unknown): value is DriverType =>
+  value === 'jdbc' || value === 'python' || value === 'whl'
+const isDriverSource = (value: unknown): value is DriverInfo['source'] =>
+  value === 'auto' || value === 'manual'
 
 export const normalizeDriverInfo = (value: unknown): DriverInfo | null => {
   if (!value || typeof value !== 'object') {
@@ -605,7 +728,8 @@ export const normalizeDriverInfo = (value: unknown): DriverInfo | null => {
     id: candidate.id,
     database_type: isDriverDatabaseType(candidate.database_type) ? candidate.database_type : 'dm',
     driver_type: isDriverType(candidate.driver_type) ? candidate.driver_type : 'jdbc',
-    name: typeof candidate.name === 'string' && candidate.name.trim() ? candidate.name : '未命名驱动',
+    name:
+      typeof candidate.name === 'string' && candidate.name.trim() ? candidate.name : '未命名驱动',
     source: isDriverSource(candidate.source) ? candidate.source : 'manual',
     enabled: candidate.enabled !== false,
     path: typeof candidate.path === 'string' && candidate.path.trim() ? candidate.path : null
@@ -664,9 +788,8 @@ export type JavaRuntimeConfigResponse = {
   enabled: boolean
 }
 
-export const buildStatementStructureKey = (statements: SqlStatementInfo[] = []): string => (
+export const buildStatementStructureKey = (statements: SqlStatementInfo[] = []): string =>
   statements.map((statement) => `${statement.start}:${statement.end}`).join('|')
-)
 
 export const DEFAULT_SHORTCUT_SETTINGS: ShortcutSettings = {
   sql_execute: 'Ctrl+Enter',
@@ -692,7 +815,8 @@ export type DefaultValueMarker = {
   __datadjinn_action__: 'default'
 }
 
-export const normalizeShortcutText = (shortcut?: string): string => shortcut?.replace(/\s+/g, '').toLowerCase() ?? ''
+export const normalizeShortcutText = (shortcut?: string): string =>
+  shortcut?.replace(/\s+/g, '').toLowerCase() ?? ''
 
 export const formatShortcutFromEvent = (event: React.KeyboardEvent<HTMLElement>): string => {
   const parts: string[] = []
@@ -713,7 +837,8 @@ export const formatShortcutFromEvent = (event: React.KeyboardEvent<HTMLElement>)
   return parts.join('+')
 }
 
-export const isModifierOnlyKey = (key: string): boolean => ['Control', 'Shift', 'Alt', 'Meta'].includes(key)
+export const isModifierOnlyKey = (key: string): boolean =>
+  ['Control', 'Shift', 'Alt', 'Meta'].includes(key)
 
 export const ShortcutRecorder = memo(function ShortcutRecorder({
   label,
@@ -769,7 +894,9 @@ export const ShortcutRecorder = memo(function ShortcutRecorder({
         <Button size="small" onClick={recording ? onCancel : onStartRecord}>
           {recording ? '取消' : '修改'}
         </Button>
-        <Button size="small" onClick={onReset}>恢复默认</Button>
+        <Button size="small" onClick={onReset}>
+          恢复默认
+        </Button>
       </Space>
     </Flex>
   )
@@ -793,18 +920,22 @@ export type TableDesignerMode = 'create' | 'edit'
 
 export const editableValue = (value: string): unknown => value
 
-export const createDefaultValueMarker = (): DefaultValueMarker => ({ __datadjinn_action__: 'default' })
+export const createDefaultValueMarker = (): DefaultValueMarker => ({
+  __datadjinn_action__: 'default'
+})
 
-export const isDefaultValueMarker = (value: unknown): value is DefaultValueMarker => (
-  value !== null
-  && typeof value === 'object'
-  && '__datadjinn_action__' in value
-  && (value as DefaultValueMarker).__datadjinn_action__ === 'default'
-)
+export const isDefaultValueMarker = (value: unknown): value is DefaultValueMarker =>
+  value !== null &&
+  typeof value === 'object' &&
+  '__datadjinn_action__' in value &&
+  (value as DefaultValueMarker).__datadjinn_action__ === 'default'
 
-export const cellDisplayText = (value: unknown): string => (
-  isDefaultValueMarker(value) ? 'DEFAULT' : value === null || value === undefined ? 'NULL' : String(value)
-)
+export const cellDisplayText = (value: unknown): string =>
+  isDefaultValueMarker(value)
+    ? 'DEFAULT'
+    : value === null || value === undefined
+      ? 'NULL'
+      : String(value)
 
 export const isCellValueEqual = (left: unknown, right: unknown): boolean => {
   if (isDefaultValueMarker(left) || isDefaultValueMarker(right)) {
@@ -819,7 +950,9 @@ export const isCellValueEqual = (left: unknown, right: unknown): boolean => {
   return String(left) === String(right)
 }
 
-export const cloneRowSnapshot = (row: Record<string, unknown>): Record<string, unknown> => ({ ...row })
+export const cloneRowSnapshot = (row: Record<string, unknown>): Record<string, unknown> => ({
+  ...row
+})
 
 export const buildEditableRows = (rows: Record<string, unknown>[]): EditableRow[] =>
   rows.map((row, index) => ({
@@ -831,24 +964,30 @@ export const buildEditableRows = (rows: Record<string, unknown>[]): EditableRow[
 export const displayValue = (value: unknown): string => {
   if (isDefaultValueMarker(value)) return 'DEFAULT'
   if (value === null || value === undefined) return 'NULL'
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean')
+    return String(value)
   return JSON.stringify(value, null, 2)
 }
 
 export const buildRedisEdits = (rows: Record<string, unknown>[]): Record<string, RedisKeyEdit> =>
-  Object.fromEntries(rows.map((row, index) => {
-    const key = String(row.key ?? `key:${index}`)
-    const rowKey = `${key}:${index}`
-    const ttl = Number(row.ttl)
-    return [rowKey, {
-      rowKey,
-      key,
-      type: String(row.type ?? 'string'),
-      value: displayValue(row.value),
-      ttl: Number.isFinite(ttl) && ttl > 0 ? ttl : null,
-      originalKey: key
-    }]
-  }))
+  Object.fromEntries(
+    rows.map((row, index) => {
+      const key = String(row.key ?? `key:${index}`)
+      const rowKey = `${key}:${index}`
+      const ttl = Number(row.ttl)
+      return [
+        rowKey,
+        {
+          rowKey,
+          key,
+          type: String(row.type ?? 'string'),
+          value: displayValue(row.value),
+          ttl: Number.isFinite(ttl) && ttl > 0 ? ttl : null,
+          originalKey: key
+        }
+      ]
+    })
+  )
 
 export const toColumnDef = (column: ColumnInfo): ColumnDef => ({
   key: column.name,
@@ -875,6 +1014,7 @@ export const redisTtlDisplay = (ttl: unknown): string => {
   if (seconds < 0) return `${seconds} 秒`
   if (seconds < 60) return `${seconds} 秒后过期`
   if (seconds < 3600) return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒后过期`
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时 ${Math.floor((seconds % 3600) / 60)} 分后过期`
+  if (seconds < 86400)
+    return `${Math.floor(seconds / 3600)} 小时 ${Math.floor((seconds % 3600) / 60)} 分后过期`
   return `${Math.floor(seconds / 86400)} 天 ${Math.floor((seconds % 86400) / 3600)} 小时后过期`
 }

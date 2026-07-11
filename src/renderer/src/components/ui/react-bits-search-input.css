@@ -43,7 +43,9 @@
   color: var(--dj-text-tertiary);
   cursor: pointer;
   border-radius: 999px;
-  transition: background-color 0.12s ease, color 0.12s ease;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
 }
 
 .rb-search-clear:hover {

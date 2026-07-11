@@ -2,10 +2,7 @@ import type { ReactNode } from 'react'
 import QueryWorkspacePanel from './query-workspace-panel'
 import type { ConnectionInfo } from './connection-model'
 import type { SqlCompletionContext, SqlEditorHandle } from '../components/SqlEditor'
-import type {
-  SqlEditorExecutionContext,
-  WorkspaceTab
-} from './workspace-model'
+import type { SqlEditorExecutionContext, WorkspaceTab } from './workspace-model'
 
 type ShortcutSettingsLike = {
   sql_execute: string
@@ -30,7 +27,10 @@ type RenderWorkspaceTabOptions = {
   isDatabaseScopedType: (databaseType?: ConnectionInfo['database_type']) => boolean
   ensureDatabasesLoaded: (connectionId: string) => Promise<void> | void
   ensureSchemasLoaded: (connectionId: string, pgDatabaseName: string) => Promise<string[]>
-  preloadCompletionForDatabase: (connectionId: string, databaseName: string) => Promise<void> | void
+  preloadCompletionForDatabase: (
+    connectionId: string,
+    databaseName?: string
+  ) => Promise<void> | void
   updateWorkspaceTab: (key: string, patch: Partial<WorkspaceTab>) => void
   renderResultTable: (tab: WorkspaceTab) => ReactNode
   runQuery: (tab: WorkspaceTab, sql?: string) => Promise<void> | void

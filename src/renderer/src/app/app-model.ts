@@ -16,7 +16,10 @@ export const BACKEND_LABELS: Record<BackendStatus['state'], string> = {
   crashed: '服务已崩溃'
 }
 
-export const BACKEND_COLORS: Record<BackendStatus['state'], 'success' | 'processing' | 'error' | 'default'> = {
+export const BACKEND_COLORS: Record<
+  BackendStatus['state'],
+  'success' | 'processing' | 'error' | 'default'
+> = {
   starting: 'processing',
   online: 'success',
   failed: 'error',
@@ -30,7 +33,11 @@ export type AppInfo = {
   projectUrl: string
 }
 
-export type SettingsSection = 'app' | 'shortcuts' | 'drivers'
+export type SettingsSection = 'app' | 'sql' | 'shortcuts' | 'drivers'
+
+export type QuerySettings = {
+  timeoutMinutes: number
+}
 
 export type ShortcutAction =
   | 'sql_execute'

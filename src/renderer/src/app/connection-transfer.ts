@@ -1,12 +1,18 @@
 import type { ConnectionFolder } from './tree-model'
-import type { ConnectionFormValues, ImportConnectionCandidate, ImportConnectionCandidateStatus } from './app-shared'
+import type {
+  ConnectionFormValues,
+  ImportConnectionCandidate,
+  ImportConnectionCandidateStatus
+} from './app-shared'
 
 const TRANSFER_FILE_FORMAT = 'datadjinn-connections'
 const TRANSFER_FILE_VERSION = 1
 const PBKDF2_ITERATIONS = 210_000
 const SALT_BYTES = 16
 const IV_BYTES = 12
-const ENCRYPTION_AAD = Uint8Array.from(new TextEncoder().encode('DataDjinn::ConnectionTransfer::v1'))
+const ENCRYPTION_AAD = Uint8Array.from(
+  new TextEncoder().encode('DataDjinn::ConnectionTransfer::v1')
+)
 const textEncoder = new TextEncoder()
 const textDecoder = new TextDecoder()
 const normalizeTransferPassphrase = (value: string): string => value.normalize('NFC').trim()
@@ -91,7 +97,11 @@ const randomBytes = (length: number): Uint8Array => {
 
 const toCryptoBuffer = (value: Uint8Array): Uint8Array<ArrayBuffer> => Uint8Array.from(value)
 
-const deriveKey = async (passphrase: string, salt: Uint8Array, usage: KeyUsage[]): Promise<CryptoKey> => {
+const deriveKey = async (
+  passphrase: string,
+  salt: Uint8Array,
+  usage: KeyUsage[]
+): Promise<CryptoKey> => {
   const cryptoApi = getCrypto()
   const baseKey = await cryptoApi.subtle.importKey(
     'raw',
@@ -137,7 +147,11 @@ const normalizeTransferConnection = (value: unknown): DataDjinnConnectionTransfe
   if (typeof value.export_id !== 'string' || !value.export_id.trim()) {
     throw new Error('连接导入文件中的连接标识缺失')
   }
-  if (!isRecord(value.payload) || typeof value.payload.name !== 'string' || typeof value.payload.database_type !== 'string') {
+  if (
+    !isRecord(value.payload) ||
+    typeof value.payload.name !== 'string' ||
+    typeof value.payload.database_type !== 'string'
+  ) {
     throw new Error('连接导入文件中的连接配置无效')
   }
 
@@ -147,7 +161,9 @@ const normalizeTransferConnection = (value: unknown): DataDjinnConnectionTransfe
   }
 }
 
-export const normalizeDataDjinnConnectionTransferBundle = (value: unknown): DataDjinnConnectionTransferBundle => {
+export const normalizeDataDjinnConnectionTransferBundle = (
+  value: unknown
+): DataDjinnConnectionTransferBundle => {
   if (!isRecord(value)) {
     throw new Error('连接导入文件内容无效')
   }
@@ -164,38 +180,48 @@ export const normalizeDataDjinnConnectionTransferBundle = (value: unknown): Data
 
   const folders = Array.isArray(value.folders)
     ? value.folders
-        .filter((item): item is ConnectionFolder => (
-          isRecord(item) &&
-          typeof item.id === 'string' &&
-          typeof item.name === 'string' &&
-          item.id.trim().length > 0 &&
-          item.name.trim().length > 0
-        ))
+        .filter(
+          (item): item is ConnectionFolder =>
+            isRecord(item) &&
+            typeof item.id === 'string' &&
+            typeof item.name === 'string' &&
+            item.id.trim().length > 0 &&
+            item.name.trim().length > 0
+        )
         .map((item) => ({ id: item.id, name: item.name }))
     : []
 
   const folderIdSet = new Set(folders.map((folder) => folder.id))
   const connectionIdSet = new Set(connections.map((connection) => connection.export_id))
   const connectionFolderAssignments = Object.fromEntries(
-    Object.entries(isRecord(value.connection_folder_assignments) ? value.connection_folder_assignments : {})
-      .filter(([connectionId, folderId]) => (
-        connectionIdSet.has(connectionId) &&
-        typeof folderId === 'string' &&
-        folderIdSet.has(folderId)
-      ))
+    Object.entries(
+      isRecord(value.connection_folder_assignments) ? value.connection_folder_assignments : {}
+    )
+      .filter(
+        ([connectionId, folderId]) =>
+          connectionIdSet.has(connectionId) &&
+          typeof folderId === 'string' &&
+          folderIdSet.has(folderId)
+      )
       .map(([connectionId, folderId]) => [connectionId, folderId as string])
   )
 
   return {
     version: 1,
-    exported_at: typeof value.exported_at === 'string' ? value.exported_at : new Date().toISOString(),
+    exported_at:
+      typeof value.exported_at === 'string' ? value.exported_at : new Date().toISOString(),
     source_app_name: typeof value.source_app_name === 'string' ? value.source_app_name : undefined,
-    source_app_version: typeof value.source_app_version === 'string' ? value.source_app_version : undefined,
+    source_app_version:
+      typeof value.source_app_version === 'string' ? value.source_app_version : undefined,
     connections,
     folders,
     connection_folder_assignments: connectionFolderAssignments,
-    connection_folder_order: toStringArray(value.connection_folder_order).filter((folderId) => folderIdSet.has(folderId)),
-    root_connection_order: toStringArray(value.root_connection_order).filter((connectionId) => connectionIdSet.has(connectionId)),
+    connection_folder_order: toStringArray(value.connection_folder_order).filter((folderId) =>
+      folderIdSet.has(folderId)
+    ),
+    root_connection_order: toStringArray(value.root_connection_order).filter((connectionId) =>
+      connectionIdSet.has(connectionId)
+    ),
     root_item_order: toStringArray(value.root_item_order).filter((itemId) => {
       if (itemId.startsWith('folder:')) {
         return folderIdSet.has(itemId.slice('folder:'.length))
@@ -222,14 +248,20 @@ const buildImportWarnings = (payload: ConnectionFormValues): string[] => {
   if (payload.database_type === 'dm' || payload.database_type === 'gaussdb') {
     warnings.push('导入后请确认驱动配置在当前设备上仍然有效')
   }
-  if (payload.ssh_enabled && payload.ssh_auth_type === 'private_key' && payload.ssh_private_key_path) {
+  if (
+    payload.ssh_enabled &&
+    payload.ssh_auth_type === 'private_key' &&
+    payload.ssh_private_key_path
+  ) {
     warnings.push('导入后请确认 SSH 私钥路径在当前设备上仍然存在')
   }
 
   return warnings
 }
 
-export const buildDataDjinnImportCandidates = (bundle: DataDjinnConnectionTransferBundle): ImportConnectionCandidate[] =>
+export const buildDataDjinnImportCandidates = (
+  bundle: DataDjinnConnectionTransferBundle
+): ImportConnectionCandidate[] =>
   bundle.connections.map<ImportConnectionCandidate>((connection) => {
     const warnings = buildImportWarnings(connection.payload)
     const status: ImportConnectionCandidateStatus = warnings.length > 0 ? 'warning' : 'ready'
@@ -306,20 +338,25 @@ export const decryptConnectionTransferBundle = async (
     throw new Error('连接导入文件不是有效的 JSON')
   }
 
-  if (!isRecord(parsed) || parsed.format !== TRANSFER_FILE_FORMAT || parsed.version !== TRANSFER_FILE_VERSION) {
+  if (
+    !isRecord(parsed) ||
+    parsed.format !== TRANSFER_FILE_FORMAT ||
+    parsed.version !== TRANSFER_FILE_VERSION
+  ) {
     throw new Error('不是有效的 DataDjinn 连接导入文件')
   }
 
-  const iterations = isRecord(parsed.kdf) && typeof parsed.kdf.iterations === 'number'
-    ? parsed.kdf.iterations
-    : PBKDF2_ITERATIONS
+  const iterations =
+    isRecord(parsed.kdf) && typeof parsed.kdf.iterations === 'number'
+      ? parsed.kdf.iterations
+      : PBKDF2_ITERATIONS
   if (iterations !== PBKDF2_ITERATIONS) {
     throw new Error('当前暂不支持该加密参数的连接导入文件')
   }
 
   try {
-    const salt = base64ToBytes(String(isRecord(parsed.kdf) ? parsed.kdf.salt ?? '' : ''))
-    const iv = base64ToBytes(String(isRecord(parsed.cipher) ? parsed.cipher.iv ?? '' : ''))
+    const salt = base64ToBytes(String(isRecord(parsed.kdf) ? (parsed.kdf.salt ?? '') : ''))
+    const iv = base64ToBytes(String(isRecord(parsed.cipher) ? (parsed.cipher.iv ?? '') : ''))
     const payloadBytes = base64ToBytes(String(parsed.payload ?? ''))
     const key = await deriveKey(normalizedPassphrase, salt, ['decrypt'])
     const decrypted = await getCrypto().subtle.decrypt(

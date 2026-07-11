@@ -61,7 +61,8 @@ export const handleTreeSelectionChange = ({
     const anchorIndex = visibleConnectionIds.indexOf(connectionSelectionAnchorId)
     const currentIndex = visibleConnectionIds.indexOf(node.connectionId)
     if (anchorIndex >= 0 && currentIndex >= 0) {
-      const [startIndex, endIndex] = anchorIndex <= currentIndex ? [anchorIndex, currentIndex] : [currentIndex, anchorIndex]
+      const [startIndex, endIndex] =
+        anchorIndex <= currentIndex ? [anchorIndex, currentIndex] : [currentIndex, anchorIndex]
       selectConnectionTreeNodes(
         visibleConnectionIds.slice(startIndex, endIndex + 1),
         connectionSelectionAnchorId,

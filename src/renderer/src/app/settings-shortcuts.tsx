@@ -1,7 +1,8 @@
 import { Button, Flex, Space, Typography } from 'antd'
 import { memo } from 'react'
 
-const normalizeShortcutText = (shortcut?: string): string => shortcut?.replace(/\s+/g, '').toLowerCase() ?? ''
+const normalizeShortcutText = (shortcut?: string): string =>
+  shortcut?.replace(/\s+/g, '').toLowerCase() ?? ''
 
 const formatShortcutFromEvent = (event: React.KeyboardEvent<HTMLElement>): string => {
   const parts: string[] = []
@@ -29,7 +30,8 @@ const formatShortcutFromEvent = (event: React.KeyboardEvent<HTMLElement>): strin
   return parts.join('+')
 }
 
-const isModifierOnlyKey = (key: string): boolean => ['Control', 'Shift', 'Alt', 'Meta'].includes(key)
+const isModifierOnlyKey = (key: string): boolean =>
+  ['Control', 'Shift', 'Alt', 'Meta'].includes(key)
 
 const ShortcutRecorder = memo(function ShortcutRecorder({
   label,
@@ -89,7 +91,9 @@ const ShortcutRecorder = memo(function ShortcutRecorder({
         <Button size="small" onClick={recording ? onCancel : onStartRecord}>
           {recording ? '取消' : '修改'}
         </Button>
-        <Button size="small" onClick={onReset}>恢复默认</Button>
+        <Button size="small" onClick={onReset}>
+          恢复默认
+        </Button>
       </Space>
     </Flex>
   )

@@ -55,6 +55,19 @@ jobs:
           "$VENV_PY" -m pip install --upgrade pip
           "$VENV_PY" -m pip install -r backend/requirements.txt
 
+      - name: Run backend unit tests
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            VENV_PY="backend/.venv/Scripts/python.exe"
+          else
+            VENV_PY="backend/.venv/bin/python"
+          fi
+          PYTHONPATH=backend "$VENV_PY" -m unittest discover -s backend/tests -v
+
+      - name: Run Electron regression tests
+        run: npm run test:regression
+
       - name: Build packages
         run: ${{ matrix.build_command }}
 

@@ -1,4 +1,13 @@
-export type DatabaseType = 'sqlite' | 'mysql' | 'postgresql' | 'dm' | 'gaussdb' | 'oracle' | 'mongodb' | 'redis' | 'clickhouse'
+export type DatabaseType =
+  | 'sqlite'
+  | 'mysql'
+  | 'postgresql'
+  | 'dm'
+  | 'gaussdb'
+  | 'oracle'
+  | 'mongodb'
+  | 'redis'
+  | 'clickhouse'
 
 export const DATABASE_TYPE_LABELS: Record<DatabaseType, string> = {
   sqlite: 'SQLite',
@@ -143,7 +152,11 @@ export const inferDataGripDatabaseType = (params: {
   if (fingerprint.includes('gauss')) {
     return 'gaussdb'
   }
-  if (fingerprint.includes('dm dbms') || fingerprint.includes('dm.jdbc.driver') || fingerprint.includes('jdbc:dm:')) {
+  if (
+    fingerprint.includes('dm dbms') ||
+    fingerprint.includes('dm.jdbc.driver') ||
+    fingerprint.includes('jdbc:dm:')
+  ) {
     return 'dm'
   }
   if (fingerprint.includes('redis')) {
@@ -163,10 +176,13 @@ export const inferDataGripDatabaseType = (params: {
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
+    ? (value as Record<string, unknown>)
     : null
 
-const readFirstString = (record: Record<string, unknown> | null, keys: string[]): string | undefined => {
+const readFirstString = (
+  record: Record<string, unknown> | null,
+  keys: string[]
+): string | undefined => {
   if (!record) {
     return undefined
   }
@@ -223,11 +239,7 @@ const inferDBeaverDatabaseType = (params: {
   driver?: string
   jdbcUrl?: string
 }): DatabaseType | undefined => {
-  const fingerprint = [
-    params.provider,
-    params.driver,
-    params.jdbcUrl
-  ]
+  const fingerprint = [params.provider, params.driver, params.jdbcUrl]
     .filter((item): item is string => Boolean(item))
     .join(' ')
     .toLowerCase()
@@ -254,7 +266,10 @@ const parseSqlitePathFromJdbcUrl = (jdbcUrl?: string): string | undefined => {
   return trimToUndefined(match?.[1])
 }
 
-export const parseJdbcUrlToConnectionFields = (jdbcUrl: string, databaseType: DatabaseType): Pick<ConnectionFormValues, 'host' | 'port' | 'database'> => {
+export const parseJdbcUrlToConnectionFields = (
+  jdbcUrl: string,
+  databaseType: DatabaseType
+): Pick<ConnectionFormValues, 'host' | 'port' | 'database'> => {
   const normalized = jdbcUrl.trim()
 
   if (!normalized.toLowerCase().startsWith('jdbc:')) {
@@ -276,7 +291,9 @@ export const parseJdbcUrlToConnectionFields = (jdbcUrl: string, databaseType: Da
     pathname = decodeURIComponent(runtimeUrl.pathname || '').replace(/^\/+/, '')
     schema = trimToUndefined(runtimeUrl.searchParams.get('schema'))
   } catch {
-    const multiHostMatch = runtimeUrlValue.match(/^[a-z0-9+.-]+:\/\/([^/?#]+)(\/[^?#]*)?(?:\?([^#]*))?$/i)
+    const multiHostMatch = runtimeUrlValue.match(
+      /^[a-z0-9+.-]+:\/\/([^/?#]+)(\/[^?#]*)?(?:\?([^#]*))?$/i
+    )
     if (!multiHostMatch) {
       throw new Error('不是有效的 JDBC URL')
     }
@@ -290,7 +307,7 @@ export const parseJdbcUrlToConnectionFields = (jdbcUrl: string, databaseType: Da
       throw new Error('未解析到主机')
     }
 
-    const firstHostMatch = firstHost.match(/^(?:\[([^\]]+)\]|([^:]+))(?:\:(\d+))?$/)
+    const firstHostMatch = firstHost.match(/^(?:\[([^\]]+)\]|([^:]+))(?::(\d+))?$/)
     if (!firstHostMatch) {
       throw new Error('未解析到主机')
     }
@@ -298,7 +315,7 @@ export const parseJdbcUrlToConnectionFields = (jdbcUrl: string, databaseType: Da
     host = trimToUndefined(firstHostMatch[1] || firstHostMatch[2])
     const portList = hostList
       .map((item) => {
-        const match = item.match(/^(?:\[[^\]]+\]|[^:]+)(?:\:(\d+))?$/)
+        const match = item.match(/^(?:\[[^\]]+\]|[^:]+)(?::(\d+))?$/)
         return match?.[1]
       })
       .filter((item): item is string => Boolean(item))
@@ -343,15 +360,30 @@ export const parseJdbcUrlToConnectionFields = (jdbcUrl: string, databaseType: Da
 }
 
 export const parseDataGripImportText = (rawText: string): ImportConnectionCandidate[] => {
-  const blockMatches = [...rawText.matchAll(/#LocalDataSource:\s*([^\r\n]+)[\r\n]+#BEGIN#([\s\S]*?)#END#/g)]
-  const fallbackMatches = blockMatches.length === 0 ? [...rawText.matchAll(/#BEGIN#([\s\S]*?)#END#/g)] : []
-  const blocks = blockMatches.length > 0
-    ? blockMatches.map((match, index) => ({ key: `dg-${index}`, label: trimToUndefined(match[1]), xml: match[2] }))
-    : fallbackMatches.map((match, index) => ({ key: `dg-${index}`, label: undefined, xml: match[1] }))
+  const blockMatches = [
+    ...rawText.matchAll(/#LocalDataSource:\s*([^\r\n]+)[\r\n]+#BEGIN#([\s\S]*?)#END#/g)
+  ]
+  const fallbackMatches =
+    blockMatches.length === 0 ? [...rawText.matchAll(/#BEGIN#([\s\S]*?)#END#/g)] : []
+  const blocks =
+    blockMatches.length > 0
+      ? blockMatches.map((match, index) => ({
+          key: `dg-${index}`,
+          label: trimToUndefined(match[1]),
+          xml: match[2]
+        }))
+      : fallbackMatches.map((match, index) => ({
+          key: `dg-${index}`,
+          label: undefined,
+          xml: match[1]
+        }))
 
   return blocks.map<ImportConnectionCandidate>((block, index) => {
     try {
-      const parsed = new DOMParser().parseFromString(sanitizeImportedXml(block.xml.trim()), 'application/xml')
+      const parsed = new DOMParser().parseFromString(
+        sanitizeImportedXml(block.xml.trim()),
+        'application/xml'
+      )
       const parserError = parsed.querySelector('parsererror')
       if (parserError) {
         throw new Error('连接配置 XML 解析失败')
@@ -376,7 +408,8 @@ export const parseDataGripImportText = (rawText: string): ImportConnectionCandid
         jdbcDriver,
         jdbcUrl
       })
-      const name = trimToUndefined(dataSource.getAttribute('name')) ?? block.label ?? `导入连接 ${index + 1}`
+      const name =
+        trimToUndefined(dataSource.getAttribute('name')) ?? block.label ?? `导入连接 ${index + 1}`
 
       if (!jdbcUrl) {
         throw new Error('未解析到 JDBC URL')
@@ -428,7 +461,9 @@ export const parseDataGripImportText = (rawText: string): ImportConnectionCandid
   })
 }
 
-export const parseDBeaverImportText = (rawText: string): {
+export const parseDBeaverImportText = (
+  rawText: string
+): {
   candidates: ImportConnectionCandidate[]
   folderPlan: ImportConnectionFolderPlan
 } => {
@@ -449,119 +484,143 @@ export const parseDBeaverImportText = (rawText: string): {
   const folderNames = folderRecord ? Object.keys(folderRecord) : []
   const connectionFolderAssignments: Record<string, string> = {}
   const rootConnectionOrder: string[] = []
-  const folderConnectionOrder = Object.fromEntries(folderNames.map((folderName) => [folderName, [] as string[]]))
-  const candidates = Object.entries(connectionsRecord).map<ImportConnectionCandidate>(([connectionId, rawConnection], index) => {
-    const candidateKey = `dbeaver-${connectionId}`
-    const connection = asRecord(rawConnection)
-    const configuration = asRecord(connection?.configuration)
-    const sourceFolderName = readFirstString(connection, ['folder'])
+  const folderConnectionOrder = Object.fromEntries(
+    folderNames.map((folderName) => [folderName, [] as string[]])
+  )
+  const candidates = Object.entries(connectionsRecord).map<ImportConnectionCandidate>(
+    ([connectionId, rawConnection], index) => {
+      const candidateKey = `dbeaver-${connectionId}`
+      const connection = asRecord(rawConnection)
+      const configuration = asRecord(connection?.configuration)
+      const sourceFolderName = readFirstString(connection, ['folder'])
 
-    if (sourceFolderName && !(sourceFolderName in folderConnectionOrder)) {
-      folderNames.push(sourceFolderName)
-      folderConnectionOrder[sourceFolderName] = []
-    }
-
-    if (sourceFolderName) {
-      connectionFolderAssignments[candidateKey] = sourceFolderName
-      folderConnectionOrder[sourceFolderName].push(candidateKey)
-    } else {
-      rootConnectionOrder.push(candidateKey)
-    }
-
-    try {
-      const name = readFirstString(connection, ['name']) ?? `导入连接 ${index + 1}`
-      const provider = readFirstString(connection, ['provider'])
-      const driver = readFirstString(connection, ['driver'])
-      const jdbcUrl = readFirstString(configuration, ['url'])
-      const databaseType = inferDBeaverDatabaseType({ provider, driver, jdbcUrl })
-
-      if (!databaseType) {
-        throw new Error('当前仅支持导入已识别的 DBeaver 数据源类型')
+      if (sourceFolderName && !(sourceFolderName in folderConnectionOrder)) {
+        folderNames.push(sourceFolderName)
+        folderConnectionOrder[sourceFolderName] = []
       }
 
-      let host = readFirstString(configuration, ['host', 'server', 'hostname'])
-      let port = readOptionalPort(configuration?.port)
-      let database = readFirstString(configuration, ['database', 'databaseName', 'activeDatabase', 'catalog', 'schema'])
-      let sqlitePath = readFirstString(configuration, ['path', 'file'])
-
-      if (jdbcUrl) {
-        const jdbcFields = parseJdbcUrlToConnectionFields(jdbcUrl, databaseType)
-        host = host ?? jdbcFields.host
-        port = port ?? jdbcFields.port
-        database = database ?? jdbcFields.database
-        sqlitePath = sqlitePath ?? parseSqlitePathFromJdbcUrl(jdbcUrl)
+      if (sourceFolderName) {
+        connectionFolderAssignments[candidateKey] = sourceFolderName
+        folderConnectionOrder[sourceFolderName].push(candidateKey)
+      } else {
+        rootConnectionOrder.push(candidateKey)
       }
 
-      if (databaseType === 'sqlite') {
-        sqlitePath = sqlitePath ?? readFirstString(configuration, ['database'])
-        if (!sqlitePath) {
-          throw new Error('未解析到 SQLite 文件路径')
+      try {
+        const name = readFirstString(connection, ['name']) ?? `导入连接 ${index + 1}`
+        const provider = readFirstString(connection, ['provider'])
+        const driver = readFirstString(connection, ['driver'])
+        const jdbcUrl = readFirstString(configuration, ['url'])
+        const databaseType = inferDBeaverDatabaseType({ provider, driver, jdbcUrl })
+
+        if (!databaseType) {
+          throw new Error('当前仅支持导入已识别的 DBeaver 数据源类型')
         }
-      } else if (!host) {
-        throw new Error('未解析到主机')
-      }
 
-      const payload: ConnectionFormValues = {
-        name,
-        database_type: databaseType,
-        host,
-        port: port ?? defaultPortForDatabaseType(databaseType),
-        username: readFirstString(connection, ['user', 'username', 'userName'])
-          ?? readFirstString(configuration, ['user', 'username', 'userName']),
-        password: readFirstString(connection, ['password']) ?? readFirstString(configuration, ['password']) ?? '',
-        database,
-        sqlite_path: sqlitePath,
-        driver_id: undefined,
-        dm_driver_id: undefined
-      }
+        let host = readFirstString(configuration, ['host', 'server', 'hostname'])
+        let port = readOptionalPort(configuration?.port)
+        let database = readFirstString(configuration, [
+          'database',
+          'databaseName',
+          'activeDatabase',
+          'catalog',
+          'schema'
+        ])
+        let sqlitePath = readFirstString(configuration, ['path', 'file'])
 
-      const sshTunnel = asRecord(asRecord(configuration?.handlers)?.ssh_tunnel)
-      const sshProperties = asRecord(sshTunnel?.properties)
-      if (sshTunnel?.enabled === true) {
-        const authType = readFirstString(sshProperties, ['authType'])
-        const sshAuthType: SshAuthType = authType?.toLowerCase().includes('password') ? 'password' : 'private_key'
-        payload.ssh_enabled = true
-        payload.ssh_host = readFirstString(sshProperties, ['host', 'hostName'])
-        payload.ssh_port = readOptionalNumber(sshProperties?.port) ?? 22
-        payload.ssh_username = readFirstString(sshProperties, ['user', 'username', 'userName'])
-        payload.ssh_auth_type = sshAuthType
-        payload.ssh_password = readFirstString(sshProperties, ['password'])
-        payload.ssh_private_key_path = readFirstString(sshProperties, ['keyPath', 'privateKeyPath', 'privateKey'])
-        payload.ssh_passphrase = readFirstString(sshProperties, ['passphrase', 'keyPassword'])
-      }
+        if (jdbcUrl) {
+          const jdbcFields = parseJdbcUrlToConnectionFields(jdbcUrl, databaseType)
+          host = host ?? jdbcFields.host
+          port = port ?? jdbcFields.port
+          database = database ?? jdbcFields.database
+          sqlitePath = sqlitePath ?? parseSqlitePathFromJdbcUrl(jdbcUrl)
+        }
 
-      const warnings: string[] = []
-      if (databaseType === 'dm' || databaseType === 'gaussdb') {
-        warnings.push(`导入后仍需在编辑连接中选择${DATABASE_TYPE_LABELS[databaseType]}驱动`)
-      }
-      if (payload.ssh_enabled && payload.ssh_auth_type === 'private_key' && !payload.ssh_private_key_path) {
-        warnings.push('SSH 私钥路径未从 DBeaver 文件中解析到，请导入后补充')
-      }
+        if (databaseType === 'sqlite') {
+          sqlitePath = sqlitePath ?? readFirstString(configuration, ['database'])
+          if (!sqlitePath) {
+            throw new Error('未解析到 SQLite 文件路径')
+          }
+        } else if (!host) {
+          throw new Error('未解析到主机')
+        }
 
-      return {
-        key: candidateKey,
-        name,
-        database_type: databaseType,
-        sourceFolderName,
-        host: payload.host,
-        port: payload.port,
-        username: payload.username,
-        database: payload.database,
-        rawJdbcUrl: jdbcUrl,
-        status: warnings.length > 0 ? 'warning' : 'ready',
-        message: warnings.join('；') || undefined,
-        payload
-      }
-    } catch (error) {
-      return {
-        key: candidateKey,
-        name: readFirstString(connection, ['name']) ?? `导入连接 ${index + 1}`,
-        sourceFolderName,
-        status: 'error',
-        message: error instanceof Error ? error.message : '解析失败'
+        const payload: ConnectionFormValues = {
+          name,
+          database_type: databaseType,
+          host,
+          port: port ?? defaultPortForDatabaseType(databaseType),
+          username:
+            readFirstString(connection, ['user', 'username', 'userName']) ??
+            readFirstString(configuration, ['user', 'username', 'userName']),
+          password:
+            readFirstString(connection, ['password']) ??
+            readFirstString(configuration, ['password']) ??
+            '',
+          database,
+          sqlite_path: sqlitePath,
+          driver_id: undefined,
+          dm_driver_id: undefined
+        }
+
+        const sshTunnel = asRecord(asRecord(configuration?.handlers)?.ssh_tunnel)
+        const sshProperties = asRecord(sshTunnel?.properties)
+        if (sshTunnel?.enabled === true) {
+          const authType = readFirstString(sshProperties, ['authType'])
+          const sshAuthType: SshAuthType = authType?.toLowerCase().includes('password')
+            ? 'password'
+            : 'private_key'
+          payload.ssh_enabled = true
+          payload.ssh_host = readFirstString(sshProperties, ['host', 'hostName'])
+          payload.ssh_port = readOptionalNumber(sshProperties?.port) ?? 22
+          payload.ssh_username = readFirstString(sshProperties, ['user', 'username', 'userName'])
+          payload.ssh_auth_type = sshAuthType
+          payload.ssh_password = readFirstString(sshProperties, ['password'])
+          payload.ssh_private_key_path = readFirstString(sshProperties, [
+            'keyPath',
+            'privateKeyPath',
+            'privateKey'
+          ])
+          payload.ssh_passphrase = readFirstString(sshProperties, ['passphrase', 'keyPassword'])
+        }
+
+        const warnings: string[] = []
+        if (databaseType === 'dm' || databaseType === 'gaussdb') {
+          warnings.push(`导入后仍需在编辑连接中选择${DATABASE_TYPE_LABELS[databaseType]}驱动`)
+        }
+        if (
+          payload.ssh_enabled &&
+          payload.ssh_auth_type === 'private_key' &&
+          !payload.ssh_private_key_path
+        ) {
+          warnings.push('SSH 私钥路径未从 DBeaver 文件中解析到，请导入后补充')
+        }
+
+        return {
+          key: candidateKey,
+          name,
+          database_type: databaseType,
+          sourceFolderName,
+          host: payload.host,
+          port: payload.port,
+          username: payload.username,
+          database: payload.database,
+          rawJdbcUrl: jdbcUrl,
+          status: warnings.length > 0 ? 'warning' : 'ready',
+          message: warnings.join('；') || undefined,
+          payload
+        }
+      } catch (error) {
+        return {
+          key: candidateKey,
+          name: readFirstString(connection, ['name']) ?? `导入连接 ${index + 1}`,
+          sourceFolderName,
+          status: 'error',
+          message: error instanceof Error ? error.message : '解析失败'
+        }
       }
     }
-  })
+  )
 
   const folderPlan: ImportConnectionFolderPlan = {
     folders: folderNames.map((folderName) => ({ id: folderName, name: folderName })),
@@ -581,8 +640,15 @@ export const parseDBeaverImportText = (rawText: string): {
   }
 }
 
-export const isDatabaseScopedType = (databaseType?: DatabaseType): databaseType is 'mysql' | 'mongodb' | 'redis' | 'clickhouse' =>
-  databaseType === 'mysql' || databaseType === 'mongodb' || databaseType === 'redis' || databaseType === 'clickhouse'
+export const isDatabaseScopedType = (
+  databaseType?: DatabaseType
+): databaseType is 'mysql' | 'mongodb' | 'redis' | 'clickhouse' =>
+  databaseType === 'mysql' ||
+  databaseType === 'mongodb' ||
+  databaseType === 'redis' ||
+  databaseType === 'clickhouse'
 
-export const isSchemaScopedType = (databaseType?: DatabaseType): databaseType is 'postgresql' | 'gaussdb' =>
+export const isSchemaScopedType = (
+  databaseType?: DatabaseType
+): databaseType is 'postgresql' | 'gaussdb' =>
   databaseType === 'postgresql' || databaseType === 'gaussdb'

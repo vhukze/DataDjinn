@@ -133,13 +133,15 @@ export const useAppPersistence = ({
 
     setConnectionFolderAssignments((current) => {
       let changed = false
-      const next = Object.fromEntries(Object.entries(current).filter(([connectionId, folderId]) => {
-        const keep = validConnectionIds.has(connectionId) && validFolderIds.has(folderId)
-        if (!keep) {
-          changed = true
-        }
-        return keep
-      }))
+      const next = Object.fromEntries(
+        Object.entries(current).filter(([connectionId, folderId]) => {
+          const keep = validConnectionIds.has(connectionId) && validFolderIds.has(folderId)
+          if (!keep) {
+            changed = true
+          }
+          return keep
+        })
+      )
       return changed ? next : current
     })
 
@@ -159,20 +161,31 @@ export const useAppPersistence = ({
         }
         return true
       })
-      return current.length === next.length && current.every((item, index) => item === next[index]) ? current : next
+      return current.length === next.length && current.every((item, index) => item === next[index])
+        ? current
+        : next
     })
 
-    setConnectionSelectionAnchorId((current) => current && validConnectionIds.has(current) ? current : undefined)
+    setConnectionSelectionAnchorId((current) =>
+      current && validConnectionIds.has(current) ? current : undefined
+    )
 
     setConnectionFolderOrder((current) => {
-      const next = mergeOrderedIds(connectionFolders.map((folder) => folder.id), current)
+      const next = mergeOrderedIds(
+        connectionFolders.map((folder) => folder.id),
+        current
+      )
       return stringArrayEquals(current, next) ? current : next
     })
 
     setRootConnectionOrder((current) => {
       const next = mergeOrderedIds(
         connections
-          .filter((connection) => !connectionFolderAssignments[connection.connection_id] || !validFolderIds.has(connectionFolderAssignments[connection.connection_id]))
+          .filter(
+            (connection) =>
+              !connectionFolderAssignments[connection.connection_id] ||
+              !validFolderIds.has(connectionFolderAssignments[connection.connection_id])
+          )
           .map((connection) => connection.connection_id),
         current
       )
@@ -181,15 +194,20 @@ export const useAppPersistence = ({
 
     setRootItemOrder((current) => {
       const rootConnectionIds = connections
-        .filter((connection) => !connectionFolderAssignments[connection.connection_id] || !validFolderIds.has(connectionFolderAssignments[connection.connection_id]))
+        .filter(
+          (connection) =>
+            !connectionFolderAssignments[connection.connection_id] ||
+            !validFolderIds.has(connectionFolderAssignments[connection.connection_id])
+        )
         .map((connection) => rootConnectionOrderId(connection.connection_id))
       const folderIds = connectionFolders.map((folder) => rootFolderOrderId(folder.id))
-      const migratedOrder = current.length > 0
-        ? current
-        : [
-            ...connectionFolderOrder.map(rootFolderOrderId),
-            ...rootConnectionOrder.map(rootConnectionOrderId)
-          ]
+      const migratedOrder =
+        current.length > 0
+          ? current
+          : [
+              ...connectionFolderOrder.map(rootFolderOrderId),
+              ...rootConnectionOrder.map(rootConnectionOrderId)
+            ]
       const next = mergeOrderedIds([...folderIds, ...rootConnectionIds], migratedOrder)
       return stringArrayEquals(current, next) ? current : next
     })
@@ -198,7 +216,9 @@ export const useAppPersistence = ({
       const next: Record<string, string[]> = {}
       for (const folderId of connectionFolders.map((folder) => folder.id)) {
         const folderConnectionIds = connections
-          .filter((connection) => connectionFolderAssignments[connection.connection_id] === folderId)
+          .filter(
+            (connection) => connectionFolderAssignments[connection.connection_id] === folderId
+          )
           .map((connection) => connection.connection_id)
         next[folderId] = mergeOrderedIds(folderConnectionIds, current[folderId] ?? [])
       }

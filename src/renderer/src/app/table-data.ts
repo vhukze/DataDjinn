@@ -53,18 +53,22 @@ export type RedisPendingTabLike = {
 
 export const editableValue = (value: string): unknown => value
 
-export const createDefaultValueMarker = (): DefaultValueMarker => ({ __datadjinn_action__: 'default' })
+export const createDefaultValueMarker = (): DefaultValueMarker => ({
+  __datadjinn_action__: 'default'
+})
 
-export const isDefaultValueMarker = (value: unknown): value is DefaultValueMarker => (
-  value !== null
-  && typeof value === 'object'
-  && '__datadjinn_action__' in value
-  && (value as DefaultValueMarker).__datadjinn_action__ === 'default'
-)
+export const isDefaultValueMarker = (value: unknown): value is DefaultValueMarker =>
+  value !== null &&
+  typeof value === 'object' &&
+  '__datadjinn_action__' in value &&
+  (value as DefaultValueMarker).__datadjinn_action__ === 'default'
 
-export const cellDisplayText = (value: unknown): string => (
-  isDefaultValueMarker(value) ? 'DEFAULT' : value === null || value === undefined ? 'NULL' : String(value)
-)
+export const cellDisplayText = (value: unknown): string =>
+  isDefaultValueMarker(value)
+    ? 'DEFAULT'
+    : value === null || value === undefined
+      ? 'NULL'
+      : String(value)
 
 export const isCellValueEqual = (left: unknown, right: unknown): boolean => {
   if (isDefaultValueMarker(left) || isDefaultValueMarker(right)) {
@@ -79,7 +83,9 @@ export const isCellValueEqual = (left: unknown, right: unknown): boolean => {
   return String(left) === String(right)
 }
 
-export const cloneRowSnapshot = (row: Record<string, unknown>): Record<string, unknown> => ({ ...row })
+export const cloneRowSnapshot = (row: Record<string, unknown>): Record<string, unknown> => ({
+  ...row
+})
 
 export const buildEditableRows = (rows: Record<string, unknown>[]): EditableRowLike[] =>
   rows.map((row, index) => ({
@@ -111,20 +117,27 @@ export const displayValue = (value: unknown): string => {
   return JSON.stringify(value, null, 2)
 }
 
-export const buildRedisEdits = (rows: Record<string, unknown>[]): Record<string, RedisKeyEditLike> =>
-  Object.fromEntries(rows.map((row, index) => {
-    const key = String(row.key ?? `key:${index}`)
-    const rowKey = `${key}:${index}`
-    const ttl = Number(row.ttl)
-    return [rowKey, {
-      rowKey,
-      key,
-      type: String(row.type ?? 'string'),
-      value: displayValue(row.value),
-      ttl: Number.isFinite(ttl) && ttl > 0 ? ttl : null,
-      originalKey: key
-    }]
-  }))
+export const buildRedisEdits = (
+  rows: Record<string, unknown>[]
+): Record<string, RedisKeyEditLike> =>
+  Object.fromEntries(
+    rows.map((row, index) => {
+      const key = String(row.key ?? `key:${index}`)
+      const rowKey = `${key}:${index}`
+      const ttl = Number(row.ttl)
+      return [
+        rowKey,
+        {
+          rowKey,
+          key,
+          type: String(row.type ?? 'string'),
+          value: displayValue(row.value),
+          ttl: Number.isFinite(ttl) && ttl > 0 ? ttl : null,
+          originalKey: key
+        }
+      ]
+    })
+  )
 
 export const toColumnDef = (column: ColumnInfoLike): ColumnDefLike => ({
   key: column.name,

@@ -1490,7 +1490,7 @@ def get_sequence_detail(engine: Engine, sequence_name: str, database_name: str |
             raise ValueError("未找到序列详情")
         return SequenceDetailResponse(
             name=str(row["sequencename"]),
-            schema=str(row["schemaname"]),
+            schema_name=str(row["schemaname"]),
             start_value=None if row["start_value"] is None else str(row["start_value"]),
             minimum_value=None if row["min_value"] is None else str(row["min_value"]),
             maximum_value=None if row["max_value"] is None else str(row["max_value"]),
@@ -1515,7 +1515,7 @@ def get_sequence_detail(engine: Engine, sequence_name: str, database_name: str |
             raise ValueError("未找到序列详情")
         return SequenceDetailResponse(
             name=str(row["SEQUENCE_NAME"]),
-            schema=str(row["SEQUENCE_OWNER"]),
+            schema_name=str(row["SEQUENCE_OWNER"]),
             minimum_value=None if row["MIN_VALUE"] is None else str(row["MIN_VALUE"]),
             maximum_value=None if row["MAX_VALUE"] is None else str(row["MAX_VALUE"]),
             increment_by=None if row["INCREMENT_BY"] is None else str(row["INCREMENT_BY"]),
@@ -1539,7 +1539,7 @@ def get_sequence_detail(engine: Engine, sequence_name: str, database_name: str |
             raise ValueError("未找到序列详情")
         return SequenceDetailResponse(
             name=str(row["SEQUENCE_NAME"]),
-            schema=str(row["SEQUENCE_OWNER"]),
+            schema_name=str(row["SEQUENCE_OWNER"]),
             minimum_value=None if row["MIN_VALUE"] is None else str(row["MIN_VALUE"]),
             maximum_value=None if row["MAX_VALUE"] is None else str(row["MAX_VALUE"]),
             increment_by=None if row["INCREMENT_BY"] is None else str(row["INCREMENT_BY"]),

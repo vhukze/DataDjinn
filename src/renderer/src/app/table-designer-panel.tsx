@@ -1,5 +1,18 @@
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons'
-import { Alert, AutoComplete, Button, Checkbox, Flex, Input, InputNumber, Space, Table, Tabs, Tag, Typography } from 'antd'
+import {
+  Alert,
+  AutoComplete,
+  Button,
+  Checkbox,
+  Flex,
+  Input,
+  InputNumber,
+  Space,
+  Table,
+  Tabs,
+  Tag,
+  Typography
+} from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type React from 'react'
 import {
@@ -54,18 +67,27 @@ export default function TableDesignerPanel({
   const supportsComments = tableDesignerSupportsComments(connection?.database_type)
   const supportsUnique = tableDesignerSupportsUnique(connection?.database_type)
   const supportsAutoIncrement = tableDesignerSupportsAutoIncrement(connection?.database_type)
-  const supportsAutoIncrementStep = tableDesignerSupportsAutoIncrementStep(connection?.database_type)
+  const supportsAutoIncrementStep = tableDesignerSupportsAutoIncrementStep(
+    connection?.database_type
+  )
   const supportsMinMax = tableDesignerSupportsMinMax(connection?.database_type)
   const scopeLabel = isSchemaScopedType(connection?.database_type)
-    ? (databaseName ? `${pgDatabaseName ?? '-'} / ${databaseName}` : (pgDatabaseName ?? '-'))
-    : (databaseName || '默认')
+    ? databaseName
+      ? `${pgDatabaseName ?? '-'} / ${databaseName}`
+      : (pgDatabaseName ?? '-')
+    : databaseName || '默认'
   const validColumns = columns.filter((column) => column.name.trim())
-  const primaryKeyColumns = validColumns.filter((column) => column.primaryKey).map((column) => column.name.trim())
+  const primaryKeyColumns = validColumns
+    .filter((column) => column.primaryKey)
+    .map((column) => column.name.trim())
   const typeOptions = COMMON_TYPES.map((type) => ({ label: type, value: type }))
   const canAddRemoveColumns = isCreateMode && !isMongo
-  const canUseAutoIncrement = (column: ColumnDef): boolean => supportsAutoIncrement && isIntegerLikeType(column.type)
-  const canUseAutoIncrementStep = (column: ColumnDef): boolean => supportsAutoIncrementStep && canUseAutoIncrement(column) && column.autoIncrement
-  const canUseMinMax = (column: ColumnDef): boolean => supportsMinMax && isNumericLikeType(column.type)
+  const canUseAutoIncrement = (column: ColumnDef): boolean =>
+    supportsAutoIncrement && isIntegerLikeType(column.type)
+  const canUseAutoIncrementStep = (column: ColumnDef): boolean =>
+    supportsAutoIncrementStep && canUseAutoIncrement(column) && column.autoIncrement
+  const canUseMinMax = (column: ColumnDef): boolean =>
+    supportsMinMax && isNumericLikeType(column.type)
 
   const commitColumnPatch = (column: ColumnDef, patch: Partial<ColumnDef>): void => {
     const next: ColumnDef = { ...column, ...patch }
@@ -111,10 +133,12 @@ export default function TableDesignerPanel({
               <Typography.Text className="table-designer-option-label">设为主键</Typography.Text>
               <Checkbox
                 checked={column.primaryKey}
-                onChange={(event) => commitColumnPatch(column, {
-                  primaryKey: event.target.checked,
-                  nullable: event.target.checked ? false : column.nullable
-                })}
+                onChange={(event) =>
+                  commitColumnPatch(column, {
+                    primaryKey: event.target.checked,
+                    nullable: event.target.checked ? false : column.nullable
+                  })
+                }
               />
             </div>
             <div className="table-designer-option-row">
@@ -127,7 +151,9 @@ export default function TableDesignerPanel({
             </div>
             {supportsUnique && (
               <div className="table-designer-option-row">
-                <Typography.Text className="table-designer-option-label">值必须唯一</Typography.Text>
+                <Typography.Text className="table-designer-option-label">
+                  值必须唯一
+                </Typography.Text>
                 <Checkbox
                   checked={column.unique}
                   disabled={column.primaryKey}
@@ -140,7 +166,9 @@ export default function TableDesignerPanel({
                 <Typography.Text className="table-designer-option-label">自动递增</Typography.Text>
                 <Checkbox
                   checked={column.autoIncrement}
-                  onChange={(event) => commitColumnPatch(column, { autoIncrement: event.target.checked })}
+                  onChange={(event) =>
+                    commitColumnPatch(column, { autoIncrement: event.target.checked })
+                  }
                 />
               </div>
             )}
@@ -169,7 +197,11 @@ export default function TableDesignerPanel({
                   min={1}
                   className="table-designer-option-control"
                   value={column.autoIncrementStep ?? undefined}
-                  onChange={(nextValue) => commitColumnPatch(column, { autoIncrementStep: typeof nextValue === 'number' ? nextValue : undefined })}
+                  onChange={(nextValue) =>
+                    commitColumnPatch(column, {
+                      autoIncrementStep: typeof nextValue === 'number' ? nextValue : undefined
+                    })
+                  }
                 />
               </div>
             )}
@@ -197,7 +229,9 @@ export default function TableDesignerPanel({
             )}
             {!canUseAutoIncrementStep(column) && !canUseMinMax(column) && (
               <div className="table-designer-option-empty">
-                <Typography.Text type="secondary">这个字段类型当前没有更多可设置的数值规则。</Typography.Text>
+                <Typography.Text type="secondary">
+                  这个字段类型当前没有更多可设置的数值规则。
+                </Typography.Text>
               </div>
             )}
           </div>
@@ -205,7 +239,13 @@ export default function TableDesignerPanel({
       </div>
       {canAddRemoveColumns && (
         <Flex justify="end">
-          <Button type="text" danger size="small" icon={<DeleteOutlined />} onClick={() => onRemoveColumn(column.key)}>
+          <Button
+            type="text"
+            danger
+            size="small"
+            icon={<DeleteOutlined />}
+            onClick={() => onRemoveColumn(column.key)}
+          >
             删除字段
           </Button>
         </Flex>
@@ -239,7 +279,11 @@ export default function TableDesignerPanel({
           value={value}
           options={typeOptions}
           onChange={(nextValue) => commitColumnPatch(column, { type: nextValue })}
-          filterOption={(inputValue, option) => String(option?.value ?? '').toLowerCase().includes(inputValue.toLowerCase())}
+          filterOption={(inputValue, option) =>
+            String(option?.value ?? '')
+              .toLowerCase()
+              .includes(inputValue.toLowerCase())
+          }
         >
           <Input size="small" placeholder="例如 VARCHAR(100)" />
         </AutoComplete>
@@ -274,9 +318,17 @@ export default function TableDesignerPanel({
                 <Space size={8}>
                   <Typography.Text strong>字段</Typography.Text>
                   <Tag>{validColumns.length} 列</Tag>
-                  {!isCreateMode && <Typography.Text type="secondary">当前只支持修改已有字段属性，不支持新增、删除或重命名字段。</Typography.Text>}
+                  {!isCreateMode && (
+                    <Typography.Text type="secondary">
+                      当前只支持修改已有字段属性，不支持新增、删除或重命名字段。
+                    </Typography.Text>
+                  )}
                 </Space>
-                {canAddRemoveColumns && <Button type="dashed" size="small" icon={<PlusOutlined />} onClick={onAddColumn}>新增字段</Button>}
+                {canAddRemoveColumns && (
+                  <Button type="dashed" size="small" icon={<PlusOutlined />} onClick={onAddColumn}>
+                    新增字段
+                  </Button>
+                )}
               </Flex>
               <Table<ColumnDef>
                 className="table-designer-grid"
@@ -302,14 +354,20 @@ export default function TableDesignerPanel({
           label: '约束摘要',
           children: (
             <Space direction="vertical" className="full-width" size="middle">
-              <Alert type="info" showIcon message="当前先展示主键摘要，索引、外键和其他约束后续再补。" />
+              <Alert
+                type="info"
+                showIcon
+                message="当前先展示主键摘要，索引、外键和其他约束后续再补。"
+              />
               <div className="table-designer-index-card">
                 <Flex align="center" justify="space-between">
                   <Space size={8}>
                     <Tag color="blue">PRIMARY</Tag>
                     <Typography.Text strong>主键</Typography.Text>
                   </Space>
-                  <Typography.Text type="secondary">{primaryKeyColumns.length > 0 ? `${primaryKeyColumns.length} 列` : '未设置'}</Typography.Text>
+                  <Typography.Text type="secondary">
+                    {primaryKeyColumns.length > 0 ? `${primaryKeyColumns.length} 列` : '未设置'}
+                  </Typography.Text>
                 </Flex>
                 <Typography.Text type="secondary">
                   {primaryKeyColumns.length > 0 ? primaryKeyColumns.join(', ') : '当前没有主键字段'}
@@ -324,7 +382,9 @@ export default function TableDesignerPanel({
     <Space direction="vertical" className="full-width" size="middle">
       <div className="table-designer-header">
         <div className="table-designer-header-main">
-          <Typography.Text type="secondary">{isCreateMode ? '新建结构' : '编辑结构'}</Typography.Text>
+          <Typography.Text type="secondary">
+            {isCreateMode ? '新建结构' : '编辑结构'}
+          </Typography.Text>
           <Input
             size="large"
             value={tableName}
@@ -347,7 +407,9 @@ export default function TableDesignerPanel({
             <Typography.Text strong>{connection?.name ?? '-'}</Typography.Text>
           </div>
           <div className="table-designer-meta-card">
-            <Typography.Text type="secondary">{isSchemaScopedType(connection?.database_type) ? '数据库 / Schema' : '数据库'}</Typography.Text>
+            <Typography.Text type="secondary">
+              {isSchemaScopedType(connection?.database_type) ? '数据库 / Schema' : '数据库'}
+            </Typography.Text>
             <Typography.Text strong>{scopeLabel}</Typography.Text>
           </div>
           <div className="table-designer-meta-card">
@@ -356,9 +418,15 @@ export default function TableDesignerPanel({
           </div>
         </div>
       </div>
-      {tabs.length > 0
-        ? <Tabs className="table-designer-tabs" items={tabs} />
-        : <Alert type="info" showIcon message="MongoDB 只需要填写集合名，字段结构会在写入文档后逐步推断。" />}
+      {tabs.length > 0 ? (
+        <Tabs className="table-designer-tabs" items={tabs} />
+      ) : (
+        <Alert
+          type="info"
+          showIcon
+          message="MongoDB 只需要填写集合名，字段结构会在写入文档后逐步推断。"
+        />
+      )}
     </Space>
   )
 }

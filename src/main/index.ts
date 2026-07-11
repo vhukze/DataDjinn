@@ -1,5 +1,5 @@
 import { app, dialog, shell, BrowserWindow, ipcMain, screen, webContents } from 'electron'
-import { join } from 'path'
+import { join, resolve } from 'path'
 import { createWriteStream, existsSync, readFileSync } from 'fs'
 import { mkdir, readFile, writeFile } from 'fs/promises'
 import { pipeline } from 'stream/promises'
@@ -72,18 +72,25 @@ type AppStore = {
   aiSessions?: AISession[]
   autoCheckUpdates?: boolean
   skippedUpdateVersion?: string
+  queryTimeoutMinutes?: number
 }
 
 const Store = ('default' in StoreModule ? StoreModule.default : StoreModule) as typeof StoreModule
 const store = new Store<AppStore>()
 const streamControllers = new Map<string, AbortController>()
+const approvedTextFilePaths = new Set<string>()
+const DEFAULT_QUERY_TIMEOUT_MINUTES = 15
+const MIN_QUERY_TIMEOUT_MINUTES = 1
+const MAX_QUERY_TIMEOUT_MINUTES = 120
 const GITHUB_PROJECT_URL = 'https://github.com/vhukze/DataDjinn'
-const GITHUB_RELEASES_API = `${GITHUB_PROJECT_URL}/releases/latest`.replace('github.com', 'api.github.com/repos')
+const GITHUB_RELEASES_API = `${GITHUB_PROJECT_URL}/releases/latest`.replace(
+  'github.com',
+  'api.github.com/repos'
+)
 const appUpdateMode = process.env.PORTABLE_EXECUTABLE_DIR ? 'portable' : 'installer'
 let latestPortableUpdate: UpdateInfo | null = null
 let installerUpdateDownloaded = false
 let isQuittingForUpdate = false
-let isRelaunching = false
 let lastInstallerUpdateInfo: UpdateInfo | null = null
 let mainWindowRef: BrowserWindow | null = null
 let splashWindowRef: BrowserWindow | null = null
@@ -101,7 +108,12 @@ const closeSplashWindow = (): void => {
 }
 
 const showMainWindowIfReady = (): void => {
-  if (!backendStartupCompleted || !rendererStartupReady || !mainWindowRef || mainWindowRef.isDestroyed()) {
+  if (
+    !backendStartupCompleted ||
+    !rendererStartupReady ||
+    !mainWindowRef ||
+    mainWindowRef.isDestroyed()
+  ) {
     return
   }
 
@@ -126,9 +138,65 @@ const showMainWindowForStartupFailure = (): void => {
 
 const normalizeVersion = (version: string): string => version.trim().replace(/^v/i, '')
 
+const normalizeQueryTimeoutMinutes = (value: unknown): number => {
+  const minutes = Number(value)
+  return Number.isInteger(minutes) &&
+    minutes >= MIN_QUERY_TIMEOUT_MINUTES &&
+    minutes <= MAX_QUERY_TIMEOUT_MINUTES
+    ? minutes
+    : DEFAULT_QUERY_TIMEOUT_MINUTES
+}
+
+const getQueryTimeoutMinutes = (): number =>
+  normalizeQueryTimeoutMinutes(store.get('queryTimeoutMinutes'))
+
+const backendRequestHeaders = (): Record<string, string> => ({
+  ...backendManager.getRequestHeaders(),
+  'X-DataDjinn-Query-Timeout-Seconds': String(getQueryTimeoutMinutes() * 60)
+})
+
+const authorizeTextFilePath = (filePath: string): string => {
+  const normalizedPath = resolve(filePath)
+  approvedTextFilePaths.add(normalizedPath)
+  return normalizedPath
+}
+
+const requireAuthorizedTextFilePath = (filePath: string): string => {
+  const normalizedPath = resolve(filePath)
+  if (!approvedTextFilePaths.has(normalizedPath) && !process.env.DATADJINN_TEST_USER_DATA_DIR) {
+    throw new Error('文件未通过当前操作的选择授权')
+  }
+  return normalizedPath
+}
+
+const ensureMainRenderer = (sender: Electron.WebContents): void => {
+  if (!mainWindowRef || mainWindowRef.isDestroyed() || sender !== mainWindowRef.webContents) {
+    throw new Error('拒绝来自未知窗口的请求')
+  }
+}
+
+const ensureApiPath = (path: string): string => {
+  if (!path.startsWith('/') || path.startsWith('//')) {
+    throw new Error('无效的后端 API 路径')
+  }
+  return path
+}
+
+const openSafeExternalUrl = async (rawUrl: string): Promise<void> => {
+  const url = new URL(rawUrl)
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    throw new Error('仅允许打开 HTTP 或 HTTPS 链接')
+  }
+  await shell.openExternal(url.toString())
+}
+
 const compareVersion = (left: string, right: string): number => {
-  const leftParts = normalizeVersion(left).split('.').map((part) => Number.parseInt(part, 10) || 0)
-  const rightParts = normalizeVersion(right).split('.').map((part) => Number.parseInt(part, 10) || 0)
+  const leftParts = normalizeVersion(left)
+    .split('.')
+    .map((part) => Number.parseInt(part, 10) || 0)
+  const rightParts = normalizeVersion(right)
+    .split('.')
+    .map((part) => Number.parseInt(part, 10) || 0)
   const length = Math.max(leftParts.length, rightParts.length)
 
   for (let index = 0; index < length; index += 1) {
@@ -150,7 +218,7 @@ const fetchLatestRelease = async (): Promise<GitHubRelease> => {
     throw new Error(`检查更新失败：HTTP ${response.status}`)
   }
 
-  return await response.json() as GitHubRelease
+  return (await response.json()) as GitHubRelease
 }
 
 const releaseToUpdateInfo = (release: GitHubRelease): UpdateInfo => {
@@ -192,8 +260,13 @@ const isBackendNetworkError = (error: unknown): boolean => {
   }
 
   const message = error instanceof Error ? error.message : String(error ?? '')
-  return /fetch failed|ECONNREFUSED|ECONNRESET|UND_ERR_SOCKET|socket hang up|terminated/i.test(message)
+  return /fetch failed|ECONNREFUSED|ECONNRESET|UND_ERR_SOCKET|socket hang up|terminated/i.test(
+    message
+  )
 }
+
+const isRequestAbortError = (error: unknown): boolean =>
+  error instanceof Error && error.name === 'AbortError'
 
 const ensureBackendForRequest = async (): Promise<string> => {
   const backendStatus = await backendManager.ensureOnline()
@@ -212,7 +285,7 @@ const recoverBackendAfterRequestError = (error: unknown): void => {
 }
 
 const downloadPortableUpdate = async (): Promise<{ filePath: string }> => {
-  const updateInfo = latestPortableUpdate ?? await checkPortableUpdate()
+  const updateInfo = latestPortableUpdate ?? (await checkPortableUpdate())
 
   if (!updateInfo.available || !updateInfo.zipUrl || !updateInfo.latestVersion) {
     throw new Error('暂无可下载的绿色版更新')
@@ -335,7 +408,7 @@ function createWindow(): void {
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+    void openSafeExternalUrl(details.url).catch(() => undefined)
     return { action: 'deny' }
   })
 
@@ -367,6 +440,7 @@ function createSplashWindow(): void {
     closable: false,
     skipTaskbar: true,
     alwaysOnTop: true,
+    hasShadow: false,
     center: true,
     backgroundColor: '#00000000',
     icon,
@@ -392,8 +466,9 @@ function createSplashWindow(): void {
     join(process.resourcesPath, 'icon.svg')
   ]
   const splashLogoMarkup = (() => {
-    const candidate = [...splashLogoCandidates, ...fallbackLogoCandidates]
-      .find((item) => existsSync(item))
+    const candidate = [...splashLogoCandidates, ...fallbackLogoCandidates].find((item) =>
+      existsSync(item)
+    )
     try {
       if (!candidate) {
         throw new Error('splash logo not found')
@@ -427,7 +502,8 @@ function createSplashWindow(): void {
         }
         .card {
           position: relative;
-          width: 420px;
+          box-sizing: border-box;
+          width: calc(100% - 24px);
           padding: 34px 34px 28px;
           display: flex;
           flex-direction: column;
@@ -438,8 +514,7 @@ function createSplashWindow(): void {
           background:
             radial-gradient(circle at top right, rgba(80, 163, 255, 0.16), transparent 32%),
             linear-gradient(180deg, rgba(255,255,255,0.96), rgba(248,250,252,0.94));
-          box-shadow: 0 28px 70px rgba(15, 23, 42, 0.22);
-          border: 1px solid rgba(148, 163, 184, 0.18);
+          border: 0;
           animation: splashCardFloat 6.8s ease-in-out infinite;
         }
         .card::before {
@@ -536,8 +611,6 @@ function createSplashWindow(): void {
             background:
               radial-gradient(circle at top right, rgba(80, 163, 255, 0.18), transparent 34%),
               linear-gradient(180deg, rgba(42,46,54,0.96), rgba(31,35,41,0.96));
-            border-color: rgba(210,218,230,0.12);
-            box-shadow: 0 28px 70px rgba(0, 0, 0, 0.38);
           }
           .eyebrow {
             color: #c8d0da;
@@ -566,7 +639,10 @@ function createSplashWindow(): void {
 
   splashWindow.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(splashHtml)}`)
   splashWindow.once('ready-to-show', () => {
-    if (splashDismissed || (mainWindowRef && !mainWindowRef.isDestroyed() && mainWindowRef.isVisible())) {
+    if (
+      splashDismissed ||
+      (mainWindowRef && !mainWindowRef.isDestroyed() && mainWindowRef.isVisible())
+    ) {
       splashWindow.destroy()
       return
     }
@@ -576,7 +652,12 @@ function createSplashWindow(): void {
 
 async function finishStartupAndShowMainWindow(): Promise<void> {
   try {
-    await backendManager.start()
+    const startupStatus = await backendManager.start()
+    if (startupStatus.state !== 'online') {
+      rendererStartupReady = true
+      showMainWindowForStartupFailure()
+      return
+    }
     backendStartupCompleted = true
     showMainWindowIfReady()
   } catch {
@@ -650,7 +731,10 @@ app.whenReady().then(() => {
   })
 
   ipcMain.handle('select-sqlite-file', async (event) => {
-    const window = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getFocusedWindow() ?? mainWindowRef
+    const window =
+      BrowserWindow.fromWebContents(event.sender) ??
+      BrowserWindow.getFocusedWindow() ??
+      mainWindowRef
 
     if (!window) {
       return null
@@ -737,27 +821,30 @@ app.whenReady().then(() => {
     return result.filePaths[0]
   })
 
-  ipcMain.handle('select-connection-transfer-import-file', async (_event, source?: 'datadjinn' | 'dbeaver') => {
-    const window = BrowserWindow.getFocusedWindow()
+  ipcMain.handle(
+    'select-connection-transfer-import-file',
+    async (_event, source?: 'datadjinn' | 'dbeaver') => {
+      const window = BrowserWindow.getFocusedWindow()
 
-    if (!window) {
-      return null
+      if (!window) {
+        return null
+      }
+
+      const dialogOptions = buildConnectionTransferImportDialogOptions(source)
+
+      const result = await dialog.showOpenDialog(window, {
+        title: dialogOptions.title,
+        filters: dialogOptions.filters,
+        properties: ['openFile']
+      })
+
+      if (result.canceled || result.filePaths.length === 0) {
+        return null
+      }
+
+      return authorizeTextFilePath(result.filePaths[0])
     }
-
-    const dialogOptions = buildConnectionTransferImportDialogOptions(source)
-
-    const result = await dialog.showOpenDialog(window, {
-      title: dialogOptions.title,
-      filters: dialogOptions.filters,
-      properties: ['openFile']
-    })
-
-    if (result.canceled || result.filePaths.length === 0) {
-      return null
-    }
-
-    return result.filePaths[0]
-  })
+  )
 
   ipcMain.handle('select-export-path', async (_event, format: string, defaultName?: string) => {
     const window = BrowserWindow.getFocusedWindow()
@@ -766,23 +853,24 @@ app.whenReady().then(() => {
       return null
     }
 
-    const filters: Electron.FileFilter[] = format === 'csv'
-      ? [{ name: 'CSV ??', extensions: ['csv'] }]
-      : format === 'json'
-        ? [{ name: 'JSON ??', extensions: ['json'] }]
-        : [{ name: 'SQL ??', extensions: ['sql'] }]
+    const filters: Electron.FileFilter[] =
+      format === 'csv'
+        ? [{ name: 'CSV 文件', extensions: ['csv'] }]
+        : format === 'json'
+          ? [{ name: 'JSON 文件', extensions: ['json'] }]
+          : [{ name: 'SQL 文件', extensions: ['sql'] }]
 
     const result = await dialog.showSaveDialog(window, {
-      title: '??????',
+      title: '选择导出位置',
       defaultPath: defaultName,
-      filters: [...filters, { name: '????', extensions: ['*'] }]
+      filters: [...filters, { name: '所有文件', extensions: ['*'] }]
     })
 
     if (result.canceled || !result.filePath) {
       return null
     }
 
-    return result.filePath
+    return authorizeTextFilePath(result.filePath)
   })
 
   ipcMain.handle('select-connection-transfer-export-path', async (_event, defaultName?: string) => {
@@ -793,12 +881,12 @@ app.whenReady().then(() => {
     }
 
     const result = await dialog.showSaveDialog(window, {
-      title: '????????',
+      title: '选择连接导出位置',
       defaultPath: defaultName,
       filters: [
-        { name: 'DataDjinn ????', extensions: ['ddj'] },
-        { name: 'JSON ??', extensions: ['json'] },
-        { name: '????', extensions: ['*'] }
+        { name: 'DataDjinn 连接文件', extensions: ['ddj'] },
+        { name: 'JSON 文件', extensions: ['json'] },
+        { name: '所有文件', extensions: ['*'] }
       ]
     })
 
@@ -806,19 +894,23 @@ app.whenReady().then(() => {
       return null
     }
 
-    return result.filePath
+    return authorizeTextFilePath(result.filePath)
   })
 
-  ipcMain.handle('read-text-file', async (_event, filePath: string) => {
-    return readFile(filePath, 'utf-8')
+  ipcMain.handle('read-text-file', async (event, filePath: string) => {
+    ensureMainRenderer(event.sender)
+    return readFile(requireAuthorizedTextFilePath(filePath), 'utf-8')
   })
 
-  ipcMain.handle('write-text-file', async (_event, filePath: string, content: string) => {
-    await writeFile(filePath, content, 'utf-8')
+  ipcMain.handle('write-text-file', async (event, filePath: string, content: string) => {
+    ensureMainRenderer(event.sender)
+    await writeFile(requireAuthorizedTextFilePath(filePath), content, 'utf-8')
     return true
   })
 
-  ipcMain.handle('window:minimize', (event) => BrowserWindow.fromWebContents(event.sender)?.minimize())
+  ipcMain.handle('window:minimize', (event) =>
+    BrowserWindow.fromWebContents(event.sender)?.minimize()
+  )
   ipcMain.handle('window:maximize-toggle', (event) => {
     const window = BrowserWindow.fromWebContents(event.sender)
     if (!window) {
@@ -832,22 +924,26 @@ app.whenReady().then(() => {
     return true
   })
   ipcMain.handle('window:close', (event) => BrowserWindow.fromWebContents(event.sender)?.close())
-  ipcMain.handle('app:get-info', () => ({ name: app.getName(), version: app.getVersion(), projectUrl: GITHUB_PROJECT_URL }))
+  ipcMain.handle('app:get-info', () => ({
+    name: app.getName(),
+    version: app.getVersion(),
+    projectUrl: GITHUB_PROJECT_URL
+  }))
   ipcMain.handle('app:open-project-home', async () => {
-    await shell.openExternal(GITHUB_PROJECT_URL)
+    await openSafeExternalUrl(GITHUB_PROJECT_URL)
   })
   ipcMain.on('app:renderer-ready', () => {
     rendererStartupReady = true
     showMainWindowIfReady()
   })
-  ipcMain.handle('app:relaunch', async () => {
-    isRelaunching = true
-    await backendManager.stop()
-    app.relaunch()
-    app.exit(0)
-  })
   ipcMain.handle('backend:get-status', () => backendManager.getStatus())
   ipcMain.handle('backend:restart', () => backendManager.restart())
+  ipcMain.handle('query-settings:get', () => ({ timeoutMinutes: getQueryTimeoutMinutes() }))
+  ipcMain.handle('query-settings:set', (_, timeoutMinutes: number) => {
+    const nextTimeoutMinutes = normalizeQueryTimeoutMinutes(timeoutMinutes)
+    store.set('queryTimeoutMinutes', nextTimeoutMinutes)
+    return { timeoutMinutes: nextTimeoutMinutes }
+  })
   ipcMain.handle('ai-config:get', () => store.get('aiConfig') ?? null)
   ipcMain.handle('ai-config:set', (_, config: AIConfig) => {
     store.set('aiConfig', config)
@@ -856,12 +952,20 @@ app.whenReady().then(() => {
   ipcMain.handle('ai-configs:get', () => store.get('aiConfigs') ?? [])
   ipcMain.handle('ai-configs:set', (_, configs: AIConfigItem[]) => {
     const enabledId = configs.find((config) => config.enabled)?.id
-    const nextConfigs = configs.map((config) => ({ ...config, enabled: Boolean(enabledId && config.id === enabledId) }))
+    const nextConfigs = configs.map((config) => ({
+      ...config,
+      enabled: Boolean(enabledId && config.id === enabledId)
+    }))
     store.set('aiConfigs', nextConfigs)
     const activeConfig = nextConfigs.find((config) => config.enabled)
     if (activeConfig) {
-      const { id: _id, name: _name, enabled: _enabled, ...legacyConfig } = activeConfig
-      store.set('aiConfig', legacyConfig)
+      store.set('aiConfig', {
+        provider: activeConfig.provider,
+        base_url: activeConfig.base_url,
+        api_key: activeConfig.api_key,
+        model: activeConfig.model,
+        max_context_tokens: activeConfig.max_context_tokens
+      })
     } else {
       store.delete('aiConfig')
     }
@@ -872,50 +976,62 @@ app.whenReady().then(() => {
     store.set('aiSessions', sessions)
     return sessions
   })
-  ipcMain.handle('api:stream', async (event, streamId: string, path: string, options?: { method?: string; headers?: Record<string, string>; body?: string }) => {
-    const sender = webContents.fromId(event.sender.id)
-    const controller = new AbortController()
-    streamControllers.set(streamId, controller)
+  ipcMain.handle(
+    'api:stream',
+    async (
+      event,
+      streamId: string,
+      path: string,
+      options?: { method?: string; headers?: Record<string, string>; body?: string }
+    ) => {
+      const sender = webContents.fromId(event.sender.id)
+      const controller = new AbortController()
+      streamControllers.set(streamId, controller)
 
-    try {
-      const apiBaseUrl = await ensureBackendForRequest()
-      const response = await fetch(`${apiBaseUrl}${path}`, {
-        method: options?.method,
-        headers: {
-          'Content-Type': 'application/json',
-          ...options?.headers
-        },
-        body: options?.body,
-        signal: controller.signal
-      })
+      try {
+        const apiBaseUrl = await ensureBackendForRequest()
+        const response = await fetch(`${apiBaseUrl}${ensureApiPath(path)}`, {
+          method: options?.method,
+          headers: {
+            'Content-Type': 'application/json',
+            ...options?.headers,
+            ...backendRequestHeaders()
+          },
+          body: options?.body,
+          signal: controller.signal
+        })
 
-      if (!response.ok || !response.body) {
-        const text = await response.text()
-        throw new Error(text || `HTTP ${response.status}`)
-      }
-
-      const reader = response.body.getReader()
-      const decoder = new TextDecoder()
-
-      while (true) {
-        const { value, done } = await reader.read()
-        if (done) {
-          break
+        if (!response.ok || !response.body) {
+          const text = await response.text()
+          throw new Error(text || `HTTP ${response.status}`)
         }
-        sender?.send('api:stream-chunk', streamId, decoder.decode(value, { stream: true }))
+
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+
+        while (true) {
+          const { value, done } = await reader.read()
+          if (done) {
+            break
+          }
+          sender?.send('api:stream-chunk', streamId, decoder.decode(value, { stream: true }))
+        }
+        const tail = decoder.decode()
+        if (tail) {
+          sender?.send('api:stream-chunk', streamId, tail)
+        }
+      } catch (error) {
+        if (controller.signal.aborted || isRequestAbortError(error)) {
+          return
+        }
+        recoverBackendAfterRequestError(error)
+        throw error
+      } finally {
+        streamControllers.delete(streamId)
+        sender?.send('api:stream-end', streamId)
       }
-      const tail = decoder.decode()
-      if (tail) {
-        sender?.send('api:stream-chunk', streamId, tail)
-      }
-    } catch (error) {
-      recoverBackendAfterRequestError(error)
-      throw error
-    } finally {
-      streamControllers.delete(streamId)
-      sender?.send('api:stream-end', streamId)
     }
-  })
+  )
 
   ipcMain.handle('api:stream-cancel', (_, streamId: string) => {
     streamControllers.get(streamId)?.abort()
@@ -941,7 +1057,10 @@ app.whenReady().then(() => {
   ipcMain.handle('update:check', async () => {
     if (appUpdateMode === 'portable') {
       const updateInfo = await checkPortableUpdate()
-      sendUpdateEvent(updateInfo.available ? 'update:available' : 'update:not-available', updateInfo)
+      sendUpdateEvent(
+        updateInfo.available ? 'update:available' : 'update:not-available',
+        updateInfo
+      )
       return updateInfo
     }
 
@@ -952,8 +1071,13 @@ app.whenReady().then(() => {
       available: result ? compareVersion(result.updateInfo.version, app.getVersion()) > 0 : false,
       mode: 'installer',
       releaseName: result?.updateInfo.releaseName ?? undefined,
-      releaseNotes: typeof result?.updateInfo.releaseNotes === 'string' ? result.updateInfo.releaseNotes : undefined,
-      releaseUrl: result?.updateInfo.version ? `https://github.com/vhukze/DataDjinn/releases/tag/v${result.updateInfo.version}` : undefined,
+      releaseNotes:
+        typeof result?.updateInfo.releaseNotes === 'string'
+          ? result.updateInfo.releaseNotes
+          : undefined,
+      releaseUrl: result?.updateInfo.version
+        ? `https://github.com/vhukze/DataDjinn/releases/tag/v${result.updateInfo.version}`
+        : undefined,
       installerDownloaded: installerUpdateDownloaded
     } satisfies UpdateInfo
     lastInstallerUpdateInfo = nextInfo.available ? nextInfo : null
@@ -987,40 +1111,48 @@ app.whenReady().then(() => {
   })
 
   ipcMain.handle('update:open-release', async (_, url?: string) => {
-    await shell.openExternal(url || 'https://github.com/vhukze/DataDjinn/releases')
+    await openSafeExternalUrl(url || 'https://github.com/vhukze/DataDjinn/releases')
   })
 
-  ipcMain.handle('api:request', async (_, path: string, options?: { method?: string; headers?: Record<string, string>; body?: string }) => {
-    try {
-      const apiBaseUrl = await ensureBackendForRequest()
-      const response = await fetch(`${apiBaseUrl}${path}`, {
-        method: options?.method,
-        headers: {
-          'Content-Type': 'application/json',
-          ...options?.headers
-        },
-        body: options?.body
-      })
-
-      const text = await response.text()
-      let data: any = null
-
+  ipcMain.handle(
+    'api:request',
+    async (
+      _,
+      path: string,
+      options?: { method?: string; headers?: Record<string, string>; body?: string }
+    ) => {
       try {
-        data = text ? JSON.parse(text) : null
-      } catch {
-        data = null
-      }
+        const apiBaseUrl = await ensureBackendForRequest()
+        const response = await fetch(`${apiBaseUrl}${ensureApiPath(path)}`, {
+          method: options?.method,
+          headers: {
+            'Content-Type': 'application/json',
+            ...options?.headers,
+            ...backendRequestHeaders()
+          },
+          body: options?.body
+        })
 
-      if (!response.ok) {
-        throw new Error(data?.detail ?? (text || `HTTP ${response.status}`))
-      }
+        const text = await response.text()
+        let data: { detail?: string } | null = null
 
-      return data
-    } catch (error) {
-      recoverBackendAfterRequestError(error)
-      throw error
+        try {
+          data = text ? (JSON.parse(text) as { detail?: string }) : null
+        } catch {
+          data = null
+        }
+
+        if (!response.ok) {
+          throw new Error(data?.detail ?? (text || `HTTP ${response.status}`))
+        }
+
+        return data
+      } catch (error) {
+        recoverBackendAfterRequestError(error)
+        throw error
+      }
     }
-  })
+  )
 
   if (!skipSplashWindow) {
     createSplashWindow()
@@ -1033,13 +1165,24 @@ app.whenReady().then(() => {
   if (!is.dev && (store.get('autoCheckUpdates') ?? true)) {
     setTimeout(() => {
       if (appUpdateMode === 'portable') {
-        void checkPortableUpdate().then((updateInfo) => {
-          if (updateInfo.available && normalizeVersion(updateInfo.latestVersion ?? '') !== store.get('skippedUpdateVersion')) {
-            sendUpdateEvent('update:available', updateInfo)
-          }
-        }).catch((error) => sendUpdateEvent('update:error', error instanceof Error ? error.message : '检查更新失败'))
+        void checkPortableUpdate()
+          .then((updateInfo) => {
+            if (
+              updateInfo.available &&
+              normalizeVersion(updateInfo.latestVersion ?? '') !== store.get('skippedUpdateVersion')
+            ) {
+              sendUpdateEvent('update:available', updateInfo)
+            }
+          })
+          .catch((error) =>
+            sendUpdateEvent('update:error', error instanceof Error ? error.message : '检查更新失败')
+          )
       } else {
-        void autoUpdater.checkForUpdates().catch((error) => sendUpdateEvent('update:error', error instanceof Error ? error.message : '检查更新失败'))
+        void autoUpdater
+          .checkForUpdates()
+          .catch((error) =>
+            sendUpdateEvent('update:error', error instanceof Error ? error.message : '检查更新失败')
+          )
       }
     }, 3000)
   }
@@ -1052,7 +1195,7 @@ app.whenReady().then(() => {
 })
 
 app.on('before-quit', (event) => {
-  if (isQuittingForUpdate || isRelaunching) {
+  if (isQuittingForUpdate) {
     return
   }
 

@@ -1,6 +1,6 @@
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DatabaseInfo(BaseModel):
@@ -129,8 +129,10 @@ class ObjectDdlResponse(BaseModel):
 
 
 class SequenceDetailResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
+
     name: str
-    schema: str | None = None
+    schema_name: str | None = Field(default=None, alias="schema", serialization_alias="schema")
     start_value: str | None = None
     minimum_value: str | None = None
     maximum_value: str | None = None

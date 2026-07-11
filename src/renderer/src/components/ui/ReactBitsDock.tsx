@@ -110,9 +110,13 @@ function DockItem({
   })
 
   const magnifiedScale = Math.max(1, magnification / baseItemSize)
-  const targetScale = disableMagnification
-    ? useTransform(mouseDistance, () => 1)
-    : useTransform(mouseDistance, [-distance, 0, distance], [1, magnifiedScale, 1])
+  const staticScale = useTransform(mouseDistance, () => 1)
+  const magnifiedScaleValue = useTransform(
+    mouseDistance,
+    [-distance, 0, distance],
+    [1, magnifiedScale, 1]
+  )
+  const targetScale = disableMagnification ? staticScale : magnifiedScaleValue
   const scale = useSpring(targetScale, spring)
 
   return (
@@ -131,10 +135,13 @@ function DockItem({
     >
       {Children.map(children, (child) =>
         React.isValidElement(child)
-          ? cloneElement(child as React.ReactElement<{ active?: boolean; isHovered?: MotionValue<number> }>, {
-              active,
-              isHovered
-            })
+          ? cloneElement(
+              child as React.ReactElement<{ active?: boolean; isHovered?: MotionValue<number> }>,
+              {
+                active,
+                isHovered
+              }
+            )
           : child
       )}
     </motion.button>

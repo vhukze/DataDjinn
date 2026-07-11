@@ -84,4 +84,10 @@ if __name__ == "__main__":
     port = int(os.environ.get("DATADJINN_BACKEND_PORT", "8000"))
     reload = os.environ.get("DATADJINN_BACKEND_RELOAD", "0") == "1"
     _start_parent_watchdog()
-    uvicorn.run(app if not reload else "app.main:app", host="127.0.0.1", port=port, reload=reload)
+    uvicorn.run(
+        app if not reload else "app.main:app",
+        host="127.0.0.1",
+        port=port,
+        reload=reload,
+        reload_dirs=[str(BACKEND_DIR / "app")] if reload else None,
+    )

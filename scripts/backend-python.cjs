@@ -13,12 +13,13 @@ const candidates = [
   'python'
 ].filter(Boolean)
 
-const command = candidates.find((candidate) => {
-  if (candidate.includes('\\') || candidate.includes('/')) {
-    return existsSync(candidate)
-  }
-  return true
-}) ?? candidates[0]
+const command =
+  candidates.find((candidate) => {
+    if (candidate.includes('\\') || candidate.includes('/')) {
+      return existsSync(candidate)
+    }
+    return true
+  }) ?? candidates[0]
 
 if (!command) {
   console.error('No Python executable available for backend build.')

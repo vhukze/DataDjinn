@@ -14,17 +14,7 @@ import {
   SaveOutlined,
   SearchOutlined
 } from '@ant-design/icons'
-import {
-  Alert,
-  Button,
-  Flex,
-  Input,
-  InputNumber,
-  Select,
-  Space,
-  Tag,
-  Typography
-} from 'antd'
+import { Alert, Button, Flex, Input, InputNumber, Select, Space, Tag, Typography } from 'antd'
 import type React from 'react'
 import { useLayoutEffect, useRef } from 'react'
 import { ResultTableHeader, WhereClauseInput } from './table-region'
@@ -45,9 +35,21 @@ type EditableCellProps = {
   editable: boolean
   onCellDragEnter: () => void
   onPrepareContextSelection: (tabKey: string, cellKey: string) => string[]
-  onOpenContextMenu: (tabKey: string, cellKey: string, clientX: number, clientY: number, selection: string[]) => void
+  onOpenContextMenu: (
+    tabKey: string,
+    cellKey: string,
+    clientX: number,
+    clientY: number,
+    selection: string[]
+  ) => void
   onStartCellSelection: (tabKey: string, rowKey: string, column: string) => void
-  onOpenEditor: (tabKey: string, rowKey: string, column: string, host: HTMLElement, value: unknown) => void
+  onOpenEditor: (
+    tabKey: string,
+    rowKey: string,
+    column: string,
+    host: HTMLElement,
+    value: unknown
+  ) => void
   displayContent?: React.ReactNode
 }
 
@@ -150,7 +152,8 @@ export function ResultStatusBar({
   onPointerClearSelection
 }: ResultStatusProps): React.ReactNode {
   const totalRows = tab.result?.total_count ?? tab.result?.row_count
-  const showPager = tab.kind !== 'table-list' && tab.resultKind !== 'command' && tab.resultKind !== 'error'
+  const showPager =
+    tab.kind !== 'table-list' && tab.resultKind !== 'command' && tab.resultKind !== 'error'
   const rowText = tab.result
     ? tab.kind === 'preview'
       ? `总行数 ${totalRows ?? 0} 行`
@@ -173,20 +176,57 @@ export function ResultStatusBar({
       }}
     >
       <Space wrap className="result-status-left">
-        <Tag className="result-status-pill result-status-kind-pill" color={tab.kind === 'query' ? 'blue' : tab.kind === 'redis-browser' ? 'red' : tab.kind === 'table-list' ? 'gold' : 'green'}>
-          {tab.kind === 'query' ? 'SQL 查询' : tab.kind === 'redis-browser' ? 'Redis 浏览' : tab.kind === 'table-list' ? '表列表' : '表预览'}
+        <Tag
+          className="result-status-pill result-status-kind-pill"
+          color={
+            tab.kind === 'query'
+              ? 'blue'
+              : tab.kind === 'redis-browser'
+                ? 'red'
+                : tab.kind === 'table-list'
+                  ? 'gold'
+                  : 'green'
+          }
+        >
+          {tab.kind === 'query'
+            ? 'SQL 查询'
+            : tab.kind === 'redis-browser'
+              ? 'Redis 浏览'
+              : tab.kind === 'table-list'
+                ? '表列表'
+                : '表预览'}
         </Tag>
         {connection && <Tag className="result-status-pill">{connection.name}</Tag>}
-        {tab.kind === 'redis-browser' && tab.databaseName && <Tag className="result-status-pill">{tab.databaseName}</Tag>}
-        {tab.kind === 'table-list' && (tab.databaseName || tab.pgDatabaseName) && (
-          <Tag className="result-status-pill">{isSchemaScopedType(connection?.database_type) ? [tab.pgDatabaseName, tab.databaseName].filter(Boolean).join('.') : (tab.databaseName || tab.pgDatabaseName)}</Tag>
+        {tab.kind === 'redis-browser' && tab.databaseName && (
+          <Tag className="result-status-pill">{tab.databaseName}</Tag>
         )}
-        {tab.tableName && tab.kind !== 'redis-browser' && <Tag className="result-status-pill">{tab.tableName}</Tag>}
-        <Typography.Text type="secondary" className="result-status-summary">{rowText}</Typography.Text>
-        {tab.result?.limited && <Tag className="result-status-pill result-status-warning-pill" color="warning">已截断</Tag>}
-        {pendingChanges > 0 && <Tag className="result-status-pill result-status-warning-pill" color="orange">{pendingChanges} 项未提交</Tag>}
+        {tab.kind === 'table-list' && (tab.databaseName || tab.pgDatabaseName) && (
+          <Tag className="result-status-pill">
+            {isSchemaScopedType(connection?.database_type)
+              ? [tab.pgDatabaseName, tab.databaseName].filter(Boolean).join('.')
+              : tab.databaseName || tab.pgDatabaseName}
+          </Tag>
+        )}
+        {tab.tableName && tab.kind !== 'redis-browser' && (
+          <Tag className="result-status-pill">{tab.tableName}</Tag>
+        )}
+        <Typography.Text type="secondary" className="result-status-summary">
+          {rowText}
+        </Typography.Text>
+        {tab.result?.limited && (
+          <Tag className="result-status-pill result-status-warning-pill" color="warning">
+            已截断
+          </Tag>
+        )}
+        {pendingChanges > 0 && (
+          <Tag className="result-status-pill result-status-warning-pill" color="orange">
+            {pendingChanges} 项未提交
+          </Tag>
+        )}
       </Space>
-      {showPager && pager ? <div className="result-status-right result-status-pager-shell">{pager}</div> : null}
+      {showPager && pager ? (
+        <div className="result-status-right result-status-pager-shell">{pager}</div>
+      ) : null}
     </div>
   )
 }
@@ -203,7 +243,21 @@ export function QueryExecutionStatusCard({
   if (tab.resultKind === 'command') {
     return (
       <div className="query-execution-card success">
-        <Button type="text" size="small" icon={<CloseOutlined />} className="query-execution-close" aria-label="关闭" onClick={() => onClose({ resultKind: undefined, commandMessage: undefined, commandAffectedRows: undefined, error: undefined })} />
+        <Button
+          type="text"
+          size="small"
+          icon={<CloseOutlined />}
+          className="query-execution-close"
+          aria-label="关闭"
+          onClick={() =>
+            onClose({
+              resultKind: undefined,
+              commandMessage: undefined,
+              commandAffectedRows: undefined,
+              error: undefined
+            })
+          }
+        />
         <CheckCircleOutlined />
         <div className="query-execution-card-body">
           <Typography.Text strong>{tab.commandMessage || '执行成功'}</Typography.Text>
@@ -218,7 +272,14 @@ export function QueryExecutionStatusCard({
   if (tab.resultKind === 'error') {
     return (
       <div className="query-execution-card error">
-        <Button type="text" size="small" icon={<CloseOutlined />} className="query-execution-close" aria-label="关闭" onClick={() => onClose({ resultKind: undefined, error: undefined })} />
+        <Button
+          type="text"
+          size="small"
+          icon={<CloseOutlined />}
+          className="query-execution-close"
+          aria-label="关闭"
+          onClick={() => onClose({ resultKind: undefined, error: undefined })}
+        />
         <CloseCircleOutlined />
         <div className="query-execution-card-body">
           <Typography.Text>{tab.error || '未知错误'}</Typography.Text>
@@ -300,7 +361,9 @@ export function ResultPager({
 }: ResultPagerProps): React.ReactNode {
   const limit = tab.limit ?? (tab.kind === 'preview' ? previewDefaultLimit : queryDefaultLimit)
   const page = tab.page ?? 1
-  const totalPages = tab.result?.total_count ? Math.max(1, Math.ceil(tab.result.total_count / limit)) : undefined
+  const totalPages = tab.result?.total_count
+    ? Math.max(1, Math.ceil(tab.result.total_count / limit))
+    : undefined
   const hasNext = totalPages ? page < totalPages : !!tab.result?.limited
   const showPageSearch = tab.kind === 'query'
 
@@ -327,8 +390,26 @@ export function ResultPager({
   }
   return (
     <Space size={4} className="result-pager">
-      <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<DoubleLeftOutlined />} title="首页" aria-label="首页" disabled={tab.loading || page <= 1} onClick={() => onChangePage(1)} />
-      <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<LeftOutlined />} title="上一页" aria-label="上一页" disabled={tab.loading || page <= 1} onClick={() => onChangePage(page - 1)} />
+      <Button
+        className="table-toolbar-icon-btn"
+        size="small"
+        type="text"
+        icon={<DoubleLeftOutlined />}
+        title="首页"
+        aria-label="首页"
+        disabled={tab.loading || page <= 1}
+        onClick={() => onChangePage(1)}
+      />
+      <Button
+        className="table-toolbar-icon-btn"
+        size="small"
+        type="text"
+        icon={<LeftOutlined />}
+        title="上一页"
+        aria-label="上一页"
+        disabled={tab.loading || page <= 1}
+        onClick={() => onChangePage(page - 1)}
+      />
       <Input
         size="small"
         key={`${tab.key}:${page}:${totalPages ?? 'open'}`}
@@ -344,8 +425,26 @@ export function ResultPager({
           event.currentTarget.value = String(page)
         }}
       />
-      <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<RightOutlined />} title="下一页" aria-label="下一页" disabled={tab.loading || !hasNext} onClick={() => onChangePage(page + 1)} />
-      <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<DoubleRightOutlined />} title="末页" aria-label="末页" disabled={tab.loading || !totalPages || page >= totalPages} onClick={() => totalPages && onChangePage(totalPages)} />
+      <Button
+        className="table-toolbar-icon-btn"
+        size="small"
+        type="text"
+        icon={<RightOutlined />}
+        title="下一页"
+        aria-label="下一页"
+        disabled={tab.loading || !hasNext}
+        onClick={() => onChangePage(page + 1)}
+      />
+      <Button
+        className="table-toolbar-icon-btn"
+        size="small"
+        type="text"
+        icon={<DoubleRightOutlined />}
+        title="末页"
+        aria-label="末页"
+        disabled={tab.loading || !totalPages || page >= totalPages}
+        onClick={() => totalPages && onChangePage(totalPages)}
+      />
       <Select
         size="small"
         variant="borderless"
@@ -362,7 +461,11 @@ export function ResultPager({
           icon={<SearchOutlined />}
           title="页内搜索"
           aria-label="页内搜索"
-          className={searchState.query.trim() || searchVisible ? 'table-toolbar-icon-btn table-toolbar-toggle is-active' : 'table-toolbar-icon-btn table-toolbar-toggle'}
+          className={
+            searchState.query.trim() || searchVisible
+              ? 'table-toolbar-icon-btn table-toolbar-toggle is-active'
+              : 'table-toolbar-icon-btn table-toolbar-toggle'
+          }
           onMouseDown={handleSearchMouseDown}
           onClick={handleSearchClick}
         />
@@ -424,7 +527,12 @@ export function ResultTableToolbar({
     return null
   }
 
-  const showPreviewActions = tab.kind === 'preview' && tab.connectionId && tab.tableName && connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis'
+  const showPreviewActions =
+    tab.kind === 'preview' &&
+    tab.connectionId &&
+    tab.tableName &&
+    connection?.database_type !== 'mongodb' &&
+    connection?.database_type !== 'redis'
   const showRedisRefresh = tab.kind === 'redis-browser' && tab.connectionId && tab.databaseName
   const showPreviewSearch = tab.kind === 'preview' || tab.kind === 'redis-browser'
   const showPreviewDdl = Boolean(tab.kind === 'preview' && tab.connectionId && tab.tableName)
@@ -440,72 +548,136 @@ export function ResultTableToolbar({
   const handleToolbarButtonMouseDown = (event: React.MouseEvent<HTMLElement>): void => {
     event.stopPropagation()
   }
-  const leftActions = showRedisRefresh || showPreviewActions
-    ? (
-        <Space size={4} className="table-data-actions">
-          {showRedisRefresh && (
-            <>
-              <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<ReloadOutlined />} title="刷新" aria-label="刷新" loading={tab.loading} onMouseDown={handleToolbarButtonMouseDown} onClick={() => onPreviewRedisRefresh(tab)} />
-              <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<PlusOutlined />} title="新增一行" aria-label="新增一行" onMouseDown={handleToolbarButtonMouseDown} onClick={() => onAddRedisRow(tab)} />
-              <Button className={`table-toolbar-icon-btn${redisPendingChanges > 0 ? ' is-pending-save' : ''}`} type="text" size="small" icon={<SaveOutlined />} title="提交" aria-label="提交" disabled={redisPendingChanges === 0} loading={tab.loading} onMouseDown={handleToolbarButtonMouseDown} onClick={() => onSubmitRedisChanges(tab)} />
-            </>
-          )}
-          {showPreviewActions && (
-            <>
-              <Button
-                className="table-toolbar-icon-btn"
-                size="small"
-                type="text"
-                icon={<ReloadOutlined />}
-                title="刷新"
-                aria-label="刷新"
-                loading={tab.loading}
-                onMouseDownCapture={() => {
-                  onBeforePreviewRefresh(tab.key)
-                }}
-                onMouseDown={(event) => {
-                  event.stopPropagation()
-                  onDiscardInlineEditor(tab.key)
-                }}
-                onClick={() => onPreviewTableRefresh(tab)}
-              />
-              <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<PlusOutlined />} title="新增行" aria-label="新增行" onMouseDown={handleToolbarButtonMouseDown} onClick={() => onAddPreviewRow(tab)} />
-              <Button className="table-toolbar-icon-btn" size="small" type="text" icon={<MinusOutlined />} title="删除选中行" aria-label="删除选中行" disabled={!hasSelectedRows} onMouseDown={handleToolbarButtonMouseDown} onClick={() => onMarkSelectedRowsDeleted(tab)} />
-              <Button className={`table-toolbar-icon-btn${pendingChanges > 0 ? ' is-pending-save' : ''}`} type="text" size="small" icon={<SaveOutlined />} title="提交" aria-label="提交" disabled={pendingChanges === 0} loading={tab.loading} onMouseDown={handleToolbarButtonMouseDown} onClick={() => onSubmitPreviewChanges(tab)} />
-            </>
-          )}
-        </Space>
-      )
-    : null
+  const leftActions =
+    showRedisRefresh || showPreviewActions ? (
+      <Space size={4} className="table-data-actions">
+        {showRedisRefresh && (
+          <>
+            <Button
+              className="table-toolbar-icon-btn"
+              size="small"
+              type="text"
+              icon={<ReloadOutlined />}
+              title="刷新"
+              aria-label="刷新"
+              loading={tab.loading}
+              onMouseDown={handleToolbarButtonMouseDown}
+              onClick={() => onPreviewRedisRefresh(tab)}
+            />
+            <Button
+              className="table-toolbar-icon-btn"
+              size="small"
+              type="text"
+              icon={<PlusOutlined />}
+              title="新增一行"
+              aria-label="新增一行"
+              onMouseDown={handleToolbarButtonMouseDown}
+              onClick={() => onAddRedisRow(tab)}
+            />
+            <Button
+              className={`table-toolbar-icon-btn${redisPendingChanges > 0 ? ' is-pending-save' : ''}`}
+              type="text"
+              size="small"
+              icon={<SaveOutlined />}
+              title="提交"
+              aria-label="提交"
+              disabled={redisPendingChanges === 0}
+              loading={tab.loading}
+              onMouseDown={handleToolbarButtonMouseDown}
+              onClick={() => onSubmitRedisChanges(tab)}
+            />
+          </>
+        )}
+        {showPreviewActions && (
+          <>
+            <Button
+              className="table-toolbar-icon-btn"
+              size="small"
+              type="text"
+              icon={<ReloadOutlined />}
+              title="刷新"
+              aria-label="刷新"
+              loading={tab.loading}
+              onMouseDownCapture={() => {
+                onBeforePreviewRefresh(tab.key)
+              }}
+              onMouseDown={(event) => {
+                event.stopPropagation()
+                onDiscardInlineEditor(tab.key)
+              }}
+              onClick={() => onPreviewTableRefresh(tab)}
+            />
+            <Button
+              className="table-toolbar-icon-btn"
+              size="small"
+              type="text"
+              icon={<PlusOutlined />}
+              title="新增行"
+              aria-label="新增行"
+              onMouseDown={handleToolbarButtonMouseDown}
+              onClick={() => onAddPreviewRow(tab)}
+            />
+            <Button
+              className="table-toolbar-icon-btn"
+              size="small"
+              type="text"
+              icon={<MinusOutlined />}
+              title="删除选中行"
+              aria-label="删除选中行"
+              disabled={!hasSelectedRows}
+              onMouseDown={handleToolbarButtonMouseDown}
+              onClick={() => onMarkSelectedRowsDeleted(tab)}
+            />
+            <Button
+              className={`table-toolbar-icon-btn${pendingChanges > 0 ? ' is-pending-save' : ''}`}
+              type="text"
+              size="small"
+              icon={<SaveOutlined />}
+              title="提交"
+              aria-label="提交"
+              disabled={pendingChanges === 0}
+              loading={tab.loading}
+              onMouseDown={handleToolbarButtonMouseDown}
+              onClick={() => onSubmitPreviewChanges(tab)}
+            />
+          </>
+        )}
+      </Space>
+    ) : null
 
-  const rightActions = showPreviewSearch || showPreviewDdl ? (
-    <Space size={4} className="table-toolbar-inline-actions">
-      {showPreviewSearch && (
-        <Button
-          size="small"
-          type="text"
-          icon={<SearchOutlined />}
-          title="页内搜索"
-          aria-label="页内搜索"
-          className={searchState.query.trim() || searchVisible ? 'table-toolbar-icon-btn table-toolbar-toggle is-active' : 'table-toolbar-icon-btn table-toolbar-toggle'}
-          onMouseDown={handleSearchMouseDown}
-          onClick={handleSearchClick}
-        />
-      )}
-      {showPreviewDdl && (
-        <Button
-          size="small"
-          type="text"
-          title="查看 DDL"
-          aria-label="查看 DDL"
-          className="table-toolbar-icon-btn table-ddl-button"
-          onClick={() => onShowObjectDdl(tab)}
-        >
-          DDL
-        </Button>
-      )}
-    </Space>
-  ) : null
+  const rightActions =
+    showPreviewSearch || showPreviewDdl ? (
+      <Space size={4} className="table-toolbar-inline-actions">
+        {showPreviewSearch && (
+          <Button
+            size="small"
+            type="text"
+            icon={<SearchOutlined />}
+            title="页内搜索"
+            aria-label="页内搜索"
+            className={
+              searchState.query.trim() || searchVisible
+                ? 'table-toolbar-icon-btn table-toolbar-toggle is-active'
+                : 'table-toolbar-icon-btn table-toolbar-toggle'
+            }
+            onMouseDown={handleSearchMouseDown}
+            onClick={handleSearchClick}
+          />
+        )}
+        {showPreviewDdl && (
+          <Button
+            size="small"
+            type="text"
+            title="查看 DDL"
+            aria-label="查看 DDL"
+            className="table-toolbar-icon-btn table-ddl-button"
+            onClick={() => onShowObjectDdl(tab)}
+          >
+            DDL
+          </Button>
+        )}
+      </Space>
+    ) : null
 
   return (
     <ResultTableHeader
@@ -550,11 +722,22 @@ export function RedisBrowserPanel({
     <div className={`result-table-shell${tab.kind === 'query' ? ' query-result-table-shell' : ''}`}>
       {statusBar}
       {toolbar}
-      {tab.error && <Alert className="result-inline-alert" message={tab.error} type="error" showIcon closable onClose={() => onCloseError(tab.key)} />}
+      {tab.error && (
+        <Alert
+          className="result-inline-alert"
+          message={tab.error}
+          type="error"
+          showIcon
+          closable
+          onClose={() => onCloseError(tab.key)}
+        />
+      )}
       <div className="result-table-content redis-result-table-content">
         <div className="redis-browser-list">
           {tab.loading && <Typography.Text type="secondary">加载中...</Typography.Text>}
-          {!tab.loading && Object.values(edits).filter((edit) => !edit.deleted).length === 0 && <Typography.Text type="secondary">当前 DB 暂无 Key</Typography.Text>}
+          {!tab.loading && Object.values(edits).filter((edit) => !edit.deleted).length === 0 && (
+            <Typography.Text type="secondary">当前 DB 暂无 Key</Typography.Text>
+          )}
           {Object.values(edits).map((edit, index) => {
             if (edit.deleted) {
               return null
@@ -563,23 +746,77 @@ export function RedisBrowserPanel({
             const rowKey = edit.rowKey
             const expanded = Boolean(tab.redisExpandedValues?.[rowKey])
             return (
-              <div className={`redis-key-card${edit.state ? ' redis-key-card-dirty' : ''}`} key={rowKey}>
-                <button className="redis-expand-button" type="button" onClick={() => onToggleRedisValue(tab.key, rowKey)} aria-label={expanded ? '收起值' : '展开值'}>
+              <div
+                className={`redis-key-card${edit.state ? ' redis-key-card-dirty' : ''}`}
+                key={rowKey}
+              >
+                <button
+                  className="redis-expand-button"
+                  type="button"
+                  onClick={() => onToggleRedisValue(tab.key, rowKey)}
+                  aria-label={expanded ? '收起值' : '展开值'}
+                >
                   {expanded ? <DownOutlined /> : <RightOutlined />}
                 </button>
                 <div className="redis-key-main">
                   <Flex align="center" gap={8} wrap="wrap">
-                    <Input size="small" className="redis-key-input" value={edit.key} placeholder="Key" onChange={(event) => onUpdateRedisEdit(tab.key, rowKey, { key: event.target.value })} />
-                    <Select size="small" className="redis-type-select" value={edit.type} options={['string', 'hash', 'list', 'set', 'zset'].map((value) => ({ label: value, value }))} onChange={(value) => onUpdateRedisEdit(tab.key, rowKey, { type: value })} />
-                    <InputNumber size="small" className="redis-ttl-input" min={1} placeholder="TTL 秒" value={edit.ttl ?? null} onChange={(value) => onUpdateRedisEdit(tab.key, rowKey, { ttl: typeof value === 'number' ? value : null })} />
+                    <Input
+                      size="small"
+                      className="redis-key-input"
+                      value={edit.key}
+                      placeholder="Key"
+                      onChange={(event) =>
+                        onUpdateRedisEdit(tab.key, rowKey, { key: event.target.value })
+                      }
+                    />
+                    <Select
+                      size="small"
+                      className="redis-type-select"
+                      value={edit.type}
+                      options={['string', 'hash', 'list', 'set', 'zset'].map((value) => ({
+                        label: value,
+                        value
+                      }))}
+                      onChange={(value) => onUpdateRedisEdit(tab.key, rowKey, { type: value })}
+                    />
+                    <InputNumber
+                      size="small"
+                      className="redis-ttl-input"
+                      min={1}
+                      placeholder="TTL 秒"
+                      value={edit.ttl ?? null}
+                      onChange={(value) =>
+                        onUpdateRedisEdit(tab.key, rowKey, {
+                          ttl: typeof value === 'number' ? value : null
+                        })
+                      }
+                    />
                     {edit.state && <Tag color="orange">未提交</Tag>}
-                    {!edit.state && sourceRow.ttl !== undefined && <Tag>{redisTtlDisplay(sourceRow.ttl)}</Tag>}
+                    {!edit.state && sourceRow.ttl !== undefined && (
+                      <Tag>{redisTtlDisplay(sourceRow.ttl)}</Tag>
+                    )}
                     {sourceRow.length !== undefined && <Tag>长度 {String(sourceRow.length)}</Tag>}
                     {sourceRow.memory !== undefined && <Tag>内存 {String(sourceRow.memory)} B</Tag>}
-                    <Button className="redis-delete-button" size="small" danger type="text" icon={<DeleteOutlined />} aria-label="删除" title="删除" onClick={() => onDeleteRedisRow(tab.key, rowKey)} />
+                    <Button
+                      className="redis-delete-button"
+                      size="small"
+                      danger
+                      type="text"
+                      icon={<DeleteOutlined />}
+                      aria-label="删除"
+                      title="删除"
+                      onClick={() => onDeleteRedisRow(tab.key, rowKey)}
+                    />
                   </Flex>
                   {expanded && (
-                    <Input.TextArea className="redis-value-editor" value={edit.value} autoSize={{ minRows: 4, maxRows: 14 }} onChange={(event) => onUpdateRedisEdit(tab.key, rowKey, { value: event.target.value })} />
+                    <Input.TextArea
+                      className="redis-value-editor"
+                      value={edit.value}
+                      autoSize={{ minRows: 4, maxRows: 14 }}
+                      onChange={(event) =>
+                        onUpdateRedisEdit(tab.key, rowKey, { value: event.target.value })
+                      }
+                    />
                   )}
                 </div>
               </div>

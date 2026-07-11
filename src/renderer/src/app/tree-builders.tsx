@@ -35,23 +35,24 @@ export const buildObjectGroupNodes = (
 ): DatabaseTreeNode[] => {
   const objectTypes = DB_OBJECT_TYPES_BY_DATABASE[databaseType]
 
-  return DB_OBJECT_GROUPS
-    .filter((group) => objectTypes.includes(group.type))
-    .map((group) => ({
-      key: `object-group:${connectionId}:${pgDatabaseName ?? ''}:${databaseName ?? ''}:${group.type}`,
-      title: objectGroupTitle(group.type, databaseType),
-      icon: group.icon,
-      kind: 'object-group',
-      connectionId,
-      databaseName,
-      pgDatabaseName,
-      objectType: group.type,
-      childrenLoaded: false,
-      isLeaf: false
-    }))
+  return DB_OBJECT_GROUPS.filter((group) => objectTypes.includes(group.type)).map((group) => ({
+    key: `object-group:${connectionId}:${pgDatabaseName ?? ''}:${databaseName ?? ''}:${group.type}`,
+    title: objectGroupTitle(group.type, databaseType),
+    icon: group.icon,
+    kind: 'object-group',
+    connectionId,
+    databaseName,
+    pgDatabaseName,
+    objectType: group.type,
+    childrenLoaded: false,
+    isLeaf: false
+  }))
 }
 
-export const buildDatabaseNode = (connection: ConnectionInfo, database: DatabaseInfo): DatabaseTreeNode => ({
+export const buildDatabaseNode = (
+  connection: ConnectionInfo,
+  database: DatabaseInfo
+): DatabaseTreeNode => ({
   key: `database:${connection.connection_id}:${database.name}`,
   title: database.name,
   icon: treeIconBadge(<DatabaseOutlined />, 'database'),
@@ -66,7 +67,11 @@ export const buildDatabaseNode = (connection: ConnectionInfo, database: Database
   isLeaf: connection.database_type === 'redis'
 })
 
-export const buildPgSchemaNode = (connection: ConnectionInfo, pgDatabaseName: string, schema: DatabaseInfo): DatabaseTreeNode => ({
+export const buildPgSchemaNode = (
+  connection: ConnectionInfo,
+  pgDatabaseName: string,
+  schema: DatabaseInfo
+): DatabaseTreeNode => ({
   key: `pg-schema:${connection.connection_id}:${pgDatabaseName}:${schema.name}`,
   title: schema.name,
   icon: treeIconBadge(<ApartmentOutlined />, 'schema'),
@@ -105,7 +110,10 @@ export const buildConnectionNode = (
   }
 }
 
-export const buildFolderDropPlaceholderNode = (folderId: string, keyPrefix: string): DatabaseTreeNode => ({
+export const buildFolderDropPlaceholderNode = (
+  folderId: string,
+  keyPrefix: string
+): DatabaseTreeNode => ({
   key: `${keyPrefix}${folderId}`,
   title: '',
   kind: 'folder-drop-placeholder',
@@ -168,9 +176,15 @@ export const buildResourceTree = (
     const existingNode = existingConnectionNodes.get(connection.connection_id)
     const nextNode = buildConnectionNode(connection)
     const folderId = connectionFolderAssignments[connection.connection_id]
-    const node = existingNode && connection.is_open
-      ? { ...nextNode, folderId, children: existingNode.children, childrenLoaded: existingNode.childrenLoaded }
-      : { ...nextNode, folderId }
+    const node =
+      existingNode && connection.is_open
+        ? {
+            ...nextNode,
+            folderId,
+            children: existingNode.children,
+            childrenLoaded: existingNode.childrenLoaded
+          }
+        : { ...nextNode, folderId }
 
     if (folderId && validFolderIds.has(folderId)) {
       const items = groupedNodes.get(folderId) ?? []
@@ -203,7 +217,9 @@ export const buildResourceTree = (
       }
 
       const childNodes = groupedNodes.get(folder.id) ?? []
-      const childNodeMap = new Map(childNodes.map((node) => [node.connectionId ?? String(node.key), node]))
+      const childNodeMap = new Map(
+        childNodes.map((node) => [node.connectionId ?? String(node.key), node])
+      )
       const orderedChildIds = mergeOrderedIds(
         childNodes.map((node) => node.connectionId ?? String(node.key)),
         folderConnectionOrder[folder.id] ?? []

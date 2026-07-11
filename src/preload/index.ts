@@ -3,17 +3,28 @@ import { electronAPI } from '@electron-toolkit/preload'
 
 // Custom APIs for renderer
 const api = {
-  selectSqlFile: (): Promise<{ name: string; content: string } | null> => ipcRenderer.invoke('select-sql-file'),
+  selectSqlFile: (): Promise<{ name: string; content: string } | null> =>
+    ipcRenderer.invoke('select-sql-file'),
   selectSqliteFile: (): Promise<string | null> => ipcRenderer.invoke('select-sqlite-file'),
   selectImportFile: (): Promise<string | null> => ipcRenderer.invoke('select-import-file'),
-  selectConnectionTransferImportFile: (source?: 'datadjinn' | 'dbeaver'): Promise<string | null> => ipcRenderer.invoke('select-connection-transfer-import-file', source),
-  selectExportPath: (format: 'sql' | 'csv' | 'json', defaultName?: string): Promise<string | null> => ipcRenderer.invoke('select-export-path', format, defaultName),
-  selectConnectionTransferExportPath: (defaultName?: string): Promise<string | null> => ipcRenderer.invoke('select-connection-transfer-export-path', defaultName),
+  selectConnectionTransferImportFile: (source?: 'datadjinn' | 'dbeaver'): Promise<string | null> =>
+    ipcRenderer.invoke('select-connection-transfer-import-file', source),
+  selectExportPath: (
+    format: 'sql' | 'csv' | 'json',
+    defaultName?: string
+  ): Promise<string | null> => ipcRenderer.invoke('select-export-path', format, defaultName),
+  selectConnectionTransferExportPath: (defaultName?: string): Promise<string | null> =>
+    ipcRenderer.invoke('select-connection-transfer-export-path', defaultName),
   selectDriverFile: (): Promise<string | null> => ipcRenderer.invoke('select-driver-file'),
   selectJavaDirectory: (): Promise<string | null> => ipcRenderer.invoke('select-java-directory'),
-  readTextFile: (filePath: string): Promise<string> => ipcRenderer.invoke('read-text-file', filePath),
-  writeTextFile: (filePath: string, content: string): Promise<boolean> => ipcRenderer.invoke('write-text-file', filePath, content),
-  requestJson: (path: string, options?: { method?: string; headers?: Record<string, string>; body?: string }) => ipcRenderer.invoke('api:request', path, options),
+  readTextFile: (filePath: string): Promise<string> =>
+    ipcRenderer.invoke('read-text-file', filePath),
+  writeTextFile: (filePath: string, content: string): Promise<boolean> =>
+    ipcRenderer.invoke('write-text-file', filePath, content),
+  requestJson: (
+    path: string,
+    options?: { method?: string; headers?: Record<string, string>; body?: string }
+  ) => ipcRenderer.invoke('api:request', path, options),
   streamRequest: (
     streamId: string,
     path: string,
@@ -44,7 +55,11 @@ const api = {
         resolve()
       }
 
-      const chunkListener = (_: Electron.IpcRendererEvent, nextStreamId: string, chunk: string): void => {
+      const chunkListener = (
+        _: Electron.IpcRendererEvent,
+        nextStreamId: string,
+        chunk: string
+      ): void => {
         if (nextStreamId !== streamId || chunkError) {
           return
         }
@@ -71,7 +86,8 @@ const api = {
 
       ipcRenderer.on('api:stream-chunk', chunkListener)
       ipcRenderer.on('api:stream-end', endListener)
-      ipcRenderer.invoke('api:stream', streamId, path, options)
+      ipcRenderer
+        .invoke('api:stream', streamId, path, options)
         .then(() => {
           invokeFinished = true
           finalize()
@@ -94,7 +110,6 @@ const api = {
   getAppInfo: () => ipcRenderer.invoke('app:get-info'),
   openProjectHome: () => ipcRenderer.invoke('app:open-project-home'),
   notifyRendererReady: () => ipcRenderer.send('app:renderer-ready'),
-  relaunchApp: () => ipcRenderer.invoke('app:relaunch'),
   onUpdateAvailable: (callback: (info: unknown) => void) => {
     const listener = (_: Electron.IpcRendererEvent, info: unknown): void => callback(info)
     ipcRenderer.on('update:available', listener)
@@ -128,6 +143,9 @@ const api = {
   setAISessions: (sessions: unknown) => ipcRenderer.invoke('ai-sessions:set', sessions),
   getBackendStatus: () => ipcRenderer.invoke('backend:get-status'),
   restartBackend: () => ipcRenderer.invoke('backend:restart'),
+  getQuerySettings: () => ipcRenderer.invoke('query-settings:get'),
+  setQueryTimeoutMinutes: (timeoutMinutes: number) =>
+    ipcRenderer.invoke('query-settings:set', timeoutMinutes),
   minimizeWindow: () => ipcRenderer.invoke('window:minimize'),
   toggleMaximizeWindow: () => ipcRenderer.invoke('window:maximize-toggle'),
   closeWindow: () => ipcRenderer.invoke('window:close'),

@@ -11,8 +11,24 @@ import type { ReactNode } from 'react'
 import type { ConnectionInfo } from './connection-model'
 import type { DatabaseType } from './data-sources'
 
-export type DbObjectType = 'table' | 'view' | 'trigger' | 'procedure' | 'function' | 'sequence' | 'index'
-export type TreeNodeKind = 'folder' | 'folder-drop-placeholder' | 'connection' | 'database' | 'pg-schema' | 'object-group' | 'table' | 'db-object' | 'column'
+export type DbObjectType =
+  | 'table'
+  | 'view'
+  | 'trigger'
+  | 'procedure'
+  | 'function'
+  | 'sequence'
+  | 'index'
+export type TreeNodeKind =
+  | 'folder'
+  | 'folder-drop-placeholder'
+  | 'connection'
+  | 'database'
+  | 'pg-schema'
+  | 'object-group'
+  | 'table'
+  | 'db-object'
+  | 'column'
 
 export type ConnectionFolder = {
   id: string
@@ -49,11 +65,10 @@ export type DatabaseTreeNode = DataNode & {
   children?: DatabaseTreeNode[]
 }
 
-export const treeIconBadge = (icon: ReactNode, tone: 'database' | 'schema' | 'table' | 'view' | 'trigger' | 'routine' | 'sequence' | 'index'): ReactNode => (
-  <span className={`tree-icon-badge tree-icon-${tone}`}>
-    {icon}
-  </span>
-)
+export const treeIconBadge = (
+  icon: ReactNode,
+  tone: 'database' | 'schema' | 'table' | 'view' | 'trigger' | 'routine' | 'sequence' | 'index'
+): ReactNode => <span className={`tree-icon-badge tree-icon-${tone}`}>{icon}</span>
 
 export const DB_OBJECT_GROUPS: DbObjectGroupMeta[] = [
   { type: 'table', title: '表', icon: treeIconBadge(<TableOutlined />, 'table') },
@@ -65,7 +80,9 @@ export const DB_OBJECT_GROUPS: DbObjectGroupMeta[] = [
   { type: 'index', title: '索引', icon: treeIconBadge(<BranchesOutlined />, 'index') }
 ]
 
-export const DB_OBJECT_GROUP_BY_TYPE = Object.fromEntries(DB_OBJECT_GROUPS.map((group) => [group.type, group])) as Record<DbObjectType, DbObjectGroupMeta>
+export const DB_OBJECT_GROUP_BY_TYPE = Object.fromEntries(
+  DB_OBJECT_GROUPS.map((group) => [group.type, group])
+) as Record<DbObjectType, DbObjectGroupMeta>
 
 export const plainObjectIconByType: Record<DbObjectType, ReactNode> = {
   table: <TableOutlined />,
@@ -99,7 +116,9 @@ export const DB_OBJECT_TYPES_BY_DATABASE: Record<DatabaseType, DbObjectType[]> =
   redis: ['table']
 }
 
-export const collectConnectionNodesById = (nodes: DatabaseTreeNode[]): Map<string, DatabaseTreeNode> => {
+export const collectConnectionNodesById = (
+  nodes: DatabaseTreeNode[]
+): Map<string, DatabaseTreeNode> => {
   const map = new Map<string, DatabaseTreeNode>()
   const visit = (currentNodes: DatabaseTreeNode[]): void => {
     for (const node of currentNodes) {
@@ -160,7 +179,9 @@ export const getTreeNodeCopyName = (
     return node.databaseName
   }
   if (node.kind === 'object-group') {
-    return String(node.title ?? (node.objectType ? resolveObjectGroupTitle(node.objectType) : '对象'))
+    return String(
+      node.title ?? (node.objectType ? resolveObjectGroupTitle(node.objectType) : '对象')
+    )
   }
   return String(node.title ?? '')
 }
@@ -176,7 +197,11 @@ export const findTreeKeyPathByPredicate = (
       return nextPath
     }
     if (node.children?.length) {
-      const childPath = findTreeKeyPathByPredicate(node.children as DatabaseTreeNode[], predicate, nextPath)
+      const childPath = findTreeKeyPathByPredicate(
+        node.children as DatabaseTreeNode[],
+        predicate,
+        nextPath
+      )
       if (childPath) {
         return childPath
       }
@@ -185,7 +210,11 @@ export const findTreeKeyPathByPredicate = (
   return undefined
 }
 
-export const updateTreeNode = (nodes: DatabaseTreeNode[], key: React.Key, children: DatabaseTreeNode[]): DatabaseTreeNode[] => {
+export const updateTreeNode = (
+  nodes: DatabaseTreeNode[],
+  key: React.Key,
+  children: DatabaseTreeNode[]
+): DatabaseTreeNode[] => {
   const visit = (currentNodes: DatabaseTreeNode[]): [DatabaseTreeNode[], boolean] => {
     let changed = false
 
@@ -228,7 +257,12 @@ export const replaceConnectionNode = (
         changed = true
         const nextNode = buildConnectionNode(connection)
         return preserveChildren && connection.is_open
-          ? { ...nextNode, folderId: node.folderId, children: node.children, childrenLoaded: node.childrenLoaded }
+          ? {
+              ...nextNode,
+              folderId: node.folderId,
+              children: node.children,
+              childrenLoaded: node.childrenLoaded
+            }
           : { ...nextNode, folderId: node.folderId }
       }
 
@@ -251,7 +285,10 @@ export const replaceConnectionNode = (
   return visit(nodes)[0]
 }
 
-export const getTreeNodeKindFromKey = (node: Partial<DatabaseTreeNode>, folderDropPlaceholderKeyPrefix: string): TreeNodeKind | undefined => {
+export const getTreeNodeKindFromKey = (
+  node: Partial<DatabaseTreeNode>,
+  folderDropPlaceholderKeyPrefix: string
+): TreeNodeKind | undefined => {
   const key = String(node.key ?? '')
   if (node.kind) {
     return node.kind
@@ -277,10 +314,20 @@ export const getRelativeDropPosition = (node: DatabaseTreeNode, dropPosition: nu
 export const isTreeNodeChildrenLoaded = (node: DatabaseTreeNode): boolean =>
   Boolean(node.isLeaf || node.childrenLoaded || node.children?.length)
 
-export const isLoadableTreeNode = (node: DatabaseTreeNode, databaseType?: DatabaseType): boolean => {
+export const isLoadableTreeNode = (
+  node: DatabaseTreeNode,
+  databaseType?: DatabaseType
+): boolean => {
   if (node.kind === 'database' && node.connectionId && databaseType === 'redis') {
     return false
   }
 
-  return node.kind === 'folder' || node.kind === 'connection' || node.kind === 'database' || node.kind === 'pg-schema' || node.kind === 'object-group' || node.kind === 'table'
+  return (
+    node.kind === 'folder' ||
+    node.kind === 'connection' ||
+    node.kind === 'database' ||
+    node.kind === 'pg-schema' ||
+    node.kind === 'object-group' ||
+    node.kind === 'table'
+  )
 }

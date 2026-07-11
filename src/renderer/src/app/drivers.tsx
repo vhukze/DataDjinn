@@ -19,9 +19,12 @@ export type DriverInfo = {
   path?: string | null
 }
 
-export const isDriverDatabaseType = (value: unknown): value is DriverDatabaseType => value === 'dm' || value === 'gaussdb'
-export const isDriverType = (value: unknown): value is DriverType => value === 'jdbc' || value === 'python' || value === 'whl'
-export const isDriverSource = (value: unknown): value is DriverInfo['source'] => value === 'auto' || value === 'manual'
+export const isDriverDatabaseType = (value: unknown): value is DriverDatabaseType =>
+  value === 'dm' || value === 'gaussdb'
+export const isDriverType = (value: unknown): value is DriverType =>
+  value === 'jdbc' || value === 'python' || value === 'whl'
+export const isDriverSource = (value: unknown): value is DriverInfo['source'] =>
+  value === 'auto' || value === 'manual'
 
 export const normalizeDriverInfo = (value: unknown): DriverInfo | null => {
   if (!value || typeof value !== 'object') {
@@ -37,7 +40,8 @@ export const normalizeDriverInfo = (value: unknown): DriverInfo | null => {
     id: candidate.id,
     database_type: isDriverDatabaseType(candidate.database_type) ? candidate.database_type : 'dm',
     driver_type: isDriverType(candidate.driver_type) ? candidate.driver_type : 'jdbc',
-    name: typeof candidate.name === 'string' && candidate.name.trim() ? candidate.name : '未命名驱动',
+    name:
+      typeof candidate.name === 'string' && candidate.name.trim() ? candidate.name : '未命名驱动',
     source: isDriverSource(candidate.source) ? candidate.source : 'manual',
     enabled: candidate.enabled !== false,
     path: typeof candidate.path === 'string' && candidate.path.trim() ? candidate.path : null
