@@ -99,6 +99,21 @@ let backendStartupCompleted = false
 let rendererStartupReady = false
 const testUserDataDir = process.env.DATADJINN_TEST_USER_DATA_DIR
 const skipSplashWindow = process.env.DATADJINN_SKIP_SPLASH === '1'
+const useCiRegressionScale = Boolean(testUserDataDir && process.env.CI)
+const requestedTestWindowHeight = Number.parseInt(
+  process.env.DATADJINN_TEST_WINDOW_HEIGHT ?? '',
+  10
+)
+const testWindowHeight =
+  Number.isFinite(requestedTestWindowHeight) && requestedTestWindowHeight >= 520
+    ? requestedTestWindowHeight
+    : 980
+
+// GitHub Windows runners provide a 1024x768 virtual desktop. Apply this only in CI
+// so local regression windows always retain the user's native display scale.
+if (useCiRegressionScale) {
+  app.commandLine.appendSwitch('force-device-scale-factor', '0.7')
+}
 
 const closeSplashWindow = (): void => {
   if (splashWindowRef && !splashWindowRef.isDestroyed()) {
@@ -378,12 +393,12 @@ autoUpdater.on('error', (error) => {
 
 function createWindow(): void {
   const { width, height } = screen.getPrimaryDisplay().workAreaSize
-  const windowWidth = Math.max(1180, Math.floor(width * 0.7))
-  const windowHeight = Math.max(760, Math.floor(height * 0.7))
+  const windowWidth = testUserDataDir ? 1440 : Math.max(1180, Math.floor(width * 0.7))
+  const windowHeight = testUserDataDir ? testWindowHeight : Math.max(760, Math.floor(height * 0.7))
 
   const mainWindow = new BrowserWindow({
-    width: Math.min(windowWidth, width),
-    height: Math.min(windowHeight, height),
+    width: testUserDataDir ? windowWidth : Math.min(windowWidth, width),
+    height: testUserDataDir ? windowHeight : Math.min(windowHeight, height),
     show: false,
     frame: false,
     title: 'DataDjinn',
