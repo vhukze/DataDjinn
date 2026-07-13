@@ -133,6 +133,7 @@ export type ResultTablePanelRefs = {
   inlineCellEditorRefs: MutableRefObject<Record<string, InlineCellEditorState | undefined>>
   committedSelectedCellRangeRefs: MutableRefObject<Record<string, string[] | undefined>>
   rowDragAnchorRefs: MutableRefObject<Record<string, string | undefined>>
+  rowSelectionAnchorRefs: MutableRefObject<Record<string, string | undefined>>
   rowSelectionDraftRefs: MutableRefObject<Record<string, Key[] | undefined>>
   columnResizeRefs: MutableRefObject<Record<string, ColumnResizeState | undefined>>
 }
@@ -270,6 +271,8 @@ const ResultTablePanel = memo(
       Boolean(searchState.query.trim() || searchState.visible)
     )
     const [cellContextMenu, setCellContextMenu] = useState<CellContextMenuState | null>(null)
+    const rowDragPointerRef = useRef<{ x: number; y: number } | null>(null)
+    const rowDragAutoScrollFrameRef = useRef<number | undefined>(undefined)
 
     useEffect(() => {
       if (searchState.query.trim() || searchState.visible) {
@@ -1704,6 +1707,101 @@ const ResultTablePanel = memo(
       applyRuntimeCellRangeSelection(tab.key, nextCellKeys)
     }
 
+    const stopRowDragAutoScroll = (): void => {
+      if (rowDragAutoScrollFrameRef.current) {
+        window.cancelAnimationFrame(rowDragAutoScrollFrameRef.current)
+        rowDragAutoScrollFrameRef.current = undefined
+      }
+    }
+
+    const updateRowDragTargetFromPointer = (): void => {
+      const pointer = rowDragPointerRef.current
+      const container = refs.tableBodyRefs.current[tab.key]
+      if (!pointer || !container || !refs.rowDragAnchorRefs.current[tab.key]) {
+        return
+      }
+      const holder = container.querySelector<HTMLElement>(
+        '.ant-table-tbody-virtual-holder, .ant-table-body'
+      )
+      const rect = holder?.getBoundingClientRect()
+      const target = document.elementFromPoint(
+        rect ? Math.min(Math.max(pointer.x, rect.left + 4), rect.right - 4) : pointer.x,
+        rect ? Math.min(Math.max(pointer.y, rect.top + 4), rect.bottom - 4) : pointer.y
+      ) as HTMLElement | null
+      const rowKey = target?.closest<HTMLElement>('[data-row-key]')?.dataset.rowKey
+      if (rowKey && orderedRowIndexMap[rowKey] !== undefined) {
+        updateDragRowSelection(rowKey)
+      }
+    }
+
+    const scheduleRowDragAutoScroll = (): void => {
+      if (rowDragAutoScrollFrameRef.current) {
+        return
+      }
+      const tick = (): void => {
+        rowDragAutoScrollFrameRef.current = undefined
+        const pointer = rowDragPointerRef.current
+        const container = refs.tableBodyRefs.current[tab.key]
+        const holder = container?.querySelector<HTMLElement>(
+          '.ant-table-tbody-virtual-holder, .ant-table-body'
+        )
+        if (!pointer || !holder || !refs.rowDragAnchorRefs.current[tab.key]) {
+          return
+        }
+        const rect = holder.getBoundingClientRect()
+        const edge = 28
+        const direction = pointer.y < rect.top + edge ? -1 : pointer.y > rect.bottom - edge ? 1 : 0
+        if (!direction) {
+          updateRowDragTargetFromPointer()
+          return
+        }
+        const previousScrollTop = holder.scrollTop
+        holder.scrollTop += direction * Math.max(8, Math.round((edge - Math.abs(pointer.y - (direction < 0 ? rect.top : rect.bottom))) * 0.7))
+        const visibleRows = Array.from(holder.querySelectorAll<HTMLElement>('[data-row-key]')).filter(
+          (element) => element.dataset.rowKey && orderedRowIndexMap[element.dataset.rowKey] !== undefined
+        )
+        const edgeRowKey =
+          visibleRows[direction < 0 ? 0 : visibleRows.length - 1]?.dataset.rowKey
+        if (edgeRowKey) {
+          updateDragRowSelection(edgeRowKey)
+        } else {
+          updateRowDragTargetFromPointer()
+        }
+        if (holder.scrollTop !== previousScrollTop) {
+          rowDragAutoScrollFrameRef.current = window.requestAnimationFrame(tick)
+        }
+      }
+      rowDragAutoScrollFrameRef.current = window.requestAnimationFrame(tick)
+    }
+
+    useEffect(() => {
+      const handleMouseMove = (event: MouseEvent): void => {
+        if (!refs.rowDragAnchorRefs.current[tab.key]) {
+          return
+        }
+        rowDragPointerRef.current = { x: event.clientX, y: event.clientY }
+        updateRowDragTargetFromPointer()
+        scheduleRowDragAutoScroll()
+      }
+      const handleMouseUp = (): void => {
+        if (!refs.rowDragAnchorRefs.current[tab.key]) {
+          return
+        }
+        stopRowDragAutoScroll()
+        flushPendingRowDragSelection()
+        refs.rowDragAnchorRefs.current[tab.key] = undefined
+        refs.pendingRowDragTargetRefs.current[tab.key] = undefined
+        commitPreviewSelectedRows()
+      }
+      window.addEventListener('mousemove', handleMouseMove)
+      window.addEventListener('mouseup', handleMouseUp)
+      return () => {
+        window.removeEventListener('mousemove', handleMouseMove)
+        window.removeEventListener('mouseup', handleMouseUp)
+        stopRowDragAutoScroll()
+      }
+    }, [tab.key])
+
     const copyColumnName = async (column: string): Promise<void> => {
       try {
         await navigator.clipboard.writeText(column)
@@ -1981,8 +2079,24 @@ const ResultTablePanel = memo(
               event.stopPropagation()
               clearRuntimeColumnSelection(tab.key)
               clearAllCellSelection(tab.key)
+              if (event.shiftKey) {
+                const anchor = refs.rowSelectionAnchorRefs.current[tab.key] ?? row.__rowKey
+                const start = orderedRowIndexMap[anchor]
+                const end = orderedRowIndexMap[row.__rowKey]
+                if (start !== undefined && end !== undefined) {
+                  const nextSelected = orderedRowKeys.slice(
+                    Math.min(start, end),
+                    Math.max(start, end) + 1
+                  )
+                  refs.rowDragAnchorRefs.current[tab.key] = undefined
+                  previewSelectedRows(nextSelected)
+                  applySelectedRows(nextSelected)
+                  return
+                }
+              }
               if (event.ctrlKey || event.metaKey) {
                 refs.rowDragAnchorRefs.current[tab.key] = undefined
+                refs.rowSelectionAnchorRefs.current[tab.key] = row.__rowKey
                 const currentSelection = new Set(getCurrentSelectedRowKeys())
                 if (currentSelection.has(row.__rowKey)) {
                   currentSelection.delete(row.__rowKey)
@@ -1995,6 +2109,7 @@ const ResultTablePanel = memo(
                 return
               }
               refs.rowDragAnchorRefs.current[tab.key] = row.__rowKey
+              refs.rowSelectionAnchorRefs.current[tab.key] = row.__rowKey
               previewSelectedRows([row.__rowKey])
             }}
             onMouseEnter={() => updateDragRowSelection(row.__rowKey)}
@@ -2175,6 +2290,10 @@ const ResultTablePanel = memo(
                 if (holder) {
                   refs.tableScrollTopRefs.current[tab.key] = holder.scrollTop
                 }
+                const selectedRows = getCurrentSelectedRowKeys()
+                if (selectedRows.length > 0) {
+                  updateRenderedSelectedRows(selectedRows)
+                }
                 scheduleRenderedCellSelectionSync(tab.key)
               }}
               onKeyDown={(event) => {
@@ -2296,6 +2415,9 @@ const ResultTablePanel = memo(
               }}
               onMouseLeave={() => {
                 if (refs.scrollbarDragRefs.current[tab.key]) {
+                  return
+                }
+                if (refs.rowDragAnchorRefs.current[tab.key]) {
                   return
                 }
                 if (

@@ -10922,6 +10922,11 @@ body[data-theme='dark'] .query-history-item-delete.ant-btn {
   align-items: center;
 }
 
+.table-data-toolbar:has(.preview-where-shell) {
+  z-index: 4;
+  overflow: visible;
+}
+
 .table-data-actions {
   position: relative;
   flex: 0 0 auto;
@@ -11005,12 +11010,12 @@ body[data-theme='dark'] .query-history-item-delete.ant-btn {
 
 .preview-where-shell {
   position: relative;
-  position: relative;
+  z-index: 2;
   flex: 1 1 auto;
   min-width: 0;
   padding: 4px 10px 4px 12px;
   border-radius: 999px;
-  overflow: hidden;
+  overflow: visible;
   background:
     linear-gradient(
       180deg,
@@ -11127,7 +11132,7 @@ body[data-theme='dark'] .query-history-item-delete.ant-btn {
   top: calc(100% + 6px);
   left: 8px;
   right: 0;
-  z-index: 20;
+  z-index: 30;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -11322,6 +11327,12 @@ body[data-theme='dark'] .query-history-item-delete.ant-btn {
 
 .query-execution-card-body .ant-typography {
   line-height: 1.35;
+}
+
+.query-execution-error-text {
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .query-execution-close.ant-btn {

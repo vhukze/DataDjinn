@@ -1,7 +1,7 @@
 import unittest
 from typing import Any
 
-from app.ai.agent import AIConfig, DatabaseAgent
+from app.ai.agent import AIConfig, DatabaseAgent, build_system_prompt
 
 
 class FakeObject:
@@ -43,6 +43,14 @@ class FakeAnthropicClient:
 
 
 class DatabaseAgentStreamingTests(unittest.TestCase):
+    def test_system_prompt_includes_product_knowledge_for_global_help(self) -> None:
+        prompt = build_system_prompt("none", "未选择上下文")
+
+        self.assertIn("内置产品知识库", prompt)
+        self.assertIn("修改入口：点击应用右上角“设置”，在左侧选择“快捷键”", prompt)
+        self.assertIn("导出连接", prompt)
+        self.assertIn("软件功能和用法问题", prompt)
+
     def test_openai_stream_chat_emits_incremental_reasoning_and_tokens(self) -> None:
         config = AIConfig(provider="openai-compatible", base_url="https://example.com/v1", api_key="test", model="demo", max_context_tokens=200_000)
         agent = DatabaseAgent(None, config)

@@ -20,6 +20,7 @@ from app.db.redis_utils import is_redis_client
 from app.db.metadata import list_columns, list_tables
 from app.db.readonly_query import execute_readonly_query, preview_table
 from app.schemas.query import QueryResponse
+from app.ai.product_knowledge import get_product_knowledge
 
 
 class AIConfig(BaseModel):
@@ -1410,11 +1411,12 @@ def build_system_prompt(db_type: str, db_name: str, workspace: AgentWorkspaceCon
         "即使执行了全量查询，工具返回给 AI 的内容仍可能只展示摘要，看到 truncated=true 时要说明这一点。"
     )
     workspace_context = f"{query_limit_rule}\n{workspace_context}"
+    product_knowledge = get_product_knowledge()
     return (
         f"你是 DataDjinn 内置数据库 Agent，{context_label}。\n"
         "你的职责是帮助用户理解数据库结构、生成安全 SQL、分析查询结果、执行可控数据库操作。\n"
         "规则：\n"
-        "1. 未选择数据库上下文时，不得执行 list_tables、describe_table、execute_query、get_sample_data 等数据库任务；只能做通用问答、整理工作区已有连接概要，或调用 append_query_sql 把 SQL 写入查询窗口。\n"
+        "1. 未选择数据库上下文时，不得执行 list_tables、describe_table、execute_query、get_sample_data 等数据库任务；可直接依据内置产品知识库回答软件功能和用法问题、整理工作区已有连接概要，或调用 append_query_sql 把 SQL 写入查询窗口。\n"
         "2. 复杂分析、排查或包含多步动作时，先调用 create_agent_plan 生成可见计划。\n"
         "3. 执行 SQL 前先调用 validate_sql；validate_sql 只做校验，永远不代表 SQL 已执行。但 MongoDB 上下文中用户明确要求创建集合、插入测试数据、初始化样例数据时，可以直接调用 execute_query 自动执行支持的 MongoDB 语句，不要改为 append_query_sql。\n"
         "4. SELECT/WITH 只读查询可以通过 execute_query(readonly=true) 自动执行，后端会限制返回行数。MongoDB 的 find/createCollection/insertOne/insertMany 和 Redis 支持命令也通过 execute_query(readonly=true) 自动执行。\n"
@@ -1434,6 +1436,8 @@ def build_system_prompt(db_type: str, db_name: str, workspace: AgentWorkspaceCon
         "18. 用户说“当前连接/当前库/当前模式/当前表”时，优先使用工作区里的当前焦点资源；如果没有焦点资源，再使用 AI 上下文数据源列表的第一个。\n"
         "19. 用户只要说生成 SQL、给出 SQL、帮我写 SQL、生成插入语句、生成建表语句，默认都应调用 append_query_sql 把 SQL 写入查询窗口，不执行；只有用户明确说执行、创建、插入、初始化、运行、落库时，才调用 execute_query。用户后续补充“不要执行，只生成”时，也必须改为 append_query_sql。\n"
         "20. MongoDB 上下文中，创建集合使用 db.createCollection(\"collection\")；插入测试数据优先把多条文档合并为一条 db.<collection>.insertMany([...]) 调用，不要逐条 insertOne 导致轮次耗尽；文档键和值都使用带引号的 Python/JSON 风格字面量。可以把 createCollection 和 insertMany 用分号组成一次 execute_query 调用完成。\n"
-        "21. Redis 上下文中，查看 Key 列表优先使用 SCAN；查看字符串用 GET key，查看 hash/list/set/zset/stream 分别用 HGETALL/LRANGE/SMEMBERS/ZRANGE/XRANGE；创建或写入测试数据可使用 SET/HSET/LPUSH/RPUSH/SADD/ZADD，并说明会修改 Redis 数据。\n\n"
+        "21. Redis 上下文中，查看 Key 列表优先使用 SCAN；查看字符串用 GET key，查看 hash/list/set/zset/stream 分别用 HGETALL/LRANGE/SMEMBERS/ZRANGE/XRANGE；创建或写入测试数据可使用 SET/HSET/LPUSH/RPUSH/SADD/ZADD，并说明会修改 Redis 数据。\n"
+        "22. 用户询问软件功能、操作步骤、快捷键、导入导出、设置、驱动、主题、更新或 AI 用法时，优先直接引用内置产品知识库回答；不要调用数据库工具，也不要把产品操作误解为数据库操作。\n\n"
+        f"内置产品知识库：\n{product_knowledge}\n\n"
         f"工作区上下文：\n{workspace_context}"
     )

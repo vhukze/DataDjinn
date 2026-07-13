@@ -5,8 +5,15 @@ from typing import Any
 
 try:
     from redis import Redis
+    from redis.exceptions import ResponseError as RedisResponseError
 except ImportError:  # pragma: no cover - optional dependency guard
     Redis = None  # type: ignore[assignment]
+
+    class RedisResponseError(Exception):
+        pass
+
+
+DEFAULT_REDIS_DATABASE_COUNT = 16
 
 
 def is_redis_client(client: Any) -> bool:
@@ -54,6 +61,22 @@ def redis_current_database(client: Any) -> int:
         return int(db or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def redis_database_count(client: Any, fallback: int = DEFAULT_REDIS_DATABASE_COUNT) -> int:
+    try:
+        config = client.config_get("databases")
+    except RedisResponseError:
+        return fallback
+
+    value = config.get("databases") if isinstance(config, dict) else None
+    if value is None and isinstance(config, dict):
+        value = config.get(b"databases")
+
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return fallback
 
 
 def redis_client_for_database(client: Any, database_name: str | None = None) -> Any:

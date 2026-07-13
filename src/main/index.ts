@@ -197,6 +197,28 @@ const ensureApiPath = (path: string): string => {
   return path
 }
 
+const sendTestAIStream = (
+  sender: Electron.WebContents | undefined,
+  streamId: string,
+  path: string
+): boolean => {
+  const rawEvents = process.env.DATADJINN_TEST_AI_STREAM_EVENTS
+  if (!testUserDataDir || !rawEvents || path !== '/ai/chat/stream') {
+    return false
+  }
+
+  const events = JSON.parse(rawEvents) as unknown
+  if (!Array.isArray(events)) {
+    throw new Error('DATADJINN_TEST_AI_STREAM_EVENTS 必须是事件数组')
+  }
+  sender?.send(
+    'api:stream-chunk',
+    streamId,
+    events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('')
+  )
+  return true
+}
+
 const openSafeExternalUrl = async (rawUrl: string): Promise<void> => {
   const url = new URL(rawUrl)
   if (url.protocol !== 'https:' && url.protocol !== 'http:') {
@@ -275,7 +297,7 @@ const isBackendNetworkError = (error: unknown): boolean => {
   }
 
   const message = error instanceof Error ? error.message : String(error ?? '')
-  return /fetch failed|ECONNREFUSED|ECONNRESET|UND_ERR_SOCKET|socket hang up|terminated/i.test(
+  return /fetch failed|ECONNREFUSED|ECONNRESET|UND_ERR_SOCKET|socket hang up|\bterminated\b/i.test(
     message
   )
 }
@@ -1004,6 +1026,9 @@ app.whenReady().then(() => {
       streamControllers.set(streamId, controller)
 
       try {
+        if (sendTestAIStream(sender, streamId, path)) {
+          return
+        }
         const apiBaseUrl = await ensureBackendForRequest()
         const response = await fetch(`${apiBaseUrl}${ensureApiPath(path)}`, {
           method: options?.method,
@@ -1158,7 +1183,7 @@ app.whenReady().then(() => {
         }
 
         if (!response.ok) {
-          throw new Error(data?.detail ?? (text || `HTTP ${response.status}`))
+          return { __datadjinnApiError: data?.detail ?? (text || `HTTP ${response.status}`) }
         }
 
         return data

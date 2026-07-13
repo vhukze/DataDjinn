@@ -2,6 +2,8 @@ import Editor, { loader, OnMount } from '@monaco-editor/react'
 import type * as Monaco from 'monaco-editor'
 import * as monaco from 'monaco-editor'
 import { useEffect, useRef } from 'react'
+import { format as formatSqlText } from 'sql-formatter'
+import type { SqlLanguage } from 'sql-formatter'
 
 loader.config({ monaco })
 
@@ -89,6 +91,7 @@ export interface SqlCompletionContext {
   schemas?: string[]
   tables?: SqlCompletionTable[]
   columns?: SqlCompletionColumn[]
+  loadTableColumns?: (tableNames: string[]) => Promise<SqlCompletionColumn[]>
 }
 
 export interface SqlStatementInfo {
@@ -110,6 +113,7 @@ export interface SqlEditorSelectionPayload {
 
 export interface SqlEditorHandle {
   getSelectionPayload: () => SqlEditorSelectionPayload
+  formatSelectionOrStatement: () => void
 }
 
 interface SqlEditorProps {
@@ -283,6 +287,7 @@ const DIALECT_KEYWORDS: Record<SqlDialect, string[]> = {
 
 const TABLE_CONTEXT_KEYWORDS = ['FROM', 'JOIN', 'UPDATE', 'INTO']
 const COLUMN_CONTEXT_KEYWORDS = ['SELECT', 'WHERE', 'ON', 'ORDER BY', 'GROUP BY', 'HAVING', 'SET']
+const SQL_KEYWORDS = new Set([...COMMON_KEYWORDS, ...Object.values(DIALECT_KEYWORDS).flat()])
 
 const uniqueBy = <T,>(items: T[], keyOf: (item: T) => string): T[] => {
   const seen = new Set<string>()
@@ -348,17 +353,90 @@ const getDotQualifier = (text: string): string | undefined => {
   return match?.[1]?.replace(/^`|`$/g, '').replace(/^"|"$/g, '')
 }
 
+type StatementTableReference = {
+  tableName: string
+  qualifier: string
+}
+
+const unquoteIdentifier = (value: string): string =>
+  value.trim().replace(/^`|`$/g, '').replace(/^"|"$/g, '').replace(/^\[|\]$/g, '')
+
+const getStatementTextAtOffset = (sql: string, offset: number): string => {
+  const statements = splitSqlStatements(sql)
+  return (
+    statements.find((statement) => offset >= statement.start && offset <= statement.end)?.text ??
+    statements.at(-1)?.text ??
+    sql
+  )
+}
+
+const getStatementTableReferences = (statementText: string): StatementTableReference[] => {
+  const references: StatementTableReference[] = []
+  const identifier = '(?:`[^`]+`|"[^"]+"|\\[[^\\]]+\\]|[A-Za-z_][\\w$]*)'
+  const pattern = new RegExp(
+    `\\b(?:FROM|JOIN)\\s+(${identifier}(?:\\s*\\.\\s*${identifier}){0,2})(?:\\s+(?:AS\\s+)?([A-Za-z_][\\w$]*))?`,
+    'gi'
+  )
+
+  for (const match of statementText.matchAll(pattern)) {
+    const segments = match[1]
+      .split('.')
+      .map(unquoteIdentifier)
+      .filter(Boolean)
+    const tableName = segments.at(-1)
+    if (!tableName) {
+      continue
+    }
+    const alias = match[2]
+    references.push({ tableName, qualifier: tableName })
+    if (alias && !SQL_KEYWORDS.has(alias.toUpperCase())) {
+      references.push({ tableName, qualifier: alias })
+    }
+  }
+
+  return uniqueBy(references, (reference) => `${reference.tableName}.${reference.qualifier}`)
+}
+
 const toEditorTheme = (theme: 'dark' | 'light'): 'datadjinn-dark' | 'datadjinn-light' =>
   theme === 'dark' ? 'datadjinn-dark' : 'datadjinn-light'
 
 const splitSqlStatements = (sql: string): { text: string; start: number; end: number }[] => {
   const statements: { text: string; start: number; end: number }[] = []
+  const implicitStatementStarters = new Set([
+    'SELECT',
+    'WITH',
+    'INSERT',
+    'UPDATE',
+    'DELETE',
+    'MERGE',
+    'CALL',
+    'EXEC',
+    'SHOW',
+    'DESCRIBE',
+    'EXPLAIN'
+  ])
   let quote: "'" | '"' | '`' | null = null
   let lineComment = false
   let blockCommentDepth = 0
+  let parenthesesDepth = 0
   let dollarQuoteTag: string | null = null
   let alternativeQuoteEnd: string | null = null
   let start = 0
+
+  const appendStatement = (end: number): void => {
+    const raw = sql.slice(start, end)
+    const trimmed = raw.trim()
+    if (!trimmed) {
+      return
+    }
+    const trimmedStartOffset = raw.search(/\S/)
+    const trimmedEndOffset = raw.length - raw.trimEnd().length
+    statements.push({
+      text: trimmed,
+      start: start + Math.max(0, trimmedStartOffset),
+      end: end - trimmedEndOffset
+    })
+  }
 
   for (let index = 0; index < sql.length; index += 1) {
     const char = sql[index]
@@ -455,29 +533,40 @@ const splitSqlStatements = (sql: string): { text: string; start: number; end: nu
       continue
     }
 
-    if (char === ';') {
-      const raw = sql.slice(start, index + 1)
-      const trimmed = raw.trim()
-      if (trimmed) {
-        const trimmedStartOffset = raw.search(/\S/)
-        const trimmedEndOffset = raw.length - raw.trimEnd().length
-        const statementStart = start + Math.max(0, trimmedStartOffset)
-        const statementEnd = index + 1 - trimmedEndOffset
-        statements.push({ text: trimmed, start: statementStart, end: statementEnd })
+    if (char === '(') {
+      parenthesesDepth += 1
+      continue
+    }
+
+    if (char === ')') {
+      parenthesesDepth = Math.max(0, parenthesesDepth - 1)
+      continue
+    }
+
+    if (char === '\n' && parenthesesDepth === 0) {
+      const currentKeyword = sql.slice(start, index).trimStart().match(/^([A-Za-z]+)/)?.[1]?.toUpperCase()
+      const nextLine = sql.slice(index + 1)
+      const nextMatch = nextLine.match(/^[\t ]*([A-Za-z]+)/)
+      const nextKeyword = nextMatch?.[1]?.toUpperCase()
+      if (
+        currentKeyword &&
+        nextKeyword &&
+        implicitStatementStarters.has(currentKeyword) &&
+        implicitStatementStarters.has(nextKeyword)
+      ) {
+        appendStatement(index)
+        start = index + 1 + (nextMatch?.[0].length ?? 0) - nextMatch![1].length
       }
+      continue
+    }
+
+    if (char === ';') {
+      appendStatement(index + 1)
       start = index + 1
     }
   }
 
-  const tail = sql.slice(start)
-  const trimmedTail = tail.trim()
-  if (trimmedTail) {
-    const trimmedStartOffset = tail.search(/\S/)
-    const trimmedEndOffset = tail.length - tail.trimEnd().length
-    const statementStart = start + Math.max(0, trimmedStartOffset)
-    const statementEnd = sql.length - trimmedEndOffset
-    statements.push({ text: trimmedTail, start: statementStart, end: statementEnd })
-  }
+  appendStatement(sql.length)
 
   return statements
 }
@@ -501,6 +590,35 @@ const buildStatementInfos = (model: Monaco.editor.ITextModel): SqlStatementInfo[
 const normalizeShortcut = (shortcut?: string): string =>
   shortcut?.replace(/\s+/g, '').toLowerCase() ?? ''
 const CONTENT_SYNC_DEBOUNCE_MS = 220
+
+const SQL_FORMATTER_LANGUAGE: Record<SqlDialect, SqlLanguage> = {
+  sqlite: 'sqlite',
+  mysql: 'mysql',
+  postgresql: 'postgresql',
+  dm: 'plsql',
+  gaussdb: 'postgresql',
+  oracle: 'plsql',
+  mongodb: 'sql',
+  redis: 'sql',
+  clickhouse: 'clickhouse'
+}
+
+const formatSql = (sql: string, dialect: SqlDialect = 'sqlite'): string => {
+  if (!sql.trim()) {
+    return sql
+  }
+
+  try {
+    return formatSqlText(sql, {
+      language: SQL_FORMATTER_LANGUAGE[dialect],
+      keywordCase: 'upper',
+      tabWidth: 2,
+      linesBetweenQueries: 1
+    })
+  } catch {
+    return sql
+  }
+}
 
 const parseKeybinding = (shortcut?: string): number | null => {
   const normalized = normalizeShortcut(shortcut)
@@ -663,7 +781,7 @@ function SqlEditor({
     completionDisposableRef.current?.dispose()
     completionDisposableRef.current = monaco.languages.registerCompletionItemProvider('sql', {
       triggerCharacters: [' ', '.', ',', '('],
-      provideCompletionItems: (model, position) => {
+      provideCompletionItems: async (model, position) => {
         const context = contextRef.current ?? {}
         const word = model.getWordUntilPosition(position)
         const range: Monaco.IRange = {
@@ -675,6 +793,9 @@ function SqlEditor({
         const textBefore = getTextBeforePosition(model, position)
         const mode = getCompletionMode(textBefore)
         const qualifier = getDotQualifier(textBefore)
+        const statementTables = getStatementTableReferences(
+          getStatementTextAtOffset(model.getValue(), model.getOffsetAt(position))
+        )
         const suggestions: Monaco.languages.CompletionItem[] = []
         const keywordSort = mode === 'all' ? '1' : '4'
         const tableSort = mode === 'table' ? '0' : '2'
@@ -714,16 +835,32 @@ function SqlEditor({
         }
 
         const tableColumns = tables.flatMap((table) => table.columns ?? [])
+        const referencedTableNames = uniqueBy(
+          statementTables.map((reference) => reference.tableName),
+          (tableName) => tableName
+        )
+        const loadedColumns =
+          mode === 'column' && referencedTableNames.length > 0 && context.loadTableColumns
+            ? await context.loadTableColumns(referencedTableNames)
+            : []
         const columns = uniqueBy(
-          [...(context.columns ?? []), ...tableColumns],
+          [...(context.columns ?? []), ...tableColumns, ...loadedColumns],
           (column) =>
             `${column.databaseName ?? ''}.${column.schemaName ?? ''}.${column.tableName ?? ''}.${column.name}`
         )
-        const qualifiedColumns = qualifier
-          ? columns.filter(
-              (column) => column.tableName === qualifier || column.schemaName === qualifier
+        const qualifiedTableNames = qualifier
+          ? new Set(
+              statementTables
+                .filter((reference) => reference.qualifier.toLowerCase() === qualifier.toLowerCase())
+                .map((reference) => reference.tableName.toLowerCase())
             )
-          : columns
+          : new Set(referencedTableNames.map((tableName) => tableName.toLowerCase()))
+        const qualifiedColumns = columns.filter((column) => {
+          if (!column.tableName) {
+            return !qualifier && referencedTableNames.length === 0
+          }
+          return qualifiedTableNames.has(column.tableName.toLowerCase())
+        })
         for (const column of qualifiedColumns) {
           suggestions.push({
             label: column.name,
@@ -919,7 +1056,8 @@ function SqlEditor({
     statements: SqlStatementInfo[]
   ): void => {
     const monacoInstance = monacoRef.current
-    if (!monacoInstance || readOnly || !executeRef.current) {
+    const model = editor.getModel()
+    if (!monacoInstance || !model || readOnly || !executeRef.current) {
       if (statementExecuteDecorationKeyRef.current) {
         statementExecuteDecorationIdsRef.current = editor.deltaDecorations(
           statementExecuteDecorationIdsRef.current,
@@ -939,14 +1077,22 @@ function SqlEditor({
 
     statementExecuteDecorationIdsRef.current = editor.deltaDecorations(
       statementExecuteDecorationIdsRef.current,
-      statements.map((statement) => ({
-        range: new monacoInstance.Range(statement.startLineNumber, 1, statement.startLineNumber, 1),
-        options: {
-          linesDecorationsClassName: 'sql-editor-statement-execute',
-          linesDecorationsTooltip: '执行此语句',
-          stickiness: monacoInstance.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges
+      statements.map((statement) => {
+        const range = new monacoInstance.Range(
+          statement.startLineNumber,
+          1,
+          statement.startLineNumber,
+          1
+        )
+        return {
+          range,
+          options: {
+            linesDecorationsClassName: 'sql-editor-statement-execute',
+            linesDecorationsTooltip: '执行此语句',
+            stickiness: monacoInstance.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges
+          }
         }
-      }))
+      })
     )
     statementExecuteDecorationKeyRef.current = nextDecorationKey
   }
@@ -1011,12 +1157,48 @@ function SqlEditor({
     if (!readOnly) {
       registerCompletionProvider(monaco)
     }
+    const isStatementExecuteTarget = (element: Element | null): boolean =>
+      Boolean(element?.closest('.sql-editor-statement-execute'))
+
+    const formatSelectionOrStatement = (statement?: SqlStatementInfo): void => {
+      const model = editor.getModel()
+      const selection = editor.getSelection()
+      if (!model) {
+        return
+      }
+      const range = selection && !selection.isEmpty()
+        ? selection
+        : statement
+          ? new monaco.Range(
+              statement.startLineNumber,
+              statement.startColumn,
+              statement.endLineNumber,
+              statement.endColumn
+            )
+          : undefined
+      if (!range) {
+        return
+      }
+      const original = model.getValueInRange(range)
+      const formatted = formatSql(original, contextRef.current?.dialect)
+      if (!formatted || formatted === original) {
+        return
+      }
+      editor.executeEdits('format-sql-statement', [{ range, text: formatted, forceMoveMarkers: true }])
+      statementExecuteDecorationKeyRef.current = ''
+      syncEditorState(editor)
+    }
+
     readyRef.current?.({
       getSelectionPayload: () => {
         const model = editor.getModel()
         const statements = getCachedStatements(model)
         const currentStatement = getCurrentStatementInfo(editor, statements)
         return buildSelectionPayload(editor, statements, currentStatement, true)
+      },
+      formatSelectionOrStatement: () => {
+        const statements = getCachedStatements(editor.getModel())
+        formatSelectionOrStatement(getCurrentStatementInfo(editor, statements) ?? undefined)
       }
     })
 
@@ -1028,7 +1210,7 @@ function SqlEditor({
       if (
         readOnly ||
         event.target.type !== monaco.editor.MouseTargetType.GUTTER_LINE_DECORATIONS ||
-        !event.target.element?.closest('.sql-editor-statement-execute') ||
+        !isStatementExecuteTarget(event.target.element) ||
         !event.target.position
       ) {
         return
@@ -1043,9 +1225,30 @@ function SqlEditor({
       }
 
       event.event.preventDefault()
+      event.event.stopPropagation()
       const payload = buildSelectionPayload(editor, statements, statement, false)
       executeRef.current?.({ ...payload, sql: statement.text })
     })
+
+    editor.onMouseUp((event) => {
+      if (isStatementExecuteTarget(event.target.element)) {
+        event.event.preventDefault()
+        event.event.stopPropagation()
+      }
+    })
+
+    const editorNode = editor.getDomNode()
+    const stopStatementExecuteClick = (event: MouseEvent): void => {
+      if (!isStatementExecuteTarget(event.target instanceof Element ? event.target : null)) {
+        return
+      }
+      event.stopImmediatePropagation()
+      event.stopPropagation()
+    }
+    if (editorNode) {
+      editorNode.addEventListener('click', stopStatementExecuteClick)
+      editor.onDidDispose(() => editorNode.removeEventListener('click', stopStatementExecuteClick))
+    }
 
     if (!readOnly) {
       const executeKeybinding =
@@ -1111,7 +1314,7 @@ function SqlEditor({
         renderLineHighlight: 'none',
         selectionHighlight: false,
         occurrencesHighlight: 'off',
-        folding: true,
+        folding: false,
         bracketPairColorization: { enabled: true },
         guides: { highlightActiveBracketPair: false },
         stickyScroll: { enabled: false },

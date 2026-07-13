@@ -282,7 +282,9 @@ export function QueryExecutionStatusCard({
         />
         <CloseCircleOutlined />
         <div className="query-execution-card-body">
-          <Typography.Text>{tab.error || '未知错误'}</Typography.Text>
+          <Typography.Text className="query-execution-error-text">
+            {tab.error || '未知错误'}
+          </Typography.Text>
         </div>
       </div>
     )

@@ -172,18 +172,25 @@ def _postgres_like_error_message(causes: list[Exception]) -> str | None:
     lower_message = message.lower()
 
     if 'password authentication failed' in lower_message:
-        return 'PostgreSQL / 高斯数据库用户名或密码错误，连接被拒绝。'
+        return 'PostgreSQL 用户名或密码错误，连接被拒绝。'
 
-    if 'database' in lower_message and 'does not exist' in lower_message:
-        return 'PostgreSQL / 高斯数据库不存在，请检查填写的数据库名。'
+    if re.search(r'\bdatabase\s+["\'][^"\']+["\']\s+does not exist\b', message, re.IGNORECASE):
+        return 'PostgreSQL 数据库不存在，请检查填写的数据库名。'
+
+    function_match = re.search(r'function\s+([^\s(]+)\s*\([^)]*\)\s+does not exist', message, re.IGNORECASE)
+    if function_match:
+        function_name = function_match.group(1)
+        if function_name.lower() == 'group_concat':
+            return 'PostgreSQL 函数不存在：GROUP_CONCAT。请使用 string_agg(字段, 分隔符)。'
+        return f'PostgreSQL 函数不存在：{function_name}。请检查函数名称、参数类型或扩展是否已安装。'
 
     if 'no pg_hba.conf entry' in lower_message:
-        return 'PostgreSQL / 高斯数据库拒绝当前客户端访问，请检查服务端 pg_hba.conf 白名单、用户、数据库和认证方式配置。'
+        return 'PostgreSQL 拒绝当前客户端访问，请检查服务端 pg_hba.conf 白名单、用户、数据库和认证方式配置。'
 
     if 'psqlexception' in lower_message and 'fatal:' in lower_message:
         fatal = re.search(r'FATAL:\s*([^\n\r]+)', message, re.IGNORECASE)
         if fatal:
-            return f'PostgreSQL / 高斯数据库连接失败：{fatal.group(1).strip()}'
+            return f'PostgreSQL 连接失败：{fatal.group(1).strip()}'
 
     return None
 

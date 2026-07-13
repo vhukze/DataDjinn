@@ -85,6 +85,7 @@ import type {
 } from './app/app-model'
 import type {
   ColumnsResponse,
+  ColumnInfo,
   ConnectionInfo,
   ConnectionTestResponse,
   DatabaseInfo,
@@ -460,6 +461,16 @@ const stringRecordArrayEquals = (
 
 const rootFolderOrderId = (folderId: string): string => `folder:${folderId}`
 const rootConnectionOrderId = (connectionId: string): string => `connection:${connectionId}`
+
+type ApiErrorResponse = { __datadjinnApiError: string }
+
+const isApiErrorResponse = (value: unknown): value is ApiErrorResponse =>
+  Boolean(
+    value &&
+      typeof value === 'object' &&
+      '__datadjinnApiError' in value &&
+      typeof value.__datadjinnApiError === 'string'
+  )
 
 const insertIdsAroundTarget = (
   ids: string[],
@@ -884,6 +895,8 @@ function App(): React.JSX.Element {
   const [allDatabases, setAllDatabases] = useState<Record<string, string[]>>({})
   const [allSchemas, setAllSchemas] = useState<Record<string, string[]>>({})
   const [completionTables, setCompletionTables] = useState<Record<string, string[]>>({})
+  const completionColumnCacheRef = useRef<Record<string, SqlCompletionColumn[]>>({})
+  const completionColumnRequestRef = useRef<Record<string, Promise<SqlCompletionColumn[]>>>({})
   const [dragOverFolderTarget, setDragOverFolderTarget] = useState<{
     folderId: string
     zone: 'before' | 'after'
@@ -962,6 +975,7 @@ function App(): React.JSX.Element {
   >({})
   const committedSelectedCellRangeRefs = useRef<Record<string, string[] | undefined>>({})
   const rowDragAnchorRefs = useRef<Record<string, string | undefined>>({})
+  const rowSelectionAnchorRefs = useRef<Record<string, string | undefined>>({})
   const rowSelectionDraftRefs = useRef<Record<string, React.Key[] | undefined>>({})
   const treeLoadingKeysRef = useRef<Set<React.Key>>(new Set())
   const dragOverFolderTargetRef = useRef<
@@ -1035,6 +1049,7 @@ function App(): React.JSX.Element {
       inlineCellEditorRefs,
       committedSelectedCellRangeRefs,
       rowDragAnchorRefs,
+      rowSelectionAnchorRefs,
       rowSelectionDraftRefs,
       columnResizeRefs
     }),
@@ -1147,11 +1162,15 @@ function App(): React.JSX.Element {
       }
 
       try {
-        return await window.api.requestJson<T>(path, {
+        const response = await window.api.requestJson<T | ApiErrorResponse>(path, {
           method: options?.method,
           headers: options?.headers as Record<string, string> | undefined,
           body: typeof options?.body === 'string' ? options.body : undefined
         })
+        if (isApiErrorResponse(response)) {
+          throw new Error(response.__datadjinnApiError)
+        }
+        return response
       } catch (err) {
         throw normalizeRequestError(err)
       }
@@ -1196,6 +1215,67 @@ function App(): React.JSX.Element {
     [normalizeRequestError, reopenConnectionSilently, requestJsonRaw]
   )
 
+  const loadSqlCompletionColumns = async (
+    tab: WorkspaceTab,
+    tableNames: string[]
+  ): Promise<SqlCompletionColumn[]> => {
+    if (!tab.connectionId || tableNames.length === 0) {
+      return []
+    }
+
+    const connection = getConnection(tab.connectionId)
+    const databaseName = isSchemaScopedType(connection?.database_type)
+      ? tab.pgDatabaseName
+      : tab.databaseName
+    const schemaName = isSchemaScopedType(connection?.database_type) ? tab.databaseName : undefined
+    const uniqueTableNames = [...new Set(tableNames.map((name) => name.trim()).filter(Boolean))]
+    const result = await Promise.all(
+      uniqueTableNames.map(async (tableName) => {
+        const cacheKey = `${tab.connectionId}:${tab.pgDatabaseName ?? ''}:${tab.databaseName ?? ''}:${tableName}`
+        const cached = completionColumnCacheRef.current[cacheKey]
+        if (cached) {
+          return cached
+        }
+
+        const pending = completionColumnRequestRef.current[cacheKey]
+        if (pending) {
+          return pending
+        }
+
+        const request = requestJson<ColumnsResponse>(
+          withPgDatabase(
+            `/connections/${tab.connectionId}/tables/${encodeURIComponent(tableName)}/columns`,
+            tab.databaseName,
+            tab.pgDatabaseName
+          )
+        )
+          .then((data) =>
+            data.columns.map<SqlCompletionColumn>((column: ColumnInfo) => ({
+              name: column.name,
+              type: column.type,
+              tableName,
+              databaseName,
+              schemaName,
+              nullable: column.nullable,
+              primaryKey: column.primary_key
+            }))
+          )
+          .catch(() => [])
+          .then((columns) => {
+            completionColumnCacheRef.current[cacheKey] = columns
+            return columns
+          })
+          .finally(() => {
+            delete completionColumnRequestRef.current[cacheKey]
+          })
+        completionColumnRequestRef.current[cacheKey] = request
+        return request
+      })
+    )
+
+    return result.flat()
+  }
+
   const buildSqlCompletionContext = (tab: WorkspaceTab): SqlCompletionContext => {
     const connection = getConnection(tab.connectionId)
     const scopeKey = tab.connectionId
@@ -1233,7 +1313,8 @@ function App(): React.JSX.Element {
       databases: databaseNames,
       schemas: schemaKey ? (allSchemas[schemaKey] ?? []) : [],
       tables,
-      columns
+      columns,
+      loadTableColumns: (tableNames) => loadSqlCompletionColumns(tab, tableNames)
     }
   }
 
@@ -3015,6 +3096,7 @@ function App(): React.JSX.Element {
       delete contextMenuCellSelectionRefs.current[key]
       delete contextMenuCellSelectionSnapshotRefs.current[key]
       delete rowSelectionDraftRefs.current[key]
+      delete rowSelectionAnchorRefs.current[key]
       delete pendingRowDragTargetRefs.current[key]
       delete pendingRowDragFrameRefs.current[key]
       delete pendingCellDragTargetRefs.current[key]

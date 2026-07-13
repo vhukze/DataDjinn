@@ -1,4 +1,4 @@
-import { DownOutlined, PlayCircleOutlined, UpOutlined } from '@ant-design/icons'
+import { DownOutlined, FormatPainterOutlined, PlayCircleOutlined, UpOutlined } from '@ant-design/icons'
 import { Button, Dropdown, Select, Splitter } from 'antd'
 import type { MenuProps } from 'antd'
 import { memo, useEffect, useMemo, useRef } from 'react'
@@ -86,6 +86,7 @@ const QueryWorkspacePanel = memo(function QueryWorkspacePanel({
   onEditorReady
 }: QueryWorkspacePanelProps) {
   const statementToggleButtonRef = useRef<HTMLButtonElement | null>(null)
+  const sqlEditorHandleRef = useRef<SqlEditorHandle | null>(null)
 
   useEffect(() => {
     if (statementToggleButtonRef.current) {
@@ -298,6 +299,13 @@ const QueryWorkspacePanel = memo(function QueryWorkspacePanel({
         <div className="query-toolbar-actions">
           <div className="query-execute-group">
             <Button
+              className="query-format-button"
+              icon={<FormatPainterOutlined />}
+              aria-label="格式化 SQL"
+              title="格式化选中内容或当前语句"
+              onClick={() => sqlEditorHandleRef.current?.formatSelectionOrStatement()}
+            />
+            <Button
               className="query-execute-button"
               type="primary"
               icon={<PlayCircleOutlined />}
@@ -388,7 +396,10 @@ const QueryWorkspacePanel = memo(function QueryWorkspacePanel({
                     }
                     handleSqlExecutionContextChange(tab.key, payload)
                   }}
-                  onReady={(handle) => onEditorReady(tab.key, handle)}
+                  onReady={(handle) => {
+                    sqlEditorHandleRef.current = handle
+                    onEditorReady(tab.key, handle)
+                  }}
                   theme={theme}
                   completionContext={buildSqlCompletionContext(tab)}
                   shortcuts={{

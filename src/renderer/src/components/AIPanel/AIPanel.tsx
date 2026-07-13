@@ -1103,13 +1103,22 @@ export default function AIPanel({
     return item
   }
 
-  const flushQueuedStreamEvents = (): void => {
+  const flushQueuedStreamEvents = (options?: { drain?: boolean; persist?: boolean }): void => {
     if (streamFlushFrameRef.current !== null) {
       window.cancelAnimationFrame(streamFlushFrameRef.current)
       streamFlushFrameRef.current = null
     }
     const pendingEvents = queuedStreamEventsRef.current
     if (pendingEvents.length === 0) {
+      if (options?.persist) {
+        setSessions((current) => {
+          const next = current.map((session) =>
+            session.id === activeSessionId ? { ...session, updatedAt: Date.now() } : session
+          )
+          writeSessions(next)
+          return next
+        })
+      }
       return
     }
 
@@ -1117,26 +1126,30 @@ export default function AIPanel({
     const remainingEvents: QueuedStreamUpdate[] = []
     let streamedEventCount = 0
 
-    for (let index = 0; index < pendingEvents.length; index += 1) {
-      const update = pendingEvents[index]
-      const streamingTextEvent = isStreamingTextEvent(update.event)
+    if (options?.drain) {
+      processedEvents.push(...pendingEvents)
+    } else {
+      for (let index = 0; index < pendingEvents.length; index += 1) {
+        const update = pendingEvents[index]
+        const streamingTextEvent = isStreamingTextEvent(update.event)
 
-      if (streamingTextEvent) {
-        if (streamedEventCount >= STREAM_EVENTS_PER_FRAME) {
+        if (streamingTextEvent) {
+          if (streamedEventCount >= STREAM_EVENTS_PER_FRAME) {
+            remainingEvents.push(...pendingEvents.slice(index))
+            break
+          }
+          streamedEventCount += 1
+          processedEvents.push(update)
+          continue
+        }
+
+        if (streamedEventCount > 0) {
           remainingEvents.push(...pendingEvents.slice(index))
           break
         }
-        streamedEventCount += 1
+
         processedEvents.push(update)
-        continue
       }
-
-      if (streamedEventCount > 0) {
-        remainingEvents.push(...pendingEvents.slice(index))
-        break
-      }
-
-      processedEvents.push(update)
     }
 
     queuedStreamEventsRef.current = remainingEvents
@@ -1160,8 +1173,8 @@ export default function AIPanel({
       }
     }
 
-    setSessions((current) =>
-      current.map((session) => {
+    setSessions((current) => {
+      const next = current.map((session) => {
         if (session.id !== activeSessionId) {
           return session
         }
@@ -1181,7 +1194,11 @@ export default function AIPanel({
           })
         }
       })
-    )
+      if (options?.persist) {
+        writeSessions(next)
+      }
+      return next
+    })
 
     if (queuedStreamEventsRef.current.length > 0) {
       streamFlushFrameRef.current = window.requestAnimationFrame(() => {
@@ -1490,8 +1507,7 @@ export default function AIPanel({
           // Ignore trailing partial chunks; completed events are already applied above.
         }
       }
-      flushQueuedStreamEvents()
-      updateActiveSession((session) => ({ ...session, updatedAt: Date.now() }), { persist: true })
+      flushQueuedStreamEvents({ drain: true, persist: true })
     }
   }
 

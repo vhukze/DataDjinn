@@ -32,6 +32,7 @@ function readFixtureUserDataDir() {
 async function launchRegressionApp(options = {}) {
   const userDataDir = readFixtureUserDataDir()
   const testWindowHeight = options.windowHeight
+  const aiStreamEvents = options.aiStreamEvents
   return electron.launch({
     args: [electronEntry],
     env: {
@@ -39,7 +40,10 @@ async function launchRegressionApp(options = {}) {
       DATADJINN_TEST_RUN_ROOT: regressionRootDir,
       DATADJINN_TEST_USER_DATA_DIR: userDataDir,
       DATADJINN_SKIP_SPLASH: '1',
-      ...(testWindowHeight ? { DATADJINN_TEST_WINDOW_HEIGHT: String(testWindowHeight) } : {})
+      ...(testWindowHeight ? { DATADJINN_TEST_WINDOW_HEIGHT: String(testWindowHeight) } : {}),
+      ...(aiStreamEvents
+        ? { DATADJINN_TEST_AI_STREAM_EVENTS: JSON.stringify(aiStreamEvents) }
+        : {})
     }
   })
 }
@@ -1647,6 +1651,79 @@ test.describe('workspace regression', () => {
     }
   })
 
+  test('completed AI stream should persist final tokens across app reload @bug', async () => {
+    const electronApp = await launchRegressionApp({
+      aiStreamEvents: [
+        ...['完整', '回复', '必须', '保留', '最后', '一段'].map((content) => ({
+          type: 'token',
+          content
+        })),
+        { type: 'done', finish_reason: 'stop' }
+      ]
+    })
+    let page
+    let originalAIState
+
+    try {
+      page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      originalAIState = await page.evaluate(async () => ({
+        configs: await window.api.getAIConfigs(),
+        sessions: await window.api.getAISessions()
+      }))
+      await page.evaluate(async () => {
+        await window.api.setAIConfigs([
+          {
+            id: 'ai-stream-persistence-regression',
+            name: 'AI stream persistence regression',
+            enabled: true,
+            provider: 'openai-compatible',
+            base_url: 'https://example.com/v1',
+            api_key: 'test-key',
+            model: 'test-model',
+            max_context_tokens: 200000
+          }
+        ])
+        await window.api.setAISessions([])
+      })
+      await page.reload()
+      await waitForAppReady(page)
+
+      const expectedReply = '完整回复必须保留最后一段'
+
+      const input = page.getByPlaceholder('输入问题')
+      await input.fill('测试 AI 回复持久化')
+      await input.press('Enter')
+      const assistantMessage = page.locator('.ai-message-assistant').last()
+      await expect(assistantMessage).toContainText(expectedReply, { timeout: 10000 })
+      await expect
+        .poll(
+          () =>
+            page.evaluate(async () => {
+              const sessions = await window.api.getAISessions()
+              return sessions[0]?.messages.at(-1)?.content ?? ''
+            }),
+          { timeout: 10000 }
+        )
+        .toBe(expectedReply)
+
+      await page.reload()
+      await waitForAppReady(page)
+      await expect(page.locator('.ai-message-assistant').last()).toContainText(expectedReply, {
+        timeout: 10000
+      })
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+    } finally {
+      if (page && originalAIState) {
+        await page.evaluate(async (state) => {
+          await window.api.setAIConfigs(state.configs)
+          await window.api.setAISessions(state.sessions)
+        }, originalAIState)
+      }
+      await electronApp.close()
+    }
+  })
+
   test('sql completion should stay near the cursor and exclude statement templates @bug', async () => {
     const electronApp = await launchRegressionApp()
 
@@ -1695,6 +1772,25 @@ test.describe('workspace regression', () => {
       await page.keyboard.type('select * from ')
       await page.keyboard.press('Control+Space')
       await expect(suggestWidget).toContainText('extra_items_01')
+
+      await page.keyboard.press('Escape')
+      await page.keyboard.press('Control+A')
+      await page.keyboard.type('select  from small_items')
+      await page.keyboard.press('Control+Home')
+      for (let index = 0; index < 7; index += 1) {
+        await page.keyboard.press('ArrowRight')
+      }
+      await page.keyboard.press('Control+Space')
+      await expect(suggestWidget).toContainText('id', { timeout: 10000 })
+      await expect(suggestWidget).toContainText('name')
+      await expect(suggestWidget).not.toContainText('description')
+
+      await page.keyboard.press('Escape')
+      await page.keyboard.press('Control+A')
+      await page.keyboard.type('select name from small_items where ')
+      await expect(suggestWidget).toContainText('id', { timeout: 10000 })
+      await expect(suggestWidget).toContainText('name')
+      await expect(suggestWidget).not.toContainText('description')
       await expect(page.locator('.app-error-boundary')).toHaveCount(0)
     } finally {
       await electronApp.close()
@@ -1830,18 +1926,32 @@ test.describe('workspace regression', () => {
 
       await focusMonacoEditor(page)
       await page.keyboard.press('Control+A')
-      await page.keyboard.type("select 'first' as value;\nselect 'second' as value;")
+      await page.keyboard.type("select\n  'first' as value\nselect\n  'second' as value")
       await expect(page.locator('.sql-editor-statement-execute')).toHaveCount(2, { timeout: 10000 })
 
-      const executeButton = await page.locator('.sql-editor-statement-execute').nth(1).boundingBox()
-      expect(executeButton, 'second statement execute button should be visible').not.toBeNull()
-      if (!executeButton) {
+      const executeButtons = await page.locator('.sql-editor-statement-execute').evaluateAll((nodes) =>
+        nodes.map((node) => {
+          const rect = node.getBoundingClientRect()
+          return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+        })
+      )
+      expect(executeButtons).toHaveLength(2)
+      expect(
+        executeButtons[1].y,
+        'second statement execute button should be on the second statement first line'
+      ).toBeGreaterThan(executeButtons[0].y + 5)
+      expect(executeButtons[1].y - executeButtons[0].y).toBeLessThan(40)
+
+      const executeButton = executeButtons[1]
+      if (executeButton.width <= 0 || executeButton.height <= 0) {
         throw new Error('Second statement execute button is not measurable')
       }
       await page.mouse.click(
         executeButton.x + executeButton.width / 2,
         executeButton.y + executeButton.height / 2
       )
+
+      await expect(page.locator('.query-execute-dropdown .ant-dropdown-menu')).toHaveCount(0)
 
       const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
       await expect(activeResult.locator('.result-table .ant-table-tbody')).toContainText('second', {
@@ -1940,7 +2050,7 @@ test.describe('workspace regression', () => {
     }
   })
 
-  test('preview where field should suggest columns on focus and after a clause separator @bug', async () => {
+  test('preview where field should only suggest active column prefixes and preserve Enter query @bug', async () => {
     const electronApp = await launchRegressionApp()
 
     try {
@@ -1953,17 +2063,185 @@ test.describe('workspace regression', () => {
       const whereField = page.locator('.preview-where-field input')
       await expect(whereField).toBeVisible({ timeout: 30000 })
       await whereField.focus()
-      await expect(
-        page.locator('.preview-where-option').filter({ hasText: 'id' }).first()
-      ).toBeVisible()
+      await expect(page.locator('.preview-where-option')).toHaveCount(0)
 
       await whereField.fill('WHERE ')
-      await expect(
-        page.locator('.preview-where-option').filter({ hasText: 'name' }).first()
-      ).toBeVisible()
-      await whereField.press('ArrowDown')
+      await expect(page.locator('.preview-where-option')).toHaveCount(0)
+
+      await whereField.fill('name = ')
+      await expect(page.locator('.preview-where-option')).toHaveCount(0)
+      await whereField.fill('na')
+      const nameOption = page.locator('.preview-where-option').filter({ hasText: 'name' }).first()
+      await expect(nameOption).toBeVisible()
+      const suggestionPosition = await nameOption.boundingBox()
+      expect(suggestionPosition, 'where completion option should not be clipped by its toolbar').not.toBeNull()
+
+      await whereField.fill("name = 'alpha'")
+      await expect(page.locator('.preview-where-option')).toHaveCount(0)
       await whereField.press('Enter')
-      await expect(whereField).toHaveValue('WHERE name')
+      const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      await expect(activeResult.locator('.result-table .ant-table-tbody')).toContainText('alpha', {
+        timeout: 30000
+      })
+      await expect(activeResult.locator('.result-table .ant-table-tbody')).not.toContainText('beta')
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('query toolbar format button should format current SQL and full selection @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openQueryWorkspace(page)
+
+      const formatButton = page.getByRole('button', { name: '格式化 SQL' })
+      const executeButton = page.locator('.query-execute-button').first()
+      await expect(formatButton).toBeVisible({ timeout: 30000 })
+      const positions = await Promise.all([formatButton.boundingBox(), executeButton.boundingBox()])
+      expect(positions[0]).not.toBeNull()
+      expect(positions[1]).not.toBeNull()
+      expect(positions[0].x + positions[0].width).toBeLessThanOrEqual(positions[1].x + 2)
+
+      await focusMonacoEditor(page)
+      await page.keyboard.press('Control+A')
+      await page.keyboard.type('select * from small_items where id=2')
+      await page.keyboard.press('Control+Home')
+      await formatButton.click()
+      await expect
+        .poll(
+          () =>
+            page.locator('.sql-editor-container .view-lines > div').evaluateAll((nodes) =>
+              nodes.map((node) => (node.textContent ?? '').replace(/\u00a0/g, ' '))
+            ),
+          { timeout: 10000 }
+        )
+        .toEqual(expect.arrayContaining(['SELECT', '  *', 'FROM', '  small_items', 'WHERE']))
+      const currentStatementPosition = await page
+        .locator('.sql-editor-container')
+        .evaluate((container) => ({
+          firstLineY: container.querySelector('.view-lines > div')?.getBoundingClientRect().y,
+          executeY: container
+            .querySelector('.sql-editor-statement-execute')
+            ?.getBoundingClientRect().y
+        }))
+      expect(currentStatementPosition.firstLineY).toBeDefined()
+      expect(currentStatementPosition.executeY).toBeDefined()
+      expect(
+        Math.abs(currentStatementPosition.executeY - currentStatementPosition.firstLineY),
+        'execute button should stay on the current statement first line after formatting'
+      ).toBeLessThan(3)
+
+      await focusMonacoEditor(page)
+      await page.keyboard.press('Control+A')
+      await page.keyboard.type(
+        'select id,name,(select count(*) from small_items where id=1) as total from small_items where id=1; select id,note from small_items where id=2;'
+      )
+      await page.keyboard.press('Control+A')
+      await formatButton.click()
+
+      await expect
+        .poll(
+          () =>
+            page.locator('.sql-editor-container .view-lines > div').evaluateAll((nodes) =>
+              nodes.map((node) => (node.textContent ?? '').replace(/\u00a0/g, ' '))
+            ),
+          { timeout: 10000 }
+        )
+        .toEqual(
+          expect.arrayContaining([
+            'SELECT',
+            '  id,',
+            '  (',
+            '    SELECT',
+            '      count(*)',
+            'FROM',
+            'WHERE'
+          ])
+        )
+
+      const statementPositions = await page
+        .locator('.sql-editor-container')
+        .evaluate((container) => {
+          const linePositions = Array.from(container.querySelectorAll('.view-lines > div'))
+            .map((node) => ({
+              text: (node.textContent ?? '').replace(/\u00a0/g, ' '),
+              y: node.getBoundingClientRect().y
+            }))
+            .filter((line) => line.text.trim() === 'SELECT')
+          const executePositions = Array.from(
+            container.querySelectorAll('.sql-editor-statement-execute')
+          ).map((node) => node.getBoundingClientRect().y)
+          return { linePositions, executePositions }
+        })
+      expect(statementPositions.linePositions).toHaveLength(3)
+      expect(statementPositions.executePositions).toHaveLength(2)
+      expect(
+        Math.abs(
+          statementPositions.executePositions[0] - statementPositions.linePositions[0].y
+        ),
+        'first execute button should stay on the first statement first line after formatting'
+      ).toBeLessThan(3)
+      expect(
+        Math.abs(
+          statementPositions.executePositions[1] - statementPositions.linePositions[2].y
+        ),
+        'second execute button should stay on the second statement first line after formatting'
+      ).toBeLessThan(3)
+      await expect(page.locator('.sql-editor-statement-format')).toHaveCount(0)
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('invalid preview WHERE must not restart the backend or close its connection @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openFixtureTable(page, smallTableName)
+
+      await page.evaluate(() => {
+        window.__backendStateEvents = []
+        window.__stopBackendStateEvents = window.api.onBackendStatusChanged((status) => {
+          window.__backendStateEvents.push(status.state)
+        })
+      })
+
+      const whereField = page.locator('.preview-where-field input')
+      await whereField.fill("name = 'unterminated")
+      await whereField.press('Enter')
+
+      const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      await expect(activeResult.locator('.result-inline-alert')).toBeVisible({ timeout: 30000 })
+      await page.waitForTimeout(500)
+      const backendStateEvents = await page.evaluate(() => {
+        window.__stopBackendStateEvents?.()
+        return window.__backendStateEvents
+      })
+      expect(
+        backendStateEvents,
+        'SQL syntax errors must not be mistaken for backend network failures'
+      ).not.toContain('starting')
+      await expect(
+        page.locator(`.connection-tree-title[data-connection-id="${fixtureConnectionId}"]`)
+      ).toHaveClass(/is-open/)
+
+      await whereField.fill("name = 'alpha'")
+      await whereField.press('Enter')
+      await expect(activeResult.locator('.result-table .ant-table-tbody')).toContainText('alpha', {
+        timeout: 30000
+      })
+      await expect(activeResult.locator('.result-table .ant-table-tbody')).not.toContainText('beta')
       await expect(page.locator('.app-error-boundary')).toHaveCount(0)
     } finally {
       await electronApp.close()
@@ -2820,6 +3098,88 @@ test.describe('workspace regression', () => {
         dragSelectionState.selectedCount,
         'dragging across preview cells should create a range selection'
       ).toBeGreaterThan(1)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('row number selection should support Ctrl anchor followed by Shift range @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openFixtureTable(page, smallTableName)
+
+      const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      const rowButtons = activeResult.locator('.row-number-button')
+      await expect(rowButtons).toHaveCount(4, { timeout: 30000 })
+      await rowButtons.nth(0).click()
+      await rowButtons.nth(1).click({ modifiers: ['Control'] })
+      await rowButtons.nth(3).click({ modifiers: ['Shift'] })
+      await expect(activeResult.locator('.row-number-button.selected')).toHaveCount(3)
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('row number drag should auto-scroll near the table edge @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openFixtureTable(page, largeTableName)
+
+      const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      const dragTarget = await activeResult.evaluate((node) => {
+        const button = node.querySelector<HTMLElement>('.row-number-button')
+        const holder = node.querySelector<HTMLElement>(
+          '.ant-table-tbody-virtual-holder, .ant-table-body'
+        )
+        if (!button || !holder) {
+          return null
+        }
+        const buttonRect = button.getBoundingClientRect()
+        const holderRect = holder.getBoundingClientRect()
+        return {
+          startX: buttonRect.left + buttonRect.width / 2,
+          startY: buttonRect.top + buttonRect.height / 2,
+          endX: holderRect.left + Math.min(24, holderRect.width / 2),
+          endY: holderRect.bottom + 12
+        }
+      })
+      expect(dragTarget).not.toBeNull()
+      if (!dragTarget) {
+        throw new Error('row drag target is not measurable')
+      }
+
+      await page.mouse.move(dragTarget.startX, dragTarget.startY)
+      await page.mouse.down()
+      await page.mouse.move(dragTarget.endX, dragTarget.endY)
+      await page.waitForTimeout(500)
+      await page.mouse.up()
+      await expect
+        .poll(
+          () =>
+            activeResult.evaluate((node) => {
+              const holder = node.querySelector<HTMLElement>(
+                '.ant-table-tbody-virtual-holder, .ant-table-body'
+              )
+              return holder?.scrollTop ?? 0
+            }),
+          { timeout: 10000 }
+        )
+        .toBeGreaterThan(0)
+      await expect
+        .poll(() => activeResult.locator('.row-number-button.selected').count(), { timeout: 10000 })
+        .toBeGreaterThan(1)
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
     } finally {
       await electronApp.close()
     }

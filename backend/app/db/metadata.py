@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import Engine, inspect, text
 
 from app.db.mongo_utils import is_mongo_client, mongo_default_database, mongo_value_type
-from app.db.redis_utils import is_redis_client, parse_redis_database_name, redis_client_for_database, redis_current_database, redis_database_name, redis_key_length, redis_key_type, redis_memory_usage, redis_scan_keys, redis_text, serialize_redis_value
+from app.db.redis_utils import is_redis_client, parse_redis_database_name, redis_client_for_database, redis_current_database, redis_database_count, redis_database_name, redis_key_length, redis_key_type, redis_memory_usage, redis_scan_keys, redis_text, serialize_redis_value
 from app.schemas.metadata import ColumnInfo, DatabaseInfo, DbObjectInfo, RedisDataChangeRequest, RedisKeyUpdate, SequenceDetailResponse, TableDataChangeRequest, TableInfo, TableUpdateColumn
 
 COLUMN_TYPE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_ (),]*$")
@@ -196,9 +196,9 @@ def list_databases(engine: Engine) -> list[DatabaseInfo]:
 
     if is_redis_client(engine):
         info = engine.info("keyspace")
-        config = engine.config_get("databases")
-        database_count = int(config.get("databases", 16) or 16)
+        database_count = redis_database_count(engine)
         indexes = set(range(database_count))
+        indexes.add(redis_current_database(engine))
         for key in info:
             if key.startswith("db"):
                 indexes.add(parse_redis_database_name(key))

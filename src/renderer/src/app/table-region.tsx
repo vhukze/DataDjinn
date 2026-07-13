@@ -328,11 +328,23 @@ export const WhereClauseInput = memo(
       if (disableSuggestions) {
         return { token: '', start: -1, options: [] as string[] }
       }
-      const match = /([A-Za-z_][A-Za-z0-9_]*)?$/.exec(inputValue)
+      const match = /(?:^|[\s(])([A-Za-z_][A-Za-z0-9_]*)$/.exec(inputValue)
       const token = match?.[1] ?? ''
+      const beforeToken = inputValue.slice(0, inputValue.length - token.length).trimEnd()
+      const previousToken = /([A-Za-z_][A-Za-z0-9_]*)$/.exec(beforeToken)?.[1]?.toUpperCase()
+      const shouldSuggest =
+        token.length > 0 &&
+        !['WHERE', 'AND', 'OR', 'NOT', 'LIKE', 'IN', 'IS', 'NULL', 'TRUE', 'FALSE'].includes(
+          token.toUpperCase()
+        ) &&
+        !/[=<>!]$/.test(beforeToken) &&
+        !['LIKE', 'IN', 'BETWEEN', 'IS', 'NOT'].includes(previousToken ?? '')
+      if (!shouldSuggest) {
+        return { token: '', start: -1, options: [] as string[] }
+      }
       const lowerToken = token.toLowerCase()
       const options = [...new Set(columns)]
-        .filter((column) => column !== '__rowKey' && column.toLowerCase().includes(lowerToken))
+        .filter((column) => column !== '__rowKey' && column.toLowerCase().startsWith(lowerToken))
         .slice(0, 8)
 
       return {
