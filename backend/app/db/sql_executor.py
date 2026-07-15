@@ -1,7 +1,7 @@
-import sqlparse
 from sqlalchemy import Engine, text
 
 from app.db.query_timeout import apply_query_timeout
+from app.db.readonly_query import _split_sql_statements, _switch_clickhouse_database
 from app.schemas.query import SqlFileRunResponse
 
 
@@ -10,7 +10,7 @@ def _is_schema_scoped_engine(engine: Engine) -> bool:
 
 
 def execute_sql_file(engine: Engine, sql: str, database: str | None = None, pg_database: str | None = None) -> SqlFileRunResponse:
-    statements = [str(s).strip() for s in sqlparse.parse(sql) if str(s).strip()]
+    statements = _split_sql_statements(sql)
 
     if not statements:
         raise ValueError("SQL 文件中未找到可执行的语句")
@@ -31,6 +31,11 @@ def execute_sql_file(engine: Engine, sql: str, database: str | None = None, pg_d
                 cleanup_engine = True
     else:
         cleanup_engine = False
+
+    engine, clickhouse_engine_changed = _switch_clickhouse_database(engine, database)
+    if clickhouse_engine_changed:
+        cleanup_engine = True
+        database = None
 
     try:
         try:

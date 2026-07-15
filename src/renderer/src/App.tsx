@@ -1,6 +1,7 @@
 ﻿import {
   CheckCircleOutlined,
   CloseCircleOutlined,
+  CopyOutlined,
   DatabaseOutlined,
   FileAddOutlined,
   GithubOutlined,
@@ -11,6 +12,7 @@
   FolderAddOutlined,
   FolderOpenOutlined,
   LoadingOutlined,
+  LinkOutlined,
   MoonOutlined,
   PlayCircleOutlined,
   PlusOutlined,
@@ -147,6 +149,19 @@ import {
   type ImperativeModalHandle
 } from './app/modal-region'
 import { ConnectionEditorModal } from './app/connection-editor-modal'
+import {
+  buildAIContextSourceId,
+  mergeAIContextSources,
+  pruneManualAIContextsForPrimary,
+  resolveAIContextDatabaseSelection,
+  resolveAIExecutionContextSource,
+  shouldSwitchAIPrimaryContext
+} from './app/ai-context'
+import {
+  buildConnectionDetailsText,
+  buildJdbcUrl,
+  supportsJdbcUrl
+} from './app/connection-clipboard'
 import ResultTablePanel, { type HorizontalScrollTableRef } from './app/result-table-panel'
 import { clampResultColumnWidth } from './app/query-utils'
 import TableDesignerPanel from './app/table-designer-panel'
@@ -529,6 +544,7 @@ function App(): React.JSX.Element {
   const [connectionModalOpen, setConnectionModalOpen] = useState(false)
   const [connectionMode, setConnectionMode] = useState<'create' | 'edit'>('create')
   const [editingConnectionInfoId, setEditingConnectionInfoId] = useState<string>()
+  const [connectionModalFolderId, setConnectionModalFolderId] = useState<string>()
   const [connectionLoading, setConnectionLoading] = useState(false)
   const [testingConnection, setTestingConnection] = useState(false)
   const [testingSshConnection, setTestingSshConnection] = useState(false)
@@ -1453,6 +1469,7 @@ function App(): React.JSX.Element {
           </div>
           {(isFocused || isSelected) && (
             <Space className="connection-tree-actions" size={2}>
+              {renderAIContextButton(node)}
               {renderDatabaseSelector(connection.connection_id)}
               <Button
                 className="connection-tree-icon-btn"
@@ -1725,6 +1742,26 @@ function App(): React.JSX.Element {
         folder.id !== excludeFolderId &&
         folder.name.trim().toLowerCase() === name.trim().toLowerCase()
     )
+
+  const createConnectionFolder = (name: string): string | undefined => {
+    const nextName = name.trim()
+    if (!nextName) {
+      messageApi.warning('请输入分组名称')
+      return undefined
+    }
+    if (folderNameExists(nextName)) {
+      messageApi.warning('分组名称已存在')
+      return undefined
+    }
+
+    const folderId = globalThis.crypto?.randomUUID?.() ?? `folder-${Date.now()}`
+    setConnectionFolders((current) => [{ id: folderId, name: nextName }, ...current])
+    setConnectionFolderOrder((current) => [folderId, ...current.filter((id) => id !== folderId)])
+    setExpandedKeys((current) =>
+      current.includes(`folder:${folderId}`) ? current : [...current, `folder:${folderId}`]
+    )
+    return folderId
+  }
 
   const openCreateFolderModal = (): void => {
     setFolderEditorMode('create')
@@ -3422,24 +3459,39 @@ function App(): React.JSX.Element {
     }
   }
 
-  const contextSourceId = (
-    source: Pick<AIContextSource, 'type' | 'connectionId' | 'database' | 'schema' | 'pgDatabase'>
-  ): string =>
-    [
-      source.type,
-      source.connectionId,
-      source.pgDatabase ?? '',
-      source.database ?? '',
-      source.schema ?? ''
-    ].join(':')
+  const copyConnectionDetails = async (connectionId: string): Promise<void> => {
+    try {
+      const connection = await requestJson<ConnectionFormValues>(`/connections/${connectionId}`)
+      await navigator.clipboard.writeText(buildConnectionDetailsText(connection))
+      messageApi.success('连接信息已复制')
+    } catch (err) {
+      showError(err instanceof Error ? err.message : '复制连接信息失败')
+    }
+  }
+
+  const copyConnectionJdbcUrl = async (connectionId: string): Promise<void> => {
+    try {
+      const connection = await requestJson<ConnectionFormValues>(`/connections/${connectionId}`)
+      const jdbcUrl = buildJdbcUrl(connection)
+      if (!jdbcUrl) {
+        messageApi.warning('当前连接无法生成 JDBC URL')
+        return
+      }
+      await navigator.clipboard.writeText(jdbcUrl)
+      messageApi.success('JDBC URL 已复制')
+    } catch (err) {
+      showError(err instanceof Error ? err.message : '复制 JDBC URL 失败')
+    }
+  }
 
   const buildAIContextSourceFromNode = (node: DatabaseTreeNode): AIContextSource | undefined => {
-    if (!node.connectionId || (node.kind !== 'database' && node.kind !== 'pg-schema')) {
+    if (!node.connectionId) {
       return undefined
     }
 
     const connection = getConnection(node.connectionId)
-    if (!connection) {
+    const isSQLiteDatabaseNode = node.kind === 'connection' && connection?.database_type === 'sqlite'
+    if (!connection || (!isSQLiteDatabaseNode && node.kind !== 'database' && node.kind !== 'pg-schema')) {
       return undefined
     }
 
@@ -3449,7 +3501,11 @@ function App(): React.JSX.Element {
       connectionId: node.connectionId,
       connectionName: connection.name,
       dbType: connection.database_type,
-      database: node.kind === 'pg-schema' ? node.pgDatabaseName : node.databaseName,
+      database: isSQLiteDatabaseNode
+        ? getDefaultDatabaseName(connection)
+        : node.kind === 'pg-schema'
+          ? node.pgDatabaseName
+          : node.databaseName,
       schema: node.kind === 'pg-schema' ? node.databaseName : undefined,
       pgDatabase:
         node.kind === 'pg-schema'
@@ -3462,13 +3518,71 @@ function App(): React.JSX.Element {
       storageSizeDisplay: node.storageSizeDisplay,
       storageSizeBytes: node.storageSizeBytes
     }
-    source.id = contextSourceId(source)
+    source.id = buildAIContextSourceId(source)
     return source
   }
 
   const addAIContextSource = (node: DatabaseTreeNode): void => {
     const source = buildAIContextSourceFromNode(node)
     if (!source) {
+      return
+    }
+
+    const activeConnection = getConnection(aiActiveContext?.connectionId)
+    const activeSource: AIContextSource | undefined =
+      aiActiveContext && activeConnection?.is_open
+        ? {
+            id: buildAIContextSourceId({
+              type:
+                isSchemaScopedType(activeConnection.database_type) &&
+                aiActiveContext.databaseName
+                  ? 'schema'
+                  : 'database',
+              connectionId: aiActiveContext.connectionId,
+              database: isSchemaScopedType(activeConnection.database_type)
+                ? aiActiveContext.pgDatabaseName
+                : aiActiveContext.databaseName,
+              schema: isSchemaScopedType(activeConnection.database_type)
+                ? aiActiveContext.databaseName
+                : undefined,
+              pgDatabase: isSchemaScopedType(activeConnection.database_type)
+                ? aiActiveContext.pgDatabaseName
+                : undefined
+            }),
+            type:
+              isSchemaScopedType(activeConnection.database_type) &&
+              aiActiveContext.databaseName
+                ? 'schema'
+                : 'database',
+            connectionId: aiActiveContext.connectionId,
+            connectionName: activeConnection.name,
+            dbType: activeConnection.database_type,
+            database: isSchemaScopedType(activeConnection.database_type)
+              ? aiActiveContext.pgDatabaseName
+              : aiActiveContext.databaseName,
+            schema: isSchemaScopedType(activeConnection.database_type)
+              ? aiActiveContext.databaseName
+              : undefined,
+            pgDatabase: isSchemaScopedType(activeConnection.database_type)
+              ? aiActiveContext.pgDatabaseName
+              : undefined
+          }
+        : undefined
+    if (activeSource?.id === source.id) {
+      messageApi.info('该数据源已是当前 AI 主上下文')
+      setAiPanelOpen(true)
+      return
+    }
+
+    if (shouldSwitchAIPrimaryContext(activeSource, source)) {
+      setAiActiveContext({
+        connectionId: source.connectionId,
+        databaseName: source.type === 'schema' ? source.schema : undefined,
+        pgDatabaseName: source.pgDatabase ?? source.database
+      })
+      setAiContextSources((current) => pruneManualAIContextsForPrimary(current, source))
+      messageApi.success('已切换 AI 主上下文')
+      setAiPanelOpen(true)
       return
     }
 
@@ -3696,7 +3810,9 @@ function App(): React.JSX.Element {
   }
 
   const renderAIContextButton = (node: DatabaseTreeNode): React.ReactNode => {
-    if (node.kind !== 'database' && node.kind !== 'pg-schema') {
+    const connection = getConnection(node.connectionId)
+    const isSQLiteDatabaseNode = node.kind === 'connection' && connection?.database_type === 'sqlite'
+    if (!isSQLiteDatabaseNode && node.kind !== 'database' && node.kind !== 'pg-schema') {
       return null
     }
 
@@ -3739,6 +3855,12 @@ function App(): React.JSX.Element {
     }
     if (key === 'run-sql') {
       void openSqlFileDialog(connection.connection_id)
+    }
+    if (key === 'copy-connection-details') {
+      void copyConnectionDetails(connection.connection_id)
+    }
+    if (key === 'copy-jdbc-url') {
+      void copyConnectionJdbcUrl(connection.connection_id)
     }
     if (key === 'move-root') {
       moveConnectionsToFolder(targetConnectionIds, undefined)
@@ -4010,6 +4132,25 @@ function App(): React.JSX.Element {
           ]),
       ...(connection.database_type !== 'mongodb' && connection.database_type !== 'redis'
         ? [{ key: 'run-sql', label: '运行 SQL 文件', icon: <PlayCircleOutlined /> }]
+        : []),
+      { type: 'divider' as const },
+      ...(connection.database_type !== 'sqlite'
+        ? [
+            {
+              key: 'copy-connection-details',
+              label: '复制连接信息',
+              icon: <CopyOutlined />
+            }
+          ]
+        : []),
+      ...(supportsJdbcUrl(connection.database_type)
+        ? [
+            {
+              key: 'copy-jdbc-url',
+              label: '复制为 JDBC URL',
+              icon: <LinkOutlined />
+            }
+          ]
         : []),
       ...(connectionFolders.length > 0
         ? [
@@ -5148,6 +5289,7 @@ function App(): React.JSX.Element {
     const defaults = buildCreateConnectionDefaults(nextDatabaseType)
     setConnectionMode('create')
     setEditingConnectionInfoId(undefined)
+    setConnectionModalFolderId(undefined)
     if (connectionModalHydrationFrameRef.current != null) {
       window.cancelAnimationFrame(connectionModalHydrationFrameRef.current)
       connectionModalHydrationFrameRef.current = undefined
@@ -5177,6 +5319,7 @@ function App(): React.JSX.Element {
     }
     setConnectionMode('edit')
     setEditingConnectionInfoId(connection.connection_id)
+    setConnectionModalFolderId(undefined)
     flushSync(() => {
       setConnectionModalDatabaseType(connection.database_type)
     })
@@ -6539,6 +6682,17 @@ function App(): React.JSX.Element {
       })
       const nextConnections = [...connections, connection]
       setConnections(nextConnections)
+      if (
+        connectionModalFolderId &&
+        connectionFolders.some((folder) => folder.id === connectionModalFolderId)
+      ) {
+        moveConnectionsToFolder([connection.connection_id], connectionModalFolderId)
+        setExpandedKeys((current) =>
+          current.includes(`folder:${connectionModalFolderId}`)
+            ? current
+            : [...current, `folder:${connectionModalFolderId}`]
+        )
+      }
       setSelectedConnectionId(connection.connection_id)
       selectConnectionNodes([connection.connection_id], connection.connection_id)
       refreshTree(nextConnections)
@@ -8595,65 +8749,80 @@ function App(): React.JSX.Element {
     startupUiReady || backendStatus.state === 'failed' || backendStatus.state === 'crashed'
   const backendStatusIcon = backendReady ? <CheckCircleOutlined /> : <CloseCircleOutlined />
   const activeAIConnection = getConnection(aiActiveContext?.connectionId)
-  const aiContextConnection = activeAIConnection?.is_open ? activeAIConnection : undefined
-  const aiDatabase = isSchemaScopedType(aiContextConnection?.database_type)
+  const activeAIContextConnection = activeAIConnection?.is_open ? activeAIConnection : undefined
+  const activeAIDatabase = isSchemaScopedType(activeAIContextConnection?.database_type)
     ? aiActiveContext?.databaseName
     : aiActiveContext?.databaseName
-  const aiPgDatabase =
-    isSchemaScopedType(aiContextConnection?.database_type) && aiContextConnection
+  const activeAIPgDatabase =
+    isSchemaScopedType(activeAIContextConnection?.database_type) && activeAIContextConnection
       ? aiActiveContext?.pgDatabaseName
       : undefined
-  const aiDbName = isSchemaScopedType(aiContextConnection?.database_type)
-    ? [aiPgDatabase, aiDatabase].filter(Boolean).join('.')
-    : aiDatabase
+  const activeAIDbName = isSchemaScopedType(activeAIContextConnection?.database_type)
+    ? [activeAIPgDatabase, activeAIDatabase].filter(Boolean).join('.')
+    : activeAIDatabase
   const primaryAIContextSource: AIContextSource | undefined = useMemo(
     () =>
-      aiContextConnection && aiDbName
+      activeAIContextConnection && activeAIDbName
         ? {
-            id: contextSourceId({
+            id: buildAIContextSourceId({
               type:
-                isSchemaScopedType(aiContextConnection.database_type) && aiDatabase
+                isSchemaScopedType(activeAIContextConnection.database_type) && activeAIDatabase
                   ? 'schema'
                   : 'database',
-              connectionId: aiContextConnection.connection_id,
-              database: isSchemaScopedType(aiContextConnection.database_type)
-                ? aiPgDatabase
-                : aiDatabase,
-              schema: isSchemaScopedType(aiContextConnection.database_type)
-                ? aiDatabase
+              connectionId: activeAIContextConnection.connection_id,
+              database: isSchemaScopedType(activeAIContextConnection.database_type)
+                ? activeAIPgDatabase
+                : activeAIDatabase,
+              schema: isSchemaScopedType(activeAIContextConnection.database_type)
+                ? activeAIDatabase
                 : undefined,
-              pgDatabase: isSchemaScopedType(aiContextConnection.database_type)
-                ? aiPgDatabase
+              pgDatabase: isSchemaScopedType(activeAIContextConnection.database_type)
+                ? activeAIPgDatabase
                 : undefined
             }),
             type:
-              isSchemaScopedType(aiContextConnection.database_type) && aiDatabase
+              isSchemaScopedType(activeAIContextConnection.database_type) && activeAIDatabase
                 ? 'schema'
                 : 'database',
-            connectionId: aiContextConnection.connection_id,
-            connectionName: aiContextConnection.name,
-            dbType: aiContextConnection.database_type,
-            database: isSchemaScopedType(aiContextConnection.database_type)
-              ? aiPgDatabase
-              : aiDatabase,
-            schema: isSchemaScopedType(aiContextConnection.database_type) ? aiDatabase : undefined,
-            pgDatabase: isSchemaScopedType(aiContextConnection.database_type)
-              ? aiPgDatabase
+            connectionId: activeAIContextConnection.connection_id,
+            connectionName: activeAIContextConnection.name,
+            dbType: activeAIContextConnection.database_type,
+            database: isSchemaScopedType(activeAIContextConnection.database_type)
+              ? activeAIPgDatabase
+              : activeAIDatabase,
+            schema: isSchemaScopedType(activeAIContextConnection.database_type)
+              ? activeAIDatabase
+              : undefined,
+            pgDatabase: isSchemaScopedType(activeAIContextConnection.database_type)
+              ? activeAIPgDatabase
               : undefined
           }
         : undefined,
-    [aiContextConnection, aiDatabase, aiDbName, aiPgDatabase, isSchemaScopedType]
+    [
+      activeAIContextConnection,
+      activeAIDatabase,
+      activeAIDbName,
+      activeAIPgDatabase,
+      isSchemaScopedType
+    ]
   )
   const effectiveAIContextSources = useMemo(
-    () =>
-      primaryAIContextSource
-        ? [
-            primaryAIContextSource,
-            ...aiContextSources.filter((source) => source.id !== primaryAIContextSource.id)
-          ]
-        : aiContextSources,
+    () => mergeAIContextSources(primaryAIContextSource, aiContextSources),
     [aiContextSources, primaryAIContextSource]
   )
+  const executionAIContextSource = resolveAIExecutionContextSource(
+    primaryAIContextSource,
+    effectiveAIContextSources
+  )
+  const executionAIConnection = getConnection(executionAIContextSource?.connectionId)
+  const aiContextConnection = executionAIConnection
+  const executionAIDatabaseSelection = resolveAIContextDatabaseSelection(
+    executionAIContextSource,
+    isSchemaScopedType(aiContextConnection?.database_type)
+  )
+  const aiDatabase = executionAIDatabaseSelection.database
+  const aiPgDatabase = executionAIDatabaseSelection.pgDatabase
+  const aiDbName = executionAIDatabaseSelection.dbName
   const focusedConnection = getConnection(focusedTreeNode?.connectionId)
   const focusedResource = useMemo(
     () =>
@@ -8713,6 +8882,7 @@ function App(): React.JSX.Element {
         connectionSummaries={connectionSummaries}
         effectiveAIContextSources={effectiveAIContextSources}
         primaryAIContextSource={primaryAIContextSource}
+        executionAIContextSource={executionAIContextSource}
         removeAIContextSource={removeAIContextSource}
         handleAiPanelWorkspaceAction={handleAiPanelWorkspaceAction}
         handleAiPanelAgentDataChanged={handleAiPanelAgentDataChanged}
@@ -8732,6 +8902,7 @@ function App(): React.JSX.Element {
     connectionSummaries,
     effectiveAIContextSources,
     primaryAIContextSource,
+    executionAIContextSource,
     removeAIContextSource,
     handleAiPanelWorkspaceAction,
     handleAiPanelAgentDataChanged,
@@ -10393,13 +10564,23 @@ function App(): React.JSX.Element {
           driverLabel={
             selectedManualDriver ? driverTypeLabel(selectedManualDriver.driver_type) : ''
           }
+          folderOptions={connectionFolders.map((folder) => ({
+            label: folder.name,
+            value: folder.id
+          }))}
+          selectedFolderId={connectionModalFolderId}
           onOk={() => void saveConnection()}
-          onCancel={() => setConnectionModalOpen(false)}
+          onCancel={() => {
+            setConnectionModalOpen(false)
+            setConnectionModalFolderId(undefined)
+          }}
           onTestConnection={() => void testConnection()}
           onTestSshConnection={() => void testSshConnection()}
           onSelectSqliteFile={() => void selectSqliteFile()}
           onOpenDriverManager={openDriverManager}
           onDriverChange={handleConnectionDriverChange}
+          onFolderChange={setConnectionModalFolderId}
+          onCreateFolder={createConnectionFolder}
         />
         <Modal
           title="备份"

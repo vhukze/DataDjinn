@@ -18,10 +18,11 @@ jobs:
         include:
           - os: windows-latest
             label: Windows
-            build_command: npm run build:win:installer
+            build_command: npm run build:win:all
             artifact_name: release-windows
             artifact_paths: |
               dist/*.exe
+              dist/*.zip
               dist/*.yml
               dist/*.blockmap
 
@@ -72,6 +73,9 @@ jobs:
 
       - name: Build packages
         run: ${{ matrix.build_command }}
+
+      - name: Run packaged build smoke test
+        run: npx playwright test -c playwright.regression.config.js tests/regression/packaged-build-smoke.spec.ts
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4

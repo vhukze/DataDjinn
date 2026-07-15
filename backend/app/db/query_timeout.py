@@ -33,8 +33,18 @@ def apply_query_timeout(connection: Connection) -> Iterator[None]:
                 raw_connection.call_timeout = seconds * 1000
                 cleanup = lambda: setattr(raw_connection, "call_timeout", previous_timeout)
         elif dialect in {"clickhouse", "clickhousedb"}:
-            connection.execute(text(f"SET max_execution_time = {seconds}"))
-            cleanup = lambda: connection.execute(text("SET max_execution_time = 0"))
+            raw_connection = connection.connection.driver_connection
+            client = raw_connection.client
+            previous_timeout = client.get_client_setting("max_execution_time")
+            client.set_client_setting("max_execution_time", seconds)
+
+            def restore_clickhouse_timeout() -> None:
+                if previous_timeout is None:
+                    client.params.pop("max_execution_time", None)
+                else:
+                    client.set_client_setting("max_execution_time", previous_timeout)
+
+            cleanup = restore_clickhouse_timeout
     except Exception:
         cleanup = None
 

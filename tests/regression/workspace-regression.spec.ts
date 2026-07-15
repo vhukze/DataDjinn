@@ -33,8 +33,11 @@ async function launchRegressionApp(options = {}) {
   const userDataDir = readFixtureUserDataDir()
   const testWindowHeight = options.windowHeight
   const aiStreamEvents = options.aiStreamEvents
+  const packagedExecutable = process.env.DATADJINN_REGRESSION_EXECUTABLE
   return electron.launch({
-    args: [electronEntry],
+    ...(packagedExecutable
+      ? { executablePath: packagedExecutable }
+      : { args: [electronEntry] }),
     env: {
       ...process.env,
       DATADJINN_TEST_RUN_ROOT: regressionRootDir,
@@ -2090,6 +2093,56 @@ test.describe('workspace regression', () => {
     }
   })
 
+  test('sql comments should not create executable statements or break formatted queries @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openQueryWorkspace(page)
+
+      await expect(page.locator('.sql-editor-statement-execute')).toHaveCount(0, { timeout: 10000 })
+
+      await focusMonacoEditor(page)
+      await page.keyboard.press('Control+A')
+      await page.keyboard.type('-- 只有一行注释')
+      await expect(page.locator('.sql-editor-statement-execute')).toHaveCount(0, { timeout: 10000 })
+
+      await page.keyboard.press('Control+A')
+      await page.keyboard.type(
+        "SELECT\n  id, -- 字段说明\n  name\nFROM small_items\nWHERE id = 1; -- 末尾说明"
+      )
+      await expect(page.locator('.sql-editor-statement-execute')).toHaveCount(1, { timeout: 10000 })
+
+      const statementPosition = await page.locator('.sql-editor-container').evaluate((container) => {
+        const selectLine = Array.from(container.querySelectorAll('.view-lines > div')).find(
+          (line) => (line.textContent ?? '').trim() === 'SELECT'
+        )
+        const executeButton = container.querySelector('.sql-editor-statement-execute')
+        return {
+          selectY: selectLine?.getBoundingClientRect().y,
+          executeY: executeButton?.getBoundingClientRect().y
+        }
+      })
+      expect(statementPosition.selectY).toBeDefined()
+      expect(statementPosition.executeY).toBeDefined()
+      expect(Math.abs(statementPosition.executeY - statementPosition.selectY)).toBeLessThan(3)
+
+      await focusMonacoEditor(page)
+      await page.keyboard.press('Control+A')
+      await page.locator('.query-execute-button').first().click()
+      const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      await expect(activeResult.locator('.result-table .ant-table-tbody')).toContainText('alpha', {
+        timeout: 30000
+      })
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
   test('query toolbar format button should format current SQL and full selection @bug', async () => {
     const electronApp = await launchRegressionApp()
 
@@ -3810,6 +3863,108 @@ test.describe('workspace regression', () => {
       expect(connectionMetrics.closeMs, 'connection editor closes too slowly').toBeLessThan(700)
     } finally {
       await electronApp.close()
+    }
+  })
+
+  test('manual AI contexts should provide a temporary primary context and collapse cleanly @bug', async () => {
+    const userDataDir = readFixtureUserDataDir()
+    const connectionsPath = path.join(userDataDir, 'connections.json')
+    const originalConnectionsRaw = fs.readFileSync(connectionsPath, 'utf-8')
+    const connectionStore = JSON.parse(originalConnectionsRaw)
+    const baseConnection = connectionStore.connections[0]
+    const contextConnectionIds = [
+      'ai-context-sqlite-1',
+      'ai-context-sqlite-2',
+      'ai-context-sqlite-3',
+      'ai-context-sqlite-4'
+    ]
+    connectionStore.connections = contextConnectionIds.map((connectionId, index) => ({
+      ...baseConnection,
+      connection_id: connectionId,
+      name: `AI 上下文库 ${index + 1}`
+    }))
+    fs.writeFileSync(connectionsPath, JSON.stringify(connectionStore, null, 2), 'utf-8')
+
+    const electronApp = await launchRegressionApp({
+      aiStreamEvents: [{ type: 'done', finish_reason: 'stop' }]
+    })
+    let page
+    let originalAIConfigs
+
+    try {
+      page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      originalAIConfigs = await page.evaluate(() => window.api.getAIConfigs())
+      await page.evaluate(async () => {
+        await window.api.setAIConfigs([
+          {
+            id: 'ai-context-management-regression',
+            name: 'AI context management regression',
+            enabled: true,
+            provider: 'openai-compatible',
+            base_url: 'https://example.com/v1',
+            api_key: 'test-key',
+            model: 'test-model',
+            max_context_tokens: 200000
+          }
+        ])
+      })
+      await page.reload()
+      await waitForAppReady(page)
+      for (const connectionId of contextConnectionIds) {
+        const connectionNode = treeNode(page, `connection:${connectionId}`)
+        await connectionNode.click()
+        const addButton = connectionNode.locator('.tree-ai-context-btn')
+        await expect(addButton).toBeVisible({ timeout: 10000 })
+        await addButton.click()
+      }
+
+      const contextPanel = page.locator('.ai-context-sources')
+      await expect(contextPanel).toContainText('4 个')
+      await expect(contextPanel.locator('.ai-context-source-item')).toHaveCount(3)
+      await expect(contextPanel.locator('.ai-context-source-item').first()).toContainText(
+        '临时主上下文'
+      )
+      await expect(contextPanel.locator('.ai-context-source-item').nth(1)).toContainText('补充')
+      await expect(page.getByText('未选择上下文', { exact: true })).toHaveCount(0)
+
+      const input = page.getByPlaceholder('输入问题')
+      await input.fill('读取当前上下文')
+      await input.press('Enter')
+      await expect(page.locator('.ai-message-user').last()).toContainText('读取当前上下文', {
+        timeout: 10000
+      })
+      await expect(page.locator('.ant-modal-confirm-error')).toHaveCount(0)
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+
+      await contextPanel.getByRole('button', { name: '展开全部上下文' }).click()
+      await expect(contextPanel.locator('.ai-context-source-item')).toHaveCount(4)
+
+      const duplicateNode = treeNode(page, `connection:${contextConnectionIds[1]}`)
+      await duplicateNode.click()
+      await duplicateNode.locator('.tree-ai-context-btn').click()
+      await expect(contextPanel).toContainText('4 个')
+      await expect(contextPanel.locator('.ai-context-source-item')).toHaveCount(4)
+
+      await contextPanel
+        .locator('.ai-context-source-item')
+        .first()
+        .getByRole('button', { name: '从当前 AI 上下文移除' })
+        .click()
+      await expect(contextPanel).toContainText('3 个')
+      await expect(contextPanel.locator('.ai-context-source-item').first()).toContainText(
+        '临时主上下文'
+      )
+    } finally {
+      if (page && originalAIConfigs) {
+        await page.evaluate(
+          (configs) => window.api.setAIConfigs(configs),
+          originalAIConfigs
+        )
+      }
+      await electronApp.close()
+      fs.writeFileSync(connectionsPath, originalConnectionsRaw, 'utf-8')
     }
   })
 

@@ -38,6 +38,7 @@ type AIDockPanelHostProps = {
   connectionSummaries: ConnectionSummary[]
   effectiveAIContextSources: AIContextSource[]
   primaryAIContextSource?: AIContextSource
+  executionAIContextSource?: AIContextSource
   removeAIContextSource: (sourceId: string) => void
   handleAiPanelWorkspaceAction: (action: AIWorkspaceAction) => void
   handleAiPanelAgentDataChanged: () => void
@@ -54,7 +55,8 @@ const MemoAIPanel = memo(
     prev.getConnectionContext === next.getConnectionContext &&
     prev.getWorkspaceSnapshot === next.getWorkspaceSnapshot &&
     prev.contextSources === next.contextSources &&
-    prev.primaryContextSourceId === next.primaryContextSourceId
+    prev.primaryContextSourceId === next.primaryContextSourceId &&
+    prev.executionContextSourceId === next.executionContextSourceId
 )
 
 const AIDockPanelHost = memo(function AIDockPanelHost({
@@ -67,6 +69,7 @@ const AIDockPanelHost = memo(function AIDockPanelHost({
   connectionSummaries,
   effectiveAIContextSources,
   primaryAIContextSource,
+  executionAIContextSource,
   removeAIContextSource,
   handleAiPanelWorkspaceAction,
   handleAiPanelAgentDataChanged,
@@ -105,11 +108,11 @@ const AIDockPanelHost = memo(function AIDockPanelHost({
   ])
 
   const hasDatabaseContext = Boolean(
-    aiContextConnection?.is_open && aiContextConnection.connection_id
+    aiContextConnection?.connection_id
   )
   const getConnectionContext = useCallback(
     () => ({
-      connectionId: aiContextConnection?.is_open ? aiContextConnection.connection_id : undefined,
+      connectionId: aiContextConnection?.connection_id,
       dbType: aiContextConnection?.database_type,
       dbName: aiDbName,
       database: aiDatabase,
@@ -120,7 +123,6 @@ const AIDockPanelHost = memo(function AIDockPanelHost({
     [
       aiContextConnection?.connection_id,
       aiContextConnection?.database_type,
-      aiContextConnection?.is_open,
       aiContextConnection?.name,
       aiContextConnection?.server_version,
       aiDbName,
@@ -137,6 +139,7 @@ const AIDockPanelHost = memo(function AIDockPanelHost({
       getWorkspaceSnapshot={getWorkspaceSnapshot}
       contextSources={effectiveAIContextSources}
       primaryContextSourceId={primaryAIContextSource?.id}
+      executionContextSourceId={executionAIContextSource?.id}
       onRemoveContextSource={removeAIContextSource}
       onWorkspaceAction={handleAiPanelWorkspaceAction}
       onAgentDataChanged={handleAiPanelAgentDataChanged}

@@ -7,6 +7,7 @@ from typing import Any
 
 import sqlparse
 from sqlalchemy import Engine, quoted_name, text
+from sqlparse.tokens import Comment, Punctuation
 
 from app.db.mongo_utils import is_mongo_client, mongo_default_database, serialize_mongo_document
 from app.db.query_timeout import apply_query_timeout
@@ -18,11 +19,47 @@ INTERNAL_PAGING_COLUMNS = {"DATADJINN_RN"}
 
 
 def _split_sql_statements(sql: str) -> list[str]:
-    return [str(statement).strip().rstrip(";") for statement in sqlparse.parse(sql) if str(statement).strip()]
+    statements: list[str] = []
+    for statement in sqlparse.parse(sql):
+        statement_sql = str(statement)
+        offset = 0
+        executable_end = -1
+
+        for token in statement.flatten():
+            token_end = offset + len(token.value)
+            is_comment = token.ttype in Comment
+            is_terminator = token.ttype is Punctuation and token.value == ";"
+            if not token.is_whitespace and not is_comment and not is_terminator:
+                executable_end = token_end
+            offset = token_end
+
+        if executable_end < 0:
+            continue
+
+        normalized = statement_sql[:executable_end].strip()
+        if normalized:
+            statements.append(normalized)
+
+    return statements
 
 
 def _is_schema_scoped_engine(engine: Engine) -> bool:
     return engine.dialect.name in {"postgresql", "gaussdb"}
+
+
+def _is_clickhouse_engine(engine: Engine) -> bool:
+    return engine.dialect.name in {"clickhouse", "clickhousedb"}
+
+
+def _switch_clickhouse_database(engine: Engine, database: str | None) -> tuple[Engine, bool]:
+    if not database or not _is_clickhouse_engine(engine) or engine.url.database == database:
+        return engine, False
+
+    factory = getattr(engine, "_datadjinn_engine_factory", None)
+    if not callable(factory):
+        return engine, False
+
+    return factory(database), True
 
 
 def _is_internal_paging_column(column: Any) -> bool:
@@ -104,6 +141,11 @@ def execute_readonly_query(engine: Engine, sql: str, limit: int | None, offset: 
                 engine = factory(pg_database)
                 cleanup_engine = True
 
+    engine, clickhouse_engine_changed = _switch_clickhouse_database(engine, database)
+    if clickhouse_engine_changed:
+        cleanup_engine = True
+        database = None
+
     try:
         statement = _validate_readonly_sql(sql)
 
@@ -136,6 +178,11 @@ def execute_query(engine: Engine, sql: str, limit: int | None, offset: int = 0, 
             if callable(factory):
                 engine = factory(pg_database)
                 cleanup_engine = True
+
+    engine, clickhouse_engine_changed = _switch_clickhouse_database(engine, database)
+    if clickhouse_engine_changed:
+        cleanup_engine = True
+        database = None
 
     try:
         statements = _split_sql_statements(sql)
@@ -783,12 +830,12 @@ def _execute_mutation_statements(engine: Engine, statements: list[str], database
 
 
 def _validate_single_sql(sql: str) -> str:
-    statements = [statement for statement in sqlparse.parse(sql) if str(statement).strip()]
+    statements = _split_sql_statements(sql)
 
     if len(statements) != 1:
         raise ValueError("只允许执行单条 SQL")
 
-    return str(statements[0]).strip().rstrip(";")
+    return statements[0]
 
 
 def _validate_readonly_sql(sql: str) -> str:
@@ -798,7 +845,7 @@ def _validate_readonly_sql(sql: str) -> str:
     if statement_type not in READONLY_TYPES:
         raise ValueError("只允许执行只读查询")
 
-    return str(statement).strip().rstrip(";")
+    return str(statement).strip()
 
 
 def _with_limit(engine: Engine, sql: str, limit: int, offset: int = 0) -> str:

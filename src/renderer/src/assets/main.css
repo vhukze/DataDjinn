@@ -5407,6 +5407,22 @@ body[data-theme='dark'] .import-connection-hero {
   gap: 12px;
 }
 
+.connection-folder-picker,
+.connection-folder-create-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.connection-folder-create-row {
+  margin-top: 8px;
+}
+
+.connection-folder-picker .ant-btn,
+.connection-folder-create-row .ant-btn {
+  min-width: 96px;
+}
+
 .connection-editor-side-actions {
   display: flex;
   justify-content: flex-end;
@@ -8735,6 +8751,13 @@ body[data-theme='dark'] .sql-editor-container .monaco-editor .selectionHighlight
   margin-bottom: 6px;
 }
 
+.ai-context-sources-toggle.ant-btn {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  padding: 0;
+}
+
 .ai-context-source-item {
   min-width: 0;
   padding: 5px 6px;
@@ -9862,6 +9885,15 @@ body[data-theme='dark'] .sql-editor-container .monaco-editor .selectionHighlight
     inset 0 1px 0 color-mix(in srgb, white 18%, transparent),
     0 0 0 3px color-mix(in srgb, var(--dj-accent) 10%, transparent),
     0 10px 22px color-mix(in srgb, var(--dj-accent) 10%, transparent) !important;
+}
+
+.ai-context-source-item > .ant-space:last-child {
+  flex: 0 0 auto;
+}
+
+.ai-context-source-item .ant-tag {
+  margin-inline-end: 0;
+  white-space: nowrap;
 }
 
 .ai-settings-modal .ant-input-affix-wrapper .ant-input,

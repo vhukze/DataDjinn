@@ -400,6 +400,29 @@ const getStatementTableReferences = (statementText: string): StatementTableRefer
 const toEditorTheme = (theme: 'dark' | 'light'): 'datadjinn-dark' | 'datadjinn-light' =>
   theme === 'dark' ? 'datadjinn-dark' : 'datadjinn-light'
 
+const findExecutableSqlOffset = (sql: string): number => {
+  let index = 0
+
+  while (index < sql.length) {
+    while (index < sql.length && /\s/.test(sql[index])) {
+      index += 1
+    }
+
+    if (sql[index] === '-' && sql[index + 1] === '-') {
+      const lineEnd = sql.indexOf('\n', index + 2)
+      if (lineEnd < 0) {
+        return -1
+      }
+      index = lineEnd + 1
+      continue
+    }
+
+    return index < sql.length && sql[index] !== ';' ? index : -1
+  }
+
+  return -1
+}
+
 const splitSqlStatements = (sql: string): { text: string; start: number; end: number }[] => {
   const statements: { text: string; start: number; end: number }[] = []
   const implicitStatementStarters = new Set([
@@ -425,15 +448,15 @@ const splitSqlStatements = (sql: string): { text: string; start: number; end: nu
 
   const appendStatement = (end: number): void => {
     const raw = sql.slice(start, end)
-    const trimmed = raw.trim()
-    if (!trimmed) {
+    const executableOffset = findExecutableSqlOffset(raw)
+    if (executableOffset < 0) {
       return
     }
-    const trimmedStartOffset = raw.search(/\S/)
-    const trimmedEndOffset = raw.length - raw.trimEnd().length
+    const executableSql = raw.slice(executableOffset)
+    const trimmedEndOffset = executableSql.length - executableSql.trimEnd().length
     statements.push({
-      text: trimmed,
-      start: start + Math.max(0, trimmedStartOffset),
+      text: executableSql.trimEnd(),
+      start: start + executableOffset,
       end: end - trimmedEndOffset
     })
   }
@@ -544,7 +567,12 @@ const splitSqlStatements = (sql: string): { text: string; start: number; end: nu
     }
 
     if (char === '\n' && parenthesesDepth === 0) {
-      const currentKeyword = sql.slice(start, index).trimStart().match(/^([A-Za-z]+)/)?.[1]?.toUpperCase()
+      const currentSql = sql.slice(start, index)
+      const currentOffset = findExecutableSqlOffset(currentSql)
+      const currentKeyword =
+        currentOffset >= 0
+          ? currentSql.slice(currentOffset).match(/^([A-Za-z]+)/)?.[1]?.toUpperCase()
+          : undefined
       const nextLine = sql.slice(index + 1)
       const nextMatch = nextLine.match(/^[\t ]*([A-Za-z]+)/)
       const nextKeyword = nextMatch?.[1]?.toUpperCase()
@@ -899,26 +927,7 @@ function SqlEditor({
 
     const statements = knownStatements ?? buildStatementInfos(model)
     if (statements.length === 0) {
-      const lineContent = model.getLineContent(position.lineNumber)
-      const trimmed = lineContent.trim()
-      if (!trimmed) {
-        return null
-      }
-      const rawStart = lineContent.search(/\S/)
-      const rawEnd = lineContent.length - lineContent.trimEnd().length
-      const startColumn = Math.max(1, rawStart + 1)
-      const endColumn = Math.max(startColumn + 1, lineContent.length - rawEnd + 1)
-      const start = model.getOffsetAt({ lineNumber: position.lineNumber, column: startColumn })
-      const end = model.getOffsetAt({ lineNumber: position.lineNumber, column: endColumn })
-      return {
-        text: trimmed,
-        start,
-        end,
-        startLineNumber: position.lineNumber,
-        startColumn,
-        endLineNumber: position.lineNumber,
-        endColumn
-      }
+      return null
     }
 
     const offset = model.getOffsetAt(position)

@@ -13,7 +13,8 @@ import {
   SendOutlined,
   SettingOutlined,
   StopOutlined,
-  ToolOutlined
+  ToolOutlined,
+  UpOutlined
 } from '@ant-design/icons'
 import {
   Alert,
@@ -39,6 +40,12 @@ import {
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  AI_CONTEXT_COLLAPSED_LIMIT,
+  getVisibleAIContextSources,
+  resolveAIContextSourceRole
+} from '../../app/ai-context'
+import type { AIContextSource } from '../../app/workspace-model'
 
 export type AIConfig = {
   provider?: 'openai-compatible' | 'anthropic'
@@ -143,21 +150,6 @@ type AgentConfirmationView = {
   estimated_impact?: unknown
 }
 
-export type AIContextSource = {
-  id: string
-  type: 'database' | 'schema'
-  connectionId: string
-  connectionName: string
-  dbType: string
-  database?: string
-  schema?: string
-  pgDatabase?: string
-  sizeDisplay?: string | null
-  sizeBytes?: number | null
-  storageSizeDisplay?: string | null
-  storageSizeBytes?: number | null
-}
-
 type AgentConnectionSummary = {
   connectionId: string
   name: string
@@ -231,6 +223,7 @@ interface AIPanelProps {
   getWorkspaceSnapshot?: () => AgentWorkspace | undefined
   contextSources?: AIContextSource[]
   primaryContextSourceId?: string
+  executionContextSourceId?: string
   onRemoveContextSource?: (sourceId: string) => void
   onWorkspaceAction?: (action: AgentWorkspaceAction) => void
   onAgentDataChanged?: () => void
@@ -545,6 +538,7 @@ export default function AIPanel({
   getWorkspaceSnapshot,
   contextSources = [],
   primaryContextSourceId,
+  executionContextSourceId,
   onRemoveContextSource,
   onWorkspaceAction,
   onAgentDataChanged,
@@ -578,6 +572,7 @@ export default function AIPanel({
   const [activeSessionId, setActiveSessionId] = useState<string>('')
   const [selectedConfigId, setSelectedConfigId] = useState<string>('')
   const [contextStats, setContextStats] = useState<AIContextStats | null>(null)
+  const [contextSourcesExpanded, setContextSourcesExpanded] = useState(false)
   const streamIdRef = useRef<string | null>(null)
   const sendButtonRef = useRef<HTMLButtonElement | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -2042,6 +2037,9 @@ export default function AIPanel({
       return null
     }
 
+    const canCollapse = contextSources.length > AI_CONTEXT_COLLAPSED_LIMIT
+    const visibleSources = getVisibleAIContextSources(contextSources, contextSourcesExpanded)
+
     return (
       <div className="ai-context-sources">
         <Flex justify="space-between" align="center" className="ai-context-sources-header">
@@ -2049,11 +2047,29 @@ export default function AIPanel({
             <DatabaseOutlined />
             <Typography.Text strong>当前 AI 上下文</Typography.Text>
           </Space>
-          <Tag>{contextSources.length}</Tag>
+          <Space size={4}>
+            <Tag>{contextSources.length} 个</Tag>
+            {canCollapse && (
+              <Button
+                type="text"
+                size="small"
+                className="ai-context-sources-toggle"
+                icon={contextSourcesExpanded ? <UpOutlined /> : <DownOutlined />}
+                title={contextSourcesExpanded ? '收起上下文' : '展开全部上下文'}
+                aria-label={contextSourcesExpanded ? '收起上下文' : '展开全部上下文'}
+                onClick={() => setContextSourcesExpanded((expanded) => !expanded)}
+              />
+            )}
+          </Space>
         </Flex>
         <Space direction="vertical" size={6} className="full-width">
-          {contextSources.map((source) => {
-            const isPrimary = source.id === primaryContextSourceId
+          {visibleSources.map((source) => {
+            const role = resolveAIContextSourceRole(
+              source.id,
+              primaryContextSourceId,
+              executionContextSourceId
+            )
+            const isPrimary = role === 'primary'
             return (
               <Flex
                 key={source.id}
@@ -2075,18 +2091,25 @@ export default function AIPanel({
                     </Typography.Text>
                   </div>
                 </Space>
-                {isPrimary ? (
-                  <Tag color="blue">当前</Tag>
-                ) : (
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<CloseOutlined />}
-                    title="从当前 AI 上下文移除"
-                    aria-label="从当前 AI 上下文移除"
-                    onClick={() => onRemoveContextSource?.(source.id)}
-                  />
-                )}
+                <Space size={4}>
+                  {isPrimary ? (
+                    <Tag color="blue">主上下文</Tag>
+                  ) : role === 'temporary-primary' ? (
+                    <Tag color="cyan">临时主上下文</Tag>
+                  ) : (
+                    <Tag>补充</Tag>
+                  )}
+                  {!isPrimary && (
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<CloseOutlined />}
+                      title="从当前 AI 上下文移除"
+                      aria-label="从当前 AI 上下文移除"
+                      onClick={() => onRemoveContextSource?.(source.id)}
+                    />
+                  )}
+                </Space>
               </Flex>
             )
           })}
@@ -2167,12 +2190,20 @@ export default function AIPanel({
       </Flex>
       <Space direction="vertical" className="full-width ai-panel" size="middle">
         {!ready && <Alert type="warning" showIcon message="请先配置并启用 AI 接口" />}
-        {ready && !hasDatabaseContext && (
+        {ready && contextSources.length === 0 && (
           <Alert
             type="info"
             showIcon
             message="未选择上下文"
             description="当前仅支持 AI 问答、整理连接信息和生成 SQL 到查询窗口，不能执行数据库查询或结构读取任务。"
+          />
+        )}
+        {ready && contextSources.length > 0 && !hasDatabaseContext && (
+          <Alert
+            type="warning"
+            showIcon
+            message="上下文连接不可用"
+            description="请先打开上下文对应的数据库连接，再使用结构读取或数据库操作能力。"
           />
         )}
         {renderContextSources()}

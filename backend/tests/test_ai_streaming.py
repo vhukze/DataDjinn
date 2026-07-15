@@ -49,6 +49,15 @@ class DatabaseAgentStreamingTests(unittest.TestCase):
         self.assertIn("内置产品知识库", prompt)
         self.assertIn("修改入口：点击应用右上角“设置”，在左侧选择“快捷键”", prompt)
         self.assertIn("导出连接", prompt)
+        self.assertIn("保存前可在连接弹框选择已有分组，也可直接新建分组", prompt)
+        self.assertIn("复制为 JDBC URL", prompt)
+        self.assertIn("所有受支持的 SQL 数据库都支持一致的 `--` 行注释处理", prompt)
+        self.assertIn("只含注释的区域不会显示执行按钮", prompt)
+        self.assertIn("分号后的尾注释也不会被识别成独立语句", prompt)
+        self.assertIn("第一个可用的手动上下文会作为临时主上下文", prompt)
+        self.assertIn("只能添加数据库或模式，重复项会自动去重", prompt)
+        self.assertIn("模式可向上合并为所属数据库", prompt)
+        self.assertIn("数据库也可下钻切换为某个模式", prompt)
         self.assertIn("软件功能和用法问题", prompt)
 
     def test_openai_stream_chat_emits_incremental_reasoning_and_tokens(self) -> None:

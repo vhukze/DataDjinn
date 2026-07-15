@@ -1097,7 +1097,16 @@ class ConnectionManager:
             port=primary_port,
             database=request.database or "default",
         )
-        return create_engine(url, pool_pre_ping=True)
+        request_snapshot = request.model_copy(deep=True)
+        engine = create_engine(url, pool_pre_ping=False)
+        setattr(
+            engine,
+            "_datadjinn_engine_factory",
+            lambda database_name: self._create_clickhouse_engine(
+                request_snapshot.model_copy(update={"database": database_name})
+            ),
+        )
+        return engine
 
     def _create_dm_engine(self, request: ConnectionRequest) -> Engine:
         if not request.host:

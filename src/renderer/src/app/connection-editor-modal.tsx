@@ -10,7 +10,8 @@ import {
   Switch,
   Typography
 } from 'antd'
-import { memo, useEffect } from 'react'
+import { PlusOutlined } from '@ant-design/icons'
+import { memo, useEffect, useState } from 'react'
 import type { FormInstance } from 'antd'
 import type { DatabaseType } from './data-sources'
 import type { ConnectionFormValues, DriverInfo } from './app-shared'
@@ -34,6 +35,8 @@ type ConnectionEditorModalProps = {
   manualDriverOptions: Array<{ label: string; value: string; disabled?: boolean }>
   selectedManualDriver?: DriverInfo
   driverLabel: string
+  folderOptions: Array<{ label: string; value: string }>
+  selectedFolderId?: string
   onOk: () => void
   onCancel: () => void
   onTestConnection: () => void
@@ -41,6 +44,8 @@ type ConnectionEditorModalProps = {
   onSelectSqliteFile: () => void
   onOpenDriverManager: () => void
   onDriverChange: (value: string) => void
+  onFolderChange: (value?: string) => void
+  onCreateFolder: (name: string) => string | undefined
 }
 
 export const ConnectionEditorModal = memo(function ConnectionEditorModal({
@@ -55,14 +60,20 @@ export const ConnectionEditorModal = memo(function ConnectionEditorModal({
   manualDriverOptions,
   selectedManualDriver,
   driverLabel,
+  folderOptions,
+  selectedFolderId,
   onOk,
   onCancel,
   onTestConnection,
   onTestSshConnection,
   onSelectSqliteFile,
   onOpenDriverManager,
-  onDriverChange
+  onDriverChange,
+  onFolderChange,
+  onCreateFolder
 }: ConnectionEditorModalProps) {
+  const [creatingFolder, setCreatingFolder] = useState(false)
+  const [newFolderName, setNewFolderName] = useState('')
   const driverDatabaseMeta =
     DRIVER_DATABASE_META[databaseType === 'dm' || databaseType === 'gaussdb' ? databaseType : 'dm']
   const sshEnabled = Form.useWatch('ssh_enabled', form) ?? false
@@ -108,6 +119,23 @@ export const ConnectionEditorModal = memo(function ConnectionEditorModal({
     }
   }, [form, open, sshEnabled, sshPort])
 
+  useEffect(() => {
+    if (!open) {
+      setCreatingFolder(false)
+      setNewFolderName('')
+    }
+  }, [open])
+
+  const addFolder = (): void => {
+    const folderId = onCreateFolder(newFolderName)
+    if (!folderId) {
+      return
+    }
+    onFolderChange(folderId)
+    setCreatingFolder(false)
+    setNewFolderName('')
+  }
+
   return (
     <Modal
       title={mode === 'edit' ? '编辑数据库连接' : '保存数据库连接'}
@@ -150,6 +178,50 @@ export const ConnectionEditorModal = memo(function ConnectionEditorModal({
             >
               <Input placeholder="例如：本地 SQLite" />
             </Form.Item>
+            {mode === 'create' && (
+              <Form.Item label="分组（可选）">
+                <div className="connection-folder-picker">
+                  <Select
+                    aria-label="连接分组"
+                    allowClear
+                    value={selectedFolderId}
+                    placeholder="不分组"
+                    options={folderOptions}
+                    onChange={onFolderChange}
+                  />
+                  <Button
+                    icon={<PlusOutlined />}
+                    aria-label="新建分组"
+                    onClick={() => setCreatingFolder((current) => !current)}
+                  >
+                    新建分组
+                  </Button>
+                </div>
+                {creatingFolder && (
+                  <div className="connection-folder-create-row">
+                    <Input
+                      aria-label="新分组名称"
+                      value={newFolderName}
+                      maxLength={80}
+                      placeholder="请输入分组名称"
+                      onChange={(event) => setNewFolderName(event.target.value)}
+                      onPressEnter={(event) => {
+                        event.preventDefault()
+                        addFolder()
+                      }}
+                    />
+                    <Button
+                      type="primary"
+                      aria-label="添加分组"
+                      disabled={!newFolderName.trim()}
+                      onClick={addFolder}
+                    >
+                      添加
+                    </Button>
+                  </div>
+                )}
+              </Form.Item>
+            )}
             {databaseType === 'sqlite' ? (
               <Form.Item label="SQLite 文件路径" required>
                 <div className="connection-file-picker">
