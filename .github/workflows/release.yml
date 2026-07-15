@@ -23,7 +23,7 @@ jobs:
             artifact_paths: |
               dist/*.exe
               dist/*.zip
-              dist/*.yml
+              dist/latest.yml
               dist/*.blockmap
 
     steps:
