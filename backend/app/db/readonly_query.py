@@ -158,6 +158,61 @@ def execute_readonly_query(engine: Engine, sql: str, limit: int | None, offset: 
             engine.dispose()
 
 
+def count_readonly_query(
+    engine: Engine,
+    sql: str,
+    database: str | None = None,
+    pg_database: str | None = None,
+) -> int:
+    if is_mongo_client(engine) or is_redis_client(engine):
+        return execute_readonly_query(engine, sql, None, 0, database, pg_database).row_count
+
+    cleanup_engine = False
+    if pg_database and _is_schema_scoped_engine(engine):
+        if engine.dialect.name == "postgresql":
+            from sqlalchemy import create_engine
+
+            engine = create_engine(engine.url.set(database=pg_database), pool_pre_ping=True)
+            cleanup_engine = True
+        else:
+            factory = getattr(engine, "_datadjinn_engine_factory", None)
+            if callable(factory):
+                engine = factory(pg_database)
+                cleanup_engine = True
+
+    engine, clickhouse_engine_changed = _switch_clickhouse_database(engine, database)
+    if clickhouse_engine_changed:
+        cleanup_engine = True
+        database = None
+
+    try:
+        statement = _validate_readonly_sql(sql)
+        alias_separator = " " if engine.dialect.name == "oracle" else " AS "
+        count_sql = (
+            "SELECT COUNT(*) AS __datadjinn_total_count FROM "
+            f"({statement}){alias_separator}__datadjinn_count_source"
+        )
+        if database and engine.dialect.name in {
+            "mysql",
+            "postgresql",
+            "gaussdb",
+            "dm",
+            "dmPython",
+            "oracle",
+            "clickhouse",
+            "clickhousedb",
+        }:
+            response = _execute_on_connection_with_context(engine, count_sql, None, 0, database)
+        else:
+            response = _execute_limited_query(engine, count_sql, None, 0)
+        if not response.rows:
+            return 0
+        return int(response.rows[0].get("__datadjinn_total_count", 0))
+    finally:
+        if cleanup_engine:
+            engine.dispose()
+
+
 def execute_query(engine: Engine, sql: str, limit: int | None, offset: int = 0, database: str | None = None, pg_database: str | None = None) -> QueryResponse:
     if is_mongo_client(engine):
         return _execute_mongo_readonly_query(engine, sql, limit, offset, database)
@@ -541,7 +596,7 @@ def _execute_on_connection_with_context(engine: Engine, sql: str, limit: int | N
 def preview_table(
     engine: Engine,
     table_name: str,
-    limit: int,
+    limit: int | None,
     offset: int = 0,
     database_name: str | None = None,
     pg_database: str | None = None,
@@ -581,7 +636,7 @@ def preview_table(
 def _preview_table_impl(
     engine: Engine,
     table_name: str,
-    limit: int,
+    limit: int | None,
     offset: int,
     database_name: str | None = None,
     where: str | None = None,

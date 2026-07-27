@@ -35,18 +35,14 @@ async function launchRegressionApp(options = {}) {
   const aiStreamEvents = options.aiStreamEvents
   const packagedExecutable = process.env.DATADJINN_REGRESSION_EXECUTABLE
   return electron.launch({
-    ...(packagedExecutable
-      ? { executablePath: packagedExecutable }
-      : { args: [electronEntry] }),
+    ...(packagedExecutable ? { executablePath: packagedExecutable } : { args: [electronEntry] }),
     env: {
       ...process.env,
       DATADJINN_TEST_RUN_ROOT: regressionRootDir,
       DATADJINN_TEST_USER_DATA_DIR: userDataDir,
       DATADJINN_SKIP_SPLASH: '1',
       ...(testWindowHeight ? { DATADJINN_TEST_WINDOW_HEIGHT: String(testWindowHeight) } : {}),
-      ...(aiStreamEvents
-        ? { DATADJINN_TEST_AI_STREAM_EVENTS: JSON.stringify(aiStreamEvents) }
-        : {})
+      ...(aiStreamEvents ? { DATADJINN_TEST_AI_STREAM_EVENTS: JSON.stringify(aiStreamEvents) } : {})
     }
   })
 }
@@ -1161,10 +1157,14 @@ test.describe('workspace regression', () => {
         }
       })
 
-      expect(indicator.indicatorContent, 'selected driver type should not render an indicator bar').toBe(
-        'none'
-      )
-      expect(indicator.titleColor, 'selected driver type title should retain an accent color').not.toBeNull()
+      expect(
+        indicator.indicatorContent,
+        'selected driver type should not render an indicator bar'
+      ).toBe('none')
+      expect(
+        indicator.titleColor,
+        'selected driver type title should retain an accent color'
+      ).not.toBeNull()
     } finally {
       await electronApp.close()
     }
@@ -1174,9 +1174,7 @@ test.describe('workspace regression', () => {
     const electronApp = await launchRegressionAppWithSplash()
 
     try {
-      await expect
-        .poll(() => electronApp.windows().length, { timeout: 5000 })
-        .toBeGreaterThan(1)
+      await expect.poll(() => electronApp.windows().length, { timeout: 5000 }).toBeGreaterThan(1)
 
       const splashPage = electronApp
         .windows()
@@ -1932,12 +1930,14 @@ test.describe('workspace regression', () => {
       await page.keyboard.type("select\n  'first' as value\nselect\n  'second' as value")
       await expect(page.locator('.sql-editor-statement-execute')).toHaveCount(2, { timeout: 10000 })
 
-      const executeButtons = await page.locator('.sql-editor-statement-execute').evaluateAll((nodes) =>
-        nodes.map((node) => {
-          const rect = node.getBoundingClientRect()
-          return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
-        })
-      )
+      const executeButtons = await page
+        .locator('.sql-editor-statement-execute')
+        .evaluateAll((nodes) =>
+          nodes.map((node) => {
+            const rect = node.getBoundingClientRect()
+            return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+          })
+        )
       expect(executeButtons).toHaveLength(2)
       expect(
         executeButtons[1].y,
@@ -2077,7 +2077,10 @@ test.describe('workspace regression', () => {
       const nameOption = page.locator('.preview-where-option').filter({ hasText: 'name' }).first()
       await expect(nameOption).toBeVisible()
       const suggestionPosition = await nameOption.boundingBox()
-      expect(suggestionPosition, 'where completion option should not be clipped by its toolbar').not.toBeNull()
+      expect(
+        suggestionPosition,
+        'where completion option should not be clipped by its toolbar'
+      ).not.toBeNull()
 
       await whereField.fill("name = 'alpha'")
       await expect(page.locator('.preview-where-option')).toHaveCount(0)
@@ -2112,20 +2115,22 @@ test.describe('workspace regression', () => {
 
       await page.keyboard.press('Control+A')
       await page.keyboard.type(
-        "SELECT\n  id, -- 字段说明\n  name\nFROM small_items\nWHERE id = 1; -- 末尾说明"
+        'SELECT\n  id, -- 字段说明\n  name\nFROM small_items\nWHERE id = 1; -- 末尾说明'
       )
       await expect(page.locator('.sql-editor-statement-execute')).toHaveCount(1, { timeout: 10000 })
 
-      const statementPosition = await page.locator('.sql-editor-container').evaluate((container) => {
-        const selectLine = Array.from(container.querySelectorAll('.view-lines > div')).find(
-          (line) => (line.textContent ?? '').trim() === 'SELECT'
-        )
-        const executeButton = container.querySelector('.sql-editor-statement-execute')
-        return {
-          selectY: selectLine?.getBoundingClientRect().y,
-          executeY: executeButton?.getBoundingClientRect().y
-        }
-      })
+      const statementPosition = await page
+        .locator('.sql-editor-container')
+        .evaluate((container) => {
+          const selectLine = Array.from(container.querySelectorAll('.view-lines > div')).find(
+            (line) => (line.textContent ?? '').trim() === 'SELECT'
+          )
+          const executeButton = container.querySelector('.sql-editor-statement-execute')
+          return {
+            selectY: selectLine?.getBoundingClientRect().y,
+            executeY: executeButton?.getBoundingClientRect().y
+          }
+        })
       expect(statementPosition.selectY).toBeDefined()
       expect(statementPosition.executeY).toBeDefined()
       expect(Math.abs(statementPosition.executeY - statementPosition.selectY)).toBeLessThan(3)
@@ -2169,9 +2174,11 @@ test.describe('workspace regression', () => {
       await expect
         .poll(
           () =>
-            page.locator('.sql-editor-container .view-lines > div').evaluateAll((nodes) =>
-              nodes.map((node) => (node.textContent ?? '').replace(/\u00a0/g, ' '))
-            ),
+            page
+              .locator('.sql-editor-container .view-lines > div')
+              .evaluateAll((nodes) =>
+                nodes.map((node) => (node.textContent ?? '').replace(/\u00a0/g, ' '))
+              ),
           { timeout: 10000 }
         )
         .toEqual(expect.arrayContaining(['SELECT', '  *', 'FROM', '  small_items', 'WHERE']))
@@ -2201,9 +2208,11 @@ test.describe('workspace regression', () => {
       await expect
         .poll(
           () =>
-            page.locator('.sql-editor-container .view-lines > div').evaluateAll((nodes) =>
-              nodes.map((node) => (node.textContent ?? '').replace(/\u00a0/g, ' '))
-            ),
+            page
+              .locator('.sql-editor-container .view-lines > div')
+              .evaluateAll((nodes) =>
+                nodes.map((node) => (node.textContent ?? '').replace(/\u00a0/g, ' '))
+              ),
           { timeout: 10000 }
         )
         .toEqual(
@@ -2235,15 +2244,11 @@ test.describe('workspace regression', () => {
       expect(statementPositions.linePositions).toHaveLength(3)
       expect(statementPositions.executePositions).toHaveLength(2)
       expect(
-        Math.abs(
-          statementPositions.executePositions[0] - statementPositions.linePositions[0].y
-        ),
+        Math.abs(statementPositions.executePositions[0] - statementPositions.linePositions[0].y),
         'first execute button should stay on the first statement first line after formatting'
       ).toBeLessThan(3)
       expect(
-        Math.abs(
-          statementPositions.executePositions[1] - statementPositions.linePositions[2].y
-        ),
+        Math.abs(statementPositions.executePositions[1] - statementPositions.linePositions[2].y),
         'second execute button should stay on the second statement first line after formatting'
       ).toBeLessThan(3)
       await expect(page.locator('.sql-editor-statement-format')).toHaveCount(0)
@@ -3335,7 +3340,7 @@ test.describe('workspace regression', () => {
             backgroundColor: style.backgroundColor,
             boxShadow: style.boxShadow
           }
-      })
+        })
       expect(queryBaselineStyle).not.toBeNull()
 
       const firstCell = page
@@ -3461,15 +3466,15 @@ test.describe('workspace regression', () => {
             }
           })
           .filter(
-          (cell) =>
-            cell.cellKey &&
-            cell.right > cell.left &&
-            cell.bottom > cell.top &&
-            cell.right <= holderRect.right &&
-            cell.left >= holderRect.left &&
-            cell.top >= holderRect.top &&
-            cell.bottom <= holderRect.bottom
-        )
+            (cell) =>
+              cell.cellKey &&
+              cell.right > cell.left &&
+              cell.bottom > cell.top &&
+              cell.right <= holderRect.right &&
+              cell.left >= holderRect.left &&
+              cell.top >= holderRect.top &&
+              cell.bottom <= holderRect.bottom
+          )
 
         const first = cells[0]
         if (!first) {
@@ -3958,10 +3963,7 @@ test.describe('workspace regression', () => {
       )
     } finally {
       if (page && originalAIConfigs) {
-        await page.evaluate(
-          (configs) => window.api.setAIConfigs(configs),
-          originalAIConfigs
-        )
+        await page.evaluate((configs) => window.api.setAIConfigs(configs), originalAIConfigs)
       }
       await electronApp.close()
       fs.writeFileSync(connectionsPath, originalConnectionsRaw, 'utf-8')
@@ -3983,9 +3985,7 @@ test.describe('workspace regression', () => {
       await modal.locator('.ai-settings-add-btn').click()
       await modal.locator('.ai-config-collapse .ant-collapse-header').first().click()
 
-      const apiKeyInput = modal
-        .locator('.ai-settings-api-key-input input[type="password"]')
-        .first()
+      const apiKeyInput = modal.locator('.ai-settings-api-key-input input[type="password"]').first()
       await expect(apiKeyInput).toBeVisible({ timeout: 10000 })
       await apiKeyInput.focus()
       const borders = await apiKeyInput.evaluate((node) => {
@@ -4007,9 +4007,10 @@ test.describe('workspace regression', () => {
       expect(borders?.inputBackground, 'API key input should inherit the wrapper background').toBe(
         'rgba(0, 0, 0, 0)'
       )
-      expect(borders?.wrapperBorderWidth, 'API key wrapper should keep the single visible border').toBe(
-        '1px'
-      )
+      expect(
+        borders?.wrapperBorderWidth,
+        'API key wrapper should keep the single visible border'
+      ).toBe('1px')
     } finally {
       await electronApp.close()
     }
@@ -4163,17 +4164,24 @@ test.describe('workspace regression', () => {
         }
       })
 
-      expect(frames, 'SQLite editor should render both the form and its main content').not.toBeNull()
-      expect(frames?.formBorderWidth, 'SQLite editor should retain the outer form frame').toBe('1px')
-      expect(frames?.mainBorderWidth, 'SQLite editor main content should not draw an inner frame').toBe(
-        '0px'
+      expect(
+        frames,
+        'SQLite editor should render both the form and its main content'
+      ).not.toBeNull()
+      expect(frames?.formBorderWidth, 'SQLite editor should retain the outer form frame').toBe(
+        '1px'
       )
+      expect(
+        frames?.mainBorderWidth,
+        'SQLite editor main content should not draw an inner frame'
+      ).toBe('0px')
       expect(frames?.mainBackground, 'SQLite editor main content should be transparent').toBe(
         'rgba(0, 0, 0, 0)'
       )
-      expect(frames?.mainBoxShadow, 'SQLite editor main content should not draw an inner shadow').toBe(
-        'none'
-      )
+      expect(
+        frames?.mainBoxShadow,
+        'SQLite editor main content should not draw an inner shadow'
+      ).toBe('none')
     } finally {
       await electronApp.close()
     }
@@ -4281,16 +4289,19 @@ test.describe('workspace regression', () => {
       expect(headerLayout.importWidth, 'import segment should stay readable').toBeGreaterThan(36)
       expect(headerLayout.exportWidth, 'export segment should stay readable').toBeGreaterThan(36)
       expect(Math.abs(headerLayout.importWidth - headerLayout.exportWidth)).toBeLessThanOrEqual(1)
-      expect(headerLayout.dividerWidth, 'import/export divider should stay one physical CSS pixel').toBe(1)
+      expect(
+        headerLayout.dividerWidth,
+        'import/export divider should stay one physical CSS pixel'
+      ).toBe(1)
       expect(
         Math.abs(
-          headerLayout.dividerLeft -
-            headerLayout.transferLeft -
-            headerLayout.transferWidth / 2
+          headerLayout.dividerLeft - headerLayout.transferLeft - headerLayout.transferWidth / 2
         )
       ).toBeLessThanOrEqual(0.1)
       expect(headerLayout.dividerBottom - headerLayout.dividerTop).toBeGreaterThan(18)
-      expect(headerLayout.dividerTransform, 'import/export divider should not be transformed').toBe('none')
+      expect(headerLayout.dividerTransform, 'import/export divider should not be transformed').toBe(
+        'none'
+      )
       expect(
         headerLayout.addWidth,
         'create button should stay wide enough to render normally'
@@ -5955,15 +5966,11 @@ test.describe('workspace regression', () => {
       const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
       const targets = await activeResult.evaluate((node) => {
         const leftCells = Array.from(
-          node.querySelectorAll<HTMLElement>(
-            '.editable-cell[data-cell-column-key="left_blank"]'
-          )
+          node.querySelectorAll<HTMLElement>('.editable-cell[data-cell-column-key="left_blank"]')
         ).slice(0, 3)
         const endRowKey = leftCells.at(-1)?.dataset.rowKey
         const middleEndCell = Array.from(
-          node.querySelectorAll<HTMLElement>(
-            '.editable-cell[data-cell-column-key="middle_blank"]'
-          )
+          node.querySelectorAll<HTMLElement>('.editable-cell[data-cell-column-key="middle_blank"]')
         ).find((cell) => cell.dataset.rowKey === endRowKey)
         if (leftCells.length !== 3 || !(middleEndCell instanceof HTMLElement)) {
           return null
@@ -6094,7 +6101,9 @@ test.describe('workspace regression', () => {
         'virtual vertical scrollbar should replace the native scrollbar arrows'
       ).toBeGreaterThan(0)
       expect(metrics.verticalWidth).toBeLessThanOrEqual(6)
-      expect(metrics.maxScrollLeft, 'fixture table should overflow horizontally').toBeGreaterThan(40)
+      expect(metrics.maxScrollLeft, 'fixture table should overflow horizontally').toBeGreaterThan(
+        40
+      )
 
       await page.mouse.move(metrics.x + 5, metrics.y)
       await page.mouse.down()
@@ -7174,6 +7183,98 @@ test.describe('workspace regression', () => {
     }
   })
 
+  test('right-clicking a cell after collapsing a range selection should keep the single-cell selection @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openFixtureTable(page, largeTableName)
+
+      const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      const selectionTargets = await activeResult.evaluate((node) => {
+        const holder = node.querySelector(
+          '.result-table .ant-table-tbody-virtual-holder, .result-table .ant-table-body'
+        )
+        if (!(holder instanceof HTMLElement)) {
+          return null
+        }
+        const holderRect = holder.getBoundingClientRect()
+        const cells = Array.from(
+          node.querySelectorAll<HTMLElement>('.result-table .editable-cell[data-cell-key]')
+        )
+          .map((cell) => {
+            const rect = cell.getBoundingClientRect()
+            return {
+              cellKey: cell.dataset.cellKey ?? '',
+              rowKey: cell.dataset.rowKey ?? '',
+              columnKey: cell.dataset.cellColumnKey ?? '',
+              x: rect.x + rect.width / 2,
+              y: rect.y + rect.height / 2,
+              top: rect.top,
+              left: rect.left,
+              right: rect.right,
+              bottom: rect.bottom
+            }
+          })
+          .filter(
+            (cell) =>
+              cell.cellKey &&
+              cell.right <= holderRect.right &&
+              cell.left >= holderRect.left &&
+              cell.top >= holderRect.top &&
+              cell.bottom <= holderRect.bottom
+          )
+        const first = cells[0]
+        const nextRowSameColumn = cells.find(
+          (cell) => cell.rowKey !== first?.rowKey && cell.columnKey === first?.columnKey
+        )
+        return first && nextRowSameColumn ? { first, nextRowSameColumn } : null
+      })
+      expect(selectionTargets).not.toBeNull()
+
+      await page.mouse.move(selectionTargets.first.x, selectionTargets.first.y)
+      await page.mouse.down()
+      await page.mouse.move(
+        selectionTargets.nextRowSameColumn.x,
+        selectionTargets.nextRowSameColumn.y,
+        {
+          steps: 10
+        }
+      )
+      await page.mouse.up()
+      await expect
+        .poll(async () =>
+          activeResult
+            .locator('.editable-cell.cell-selected-runtime, .cell-selected-runtime-host')
+            .count()
+        )
+        .toBeGreaterThan(1)
+
+      await page.mouse.click(selectionTargets.first.x, selectionTargets.first.y)
+      await expect
+        .poll(async () =>
+          activeResult
+            .locator('.editable-cell.cell-selected-runtime, .cell-selected-runtime-host')
+            .count()
+        )
+        .toBe(1)
+
+      await page.mouse.click(selectionTargets.first.x, selectionTargets.first.y, {
+        button: 'right'
+      })
+      await expect(page.locator('.result-cell-context-menu-panel')).toBeVisible({ timeout: 10000 })
+      await expect(
+        activeResult.locator('.editable-cell.cell-selected-runtime, .cell-selected-runtime-host')
+      ).toHaveCount(1)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
   test('editing inside cell inspector views should keep selected cell highlights visible @bug', async () => {
     const electronApp = await launchRegressionApp()
 
@@ -7476,9 +7577,15 @@ test.describe('workspace regression', () => {
         }
       })
 
-      expect(colors.modalBackground, 'delete confirmation outer layer should not be white').not.toBeNull()
+      expect(
+        colors.modalBackground,
+        'delete confirmation outer layer should not be white'
+      ).not.toBeNull()
       expect(Math.max(...(colors.modalBackground ?? []))).toBeLessThan(120)
-      expect(colors.containerBackground, 'delete confirmation container should be dark').not.toBeNull()
+      expect(
+        colors.containerBackground,
+        'delete confirmation container should be dark'
+      ).not.toBeNull()
       expect(Math.max(...(colors.containerBackground ?? []))).toBeLessThan(120)
 
       await page.keyboard.press('Escape')
@@ -7962,6 +8069,226 @@ test.describe('workspace regression', () => {
         afterState.insertedVisible,
         'adding a preview row should scroll the inserted row into the visible area'
       ).toBe(true)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('query pager should resolve and navigate to the last page with a visible disabled state @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openQueryWorkspace(page)
+
+      const editorTextbox = page.getByRole('textbox', { name: 'Editor content' }).first()
+      await editorTextbox.focus()
+      await page.keyboard.press('Control+A')
+      await page.keyboard.type('select id, title from large_items order by id;')
+      await page.locator('.query-execute-button').first().click()
+
+      const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      await expect(activeResult.locator('.result-table .ant-table-thead')).toBeVisible({
+        timeout: 30000
+      })
+      await activeResult.locator('.result-limit-select').click()
+      await page.getByText('300 条/页', { exact: true }).last().click()
+      const firstPage = activeResult.getByRole('button', { name: '首页' })
+      const lastPage = activeResult.getByRole('button', { name: '末页' })
+      await expect(firstPage).toBeDisabled()
+      await expect(lastPage).toBeEnabled()
+
+      const disabledStyle = await firstPage.evaluate((node) => {
+        const style = window.getComputedStyle(node)
+        return {
+          opacity: Number.parseFloat(style.opacity),
+          transform: style.transform,
+          transitionDuration: style.transitionDuration
+        }
+      })
+      expect(disabledStyle.opacity).toBeLessThan(0.7)
+      expect(disabledStyle.transform).toBe('none')
+      expect(disabledStyle.transitionDuration).toBe('0s')
+
+      await lastPage.click()
+      await expect
+        .poll(
+          () =>
+            activeResult
+              .getByLabel('页码')
+              .inputValue()
+              .then((value) => Number(value)),
+          { timeout: 30000 }
+        )
+        .toBeGreaterThan(1)
+      await expect(lastPage).toBeDisabled({ timeout: 30000 })
+      await expect(activeResult.getByRole('button', { name: '下一页' })).toBeDisabled()
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('query and table results should expose source-aware export options @smoke', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openQueryWorkspace(page)
+
+      const editorTextbox = page.getByRole('textbox', { name: 'Editor content' }).first()
+      await editorTextbox.focus()
+      await page.keyboard.press('Control+A')
+      await page.keyboard.type('select id, name from small_items order by id;')
+      await page.locator('.query-execute-button').first().click()
+
+      const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      await expect(activeResult.locator('.result-export-button')).toBeVisible({ timeout: 30000 })
+      await expect(activeResult.locator('.table-data-toolbar')).toHaveCount(0)
+      await expect(
+        activeResult.locator(
+          '.result-pager .ant-space-item:has(button[aria-label="页内搜索"]) + .ant-space-item button.result-export-button'
+        )
+      ).toHaveCount(1)
+      await activeResult.locator('.result-export-button').click()
+
+      const exportModal = page.locator('.data-export-modal')
+      await expect(exportModal).toBeVisible({ timeout: 10000 })
+      await expect(exportModal.locator('.ant-modal-container')).toHaveCSS(
+        'backdrop-filter',
+        'blur(20px)'
+      )
+      await expect(exportModal.getByText('当前页', { exact: true })).toBeVisible()
+      await expect(exportModal.getByText('全部数据', { exact: true })).toBeVisible()
+      await expect(exportModal.getByText('id', { exact: true }).first()).toBeVisible()
+      await exportModal.locator('.ant-select').last().click()
+      await expect(page.getByText('Markdown', { exact: true }).last()).toBeVisible()
+      await expect(page.getByText('SQL', { exact: true })).toHaveCount(0)
+      await exportModal.locator('.ant-modal-close').click()
+      await expect(exportModal).toBeHidden()
+
+      await ensureTreeNodeExpanded(page, `object-group:${fixtureConnectionId}:::table`)
+      await openFixtureTable(page, smallTableName)
+      const previewResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      await previewResult.locator('.result-export-button').click()
+      await expect(exportModal).toBeVisible({ timeout: 10000 })
+      await exportModal.locator('.ant-select').nth(1).click()
+      await expect(page.getByText('SQL', { exact: true }).last()).toBeVisible()
+      await expect(page.getByText('Markdown', { exact: true }).last()).toBeVisible()
+      await exportModal.locator('.ant-modal-close').click()
+      await expect(exportModal).toBeHidden()
+
+      const tableKey = `table:${fixtureConnectionId}:::table:${smallTableName}`
+      const tableNode = treeNode(page, tableKey)
+      const tableNodeBox = await tableNode.boundingBox()
+      expect(tableNodeBox).not.toBeNull()
+      await page.mouse.click(
+        tableNodeBox.x + Math.min(tableNodeBox.width - 12, 120),
+        tableNodeBox.y + tableNodeBox.height / 2,
+        { button: 'right' }
+      )
+      const treeExportItem = page
+        .locator('.tree-context-menu-panel .ant-menu-item')
+        .filter({ hasText: '导出' })
+        .first()
+      await expect(treeExportItem).toBeVisible({ timeout: 10000 })
+      await treeExportItem.click()
+      await expect(exportModal).toBeVisible({ timeout: 10000 })
+      await expect(exportModal.getByText('导出列', { exact: true })).toBeVisible()
+      await expect(exportModal.getByText('当前页', { exact: true })).toHaveCount(0)
+      await exportModal.locator('.ant-select').nth(1).click()
+      await expect(page.getByText('SQL', { exact: true }).last()).toBeVisible()
+      await expect(page.getByText('Markdown', { exact: true }).last()).toBeVisible()
+      await page.keyboard.press('Escape')
+      await exportModal.locator('.ant-select').last().click()
+      await expect(page.getByText('仅结构', { exact: true }).last()).toBeVisible()
+      await expect(page.getByText('仅数据', { exact: true })).toHaveCount(0)
+      await exportModal.locator('.ant-modal-close').click()
+      await expect(exportModal).toBeHidden()
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('tree DDL action should silently reopen a closed connection and imports should use the import icon @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await ensureTreeNodeExpanded(page, `object-group:${fixtureConnectionId}:::table`)
+
+      const tableKey = `table:${fixtureConnectionId}:::table:${smallTableName}`
+      await expect.poll(async () => revealTreeNode(page, tableKey), { timeout: 10000 }).toBe(true)
+      const tableNode = treeNode(page, tableKey)
+      await expect(tableNode).toBeVisible({ timeout: 10000 })
+      const tableNodeBox = await tableNode.boundingBox()
+      expect(tableNodeBox).not.toBeNull()
+      await page.mouse.click(
+        tableNodeBox.x + Math.min(tableNodeBox.width - 12, 120),
+        tableNodeBox.y + tableNodeBox.height / 2,
+        { button: 'right' }
+      )
+
+      const menu = page.locator('.tree-context-menu-panel')
+      await expect(menu).toBeVisible({ timeout: 10000 })
+      const importItem = menu.locator('.ant-menu-item').filter({ hasText: '导入' }).first()
+      await expect(importItem).toBeVisible({ timeout: 10000 })
+      await expect(importItem.locator('.anticon-import')).toHaveCount(1)
+      await page.evaluate(async (connectionId) => {
+        await window.api.requestJson(`/connections/${connectionId}/close`, { method: 'POST' })
+      }, fixtureConnectionId)
+      await menu.locator('.ant-menu-item').filter({ hasText: '查看 DDL' }).first().click()
+
+      const ddlDialog = page.getByRole('dialog')
+      await expect(ddlDialog).toContainText(`${smallTableName} DDL`, { timeout: 15000 })
+      await expect(ddlDialog.locator('.ddl-preview-shell .monaco-editor')).toBeVisible({
+        timeout: 15000
+      })
+      await expect(ddlDialog).toHaveClass(/ddl-preview-modal/)
+      await expect(ddlDialog.locator('.ant-modal-container')).toHaveCSS(
+        'backdrop-filter',
+        'blur(20px)'
+      )
+      await expect(ddlDialog.locator('.ddl-preview-shell .vs-whitespace')).toHaveCount(0)
+      await expect(treeNode(page, `connection:${fixtureConnectionId}`)).toHaveClass(/is-open/)
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('SQL editor should not render whitespace markers @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openQueryWorkspace(page)
+
+      const editorTextbox = page.getByRole('textbox', { name: 'Editor content' }).first()
+      await editorTextbox.focus()
+      await page.keyboard.type('SELECT  id FROM small_items')
+      await expect(
+        page.locator(
+          '.sql-editor-container .mtkw, .sql-editor-container .mtkz, .sql-editor-container .mwh'
+        )
+      ).toHaveCount(0)
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
     } finally {
       await electronApp.close()
     }

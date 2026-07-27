@@ -7,9 +7,11 @@ from app.schemas.connection import DatabaseType
 
 
 BackupStatus = Literal["completed", "failed"]
-ExportFormat = Literal["sql", "csv", "json"]
+ExportFormat = Literal["sql", "csv", "json", "markdown"]
 ExportScope = Literal["database", "schema", "table"]
 ExportContent = Literal["schema", "data", "schema_data"]
+ResultExportSource = Literal["query", "table"]
+ResultExportDataScope = Literal["current_page", "all"]
 
 
 class BackupRecord(BaseModel):
@@ -47,7 +49,26 @@ class ExportRequest(BaseModel):
     scope: ExportScope = "database"
     format: ExportFormat = "sql"
     content: ExportContent = "schema_data"
+    columns: list[str] | None = None
     output_path: str = Field(min_length=1)
+
+
+class ResultExportRequest(BaseModel):
+    connection_id: str
+    source: ResultExportSource
+    format: ExportFormat
+    output_path: str = Field(min_length=1)
+    columns: list[str] = Field(min_length=1)
+    data_scope: ResultExportDataScope = "current_page"
+    sql: str | None = None
+    table: str | None = None
+    database: str | None = None
+    pg_database: str | None = None
+    where: str | None = None
+    sort_column: str | None = None
+    sort_direction: Literal["ascend", "descend"] | None = None
+    limit: int = Field(default=300, ge=1, le=10000)
+    offset: int = Field(default=0, ge=0)
 
 
 class ImportRequest(BaseModel):

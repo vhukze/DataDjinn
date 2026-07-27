@@ -1343,7 +1343,7 @@ function SqlEditor({
         tabCompletion: 'off',
         quickSuggestions: readOnly ? false : { other: true, comments: false, strings: false },
         tabSize: 2,
-        renderWhitespace: 'boundary',
+        renderWhitespace: 'none',
         glyphMargin: false,
         readOnly,
         domReadOnly: readOnly

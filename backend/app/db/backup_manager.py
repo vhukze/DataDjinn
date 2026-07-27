@@ -9,10 +9,13 @@ from uuid import uuid4
 from sqlalchemy import create_engine, inspect, text
 
 from app.db.connection_manager import _resolve_runtime_path, connection_manager
+from app.db.data_export import render_markdown_table, render_sql_inserts, write_tabular_export
+from app.db.metadata import get_object_ddl, list_schemas, list_tables
 from app.db.mongo_utils import is_mongo_client, serialize_mongo_document
+from app.db.readonly_query import execute_readonly_query, preview_table
 from app.db.redis_utils import is_redis_client, redis_client_for_database, redis_scan_keys, redis_text, serialize_redis_value
 from app.db.sql_executor import execute_sql_file
-from app.schemas.backup import BackupRecord, ExportContent, ExportFormat, ExportScope
+from app.schemas.backup import BackupRecord, ExportContent, ExportFormat, ExportScope, ResultExportRequest
 from app.schemas.connection import ConnectionRequest
 
 
@@ -156,10 +159,10 @@ def _generate_postgresql_backup_internal(engine, schema_name: str, content: Expo
 def _format_value(value) -> str:
     if value is None:
         return "NULL"
-    if isinstance(value, (int, float)):
-        return str(value)
     if isinstance(value, bool):
         return "TRUE" if value else "FALSE"
+    if isinstance(value, (int, float)):
+        return str(value)
     escaped = str(value).replace("\\", "\\\\").replace("'", "''")
     return f"'{escaped}'"
 
@@ -241,26 +244,157 @@ class BackupManager:
 
         return record
 
-    def export_file(self, connection_id: str, output_path: str, format: ExportFormat, database: str | None = None, pg_database: str | None = None, table: str | None = None, scope: ExportScope = "database", content: ExportContent = "schema_data") -> Path:
+    def export_file(self, connection_id: str, output_path: str, format: ExportFormat, database: str | None = None, pg_database: str | None = None, table: str | None = None, scope: ExportScope = "database", content: ExportContent = "schema_data", columns: list[str] | None = None) -> Path:
         request = connection_manager.get_connection_request(connection_id)
-        target_database = pg_database or self._target_database(request, database)
         file_path = Path(output_path).expanduser().resolve()
         file_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if request.database_type == "mongodb":
+        if request.database_type == "mongodb" and format == "json" and scope != "table":
             self._export_mongodb(connection_id, file_path, database, table, scope)
             return file_path
 
-        if request.database_type == "redis":
+        if request.database_type == "redis" and format == "json" and scope != "table":
             self._export_redis(connection_id, file_path, database, table, scope)
             return file_path
 
         if format == "sql":
-            self._export_sql(connection_id, target_database, table, scope, file_path, content)
+            self._export_sql(connection_id, database, pg_database, table, scope, file_path, content, columns)
             return file_path
 
-        self._export_csv(connection_id, file_path, database, pg_database, table, scope)
+        if format == "csv":
+            self._export_csv(connection_id, file_path, database, pg_database, table, scope, columns)
+            return file_path
+
+        self._export_structured_tables(
+            connection_id,
+            file_path,
+            format,
+            database,
+            pg_database,
+            table,
+            scope,
+            columns,
+        )
         return file_path
+
+    def export_result_data(self, request: ResultExportRequest) -> Path:
+        engine = connection_manager.get_engine(request.connection_id)
+        if engine is None:
+            raise ValueError("连接已关闭")
+        if request.source == "query" and request.format == "sql":
+            raise ValueError("查询结果不支持导出为 SQL")
+
+        limit = request.limit if request.data_scope == "current_page" else None
+        offset = request.offset if request.data_scope == "current_page" else 0
+        if request.source == "query":
+            if not request.sql or not request.sql.strip():
+                raise ValueError("没有可导出的查询语句")
+            result = execute_readonly_query(
+                engine,
+                request.sql,
+                limit,
+                offset,
+                request.database,
+                request.pg_database,
+            )
+        else:
+            if not request.table:
+                raise ValueError("没有可导出的表")
+            result = preview_table(
+                engine,
+                request.table,
+                limit,
+                offset,
+                request.database,
+                request.pg_database,
+                request.where,
+                request.sort_column,
+                request.sort_direction,
+            )
+
+        selected_columns = self._validated_columns(result.columns, request.columns)
+        file_path = Path(request.output_path).expanduser().resolve()
+        table_name = None
+        if request.source == "table" and request.table:
+            preparer = engine.dialect.identifier_preparer
+            quoted_table = preparer.quote(request.table)
+            table_name = (
+                f"{preparer.quote(request.database)}.{quoted_table}"
+                if request.database
+                else quoted_table
+            )
+        if request.format == "sql" and request.source == "table" and request.table:
+            ddl = get_object_ddl(
+                engine,
+                request.table,
+                "table",
+                request.database,
+                request.pg_database,
+            ).rstrip()
+            if not ddl:
+                raise ValueError("无法读取表结构")
+            inserts = render_sql_inserts(
+                selected_columns,
+                result.rows,
+                table_name or request.table,
+                engine.dialect.identifier_preparer.quote,
+            )
+            normalized_ddl = ddl if ddl.endswith(";") else f"{ddl};"
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(
+                f"{normalized_ddl}\n\n{inserts}",
+                encoding="utf-8",
+            )
+            return file_path
+        write_tabular_export(
+            file_path,
+            request.format,
+            selected_columns,
+            result.rows,
+            table_name=table_name,
+            quote_identifier=engine.dialect.identifier_preparer.quote,
+        )
+        return file_path
+
+    @staticmethod
+    def _validated_columns(available: list[str], selected: list[str] | None) -> list[str]:
+        requested = selected or available
+        invalid = [column for column in requested if column not in available]
+        if invalid:
+            raise ValueError(f"导出列不存在：{', '.join(invalid)}")
+        if not requested:
+            raise ValueError("请至少选择一个导出列")
+        return requested
+
+    @staticmethod
+    def _export_table_targets(
+        engine,
+        database: str | None,
+        pg_database: str | None,
+        table: str | None,
+        scope: ExportScope,
+    ) -> list[tuple[str, str | None, str]]:
+        if scope == "table" and table:
+            return [(table, database, table)]
+
+        if (
+            scope == "database"
+            and pg_database
+            and not database
+            and engine.dialect.name in {"postgresql", "gaussdb"}
+        ):
+            targets: list[tuple[str, str | None, str]] = []
+            for schema in list_schemas(engine, pg_database):
+                targets.extend(
+                    (f"{schema.name}.{item.name}", schema.name, item.name)
+                    for item in list_tables(engine, schema.name, pg_database)
+                )
+            return targets
+
+        return [
+            (item.name, database, item.name)
+            for item in list_tables(engine, database, pg_database)
+        ]
 
     def import_file(self, connection_id: str, input_path: str, database: str | None = None, pg_database: str | None = None, table: str | None = None) -> Path:
         file_path = Path(input_path).expanduser().resolve()
@@ -356,31 +490,85 @@ class BackupManager:
             if target is not client:
                 target.close()
 
-    def _export_sql(self, connection_id: str, database: str, table: str | None, scope: ExportScope, file_path: Path, content: ExportContent) -> None:
+    def _export_sql(self, connection_id: str, database: str | None, pg_database: str | None, table: str | None, scope: ExportScope, file_path: Path, content: ExportContent, columns: list[str] | None = None) -> None:
         request = connection_manager.get_connection_request(connection_id)
         engine = connection_manager.get_engine(connection_id)
         if engine is None:
             raise ValueError("连接已关闭")
 
-        if request.database_type == "sqlite":
-            sql = _generate_sqlite_backup(request)
+        if scope == "database" and request.database_type == "sqlite":
+            file_path.write_text(_generate_sqlite_backup(request), encoding="utf-8")
+            return
+        if scope == "database" and request.database_type == "mysql":
+            target_database = database or request.database
+            if not target_database:
+                raise ValueError("导出数据库名不能为空")
+            file_path.write_text(
+                _generate_mysql_backup(engine, target_database, content),
+                encoding="utf-8",
+            )
+            return
+        if scope == "database" and request.database_type == "clickhouse":
+            target_database = database or request.database or "default"
+            sql = self._export_clickhouse_sql(
+                engine,
+                target_database,
+                None,
+                scope,
+                content,
+            )
+            if not sql:
+                raise ValueError("无法生成 SQL 导出")
             file_path.write_text(sql, encoding="utf-8")
             return
 
-        if request.database_type == "clickhouse":
-            sql = self._export_clickhouse_sql(engine, database, table, scope, content)
-        elif scope == "table" and table:
-            sql = self._export_single_table_sql(engine, request.database_type, database, table, content)
-        elif request.database_type == "mysql":
-            sql = _generate_mysql_backup(engine, database, content)
-        elif request.database_type == "postgresql":
-            sql = _generate_postgresql_backup(engine, database, database if scope == "database" else "public", content)
-        else:
-            raise ValueError("不支持的数据库类型")
-
-        if not sql:
+        targets = self._export_table_targets(
+            engine,
+            database,
+            pg_database,
+            table,
+            scope,
+        )
+        if not targets:
             raise ValueError("无法生成 SQL 导出")
-        file_path.write_text(sql, encoding="utf-8")
+
+        preparer = engine.dialect.identifier_preparer
+        sections: list[str] = []
+        for _, target_schema, table_name in targets:
+            if scope == "table" or content in {"schema", "schema_data"}:
+                ddl = get_object_ddl(
+                    engine,
+                    table_name,
+                    "table",
+                    target_schema,
+                    pg_database,
+                ).rstrip()
+                if ddl:
+                    sections.append(ddl if ddl.endswith(";") else f"{ddl};")
+            if content == "schema":
+                continue
+            result = preview_table(
+                engine,
+                table_name,
+                None,
+                0,
+                target_schema,
+                pg_database,
+            )
+            selected = self._validated_columns(
+                result.columns,
+                columns if scope == "table" else None,
+            )
+            quoted_table = preparer.quote(table_name)
+            if target_schema and request.database_type != "sqlite":
+                quoted_table = f"{preparer.quote(target_schema)}.{quoted_table}"
+            inserts = render_sql_inserts(selected, result.rows, quoted_table, preparer.quote).rstrip()
+            if inserts:
+                sections.append(inserts)
+
+        if not sections:
+            raise ValueError("无法生成 SQL 导出")
+        file_path.write_text("\n\n".join(sections) + "\n", encoding="utf-8")
 
     def _export_clickhouse_sql(self, engine, database: str, table: str | None, scope: ExportScope, content: ExportContent) -> str:
         tables = [table] if scope == "table" and table else []
@@ -415,100 +603,108 @@ class BackupManager:
 
         return "\n".join(lines)
 
-    def _export_single_table_sql(self, engine, db_type: str, database: str, table: str, content: ExportContent) -> str:
-        lines: list[str] = []
-
-        with engine.connect() as connection:
-            inspector = inspect(connection)
-            if db_type == "postgresql":
-                connection.execute(text(f"SET search_path TO {_quote_identifier(engine, database)}"))
-
-            if db_type == "mysql":
-                quoted = _mysql_table_name(engine, database, table)
-                result = connection.execute(text(f"SHOW CREATE TABLE {quoted}"))
-                row = result.fetchone()
-                if content in {"schema", "schema_data"} and row and len(row) >= 2:
-                    lines.append(f"DROP TABLE IF EXISTS {quoted};")
-                    lines.append(f"{row[1]};")
-            elif db_type == "clickhouse":
-                quoted = _qualified_table_name(engine, database, table)
-                if content in {"schema", "schema_data"}:
-                    row = connection.execute(text(f"SHOW CREATE TABLE {quoted}")).fetchone()
-                    if row and row[0]:
-                        lines.append(f"DROP TABLE IF EXISTS {quoted};")
-                        lines.append(f"{row[0]};")
-            elif db_type == "postgresql":
-                columns = inspector.get_columns(table, schema=database)
-                col_defs = []
-                pk_cols = []
-                for col in columns:
-                    cd = f"{_quote_identifier(engine, col['name'])} {col['type']}"
-                    if not col.get("nullable", True):
-                        cd += " NOT NULL"
-                    col_defs.append(cd)
-                    if col.get("primary_key"):
-                        pk_cols.append(col["name"])
-                if pk_cols:
-                    col_defs.append(f"PRIMARY KEY ({', '.join(_quote_identifier(engine, pk) for pk in pk_cols)})")
-                quoted = f"{_quote_identifier(engine, database)}.{_quote_identifier(engine, table)}"
-                if content in {"schema", "schema_data"}:
-                    lines.append(f"DROP TABLE IF EXISTS {quoted} CASCADE;")
-                    lines.append(f"CREATE TABLE {quoted} (\n  {',\n  '.join(col_defs)}\n);")
-
-            lines.append("")
-            if content == "schema":
-                return "\n".join(lines)
-
-            cols = [c["name"] for c in inspector.get_columns(table, schema=database)]
-            quoted_tbl = f"{_quote_identifier(engine, database)}.{_quote_identifier(engine, table)}" if db_type == "postgresql" else _mysql_table_name(engine, database, table)
-            result = connection.execute(text(f"SELECT * FROM {quoted_tbl}"))
-            col_list = ", ".join(_quote_identifier(engine, c) for c in cols)
-            for row in result:
-                values = ", ".join(_format_value(v) for v in row)
-                lines.append(f"INSERT INTO {quoted_tbl} ({col_list}) VALUES ({values});")
-
-        return "\n".join(lines)
-
-    def _export_csv(self, connection_id: str, output_path: Path, database: str | None, pg_database: str | None, table: str | None, scope: ExportScope) -> None:
+    def _export_csv(self, connection_id: str, output_path: Path, database: str | None, pg_database: str | None, table: str | None, scope: ExportScope, columns: list[str] | None = None) -> None:
         engine = connection_manager.get_engine(connection_id)
         if engine is None:
             raise ValueError("连接已关闭")
 
-        inspector = inspect(engine)
-        schema = database if engine.dialect.name in {"mysql", "postgresql", "dm", "dmPython"} or _is_clickhouse_engine(engine) else None
-        tables = [table] if scope == "table" and table else inspector.get_table_names(schema=schema)
-        if not tables:
+        targets = self._export_table_targets(engine, database, pg_database, table, scope)
+        if not targets:
             raise ValueError("未找到可导出的表")
 
-        if len(tables) == 1 and output_path.suffix.lower() == ".csv":
-            self._write_table_csv(engine, output_path, tables[0], database, pg_database)
+        if len(targets) == 1 and output_path.suffix.lower() == ".csv":
+            _, target_schema, table_name = targets[0]
+            result = preview_table(
+                engine,
+                table_name,
+                None,
+                0,
+                target_schema,
+                pg_database,
+            )
+            selected = self._validated_columns(result.columns, columns)
+            write_tabular_export(output_path, "csv", selected, result.rows)
             return
 
         output_path.mkdir(parents=True, exist_ok=True)
-        for table_name in tables:
-            self._write_table_csv(engine, output_path / f"{_safe_filename(table_name)}.csv", table_name, database, pg_database)
+        for label, target_schema, table_name in targets:
+            result = preview_table(
+                engine,
+                table_name,
+                None,
+                0,
+                target_schema,
+                pg_database,
+            )
+            selected = self._validated_columns(
+                result.columns,
+                columns if len(targets) == 1 else None,
+            )
+            write_tabular_export(
+                output_path / f"{_safe_filename(label)}.csv",
+                "csv",
+                selected,
+                result.rows,
+            )
 
-    def _write_table_csv(self, engine, file_path: Path, table_name: str, database: str | None, pg_database: str | None) -> None:
-        preparer = engine.dialect.identifier_preparer
-        quoted_table = preparer.quote(table_name)
-        if engine.dialect.name == "postgresql" and database:
-            quoted_table = f"{preparer.quote(database)}.{quoted_table}"
-        elif (engine.dialect.name == "mysql" or _is_clickhouse_engine(engine)) and database:
-            quoted_table = f"{preparer.quote(database)}.{quoted_table}"
+    def _export_structured_tables(
+        self,
+        connection_id: str,
+        output_path: Path,
+        export_format: ExportFormat,
+        database: str | None,
+        pg_database: str | None,
+        table: str | None,
+        scope: ExportScope,
+        columns: list[str] | None,
+    ) -> None:
+        if export_format not in {"json", "markdown"}:
+            raise ValueError(f"不支持的导出格式：{export_format}")
+        engine = connection_manager.get_engine(connection_id)
+        if engine is None:
+            raise ValueError("连接已关闭")
 
-        with engine.connect() as connection:
-            if pg_database and engine.dialect.name == "postgresql":
-                pg_engine = create_engine(engine.url.set(database=pg_database), pool_pre_ping=True)
-                try:
-                    return self._write_table_csv(pg_engine, file_path, table_name, database, None)
-                finally:
-                    pg_engine.dispose()
-            result = connection.execute(text(f"SELECT * FROM {quoted_table}"))
-            with file_path.open("w", encoding="utf-8-sig", newline="") as output:
-                writer = csv.writer(output)
-                writer.writerow(list(result.keys()))
-                for row in result:
-                    writer.writerow(list(row))
+        targets = self._export_table_targets(engine, database, pg_database, table, scope)
+        if not targets:
+            raise ValueError("未找到可导出的表")
+
+        exported: dict[str, tuple[list[str], list[dict[str, object]]]] = {}
+        for label, target_schema, table_name in targets:
+            result = preview_table(
+                engine,
+                table_name,
+                None,
+                0,
+                target_schema,
+                pg_database,
+            )
+            selected = self._validated_columns(
+                result.columns,
+                columns if scope == "table" else None,
+            )
+            exported[label] = (
+                selected,
+                [{column: row.get(column) for column in selected} for row in result.rows],
+            )
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if export_format == "json":
+            payload = (
+                next(iter(exported.values()))[1]
+                if scope == "table" and len(exported) == 1
+                else {"tables": {name: rows for name, (_, rows) in exported.items()}}
+            )
+            output_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+                encoding="utf-8",
+            )
+            return
+
+        sections = [
+            f"## {table_name}\n\n{render_markdown_table(table_columns, rows)}"
+            for table_name, (table_columns, rows) in exported.items()
+        ]
+        output_path.write_text("\n".join(sections), encoding="utf-8")
 
     def _import_csv(self, connection_id: str, file_path: Path, database: str | None, pg_database: str | None, table: str) -> None:
         engine = connection_manager.get_engine(connection_id)

@@ -75,10 +75,26 @@ export type QueryResponse = {
   sort_direction?: string | null
 }
 
+export type QueryCountResponse = {
+  total_count: number
+}
+
 export type QueryResultKind = 'query' | 'command' | 'error'
 
 export type ObjectDdlResponse = {
   ddl: string
+}
+
+export type RoutineParameterInfo = {
+  name: string
+  mode: 'IN' | 'OUT' | 'INOUT'
+  data_type: string
+  position: number
+  has_default: boolean
+}
+
+export type RoutineParametersResponse = {
+  parameters: RoutineParameterInfo[]
 }
 
 export type SequenceDetailResponse = {

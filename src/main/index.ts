@@ -895,7 +895,9 @@ app.whenReady().then(() => {
         ? [{ name: 'CSV 文件', extensions: ['csv'] }]
         : format === 'json'
           ? [{ name: 'JSON 文件', extensions: ['json'] }]
-          : [{ name: 'SQL 文件', extensions: ['sql'] }]
+          : format === 'markdown'
+            ? [{ name: 'Markdown 文件', extensions: ['md'] }]
+            : [{ name: 'SQL 文件', extensions: ['sql'] }]
 
     const result = await dialog.showSaveDialog(window, {
       title: '选择导出位置',

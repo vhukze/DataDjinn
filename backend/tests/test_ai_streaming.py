@@ -58,6 +58,11 @@ class DatabaseAgentStreamingTests(unittest.TestCase):
         self.assertIn("只能添加数据库或模式，重复项会自动去重", prompt)
         self.assertIn("模式可向上合并为所属数据库", prompt)
         self.assertIn("数据库也可下钻切换为某个模式", prompt)
+        self.assertIn("查询结果支持 CSV、JSON、Markdown", prompt)
+        self.assertIn("SQL 导出始终保留完整表结构", prompt)
+        self.assertIn("存储过程右键菜单在“导入”项下方提供“执行存储过程”", prompt)
+        self.assertIn("输入留空默认传入 NULL", prompt)
+        self.assertIn("DDL 会自动保证末尾带分号", prompt)
         self.assertIn("软件功能和用法问题", prompt)
 
     def test_openai_stream_chat_emits_incremental_reasoning_and_tokens(self) -> None:

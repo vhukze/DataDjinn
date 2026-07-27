@@ -22,6 +22,17 @@ class QueryResponse(BaseModel):
     sort_direction: str | None = None
 
 
+class QueryCountRequest(BaseModel):
+    connection_id: str
+    sql: str = Field(min_length=1)
+    database: str | None = None
+    pg_database: str | None = None
+
+
+class QueryCountResponse(BaseModel):
+    total_count: int
+
+
 class SqlFileRunRequest(BaseModel):
     sql: str = Field(min_length=1, max_length=5 * 1024 * 1024)
     database: str | None = None

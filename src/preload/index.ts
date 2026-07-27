@@ -10,7 +10,7 @@ const api = {
   selectConnectionTransferImportFile: (source?: 'datadjinn' | 'dbeaver'): Promise<string | null> =>
     ipcRenderer.invoke('select-connection-transfer-import-file', source),
   selectExportPath: (
-    format: 'sql' | 'csv' | 'json',
+    format: 'sql' | 'csv' | 'json' | 'markdown',
     defaultName?: string
   ): Promise<string | null> => ipcRenderer.invoke('select-export-path', format, defaultName),
   selectConnectionTransferExportPath: (defaultName?: string): Promise<string | null> =>

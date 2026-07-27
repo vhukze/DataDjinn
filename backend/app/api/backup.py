@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 
 from app.db.backup_manager import backup_manager
 from app.db.error_utils import friendly_error
-from app.schemas.backup import BackupCreateRequest, BackupListResponse, ExportRequest, FileOperationResponse, ImportRequest, RestoreBackupRequest
+from app.schemas.backup import BackupCreateRequest, BackupListResponse, ExportRequest, FileOperationResponse, ImportRequest, ResultExportRequest, RestoreBackupRequest
 
 router = APIRouter(prefix="/backup", tags=["backup"])
 
@@ -33,7 +33,16 @@ def restore_backup(request: RestoreBackupRequest) -> FileOperationResponse:
 @router.post("/export", response_model=FileOperationResponse)
 def export_file(request: ExportRequest) -> FileOperationResponse:
     try:
-        file_path = backup_manager.export_file(request.connection_id, request.output_path, request.format, request.database, request.pg_database, request.table, request.scope, request.content)
+        file_path = backup_manager.export_file(request.connection_id, request.output_path, request.format, request.database, request.pg_database, request.table, request.scope, request.content, request.columns)
+        return FileOperationResponse(success=True, message="导出完成", file_path=str(file_path))
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
+
+
+@router.post("/export-data", response_model=FileOperationResponse)
+def export_result_data(request: ResultExportRequest) -> FileOperationResponse:
+    try:
+        file_path = backup_manager.export_result_data(request)
         return FileOperationResponse(success=True, message="导出完成", file_path=str(file_path))
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc

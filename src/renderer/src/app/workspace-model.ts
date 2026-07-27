@@ -46,6 +46,7 @@ export type WorkspaceTab = {
   tableName?: string
   objectType?: DbObjectType
   sql: string
+  executedSql?: string
   limit?: number
   page?: number
   loading: boolean

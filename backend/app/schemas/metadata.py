@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -126,6 +126,31 @@ class DbObjectsResponse(BaseModel):
 
 class ObjectDdlResponse(BaseModel):
     ddl: str
+
+
+class RoutineParameterInfo(BaseModel):
+    name: str
+    mode: Literal["IN", "OUT", "INOUT"] = "IN"
+    data_type: str = "VARCHAR"
+    position: int
+    has_default: bool = False
+
+
+class RoutineParametersResponse(BaseModel):
+    parameters: list[RoutineParameterInfo]
+
+
+class RoutineArgumentValue(BaseModel):
+    name: str
+    value: str | None = None
+    is_null: bool = False
+    use_default: bool = False
+
+
+class RoutineExecuteRequest(BaseModel):
+    database: str | None = None
+    pg_database: str | None = None
+    arguments: list[RoutineArgumentValue] = Field(default_factory=list)
 
 
 class SequenceDetailResponse(BaseModel):

@@ -146,6 +146,7 @@ type ResultTablePanelProps = {
   updateWorkspaceTab: (tabKey: string, patch: Partial<WorkspaceTab>) => void
   updateTableSearchState: (tab: WorkspaceTab, patch: Partial<TableSearchUiState>) => void
   changeTabPage: (tab: WorkspaceTab, page: number) => Promise<void>
+  changeTabLastPage: (tab: WorkspaceTab) => Promise<void>
   changeTabLimit: (tab: WorkspaceTab, limit: number) => Promise<void>
   previewTable: (
     connectionId: string,
@@ -173,6 +174,7 @@ type ResultTablePanelProps = {
     databaseName?: string,
     pgDatabaseName?: string
   ) => Promise<void>
+  openResultExportModal: (tab: WorkspaceTab) => void
   addPreviewRow: (tab: WorkspaceTab) => void
   markSelectedRowsDeleted: (tab: WorkspaceTab, selectedRowKeysOverride?: string[]) => void
   submitPreviewChanges: (tab: WorkspaceTab) => Promise<void>
@@ -229,10 +231,12 @@ const ResultTablePanel = memo(
     updateWorkspaceTab,
     updateTableSearchState,
     changeTabPage,
+    changeTabLastPage,
     changeTabLimit,
     previewTable,
     previewRedisDatabase,
     showObjectDdl,
+    openResultExportModal,
     addPreviewRow,
     markSelectedRowsDeleted,
     submitPreviewChanges,
@@ -513,7 +517,9 @@ const ResultTablePanel = memo(
           searchState={effectiveSearchState}
           searchVisible={searchVisibleLocal}
           onChangePage={(page) => void changeTabPage(currentTab, page)}
+          onChangeLastPage={() => void changeTabLastPage(currentTab)}
           onChangeLimit={(limit) => void changeTabLimit(currentTab, limit)}
+          onExportData={() => openResultExportModal(currentTab)}
           onToggleSearch={() => {
             if (searchState.query.trim() || searchVisibleLocal) {
               clearActiveSearchCellHighlight(currentTab.key)
@@ -653,6 +659,7 @@ const ResultTablePanel = memo(
               nextTab.pgDatabaseName
             )
           }
+          onExportData={openResultExportModal}
           onPreviewTableRefresh={(nextTab) =>
             void previewTable(
               nextTab.connectionId!,
@@ -1756,12 +1763,21 @@ const ResultTablePanel = memo(
           return
         }
         const previousScrollTop = holder.scrollTop
-        holder.scrollTop += direction * Math.max(8, Math.round((edge - Math.abs(pointer.y - (direction < 0 ? rect.top : rect.bottom))) * 0.7))
-        const visibleRows = Array.from(holder.querySelectorAll<HTMLElement>('[data-row-key]')).filter(
-          (element) => element.dataset.rowKey && orderedRowIndexMap[element.dataset.rowKey] !== undefined
+        holder.scrollTop +=
+          direction *
+          Math.max(
+            8,
+            Math.round(
+              (edge - Math.abs(pointer.y - (direction < 0 ? rect.top : rect.bottom))) * 0.7
+            )
+          )
+        const visibleRows = Array.from(
+          holder.querySelectorAll<HTMLElement>('[data-row-key]')
+        ).filter(
+          (element) =>
+            element.dataset.rowKey && orderedRowIndexMap[element.dataset.rowKey] !== undefined
         )
-        const edgeRowKey =
-          visibleRows[direction < 0 ? 0 : visibleRows.length - 1]?.dataset.rowKey
+        const edgeRowKey = visibleRows[direction < 0 ? 0 : visibleRows.length - 1]?.dataset.rowKey
         if (edgeRowKey) {
           updateDragRowSelection(edgeRowKey)
         } else {
@@ -1872,6 +1888,9 @@ const ResultTablePanel = memo(
           if (refs.inlineCellEditorRefs.current[nextTabKey]) {
             return
           }
+          // A new left-click selection must not inherit a completed context-menu range.
+          refs.contextMenuCellSelectionRefs.current[nextTabKey] = undefined
+          refs.contextMenuCellSelectionSnapshotRefs.current[nextTabKey] = undefined
           refs.tableBodyRefs.current[nextTabKey]?.focus()
           clearSelectedRowsForTab(nextTabKey)
           refs.cellDragAnchorRefs.current[nextTabKey] = { rowKey: nextRowKey, column: nextColumn }
@@ -2516,10 +2535,12 @@ const ResultTablePanel = memo(
     prev.updateWorkspaceTab === next.updateWorkspaceTab &&
     prev.updateTableSearchState === next.updateTableSearchState &&
     prev.changeTabPage === next.changeTabPage &&
+    prev.changeTabLastPage === next.changeTabLastPage &&
     prev.changeTabLimit === next.changeTabLimit &&
     prev.previewTable === next.previewTable &&
     prev.previewRedisDatabase === next.previewRedisDatabase &&
     prev.showObjectDdl === next.showObjectDdl &&
+    prev.openResultExportModal === next.openResultExportModal &&
     prev.messageApi === next.messageApi &&
     prev.isSchemaScopedType === next.isSchemaScopedType &&
     prev.tableSearchShortcut === next.tableSearchShortcut

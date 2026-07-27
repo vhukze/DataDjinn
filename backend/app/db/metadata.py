@@ -1747,6 +1747,13 @@ def get_object_ddl(engine: Engine, object_name: str, object_type: str, database_
     raise ValueError("当前数据库类型不支持查看 DDL")
 
 
+def ensure_ddl_terminator(ddl: str, object_type: str) -> str:
+    normalized = ddl.rstrip()
+    if object_type.strip().lower() not in {"procedure", "function"} or not normalized:
+        return ddl
+    return normalized if normalized.endswith(";") else f"{normalized};"
+
+
 def drop_db_object(engine: Engine, object_name: str, object_type: str, database_name: str | None = None, pg_database: str | None = None) -> None:
     if is_mongo_client(engine):
         if object_type != "table":

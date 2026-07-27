@@ -4,10 +4,11 @@ from app.db.connection_manager import connection_manager
 from app.db.error_utils import friendly_error
 from app.db.mongo_utils import is_mongo_client
 from app.db.redis_utils import is_redis_client
-from app.db.metadata import apply_redis_data_changes, apply_table_data_changes, create_database, create_oracle_user, create_schema, create_table, drop_database, drop_db_object, get_object_ddl, get_sequence_detail, get_table_comment, list_columns, list_databases, list_db_objects, list_schemas, list_tables, update_table_columns
+from app.db.metadata import apply_redis_data_changes, apply_table_data_changes, create_database, create_oracle_user, create_schema, create_table, drop_database, drop_db_object, ensure_ddl_terminator, get_object_ddl, get_sequence_detail, get_table_comment, list_columns, list_databases, list_db_objects, list_schemas, list_tables, update_table_columns
 from app.db.readonly_query import preview_table
+from app.db.routine_executor import execute_routine, list_routine_parameters
 from app.db.sql_executor import execute_sql_file
-from app.schemas.metadata import ColumnsResponse, DatabaseCreateRequest, DatabaseCreateResponse, DatabasesResponse, DbObjectsResponse, ObjectDdlResponse, RedisDataChangeRequest, SequenceDetailResponse, TableCreateRequest, TableCreateResponse, TableDataChangeRequest, TableUpdateRequest, TablesResponse
+from app.schemas.metadata import ColumnsResponse, DatabaseCreateRequest, DatabaseCreateResponse, DatabasesResponse, DbObjectsResponse, ObjectDdlResponse, RedisDataChangeRequest, RoutineExecuteRequest, RoutineParametersResponse, SequenceDetailResponse, TableCreateRequest, TableCreateResponse, TableDataChangeRequest, TableUpdateRequest, TablesResponse
 from app.schemas.query import QueryResponse, SqlFileRunRequest, SqlFileRunResponse
 
 router = APIRouter(prefix="/connections", tags=["metadata"])
@@ -153,7 +154,69 @@ def get_object_ddl_endpoint(connection_id: str, object_name: str, type: str, dat
     if not ddl:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到对象 DDL")
 
-    return ObjectDdlResponse(ddl=ddl)
+    return ObjectDdlResponse(ddl=ensure_ddl_terminator(ddl, type))
+
+
+@router.get(
+    "/{connection_id}/objects/{object_name}/routine-parameters",
+    response_model=RoutineParametersResponse,
+)
+def get_routine_parameters_endpoint(
+    connection_id: str,
+    object_name: str,
+    database: str | None = None,
+    pg_database: str | None = None,
+) -> RoutineParametersResponse:
+    engine = connection_manager.get_engine(connection_id)
+    if engine is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="连接已关闭，请先打开连接")
+    try:
+        return RoutineParametersResponse(
+            parameters=list_routine_parameters(engine, object_name, database, pg_database)
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=friendly_error(exc)) from exc
+
+
+@router.post(
+    "/{connection_id}/objects/{object_name}/execute",
+    response_model=QueryResponse,
+)
+def execute_routine_endpoint(
+    connection_id: str,
+    object_name: str,
+    request: RoutineExecuteRequest,
+) -> QueryResponse:
+    engine = connection_manager.get_engine(connection_id)
+    if engine is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="连接已关闭，请先打开连接")
+    try:
+        parameters = list_routine_parameters(
+            engine,
+            object_name,
+            request.database,
+            request.pg_database,
+        )
+        available_names = {parameter.name.lower() for parameter in parameters}
+        unknown_names = [
+            argument.name for argument in request.arguments if argument.name.lower() not in available_names
+        ]
+        if unknown_names:
+            raise ValueError(f"存储过程参数不存在：{', '.join(unknown_names)}")
+        return execute_routine(
+            engine,
+            object_name,
+            parameters,
+            request.arguments,
+            request.database,
+            request.pg_database,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=friendly_error(exc)) from exc
 
 
 @router.get("/{connection_id}/objects/{object_name}/sequence-detail", response_model=SequenceDetailResponse)

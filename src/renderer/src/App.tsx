@@ -13,6 +13,7 @@
   FolderOpenOutlined,
   LoadingOutlined,
   LinkOutlined,
+  ImportOutlined,
   MoonOutlined,
   PlayCircleOutlined,
   PlusOutlined,
@@ -42,6 +43,7 @@ import {
   Modal,
   Popover,
   Progress,
+  Segmented,
   Select,
   Space,
   Switch,
@@ -94,7 +96,10 @@ import type {
   DbObjectInfo,
   HealthStatus,
   ObjectDdlResponse,
+  QueryCountResponse,
   QueryResponse,
+  RoutineParameterInfo,
+  RoutineParametersResponse,
   SqlFileRunResponse,
   TableInfo
 } from './app/connection-model'
@@ -237,6 +242,21 @@ const FAST_DROPDOWN_PROPS = {
   destroyOnHidden: true,
   transitionName: ''
 } as const
+
+type ExportFormat = 'sql' | 'csv' | 'json' | 'markdown'
+type ExportOrigin = 'tree' | 'result'
+type ExportDataScope = 'current_page' | 'all'
+type RoutineExecutionTarget = {
+  connectionId: string
+  name: string
+  databaseName?: string
+  pgDatabaseName?: string
+}
+type RoutineArgumentDraft = {
+  value: string
+  isNull: boolean
+  useDefault: boolean
+}
 
 const FAST_PRELOADED_DROPDOWN_PROPS = {
   ...FAST_DROPDOWN_PROPS,
@@ -482,9 +502,9 @@ type ApiErrorResponse = { __datadjinnApiError: string }
 const isApiErrorResponse = (value: unknown): value is ApiErrorResponse =>
   Boolean(
     value &&
-      typeof value === 'object' &&
-      '__datadjinnApiError' in value &&
-      typeof value.__datadjinnApiError === 'string'
+    typeof value === 'object' &&
+    '__datadjinnApiError' in value &&
+    typeof value.__datadjinnApiError === 'string'
   )
 
 const insertIdsAroundTarget = (
@@ -616,10 +636,16 @@ function App(): React.JSX.Element {
   const [exportPgDatabase, setExportPgDatabase] = useState<string>('')
   const [exportTable, setExportTable] = useState<string>('')
   const [exportScope, setExportScope] = useState<'database' | 'schema' | 'table'>('database')
-  const [exportFormat, setExportFormat] = useState<'sql' | 'csv' | 'json'>('sql')
+  const [exportFormat, setExportFormat] = useState<ExportFormat>('sql')
   const [exportContent, setExportContent] = useState<'schema' | 'data' | 'schema_data'>(
     'schema_data'
   )
+  const [exportOrigin, setExportOrigin] = useState<ExportOrigin>('tree')
+  const [exportResultTabKey, setExportResultTabKey] = useState('')
+  const [exportDataScope, setExportDataScope] = useState<ExportDataScope>('current_page')
+  const [exportAvailableColumns, setExportAvailableColumns] = useState<string[]>([])
+  const [exportColumns, setExportColumns] = useState<string[]>([])
+  const [exportColumnsLoading, setExportColumnsLoading] = useState(false)
   const [exportLoading, setExportLoading] = useState(false)
   const [importModalOpen, setImportModalOpen] = useState(false)
   const [importConnectionId, setImportConnectionId] = useState<string>('')
@@ -655,6 +681,11 @@ function App(): React.JSX.Element {
   const [backupRestoreDatabase, setBackupRestoreDatabase] = useState<string>('')
   const [backupRestorePgDatabase, setBackupRestorePgDatabase] = useState<string>('')
   const [backupRestoreLoading, setBackupRestoreLoading] = useState(false)
+  const [routineExecuteModalOpen, setRoutineExecuteModalOpen] = useState(false)
+  const [routineExecuteLoading, setRoutineExecuteLoading] = useState(false)
+  const [routineTarget, setRoutineTarget] = useState<RoutineExecutionTarget>()
+  const [routineParameters, setRoutineParameters] = useState<RoutineParameterInfo[]>([])
+  const [routineArguments, setRoutineArguments] = useState<Record<string, RoutineArgumentDraft>>({})
   const [createTableModalOpen, setCreateTableModalOpen] = useState(false)
   const [createTableConnectionId, setCreateTableConnectionId] = useState<string>('')
   const [createTableDatabaseName, setCreateTableDatabaseName] = useState<string>('')
@@ -1194,17 +1225,59 @@ function App(): React.JSX.Element {
     [backendStatus.apiBaseUrl, backendStatus.message, backendStatus.state]
   )
 
+  const getRequestConnectionId = (path: string, options?: RequestInit): string | undefined => {
+    const pathConnectionId = path.match(/^\/connections\/([^/?]+)/)?.[1]
+    if (pathConnectionId) {
+      return decodeURIComponent(pathConnectionId)
+    }
+
+    if (typeof options?.body !== 'string') {
+      return undefined
+    }
+
+    try {
+      const body = JSON.parse(options.body) as { connection_id?: unknown }
+      return typeof body.connection_id === 'string' && body.connection_id.trim()
+        ? body.connection_id
+        : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  const isReconnectableConnectionError = (message: string): boolean =>
+    /连接(?:已关闭|尚未打开|已断开)|(?:connection|client)\s+(?:is\s+)?(?:closed|disconnected)/i.test(
+      message
+    )
+
+  const reconnectingConnectionsRef = useRef<Record<string, Promise<void> | undefined>>({})
+
   const reopenConnectionSilently = useCallback(
     async (connectionId: string): Promise<void> => {
-      const connection = await requestJsonRaw<ConnectionInfo>(`/connections/${connectionId}/open`, {
+      const pending = reconnectingConnectionsRef.current[connectionId]
+      if (pending) {
+        return pending
+      }
+
+      const reconnect = requestJsonRaw<ConnectionInfo>(`/connections/${connectionId}/open`, {
         method: 'POST'
+      }).then((connection) => {
+        setConnections((current) =>
+          current.map((item) => (item.connection_id === connectionId ? connection : item))
+        )
+        setTreeData((current) =>
+          replaceConnectionNode(current, connection, buildConnectionNode, true)
+        )
       })
-      setConnections((current) =>
-        current.map((item) => (item.connection_id === connectionId ? connection : item))
-      )
-      setTreeData((current) =>
-        replaceConnectionNode(current, connection, buildConnectionNode, true)
-      )
+      reconnectingConnectionsRef.current[connectionId] = reconnect
+      void reconnect
+        .finally(() => {
+          if (reconnectingConnectionsRef.current[connectionId] === reconnect) {
+            delete reconnectingConnectionsRef.current[connectionId]
+          }
+        })
+        .catch(() => undefined)
+      return reconnect
     },
     [requestJsonRaw]
   )
@@ -1215,13 +1288,10 @@ function App(): React.JSX.Element {
         return await requestJsonRaw<T>(path, options)
       } catch (err) {
         const error = normalizeRequestError(err)
-        const match = path.match(/^\/connections\/([^/]+)/)
+        const connectionId = getRequestConnectionId(path, options)
 
-        if (
-          match &&
-          (error.message.includes('连接已关闭') || error.message.includes('连接尚未打开'))
-        ) {
-          await reopenConnectionSilently(match[1])
+        if (connectionId && isReconnectableConnectionError(error.message)) {
+          await reopenConnectionSilently(connectionId)
           return await requestJsonRaw<T>(path, options)
         }
 
@@ -3490,8 +3560,12 @@ function App(): React.JSX.Element {
     }
 
     const connection = getConnection(node.connectionId)
-    const isSQLiteDatabaseNode = node.kind === 'connection' && connection?.database_type === 'sqlite'
-    if (!connection || (!isSQLiteDatabaseNode && node.kind !== 'database' && node.kind !== 'pg-schema')) {
+    const isSQLiteDatabaseNode =
+      node.kind === 'connection' && connection?.database_type === 'sqlite'
+    if (
+      !connection ||
+      (!isSQLiteDatabaseNode && node.kind !== 'database' && node.kind !== 'pg-schema')
+    ) {
       return undefined
     }
 
@@ -3534,8 +3608,7 @@ function App(): React.JSX.Element {
         ? {
             id: buildAIContextSourceId({
               type:
-                isSchemaScopedType(activeConnection.database_type) &&
-                aiActiveContext.databaseName
+                isSchemaScopedType(activeConnection.database_type) && aiActiveContext.databaseName
                   ? 'schema'
                   : 'database',
               connectionId: aiActiveContext.connectionId,
@@ -3550,8 +3623,7 @@ function App(): React.JSX.Element {
                 : undefined
             }),
             type:
-              isSchemaScopedType(activeConnection.database_type) &&
-              aiActiveContext.databaseName
+              isSchemaScopedType(activeConnection.database_type) && aiActiveContext.databaseName
                 ? 'schema'
                 : 'database',
             connectionId: aiActiveContext.connectionId,
@@ -3811,7 +3883,8 @@ function App(): React.JSX.Element {
 
   const renderAIContextButton = (node: DatabaseTreeNode): React.ReactNode => {
     const connection = getConnection(node.connectionId)
-    const isSQLiteDatabaseNode = node.kind === 'connection' && connection?.database_type === 'sqlite'
+    const isSQLiteDatabaseNode =
+      node.kind === 'connection' && connection?.database_type === 'sqlite'
     if (!isSQLiteDatabaseNode && node.kind !== 'database' && node.kind !== 'pg-schema') {
       return null
     }
@@ -3909,7 +3982,7 @@ function App(): React.JSX.Element {
         : []),
       { key: 'export', label: '导出', icon: <FileAddOutlined /> },
       ...(connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis'
-        ? [{ key: 'import', label: '导入', icon: <PlayCircleOutlined /> }]
+        ? [{ key: 'import', label: '导入', icon: <ImportOutlined /> }]
         : []),
       ...(!isPgDb &&
       (connection?.database_type === 'mysql' ||
@@ -4024,7 +4097,11 @@ function App(): React.JSX.Element {
       openBackupRestoreModal(connectionId, isPgDb ? undefined : databaseName, pgDbName)
     }
     if (key === 'export') {
-      openExportModal(connectionId, isPgDb ? undefined : databaseName, pgDbName)
+      openExportModal(
+        connectionId,
+        isPgDb ? undefined : databaseName,
+        isPgDb ? databaseName : pgDbName
+      )
     }
     if (key === 'import') {
       openImportModal(connectionId, isPgDb ? undefined : databaseName, pgDbName)
@@ -4059,7 +4136,10 @@ function App(): React.JSX.Element {
       { type: 'divider' },
       ...(canPreview ? [{ key: 'export', label: '导出', icon: <FileAddOutlined /> }] : []),
       ...(connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis'
-        ? [{ key: 'import', label: '导入', icon: <PlayCircleOutlined /> }]
+        ? [{ key: 'import', label: '导入', icon: <ImportOutlined /> }]
+        : []),
+      ...(objectType === 'procedure'
+        ? [{ key: 'execute-routine', label: '执行存储过程', icon: <PlayCircleOutlined /> }]
         : []),
       ...(canPreview
         ? [
@@ -4090,6 +4170,9 @@ function App(): React.JSX.Element {
     }
     if (key === 'ddl') {
       void showObjectDdl(connectionId, tableName, objectType, databaseName, pgDbName)
+    }
+    if (key === 'execute-routine') {
+      void openRoutineExecution(connectionId, tableName, databaseName, pgDbName)
     }
     if (key === 'edit') {
       void openTableEditor(connectionId, tableName, databaseName, pgDbName)
@@ -4833,10 +4916,12 @@ function App(): React.JSX.Element {
       updateWorkspaceTab={updateWorkspaceTab}
       updateTableSearchState={updateTableSearchState}
       changeTabPage={changeTabPage}
+      changeTabLastPage={changeTabLastPage}
       changeTabLimit={changeTabLimit}
       previewTable={previewTable}
       previewRedisDatabase={previewRedisDatabase}
       showObjectDdl={showObjectDdl}
+      openResultExportModal={openResultExportModal}
       addPreviewRow={addPreviewRow}
       markSelectedRowsDeleted={markSelectedRowsDeleted}
       submitPreviewChanges={submitPreviewChanges}
@@ -6908,6 +6993,108 @@ function App(): React.JSX.Element {
     })
   }
 
+  const openRoutineExecution = async (
+    connectionId: string,
+    name: string,
+    databaseName?: string,
+    pgDatabaseName?: string
+  ): Promise<void> => {
+    setRoutineExecuteLoading(true)
+    setRoutineTarget({ connectionId, name, databaseName, pgDatabaseName })
+    try {
+      const params = new URLSearchParams()
+      if (databaseName) params.set('database', databaseName)
+      if (pgDatabaseName) params.set('pg_database', pgDatabaseName)
+      const query = params.size > 0 ? `?${params.toString()}` : ''
+      const response = await requestJson<RoutineParametersResponse>(
+        `/connections/${connectionId}/objects/${encodeURIComponent(name)}/routine-parameters${query}`
+      )
+      setRoutineParameters(response.parameters)
+      setRoutineArguments(
+        Object.fromEntries(
+          response.parameters.map((parameter) => [
+            parameter.name,
+            {
+              value: '',
+              isNull: !parameter.has_default && parameter.mode !== 'OUT',
+              useDefault: parameter.has_default
+            }
+          ])
+        )
+      )
+      setRoutineExecuteModalOpen(true)
+    } catch (error) {
+      setRoutineTarget(undefined)
+      showError(error instanceof Error ? error.message : '读取存储过程参数失败')
+    } finally {
+      setRoutineExecuteLoading(false)
+    }
+  }
+
+  const executeRoutine = async (): Promise<void> => {
+    if (!routineTarget) return
+    setRoutineExecuteLoading(true)
+    try {
+      const result = await requestJson<QueryResponse>(
+        `/connections/${routineTarget.connectionId}/objects/${encodeURIComponent(routineTarget.name)}/execute`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            database: routineTarget.databaseName,
+            pg_database: routineTarget.pgDatabaseName,
+            arguments: routineParameters.map((parameter) => {
+              const draft = routineArguments[parameter.name]
+              return {
+                name: parameter.name,
+                value: draft?.value ?? '',
+                is_null: draft?.isNull ?? parameter.mode === 'OUT',
+                use_default: draft?.useDefault ?? false
+              }
+            })
+          })
+        }
+      )
+      const isCommandResult =
+        result.columns.includes('message') &&
+        result.columns.includes('affected_rows') &&
+        result.rows.length === 1
+      const commandRow = isCommandResult ? result.rows[0] : undefined
+      const tabKey = `routine:${routineTarget.connectionId}:${routineTarget.name}:${Date.now()}`
+      const resultTab: WorkspaceTab = {
+        key: tabKey,
+        title: `执行 ${routineTarget.name}`,
+        kind: 'query',
+        connectionId: routineTarget.connectionId,
+        databaseName: routineTarget.databaseName,
+        pgDatabaseName: routineTarget.pgDatabaseName,
+        sql: '',
+        executedSql: `CALL ${routineTarget.name}`,
+        loading: false,
+        result,
+        resultVisible: true,
+        resultCollapsed: false,
+        resultKind: isCommandResult ? 'command' : 'query',
+        commandMessage:
+          isCommandResult && typeof commandRow?.message === 'string'
+            ? commandRow.message
+            : undefined,
+        commandAffectedRows:
+          isCommandResult && typeof commandRow?.affected_rows === 'number'
+            ? commandRow.affected_rows
+            : null,
+        page: 1,
+        limit: QUERY_DEFAULT_LIMIT
+      }
+      setWorkspaceTabsAndActiveTabKey((tabs) => [...tabs, resultTab], tabKey)
+      setRoutineExecuteModalOpen(false)
+      messageApi.success('存储过程执行完成')
+    } catch (error) {
+      showError(error instanceof Error ? error.message : '执行存储过程失败')
+    } finally {
+      setRoutineExecuteLoading(false)
+    }
+  }
+
   const showObjectDdl = async (
     connectionId: string,
     name: string,
@@ -7366,11 +7553,16 @@ function App(): React.JSX.Element {
     table?: string
   ): void => {
     const connection = getConnection(connectionId)
+    setExportOrigin('tree')
+    setExportResultTabKey('')
+    setExportDataScope('all')
+    setExportAvailableColumns([])
+    setExportColumns([])
     setExportConnectionId(connectionId)
     setExportDatabase(database ?? '')
     setExportPgDatabase(pgDatabase ?? '')
     setExportTable(table ?? '')
-    setExportScope(table ? 'table' : pgDatabase ? 'schema' : 'database')
+    setExportScope(table ? 'table' : pgDatabase && database ? 'schema' : 'database')
     setExportFormat(
       connection?.database_type === 'mongodb' || connection?.database_type === 'redis'
         ? 'json'
@@ -7378,13 +7570,67 @@ function App(): React.JSX.Element {
     )
     setExportContent('schema_data')
     setExportModalOpen(true)
+    if (table) {
+      setExportColumnsLoading(true)
+      void requestJson<ColumnsResponse>(
+        withPgDatabase(
+          `/connections/${connectionId}/tables/${encodeURIComponent(table)}/columns`,
+          database,
+          pgDatabase
+        )
+      )
+        .then((result) => {
+          const columns = result.columns.map((column) => column.name)
+          setExportAvailableColumns(columns)
+          setExportColumns(columns)
+        })
+        .catch((error) => showError(error instanceof Error ? error.message : '读取导出列失败'))
+        .finally(() => setExportColumnsLoading(false))
+    }
+  }
+
+  const openResultExportModal = (tab: WorkspaceTab): void => {
+    if (!tab.connectionId || !tab.result || tab.result.columns.length === 0) {
+      messageApi.warning('当前没有可导出的结果')
+      return
+    }
+    const columns = tab.result.columns.filter((column) => column !== '__rowKey')
+    setExportOrigin('result')
+    setExportResultTabKey(tab.key)
+    setExportDataScope('current_page')
+    setExportAvailableColumns(columns)
+    setExportColumns(columns)
+    setExportColumnsLoading(false)
+    setExportConnectionId(tab.connectionId)
+    setExportDatabase(tab.databaseName ?? '')
+    setExportPgDatabase(tab.pgDatabaseName ?? '')
+    setExportTable(tab.tableName ?? '')
+    setExportScope(tab.kind === 'preview' ? 'table' : 'database')
+    setExportFormat('csv')
+    setExportContent('data')
+    setExportModalOpen(true)
   }
 
   const runExport = async (): Promise<void> => {
     setExportLoading(true)
     try {
-      const defaultName = exportTable || exportPgDatabase || exportDatabase || 'export'
-      const extension = exportFormat === 'csv' ? 'csv' : exportFormat === 'json' ? 'json' : 'sql'
+      const resultTab = exportResultTabKey
+        ? useWorkspaceStore.getState().getTabByKey(exportResultTabKey)
+        : undefined
+      if (exportAvailableColumns.length > 0 && exportColumns.length === 0) {
+        messageApi.warning('请至少选择一个导出列')
+        return
+      }
+      const defaultName =
+        exportTable || resultTab?.title || exportPgDatabase || exportDatabase || 'export'
+      const extension =
+        exportFormat === 'markdown'
+          ? 'md'
+          : exportFormat === 'csv'
+            ? 'csv'
+            : exportFormat === 'json'
+              ? 'json'
+              : 'sql'
       const outputPath = await window.api.selectExportPath(
         exportFormat,
         `${defaultName}.${extension}`
@@ -7392,20 +7638,47 @@ function App(): React.JSX.Element {
       if (!outputPath) {
         return
       }
+      const isResultExport = exportOrigin === 'result' && resultTab
       const result = await requestJson<{ success: boolean; message: string; file_path?: string }>(
-        '/backup/export',
+        isResultExport ? '/backup/export-data' : '/backup/export',
         {
           method: 'POST',
-          body: JSON.stringify({
-            connection_id: exportConnectionId,
-            database: exportDatabase || undefined,
-            pg_database: exportPgDatabase || undefined,
-            table: exportTable || undefined,
-            scope: exportScope,
-            format: exportFormat,
-            content: exportContent,
-            output_path: outputPath
-          })
+          body: JSON.stringify(
+            isResultExport
+              ? {
+                  connection_id: resultTab.connectionId,
+                  source: resultTab.kind === 'query' ? 'query' : 'table',
+                  format: exportFormat,
+                  output_path: outputPath,
+                  columns: exportColumns,
+                  data_scope: exportDataScope,
+                  sql: resultTab.kind === 'query' ? resultTab.executedSql : undefined,
+                  table: resultTab.kind === 'preview' ? resultTab.tableName : undefined,
+                  database: resultTab.databaseName || undefined,
+                  pg_database: resultTab.pgDatabaseName || undefined,
+                  where: resultTab.kind === 'preview' ? resultTab.where || undefined : undefined,
+                  sort_column: resultTab.sortState?.column,
+                  sort_direction: resultTab.sortState?.direction,
+                  limit:
+                    resultTab.limit ??
+                    (resultTab.kind === 'preview' ? PREVIEW_DEFAULT_LIMIT : QUERY_DEFAULT_LIMIT),
+                  offset:
+                    Math.max(0, (resultTab.page ?? 1) - 1) *
+                    (resultTab.limit ??
+                      (resultTab.kind === 'preview' ? PREVIEW_DEFAULT_LIMIT : QUERY_DEFAULT_LIMIT))
+                }
+              : {
+                  connection_id: exportConnectionId,
+                  database: exportDatabase || undefined,
+                  pg_database: exportPgDatabase || undefined,
+                  table: exportTable || undefined,
+                  scope: exportScope,
+                  format: exportFormat,
+                  content: exportContent,
+                  columns: exportScope === 'table' ? exportColumns : undefined,
+                  output_path: outputPath
+                }
+          )
         }
       )
       messageApi.success(result.message)
@@ -8345,7 +8618,7 @@ function App(): React.JSX.Element {
     updateWorkspaceTab(tab.key, { limit, page: 1, loading: true, error: undefined })
 
     if (tab.kind === 'query') {
-      await runQuery({ ...tab, limit, page: 1 })
+      await runQuery({ ...tab, limit, page: 1 }, tab.executedSql)
       return
     }
 
@@ -8372,7 +8645,7 @@ function App(): React.JSX.Element {
     updateWorkspaceTab(tab.key, { page: nextPage, loading: true, error: undefined })
 
     if (tab.kind === 'query') {
-      await runQuery({ ...tab, page: nextPage })
+      await runQuery({ ...tab, page: nextPage }, tab.executedSql)
       return
     }
 
@@ -8502,8 +8775,14 @@ function App(): React.JSX.Element {
           result.columns.includes('affected_rows') &&
           result.rows.length === 1
         const commandRow = isCommandResult ? result.rows[0] : undefined
+        const preservedTotalCount =
+          resolvedTab.executedSql === sqlToExecute ? resolvedTab.result?.total_count : undefined
         updateWorkspaceTab(resolvedTab.key, {
-          result,
+          result: {
+            ...result,
+            total_count: result.total_count ?? preservedTotalCount
+          },
+          executedSql: sqlToExecute,
           page: resolvedTab.page ?? 1,
           selectedRowKeys: [],
           selectedRowKeyMap: {},
@@ -8806,6 +9085,55 @@ function App(): React.JSX.Element {
       isSchemaScopedType
     ]
   )
+
+  const changeTabLastPage = async (tab: WorkspaceTab): Promise<void> => {
+    const limit =
+      tab.limit ?? (tab.kind === 'preview' ? PREVIEW_DEFAULT_LIMIT : QUERY_DEFAULT_LIMIT)
+    const knownTotal = tab.result?.total_count
+    if (knownTotal !== undefined && knownTotal !== null) {
+      await changeTabPage(tab, Math.max(1, Math.ceil(knownTotal / limit)))
+      return
+    }
+    if (tab.kind !== 'query' || !tab.connectionId || !tab.executedSql) {
+      return
+    }
+
+    updateWorkspaceTab(tab.key, { loading: true, error: undefined })
+    try {
+      const connection = getConnection(tab.connectionId)
+      const count = await requestJson<QueryCountResponse>('/query/count', {
+        method: 'POST',
+        body: JSON.stringify({
+          connection_id: tab.connectionId,
+          sql: tab.executedSql,
+          database:
+            connection?.database_type === 'mysql' ||
+            connection?.database_type === 'dm' ||
+            connection?.database_type === 'oracle' ||
+            isSchemaScopedType(connection?.database_type) ||
+            connection?.database_type === 'mongodb' ||
+            connection?.database_type === 'redis' ||
+            connection?.database_type === 'clickhouse'
+              ? tab.databaseName || undefined
+              : undefined,
+          pg_database: isSchemaScopedType(connection?.database_type)
+            ? tab.pgDatabaseName || undefined
+            : undefined
+        })
+      })
+      const result = tab.result ? { ...tab.result, total_count: count.total_count } : tab.result
+      const lastPage = Math.max(1, Math.ceil(count.total_count / limit))
+      updateWorkspaceTab(tab.key, { result, loading: false })
+      if (lastPage !== (tab.page ?? 1)) {
+        await runQuery({ ...tab, result, page: lastPage }, tab.executedSql)
+      }
+    } catch (error) {
+      updateWorkspaceTab(tab.key, {
+        loading: false,
+        error: error instanceof Error ? error.message : '获取总页数失败'
+      })
+    }
+  }
   const effectiveAIContextSources = useMemo(
     () => mergeAIContextSources(primaryAIContextSource, aiContextSources),
     [aiContextSources, primaryAIContextSource]
@@ -8910,6 +9238,23 @@ function App(): React.JSX.Element {
     shortcutSettings.ai_newline,
     shortcutSettings.ai_stop
   ])
+
+  const exportResultTab = exportResultTabKey
+    ? getWorkspaceTabs().find((tab) => tab.key === exportResultTabKey)
+    : undefined
+  const exportConnection = getConnection(exportConnectionId)
+  const exportSupportsSql =
+    exportOrigin === 'tree'
+      ? exportConnection?.database_type !== 'mongodb' && exportConnection?.database_type !== 'redis'
+      : exportResultTab?.kind === 'preview' &&
+        exportConnection?.database_type !== 'mongodb' &&
+        exportConnection?.database_type !== 'redis'
+  const exportFormatOptions = [
+    ...(exportSupportsSql ? [{ label: 'SQL', value: 'sql' as const }] : []),
+    { label: 'CSV', value: 'csv' as const },
+    { label: 'JSON', value: 'json' as const },
+    { label: 'Markdown', value: 'markdown' as const }
+  ]
 
   return (
     <ConfigProvider
@@ -10479,6 +10824,116 @@ function App(): React.JSX.Element {
             </Space>
           )}
         </Modal>
+        <Modal
+          title={routineTarget ? `执行存储过程：${routineTarget.name}` : '执行存储过程'}
+          open={routineExecuteModalOpen}
+          className="routine-execute-modal"
+          okText="确认执行"
+          cancelText="取消"
+          confirmLoading={routineExecuteLoading}
+          onOk={() => void executeRoutine()}
+          onCancel={() => {
+            setRoutineExecuteModalOpen(false)
+            setRoutineTarget(undefined)
+            setRoutineParameters([])
+            setRoutineArguments({})
+          }}
+          maskClosable={false}
+          {...FAST_MODAL_PROPS}
+        >
+          <Space direction="vertical" className="full-width" size={16}>
+            <Alert type="warning" showIcon message="确认后将立即在当前数据库中执行该存储过程。" />
+            {routineParameters.length === 0 ? (
+              <Typography.Text type="secondary">该存储过程没有参数。</Typography.Text>
+            ) : (
+              <Form layout="vertical" className="routine-parameter-form">
+                {routineParameters.map((parameter) => {
+                  const draft = routineArguments[parameter.name] ?? {
+                    value: '',
+                    isNull: true,
+                    useDefault: false
+                  }
+                  const outputOnly = parameter.mode === 'OUT'
+                  return (
+                    <div
+                      className="routine-parameter-row"
+                      key={`${parameter.position}:${parameter.name}`}
+                    >
+                      <div className="routine-parameter-heading">
+                        <Typography.Text strong>{parameter.name}</Typography.Text>
+                        <Space size={6}>
+                          <Tag color={parameter.mode === 'IN' ? 'blue' : 'gold'}>
+                            {parameter.mode}
+                          </Tag>
+                          <Typography.Text type="secondary">{parameter.data_type}</Typography.Text>
+                        </Space>
+                      </div>
+                      {outputOnly ? (
+                        <Typography.Text type="secondary">
+                          输出参数，执行完成后在结果中显示
+                        </Typography.Text>
+                      ) : (
+                        <Space direction="vertical" className="full-width" size={8}>
+                          <Input
+                            value={draft.value}
+                            disabled={draft.isNull || draft.useDefault}
+                            placeholder={draft.isNull ? '将传入 NULL' : '请输入参数值'}
+                            onChange={(event) => {
+                              const value = event.target.value
+                              setRoutineArguments((current) => ({
+                                ...current,
+                                [parameter.name]: {
+                                  ...draft,
+                                  value,
+                                  isNull: value.length === 0
+                                }
+                              }))
+                            }}
+                          />
+                          <Space size={16} wrap>
+                            <Checkbox
+                              checked={draft.isNull}
+                              disabled={draft.useDefault}
+                              onChange={(event) =>
+                                setRoutineArguments((current) => ({
+                                  ...current,
+                                  [parameter.name]: {
+                                    ...draft,
+                                    isNull: event.target.checked
+                                  }
+                                }))
+                              }
+                            >
+                              传入 NULL
+                            </Checkbox>
+                            {parameter.has_default && (
+                              <Checkbox
+                                checked={draft.useDefault}
+                                onChange={(event) => {
+                                  const useDefault = event.target.checked
+                                  setRoutineArguments((current) => ({
+                                    ...current,
+                                    [parameter.name]: {
+                                      ...draft,
+                                      useDefault,
+                                      isNull: useDefault ? false : draft.value.length === 0
+                                    }
+                                  }))
+                                }}
+                              >
+                                使用默认值
+                              </Checkbox>
+                            )}
+                          </Space>
+                        </Space>
+                      )}
+                    </div>
+                  )
+                })}
+              </Form>
+            )}
+          </Space>
+        </Modal>
         <DdlPreviewModal
           ref={ddlPreviewModalRef}
           theme={theme}
@@ -10610,46 +11065,95 @@ function App(): React.JSX.Element {
           </Space>
         </Modal>
         <Modal
-          title="导出"
+          title={exportOrigin === 'result' ? '导出查询结果' : '导出'}
           open={exportModalOpen}
+          className="data-export-modal"
+          rootClassName="data-export-modal-root"
           okText="选择路径并导出"
           cancelText="取消"
           confirmLoading={exportLoading}
           onOk={() => void runExport()}
           onCancel={() => setExportModalOpen(false)}
+          okButtonProps={{
+            disabled:
+              exportColumnsLoading ||
+              (exportAvailableColumns.length > 0 && exportColumns.length === 0)
+          }}
           maskClosable={false}
           {...FAST_MODAL_PROPS}
         >
           <Space direction="vertical" className="full-width">
             <Typography.Text>
               <Typography.Text strong>连接：</Typography.Text>
-              {getConnection(exportConnectionId)?.name}
+              {exportConnection?.name}
             </Typography.Text>
             <Typography.Text>
               <Typography.Text strong>范围：</Typography.Text>
-              {exportScope === 'table'
-                ? `表 ${exportTable}`
-                : exportScope === 'schema'
-                  ? `Schema ${exportPgDatabase}`
-                  : `数据库 ${exportDatabase || '默认'}`}
+              {exportOrigin === 'result'
+                ? exportResultTab?.title || '当前结果'
+                : exportScope === 'table'
+                  ? `表 ${exportTable}`
+                  : exportScope === 'schema'
+                    ? `Schema ${exportDatabase}`
+                    : `数据库 ${exportPgDatabase || exportDatabase || '默认'}`}
             </Typography.Text>
             <Form layout="vertical">
+              {exportOrigin === 'result' && (
+                <Form.Item label="数据范围">
+                  <Segmented
+                    block
+                    value={exportDataScope}
+                    options={[
+                      { label: '当前页', value: 'current_page' },
+                      { label: '全部数据', value: 'all' }
+                    ]}
+                    onChange={(value) => setExportDataScope(value as ExportDataScope)}
+                  />
+                </Form.Item>
+              )}
+              {(exportAvailableColumns.length > 0 || exportColumnsLoading) && (
+                <Form.Item label="导出列">
+                  <Space direction="vertical" className="full-width" size={8}>
+                    <Checkbox
+                      checked={
+                        exportAvailableColumns.length > 0 &&
+                        exportColumns.length === exportAvailableColumns.length
+                      }
+                      indeterminate={
+                        exportColumns.length > 0 &&
+                        exportColumns.length < exportAvailableColumns.length
+                      }
+                      disabled={exportColumnsLoading}
+                      onChange={(event) =>
+                        setExportColumns(event.target.checked ? exportAvailableColumns : [])
+                      }
+                    >
+                      全选
+                    </Checkbox>
+                    <Select
+                      mode="multiple"
+                      allowClear
+                      loading={exportColumnsLoading}
+                      value={exportColumns}
+                      options={exportAvailableColumns.map((column) => ({
+                        label: column,
+                        value: column
+                      }))}
+                      placeholder="请选择要导出的列"
+                      maxTagCount="responsive"
+                      onChange={setExportColumns}
+                    />
+                  </Space>
+                </Form.Item>
+              )}
               <Form.Item label="导出格式">
                 <Select
                   value={exportFormat}
-                  onChange={(value) => setExportFormat(value)}
-                  options={
-                    getConnection(exportConnectionId)?.database_type === 'mongodb' ||
-                    getConnection(exportConnectionId)?.database_type === 'redis'
-                      ? [{ label: 'JSON', value: 'json' }]
-                      : [
-                          { label: 'SQL 脚本', value: 'sql' },
-                          { label: 'CSV', value: 'csv' }
-                        ]
-                  }
+                  onChange={(value) => setExportFormat(value as ExportFormat)}
+                  options={exportFormatOptions}
                 />
               </Form.Item>
-              {exportFormat === 'sql' && (
+              {exportOrigin === 'tree' && exportFormat === 'sql' && (
                 <Form.Item label="导出内容">
                   <Select
                     value={exportContent}
@@ -10657,26 +11161,22 @@ function App(): React.JSX.Element {
                     options={[
                       { label: '结构 + 数据', value: 'schema_data' },
                       { label: '仅结构', value: 'schema' },
-                      { label: '仅数据', value: 'data' }
+                      ...(exportScope === 'table' ? [] : [{ label: '仅数据', value: 'data' }])
                     ]}
                   />
                 </Form.Item>
               )}
             </Form>
-            {exportFormat === 'csv' && exportScope !== 'table' && (
+            {exportOrigin === 'tree' && exportFormat === 'csv' && exportScope !== 'table' && (
               <Alert type="info" message="CSV 多表导出会创建目录，每张表一个 CSV 文件。" showIcon />
             )}
             {exportFormat === 'json' && (
-              <Alert
-                type="info"
-                message="Redis / MongoDB 会导出为 JSON 文件，便于留档或迁移前查看。"
-                showIcon
-              />
+              <Alert type="info" message="JSON 会保留字段名称与结构化值，便于程序读取。" showIcon />
             )}
-            {exportFormat === 'sql' && (
+            {exportOrigin === 'tree' && exportFormat === 'sql' && (
               <Alert
                 type="info"
-                message="SQL 导出用于迁移或查看，可选仅结构、仅数据或结构加数据；完整恢复请使用备份。"
+                message="SQL 导出保留完整表结构；选择部分列时，仅 INSERT 数据按所选列生成。"
                 showIcon
               />
             )}

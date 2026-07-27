@@ -8,7 +8,7 @@ from sqlalchemy.engine import Engine
 
 from app.db.connection_manager import ConnectionManager
 from app.db.query_timeout import apply_query_timeout
-from app.db.readonly_query import _split_sql_statements, _with_limit, execute_query
+from app.db.readonly_query import _split_sql_statements, _with_limit, count_readonly_query, execute_query
 from app.request_context import reset_query_timeout_seconds, set_query_timeout_seconds
 from app.schemas.connection import ConnectionRequest
 
@@ -136,6 +136,27 @@ class ClickHouseQueryPerformanceTests(unittest.TestCase):
                 self.assertFalse(switched_engine.pool._pre_ping)  # type: ignore[attr-defined]
             finally:
                 switched_engine.dispose()
+        finally:
+            engine.dispose()
+
+
+class QueryPaginationTests(unittest.TestCase):
+    def test_readonly_query_count_supports_last_page_navigation(self) -> None:
+        from sqlalchemy import create_engine, text
+
+        engine = create_engine("sqlite://")
+        try:
+            with engine.begin() as connection:
+                connection.execute(text("CREATE TABLE items (id INTEGER PRIMARY KEY)"))
+                connection.execute(
+                    text(
+                        "WITH RECURSIVE numbers(value) AS ("
+                        "SELECT 1 UNION ALL SELECT value + 1 FROM numbers WHERE value < 601"
+                        ") INSERT INTO items(id) SELECT value FROM numbers"
+                    )
+                )
+
+            self.assertEqual(count_readonly_query(engine, "SELECT * FROM items"), 601)
         finally:
             engine.dispose()
 

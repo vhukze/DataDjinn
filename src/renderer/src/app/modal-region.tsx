@@ -57,6 +57,8 @@ export const DdlPreviewModal = memo(
         footer={null}
         onCancel={() => setOpen(false)}
         width={980}
+        className="ddl-preview-modal"
+        rootClassName="ddl-preview-modal-root"
         centered
         maskClosable={false}
         transitionName=""

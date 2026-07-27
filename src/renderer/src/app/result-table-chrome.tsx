@@ -5,6 +5,7 @@ import {
   DeleteOutlined,
   DoubleLeftOutlined,
   DoubleRightOutlined,
+  DownloadOutlined,
   DownOutlined,
   LeftOutlined,
   MinusOutlined,
@@ -347,8 +348,10 @@ type ResultPagerProps = {
   searchState: TableSearchUiState
   searchVisible: boolean
   onChangePage: (page: number) => void
+  onChangeLastPage: () => void
   onChangeLimit: (limit: number) => void
   onToggleSearch: () => void
+  onExportData: () => void
 }
 
 export function ResultPager({
@@ -358,8 +361,10 @@ export function ResultPager({
   searchState,
   searchVisible,
   onChangePage,
+  onChangeLastPage,
   onChangeLimit,
-  onToggleSearch
+  onToggleSearch,
+  onExportData
 }: ResultPagerProps): React.ReactNode {
   const limit = tab.limit ?? (tab.kind === 'preview' ? previewDefaultLimit : queryDefaultLimit)
   const page = tab.page ?? 1
@@ -367,7 +372,14 @@ export function ResultPager({
     ? Math.max(1, Math.ceil(tab.result.total_count / limit))
     : undefined
   const hasNext = totalPages ? page < totalPages : !!tab.result?.limited
+  const hasLastPage = totalPages ? page < totalPages : hasNext
   const showPageSearch = tab.kind === 'query'
+  const showDataExport = Boolean(
+    tab.kind === 'query' &&
+    tab.resultKind !== 'command' &&
+    tab.resultKind !== 'error' &&
+    tab.result?.columns.length
+  )
 
   const jumpToPage = (rawValue: string): void => {
     const parsed = Number(rawValue.trim())
@@ -444,8 +456,8 @@ export function ResultPager({
         icon={<DoubleRightOutlined />}
         title="末页"
         aria-label="末页"
-        disabled={tab.loading || !totalPages || page >= totalPages}
-        onClick={() => totalPages && onChangePage(totalPages)}
+        disabled={tab.loading || !hasLastPage}
+        onClick={() => (totalPages ? onChangePage(totalPages) : onChangeLastPage())}
       />
       <Select
         size="small"
@@ -472,6 +484,18 @@ export function ResultPager({
           onClick={handleSearchClick}
         />
       )}
+      {showDataExport && (
+        <Button
+          size="small"
+          type="text"
+          icon={<DownloadOutlined />}
+          title="导出数据"
+          aria-label="导出数据"
+          className="table-toolbar-icon-btn result-export-button"
+          onMouseDown={handleSearchMouseDown}
+          onClick={onExportData}
+        />
+      )}
     </Space>
   )
 }
@@ -490,6 +514,7 @@ type TableToolbarProps = {
   onSearchStateChange: (patch: Partial<TableSearchUiState>) => void
   onClearActiveHighlight: () => void
   onShowObjectDdl: (tab: WorkspaceTab) => void
+  onExportData: (tab: WorkspaceTab) => void
   onPreviewTableRefresh: (tab: WorkspaceTab) => void
   onPreviewRedisRefresh: (tab: WorkspaceTab) => void
   onAddPreviewRow: (tab: WorkspaceTab) => void
@@ -515,6 +540,7 @@ export function ResultTableToolbar({
   onSearchStateChange,
   onClearActiveHighlight,
   onShowObjectDdl,
+  onExportData,
   onPreviewTableRefresh,
   onPreviewRedisRefresh,
   onAddPreviewRow,
@@ -538,6 +564,12 @@ export function ResultTableToolbar({
   const showRedisRefresh = tab.kind === 'redis-browser' && tab.connectionId && tab.databaseName
   const showPreviewSearch = tab.kind === 'preview' || tab.kind === 'redis-browser'
   const showPreviewDdl = Boolean(tab.kind === 'preview' && tab.connectionId && tab.tableName)
+  const showDataExport = Boolean(
+    tab.kind === 'preview' &&
+    tab.resultKind !== 'command' &&
+    tab.resultKind !== 'error' &&
+    tab.result?.columns.length
+  )
   const handleSearchMouseDown = (event: React.MouseEvent<HTMLElement>): void => {
     event.preventDefault()
     event.stopPropagation()
@@ -552,7 +584,7 @@ export function ResultTableToolbar({
   }
   const leftActions =
     showRedisRefresh || showPreviewActions ? (
-      <Space size={4} className="table-data-actions">
+      <Space size={4} className="table-toolbar-inline-actions">
         {showRedisRefresh && (
           <>
             <Button
@@ -648,8 +680,19 @@ export function ResultTableToolbar({
     ) : null
 
   const rightActions =
-    showPreviewSearch || showPreviewDdl ? (
+    showPreviewSearch || showPreviewDdl || showDataExport ? (
       <Space size={4} className="table-toolbar-inline-actions">
+        {showDataExport && (
+          <Button
+            size="small"
+            type="text"
+            icon={<DownloadOutlined />}
+            title="导出数据"
+            aria-label="导出数据"
+            className="table-toolbar-icon-btn result-export-button"
+            onClick={() => onExportData(tab)}
+          />
+        )}
         {showPreviewSearch && (
           <Button
             size="small"
