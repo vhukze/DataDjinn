@@ -1053,7 +1053,9 @@ function App(): React.JSX.Element {
           pointerId: number
           startX: number
           startWidth: number
+          startTableWidth: number
           lastWidth: number
+          tableWidthHost?: HTMLElement
           headerCells: HTMLElement[]
           headerColElements: HTMLTableColElement[]
           bodyColElements: HTMLTableColElement[]
@@ -1231,14 +1233,26 @@ function App(): React.JSX.Element {
       return decodeURIComponent(pathConnectionId)
     }
 
+    try {
+      const requestUrl = new URL(path, 'http://localhost')
+      const queryConnectionId =
+        requestUrl.searchParams.get('connection_id') ?? requestUrl.searchParams.get('connectionId')
+      if (queryConnectionId?.trim()) {
+        return queryConnectionId
+      }
+    } catch {
+      // Keep body-based connection extraction available for malformed relative paths.
+    }
+
     if (typeof options?.body !== 'string') {
       return undefined
     }
 
     try {
-      const body = JSON.parse(options.body) as { connection_id?: unknown }
-      return typeof body.connection_id === 'string' && body.connection_id.trim()
-        ? body.connection_id
+      const body = JSON.parse(options.body) as { connection_id?: unknown; connectionId?: unknown }
+      const bodyConnectionId = body.connection_id ?? body.connectionId
+      return typeof bodyConnectionId === 'string' && bodyConnectionId.trim()
+        ? bodyConnectionId
         : undefined
     } catch {
       return undefined
@@ -1246,7 +1260,7 @@ function App(): React.JSX.Element {
   }
 
   const isReconnectableConnectionError = (message: string): boolean =>
-    /连接(?:已关闭|尚未打开|已断开)|(?:connection|client)\s+(?:is\s+)?(?:closed|disconnected)/i.test(
+    /连接\s*(?:已关闭|尚未打开|已断开)|\b(?:connection|client)\b(?:\s+\w+){0,4}\s+\b(?:closed|disconnected)\b|\b(?:socket|channel)\s+(?:is\s+)?closed\b/i.test(
       message
     )
 
@@ -2569,6 +2583,18 @@ function App(): React.JSX.Element {
     })
   }
 
+  const applyLiveResultTableWidth = (
+    width: number,
+    startWidth: number,
+    startTableWidth: number,
+    tableWidthHost?: HTMLElement
+  ): void => {
+    tableWidthHost?.style.setProperty(
+      '--result-table-width',
+      `${Math.max(1, startTableWidth + (width - startWidth))}px`
+    )
+  }
+
   const renameWorkspaceTab = useCallback(
     (key: string, title: string): void => {
       updateWorkspaceTab(key, { title })
@@ -2954,6 +2980,12 @@ function App(): React.JSX.Element {
             resizeState.bodyColElements
           )
         }
+        applyLiveResultTableWidth(
+          finalWidth,
+          resizeState.startWidth,
+          resizeState.startTableWidth,
+          resizeState.tableWidthHost
+        )
       })
 
       flushSync(() => {
@@ -3008,6 +3040,12 @@ function App(): React.JSX.Element {
             resizeState.headerColElements,
             resizeState.virtualCells ?? []
           )
+          applyLiveResultTableWidth(
+            pendingWidth,
+            resizeState.startWidth,
+            resizeState.startTableWidth,
+            resizeState.tableWidthHost
+          )
           return
         }
         applyLiveColumnWidth(
@@ -3016,6 +3054,12 @@ function App(): React.JSX.Element {
           resizeState.headerCells,
           resizeState.headerColElements,
           resizeState.bodyColElements
+        )
+        applyLiveResultTableWidth(
+          pendingWidth,
+          resizeState.startWidth,
+          resizeState.startTableWidth,
+          resizeState.tableWidthHost
         )
       })
     }

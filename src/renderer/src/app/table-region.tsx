@@ -916,7 +916,12 @@ export const ResultTableBodyView = memo(
         }}
         className="result-table-body"
         tabIndex={0}
-        style={{ '--result-table-scroll-y': `${effectiveTableScrollY}px` } as React.CSSProperties}
+        style={
+          {
+            '--result-table-scroll-y': `${effectiveTableScrollY}px`,
+            '--result-table-width': `${tableScrollX}px`
+          } as React.CSSProperties
+        }
         onDragStart={(event) => {
           event.preventDefault()
         }}

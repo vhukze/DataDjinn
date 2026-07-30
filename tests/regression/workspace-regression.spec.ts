@@ -2165,10 +2165,62 @@ test.describe('workspace regression', () => {
       expect(positions[0]).not.toBeNull()
       expect(positions[1]).not.toBeNull()
       expect(positions[0].x + positions[0].width).toBeLessThanOrEqual(positions[1].x + 2)
+      const toolbarMetrics = await page.evaluate(() => {
+        const queryButton = document.querySelector<HTMLElement>('.toolbar-query-btn')
+        const connectionButton = document.querySelector<HTMLElement>('.resource-add')
+        const formatButton = document.querySelector<HTMLElement>('.query-format-button')
+        const executeSplit = document.querySelector<HTMLElement>('.query-execute-split')
+        const executeButton = document.querySelector<HTMLElement>('.query-execute-button')
+        if (!queryButton || !connectionButton || !formatButton || !executeSplit || !executeButton) {
+          return null
+        }
+        return {
+          queryRadius: getComputedStyle(queryButton).borderTopLeftRadius,
+          connectionRadius: getComputedStyle(connectionButton).borderTopLeftRadius,
+          formatBorderWidth: getComputedStyle(formatButton).borderTopWidth,
+          splitRadius: getComputedStyle(executeSplit).borderTopLeftRadius,
+          executeRadius: getComputedStyle(executeButton).borderTopRightRadius
+        }
+      })
+      expect(toolbarMetrics).not.toBeNull()
+      expect(toolbarMetrics.queryRadius).toBe(toolbarMetrics.connectionRadius)
+      expect(toolbarMetrics.formatBorderWidth).toBe('0px')
+      expect(toolbarMetrics.splitRadius).toBe('8px')
+      expect(toolbarMetrics.executeRadius).toBe('8px')
 
       await focusMonacoEditor(page)
       await page.keyboard.press('Control+A')
       await page.keyboard.type('select * from small_items where id=2')
+      const statementToggle = page.getByRole('button', { name: '选择执行语句' })
+      await expect(statementToggle).toBeVisible({ timeout: 10000 })
+      await expect
+        .poll(
+          () =>
+            page
+              .locator('.query-execute-button')
+              .evaluate((button) => Math.round(Number.parseFloat(getComputedStyle(button).borderTopRightRadius))),
+          { timeout: 10000 }
+        )
+        .toBe(0)
+      const splitMetrics = await page.evaluate(() => {
+        const split = document.querySelector<HTMLElement>('.query-execute-split.has-statement-menu')
+        const executeButton = document.querySelector<HTMLElement>('.query-execute-button')
+        const dropdownButton = document.querySelector<HTMLElement>('.query-execute-dropdown-button')
+        if (!split || !executeButton || !dropdownButton) {
+          return null
+        }
+        const executeRect = executeButton.getBoundingClientRect()
+        const dropdownRect = dropdownButton.getBoundingClientRect()
+        return {
+          executeRadius: getComputedStyle(executeButton).borderTopRightRadius,
+          dropdownRadius: getComputedStyle(dropdownButton).borderTopRightRadius,
+          splitGap: dropdownRect.left - executeRect.right
+        }
+      })
+      expect(splitMetrics).not.toBeNull()
+      expect(Number.parseFloat(splitMetrics.executeRadius)).toBeLessThan(0.1)
+      expect(splitMetrics.dropdownRadius).toBe('8px')
+      expect(splitMetrics.splitGap).toBeLessThanOrEqual(1)
       await page.keyboard.press('Control+Home')
       await formatButton.click()
       await expect
@@ -2425,6 +2477,62 @@ test.describe('workspace regression', () => {
         overflowMetrics.textWidth,
         'rendered text box should stay within cell width'
       ).toBeLessThanOrEqual(overflowMetrics.cellWidth)
+      expect(
+        overflowMetrics.cellWidth,
+        'default preview column width should not expand for long cell content'
+      ).toBeLessThanOrEqual(182)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('sql query long cell content should keep the default column width @smoke', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openQueryWorkspace(page)
+
+      const editorTextbox = page.getByRole('textbox', { name: 'Editor content' }).first()
+      await expect(editorTextbox).toBeVisible({ timeout: 30000 })
+      await editorTextbox.focus()
+      await page.keyboard.press('Control+A')
+      await page.keyboard.type('select payload from large_items limit 1;')
+
+      const executeButton = page.getByRole('button', { name: /执行/i }).first()
+      await executeButton.click()
+
+      const overflowMetrics = await page
+        .locator('.workspace-tab-panels .workspace-active-content')
+        .evaluate((activePane) => {
+          const editableCell = activePane.querySelector(
+            '.result-table .editable-cell[data-cell-column-key="payload"]'
+          )
+          const tableCell = editableCell?.closest<HTMLElement>('[data-column-key="payload"]')
+          const tableCellText = editableCell?.querySelector<HTMLElement>('.table-cell-text')
+          if (!tableCell || !tableCellText) {
+            return null
+          }
+          return {
+            cellWidth: tableCell.getBoundingClientRect().width,
+            scrollWidth: tableCellText.scrollWidth,
+            clientWidth: tableCellText.clientWidth
+          }
+        })
+
+      expect(overflowMetrics).not.toBeNull()
+      expect(
+        overflowMetrics.cellWidth,
+        'default query column width should not expand for long cell content'
+      ).toBeLessThanOrEqual(182)
+      expect(
+        overflowMetrics.scrollWidth,
+        'query cell text should overflow internally for ellipsis'
+      ).toBeGreaterThan(overflowMetrics.clientWidth)
     } finally {
       await electronApp.close()
     }
@@ -6373,7 +6481,7 @@ test.describe('workspace regression', () => {
 
       await page
         .locator(
-          '.workspace-tab-panels .workspace-active-content .table-data-actions [aria-label="刷新"]'
+          '.workspace-tab-panels .workspace-active-content .table-toolbar-inline-actions [aria-label="刷新"]'
         )
         .click()
       await expect(
@@ -6442,7 +6550,7 @@ test.describe('workspace regression', () => {
       )
       await expectCellTextExactly(visibleCell, editedText)
 
-      await activeResult.locator('.table-data-actions [aria-label="刷新"]').click()
+      await activeResult.locator('.table-toolbar-inline-actions [aria-label="刷新"]').click()
       await expect(
         page.locator('.result-status-warning-pill').filter({ hasText: '未提交' })
       ).toHaveCount(0, { timeout: 10000 })
@@ -6489,7 +6597,7 @@ test.describe('workspace regression', () => {
       await expect(inlineEditor).toBeVisible({ timeout: 10000 })
       await inlineEditor.fill(`${editableTarget.originalText}__draft__`)
 
-      await activeResult.locator('.table-data-actions [aria-label="刷新"]').click()
+      await activeResult.locator('.table-toolbar-inline-actions [aria-label="刷新"]').click()
       await expect(inlineEditor).toHaveCount(0, { timeout: 10000 })
       await expect(
         page.locator('.result-status-warning-pill').filter({ hasText: '未提交' })
@@ -6538,7 +6646,7 @@ test.describe('workspace regression', () => {
       )
       await expectCellTextExactly(visibleCell, editedText)
 
-      await activeResult.locator('.table-data-actions [aria-label="刷新"]').click()
+      await activeResult.locator('.table-toolbar-inline-actions [aria-label="刷新"]').click()
       await expect(
         page.locator('.result-status-warning-pill').filter({ hasText: '未提交' })
       ).toHaveCount(0, { timeout: 10000 })
@@ -6582,7 +6690,7 @@ test.describe('workspace regression', () => {
       )
       await expectCellTextExactly(visibleCell, editedText)
 
-      await activeResult.locator('.table-data-actions [aria-label="刷新"]').click()
+      await activeResult.locator('.table-toolbar-inline-actions [aria-label="刷新"]').click()
       await expect(
         page.locator('.result-status-warning-pill').filter({ hasText: '未提交' })
       ).toHaveCount(0, { timeout: 10000 })
@@ -7975,6 +8083,21 @@ test.describe('workspace regression', () => {
       await openFixtureTable(page, largeTableName)
 
       const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      const deleteButton = activeResult.locator(
+        '.table-toolbar-inline-actions [aria-label="删除选中行"]'
+      )
+      const saveButton = activeResult.locator('.table-toolbar-inline-actions [aria-label="提交"]')
+      await expect(deleteButton).toBeDisabled()
+      await expect(saveButton).toBeDisabled()
+      await expect
+        .poll(async () =>
+          deleteButton.evaluate((node) => {
+            const style = getComputedStyle(node)
+            return { cursor: style.cursor, opacity: Number(style.opacity) }
+          })
+        )
+        .toEqual({ cursor: 'not-allowed', opacity: 0.46 })
+
       const editableTarget = await activeResult.evaluate((node) => {
         const cell = node.querySelector<HTMLElement>('.editable-cell[data-cell-key]')
         if (!(cell instanceof HTMLElement)) {
@@ -7995,11 +8118,28 @@ test.describe('workspace regression', () => {
       await inlineEditor.fill(`${editableTarget.originalText}__pending__`)
       await activeResult.locator('.result-status').click()
 
-      const saveButton = activeResult.locator('.table-data-actions [aria-label="提交"]')
       await expect(
         page.locator('.result-status-warning-pill').filter({ hasText: '未提交' })
       ).toContainText('未提交', { timeout: 10000 })
       await expect(saveButton).toHaveClass(/is-pending-save/, { timeout: 10000 })
+      await expect
+        .poll(async () =>
+          saveButton.evaluate((node) => {
+            const icon = node.querySelector('.anticon')
+            const buttonStyle = getComputedStyle(node)
+            const iconStyle = icon ? getComputedStyle(icon) : null
+            return {
+              backgroundImage: buttonStyle.backgroundImage,
+              iconFilter: iconStyle?.filter ?? '',
+              iconTransform: iconStyle?.transform ?? ''
+            }
+          })
+        )
+        .toEqual({
+          backgroundImage: 'none',
+          iconFilter: expect.stringContaining('drop-shadow'),
+          iconTransform: expect.not.stringMatching(/^none$/)
+        })
     } finally {
       await electronApp.close()
     }
@@ -8032,7 +8172,7 @@ test.describe('workspace regression', () => {
       })
       expect(beforeState.hasInsertedRow).toBe(false)
 
-      await activeResult.locator('.table-data-actions .table-toolbar-icon-btn').nth(1).click()
+      await activeResult.locator('.table-toolbar-inline-actions [aria-label="新增行"]').click()
       await page.waitForTimeout(600)
 
       const afterState = await activeResult.evaluate((node) => {

@@ -1,7 +1,9 @@
 import unittest
 from typing import Any
+from unittest.mock import patch
 
 from app.ai.agent import AIConfig, DatabaseAgent, build_system_prompt
+from app.schemas.query import QueryResponse
 
 
 class FakeObject:
@@ -43,6 +45,29 @@ class FakeAnthropicClient:
 
 
 class DatabaseAgentStreamingTests(unittest.TestCase):
+    def test_gaussdb_write_execution_uses_selected_database_and_schema(self) -> None:
+        engine = object()
+        agent = DatabaseAgent(
+            engine,
+            AIConfig(base_url="https://example.com/v1", api_key="test", model="demo"),
+            database="test",
+            pg_database="vhukze",
+        )
+        response = QueryResponse(columns=["message"], rows=[{"message": "SQL 执行成功"}], row_count=1, limited=False)
+
+        with patch("app.ai.agent.execute_query", return_value=response) as execute:
+            actual = agent._execute_query("CREATE TABLE test.test_department (dept_id INTEGER PRIMARY KEY)", readonly=False)
+
+        self.assertIs(actual, response)
+        execute.assert_called_once_with(
+            engine,
+            "CREATE TABLE test.test_department (dept_id INTEGER PRIMARY KEY)",
+            200,
+            0,
+            "test",
+            "vhukze",
+        )
+
     def test_system_prompt_includes_product_knowledge_for_global_help(self) -> None:
         prompt = build_system_prompt("none", "未选择上下文")
 
@@ -64,6 +89,8 @@ class DatabaseAgentStreamingTests(unittest.TestCase):
         self.assertIn("输入留空默认传入 NULL", prompt)
         self.assertIn("DDL 会自动保证末尾带分号", prompt)
         self.assertIn("软件功能和用法问题", prompt)
+        self.assertIn("PostgreSQL 和高斯数据库的 SQL 必须在当前 pg_database 内执行", prompt)
+        self.assertIn("写操作会显示确认按钮，未确认前不会执行，并会继承当前选中的连接、数据库和模式", prompt)
 
     def test_openai_stream_chat_emits_incremental_reasoning_and_tokens(self) -> None:
         config = AIConfig(provider="openai-compatible", base_url="https://example.com/v1", api_key="test", model="demo", max_context_tokens=200_000)

@@ -305,41 +305,45 @@ const QueryWorkspacePanel = memo(function QueryWorkspacePanel({
               title="格式化选中内容或当前语句"
               onClick={() => sqlEditorHandleRef.current?.formatSelectionOrStatement()}
             />
-            <Button
-              className="query-execute-button"
-              type="primary"
-              icon={<PlayCircleOutlined />}
-              loading={tab.loading}
-              onClick={() => void runQuery(tab)}
+            <div
+              className={`query-execute-split${statementMenuItems.length > 0 ? ' has-statement-menu' : ''}`}
             >
-              {EXECUTE_LABEL}
-            </Button>
-            {statementMenuItems.length > 0 && (
-              <Dropdown
-                trigger={['click']}
-                overlayClassName="query-execute-dropdown"
-                transitionName=""
-                destroyOnHidden
-                menu={{
-                  items: statementMenuItems,
-                  onClick: ({ key }) => {
-                    const targetStatement = statementSource[Number(key)]
-                    if (targetStatement) {
-                      void runQuery(tab, targetStatement.text)
-                    }
-                  }
-                }}
+              <Button
+                className="query-execute-button"
+                type="primary"
+                icon={<PlayCircleOutlined />}
+                loading={tab.loading}
+                onClick={() => void runQuery(tab)}
               >
-                <Button
-                  ref={statementToggleButtonRef}
-                  className="query-execute-dropdown-button"
-                  type="primary"
-                  icon={<DownOutlined />}
-                  aria-label={EXECUTE_STATEMENT_ARIA_LABEL}
-                  data-active-statement-index={activeStatementIndex}
-                />
-              </Dropdown>
-            )}
+                {EXECUTE_LABEL}
+              </Button>
+              {statementMenuItems.length > 0 && (
+                <Dropdown
+                  trigger={['click']}
+                  overlayClassName="query-execute-dropdown"
+                  transitionName=""
+                  destroyOnHidden
+                  menu={{
+                    items: statementMenuItems,
+                    onClick: ({ key }) => {
+                      const targetStatement = statementSource[Number(key)]
+                      if (targetStatement) {
+                        void runQuery(tab, targetStatement.text)
+                      }
+                    }
+                  }}
+                >
+                  <Button
+                    ref={statementToggleButtonRef}
+                    className="query-execute-dropdown-button"
+                    type="primary"
+                    icon={<DownOutlined />}
+                    aria-label={EXECUTE_STATEMENT_ARIA_LABEL}
+                    data-active-statement-index={activeStatementIndex}
+                  />
+                </Dropdown>
+              )}
+            </div>
           </div>
         </div>
       </div>

@@ -2270,7 +2270,7 @@ body[data-theme='dark'] .ant-popover-message {
 .toolbar-actions .toolbar-query-btn.ant-btn {
   height: 34px;
   padding-inline: 14px;
-  border-radius: 16px !important;
+  border-radius: 12px !important;
   border: 0 !important;
   background:
     radial-gradient(circle at 20% 12%, rgba(255, 255, 255, 0.1) 0%, transparent 16%),
@@ -6805,8 +6805,8 @@ body:not([data-theme='dark']) .workspace-tabs .ant-tabs-tab-active {
 .result-table .ant-table-body > table,
 .result-table .ant-table-tbody-virtual > table,
 .result-table .ant-table-tbody-virtual-holder > table {
-  width: max-content !important;
-  min-width: 100%;
+  width: var(--result-table-width) !important;
+  min-width: var(--result-table-width) !important;
   table-layout: fixed !important;
 }
 
@@ -8337,7 +8337,15 @@ body:not([data-theme='dark']) .table-search-bar::after {
 .query-execute-group {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
+}
+
+.query-execute-split {
+  display: inline-flex;
+  align-items: stretch;
+  overflow: hidden;
+  border-radius: 8px;
+  box-shadow: 0 14px 26px rgba(77, 124, 255, 0.28);
 }
 
 .query-toolbar-select-shell {
@@ -10540,7 +10548,7 @@ body[data-theme='dark'] .sql-editor-container .monaco-editor .selectionHighlight
   border: 0 !important;
   border-color: transparent !important;
   outline: none !important;
-  border-radius: 999px !important;
+  border-radius: 8px !important;
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.02em;
@@ -10584,19 +10592,75 @@ body[data-theme='dark'] .sql-editor-container .monaco-editor .selectionHighlight
   transform: none;
 }
 
+.query-execute-split.has-statement-menu .query-execute-button.ant-btn {
+  border-radius: 8px 0 0 8px !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    inset 0 -1px 0 rgba(48, 84, 196, 0.3) !important;
+}
+
+.query-execute-split.has-statement-menu .query-execute-button.ant-btn:hover,
+.query-execute-split.has-statement-menu .query-execute-button.ant-btn:focus-visible,
+.query-execute-split.has-statement-menu .query-execute-button.ant-btn:focus,
+.query-execute-split.has-statement-menu .query-execute-button.ant-btn:active {
+  transform: none;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    inset 0 -1px 0 rgba(48, 84, 196, 0.36) !important;
+}
+
 .query-execute-dropdown-button.ant-btn {
   width: 34px;
   min-width: 34px;
   height: 34px;
   padding: 0;
   border: 0 !important;
-  border-radius: 999px !important;
+  border-radius: 8px !important;
   color: #f8fbff !important;
   background: linear-gradient(180deg, #87dcff, #68a7ff 52%, #4f7dff 100%) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.34),
     inset 0 -1px 0 rgba(48, 84, 196, 0.3),
     0 14px 26px rgba(77, 124, 255, 0.22);
+}
+
+.query-execute-split.has-statement-menu .query-execute-dropdown-button.ant-btn {
+  border-radius: 0 8px 8px 0 !important;
+  border-left: 1px solid rgba(255, 255, 255, 0.26) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    inset 0 -1px 0 rgba(48, 84, 196, 0.3) !important;
+}
+
+.query-execute-split.has-statement-menu .query-execute-dropdown-button.ant-btn:hover,
+.query-execute-split.has-statement-menu .query-execute-dropdown-button.ant-btn:focus-visible,
+.query-execute-split.has-statement-menu .query-execute-dropdown-button.ant-btn:focus,
+.query-execute-split.has-statement-menu .query-execute-dropdown-button.ant-btn:active {
+  transform: none;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    inset 0 -1px 0 rgba(48, 84, 196, 0.36) !important;
+}
+
+.query-format-button.ant-btn {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0 !important;
+  border-radius: 8px !important;
+  color: var(--dj-text-secondary);
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.query-format-button.ant-btn:hover,
+.query-format-button.ant-btn:focus-visible,
+.query-format-button.ant-btn:focus,
+.query-format-button.ant-btn:active {
+  color: var(--dj-accent) !important;
+  background: color-mix(in srgb, var(--dj-accent-soft) 68%, transparent) !important;
+  box-shadow: none !important;
+  transform: none;
 }
 
 .query-execute-dropdown-button.ant-btn:hover,
@@ -11132,29 +11196,33 @@ body[data-theme='dark'] .query-history-item-delete.ant-btn {
   box-shadow: none;
 }
 
-.table-toolbar-icon-btn.is-pending-save.ant-btn,
-.table-toolbar-icon-btn.is-pending-save.ant-btn:hover,
-.table-toolbar-icon-btn.is-pending-save.ant-btn:focus,
-.table-toolbar-icon-btn.is-pending-save.ant-btn:active {
-  color: var(--dj-accent-text);
-  background:
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, white 10%, var(--dj-accent)) 0%,
-      var(--dj-accent) 48%,
-      var(--dj-accent-hover) 100%
-    ),
-    radial-gradient(circle at 24% 18%, color-mix(in srgb, white 36%, transparent), transparent 44%);
-  border: 0;
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, white 34%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--dj-accent) 58%, transparent),
-    0 10px 22px color-mix(in srgb, var(--dj-accent) 26%, transparent);
+.table-toolbar-inline-actions .table-toolbar-icon-btn.ant-btn:disabled,
+.table-toolbar-inline-actions .table-toolbar-icon-btn.ant-btn:disabled:hover,
+.table-toolbar-inline-actions .table-toolbar-icon-btn.ant-btn:disabled:focus,
+.table-toolbar-inline-actions .table-toolbar-icon-btn.ant-btn:disabled:active {
+  color: color-mix(in srgb, var(--dj-text-tertiary) 44%, transparent) !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  opacity: 0.46;
+  cursor: not-allowed;
+  transform: none !important;
+  transition: none !important;
 }
 
-.table-toolbar-icon-btn.is-pending-save.ant-btn .anticon {
-  color: inherit;
-  transform: translateY(-0.5px) scale(1.05);
+.table-toolbar-inline-actions .table-toolbar-icon-btn.is-pending-save.ant-btn,
+.table-toolbar-inline-actions .table-toolbar-icon-btn.is-pending-save.ant-btn:hover,
+.table-toolbar-inline-actions .table-toolbar-icon-btn.is-pending-save.ant-btn:focus,
+.table-toolbar-inline-actions .table-toolbar-icon-btn.is-pending-save.ant-btn:active {
+  color: var(--dj-accent);
+  background: transparent !important;
+  border: 0;
+  box-shadow: none !important;
+}
+
+.table-toolbar-inline-actions .table-toolbar-icon-btn.is-pending-save.ant-btn .anticon {
+  color: var(--dj-accent);
+  transform: translateY(-0.5px) scale(1.12);
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--dj-accent) 68%, transparent));
 }
 
 .table-toolbar-icon-btn.ant-btn-color-primary,

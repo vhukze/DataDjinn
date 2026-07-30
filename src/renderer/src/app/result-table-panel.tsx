@@ -77,7 +77,9 @@ type ColumnResizeState = {
   pointerId: number
   startX: number
   startWidth: number
+  startTableWidth: number
   lastWidth: number
+  tableWidthHost?: HTMLElement
   headerCells: HTMLElement[]
   headerColElements: HTMLTableColElement[]
   bodyColElements: HTMLTableColElement[]
@@ -2000,6 +2002,13 @@ const ResultTablePanel = memo(
                 event.preventDefault()
                 event.stopPropagation()
                 const currentWidth = columnWidths[column] ?? DEFAULT_RESULT_COLUMN_WIDTH
+                const startTableWidth = Math.max(
+                  orderedColumns.reduce(
+                    (total, item) => total + (columnWidths[item] ?? DEFAULT_RESULT_COLUMN_WIDTH),
+                    supportsCellSelection ? 34 : 0
+                  ),
+                  1
+                )
                 const columnIndex = orderedColumns.indexOf(column) + (supportsCellSelection ? 1 : 0)
                 const header = refs.tableHeaderRefs.current[tab.key]
                 const body = refs.tableBodyRefs.current[tab.key]
@@ -2040,7 +2049,9 @@ const ResultTablePanel = memo(
                   pointerId: event.pointerId,
                   startX: event.clientX,
                   startWidth: currentWidth,
+                  startTableWidth,
                   lastWidth: currentWidth,
+                  tableWidthHost: body ?? undefined,
                   headerCells,
                   headerColElements,
                   bodyColElements,
@@ -2182,7 +2193,7 @@ const ResultTablePanel = memo(
         (total, column) => total + (columnWidths[column] ?? DEFAULT_RESULT_COLUMN_WIDTH),
         supportsCellSelection ? 34 : 0
       ),
-      720
+      1
     )
     const enableVirtualTable = shouldUseVirtualTable(tab, tableRows.length)
     const searchSignature = `${searchState.query}\u0000${searchState.caseSensitive ? 1 : 0}\u0000${searchState.regex ? 1 : 0}\u0000${searchState.wholeWord ? 1 : 0}\u0000${searchState.filterRows ? 1 : 0}`

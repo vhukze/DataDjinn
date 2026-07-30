@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from sqlalchemy.engine import Engine
 
@@ -184,6 +184,108 @@ class QueryPaginationTests(unittest.TestCase):
             self.assertEqual(execute.call_args.args[1], "SELECT 1")
         finally:
             engine.dispose()
+
+    def test_gaussdb_mutation_switches_to_selected_database_and_schema(self) -> None:
+        base_engine = SimpleNamespace(dialect=SimpleNamespace(name="gaussdb"))
+        selected_engine = SimpleNamespace(dialect=SimpleNamespace(name="gaussdb"), dispose=Mock())
+        factory = Mock(return_value=selected_engine)
+        base_engine._datadjinn_engine_factory = factory
+        response = SimpleNamespace()
+
+        with patch("app.db.readonly_query._execute_mutation_statements", return_value=response) as execute:
+            actual = execute_query(
+                base_engine,
+                "CREATE TABLE test.test_department (dept_id INTEGER PRIMARY KEY)",
+                None,
+                database="test",
+                pg_database="vhukze",
+            )
+
+        self.assertIs(actual, response)
+        factory.assert_called_once_with("vhukze")
+        execute.assert_called_once_with(
+            selected_engine,
+            ["CREATE TABLE test.test_department (dept_id INTEGER PRIMARY KEY)"],
+            "test",
+        )
+        selected_engine.dispose.assert_called_once()
+
+    def test_postgresql_mutation_switches_to_selected_database_and_schema(self) -> None:
+        selected_engine = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"), dispose=Mock())
+        url = SimpleNamespace(set=Mock(return_value="postgresql://selected/vhukze"))
+        base_engine = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"), url=url)
+        response = SimpleNamespace()
+
+        with patch("sqlalchemy.create_engine", return_value=selected_engine) as create_engine, patch(
+            "app.db.readonly_query._execute_mutation_statements", return_value=response
+        ) as execute:
+            actual = execute_query(
+                base_engine,
+                "CREATE TABLE test.test_department (dept_id INTEGER PRIMARY KEY)",
+                None,
+                database="test",
+                pg_database="vhukze",
+            )
+
+        self.assertIs(actual, response)
+        url.set.assert_called_once_with(database="vhukze")
+        create_engine.assert_called_once_with("postgresql://selected/vhukze", pool_pre_ping=True)
+        execute.assert_called_once_with(
+            selected_engine,
+            ["CREATE TABLE test.test_department (dept_id INTEGER PRIMARY KEY)"],
+            "test",
+        )
+        selected_engine.dispose.assert_called_once()
+
+    def test_mutation_preserves_context_for_database_and_schema_scoped_engines(self) -> None:
+        sql = "CREATE TABLE test_department (dept_id INTEGER PRIMARY KEY)"
+        cases = (
+            ("mysql", "sales"),
+            ("dm", "APP"),
+            ("dmPython", "APP"),
+            ("oracle", "APP"),
+        )
+
+        for dialect, database in cases:
+            with self.subTest(dialect=dialect):
+                engine = SimpleNamespace(dialect=SimpleNamespace(name=dialect))
+                response = SimpleNamespace()
+                with patch("app.db.readonly_query._execute_mutation_statements", return_value=response) as execute:
+                    actual = execute_query(engine, sql, None, database=database)
+
+                self.assertIs(actual, response)
+                execute.assert_called_once_with(engine, [sql], database)
+
+    def test_clickhouse_mutation_switches_to_selected_database(self) -> None:
+        selected_engine = SimpleNamespace(
+            dialect=SimpleNamespace(name="clickhousedb"),
+            url=SimpleNamespace(database="analytics"),
+            dispose=Mock(),
+        )
+        factory = Mock(return_value=selected_engine)
+        base_engine = SimpleNamespace(
+            dialect=SimpleNamespace(name="clickhousedb"),
+            url=SimpleNamespace(database="default"),
+            _datadjinn_engine_factory=factory,
+        )
+        response = SimpleNamespace()
+
+        with patch("app.db.readonly_query._execute_mutation_statements", return_value=response) as execute:
+            actual = execute_query(
+                base_engine,
+                "CREATE TABLE test_department (dept_id INTEGER PRIMARY KEY)",
+                None,
+                database="analytics",
+            )
+
+        self.assertIs(actual, response)
+        factory.assert_called_once_with("analytics")
+        execute.assert_called_once_with(
+            selected_engine,
+            ["CREATE TABLE test_department (dept_id INTEGER PRIMARY KEY)"],
+            None,
+        )
+        selected_engine.dispose.assert_called_once()
 
 
 if __name__ == "__main__":

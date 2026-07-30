@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy import Engine, inspect, text
 
+from app.db.gaussdb import execute_gaussdb_database_ddl
 from app.db.mongo_utils import is_mongo_client, mongo_default_database, mongo_value_type
 from app.db.redis_utils import is_redis_client, parse_redis_database_name, redis_client_for_database, redis_current_database, redis_database_count, redis_database_name, redis_key_length, redis_key_type, redis_memory_usage, redis_scan_keys, redis_text, serialize_redis_value
 from app.schemas.metadata import ColumnInfo, DatabaseInfo, DbObjectInfo, RedisDataChangeRequest, RedisKeyUpdate, SequenceDetailResponse, TableDataChangeRequest, TableInfo, TableUpdateColumn
@@ -437,8 +438,7 @@ def create_database(engine: Engine, database_name: str) -> DatabaseInfo:
     quoted = preparer.quote(database_name)
 
     if _is_schema_scoped_engine(engine):
-        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
-            connection.execute(text(f"CREATE DATABASE {quoted}"))
+        _execute_schema_scoped_database_ddl(engine, f"CREATE DATABASE {quoted}")
     else:
         with engine.begin() as connection:
             connection.execute(text(f"CREATE DATABASE {quoted}"))
@@ -492,8 +492,10 @@ def drop_database(engine: Engine, database_name: str) -> None:
         return
 
     if _is_schema_scoped_engine(engine):
-        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
-            connection.execute(text(f"DROP DATABASE {engine.dialect.identifier_preparer.quote(database_name)}"))
+        _execute_schema_scoped_database_ddl(
+            engine,
+            f"DROP DATABASE {engine.dialect.identifier_preparer.quote(database_name)}",
+        )
         return
 
     if engine.dialect.name == "mysql":
@@ -507,6 +509,15 @@ def drop_database(engine: Engine, database_name: str) -> None:
         return
 
     raise ValueError("当前数据库类型不支持删除数据库")
+
+
+def _execute_schema_scoped_database_ddl(engine: Engine, statement: str) -> None:
+    if engine.dialect.name != "gaussdb":
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
+            connection.execute(text(statement))
+        return
+
+    execute_gaussdb_database_ddl(engine, statement)
 
 
 def create_schema(engine: Engine, database_name: str, schema_name: str) -> DatabaseInfo:

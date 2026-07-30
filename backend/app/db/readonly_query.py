@@ -9,6 +9,7 @@ import sqlparse
 from sqlalchemy import Engine, quoted_name, text
 from sqlparse.tokens import Comment, Punctuation
 
+from app.db.gaussdb import execute_gaussdb_database_ddl, is_gaussdb_database_ddl
 from app.db.mongo_utils import is_mongo_client, mongo_default_database, serialize_mongo_document
 from app.db.query_timeout import apply_query_timeout
 from app.db.redis_utils import is_redis_client, redis_client_for_database, redis_key_length, redis_key_type, redis_scan_keys, redis_text, serialize_redis_value
@@ -818,6 +819,16 @@ def _execute_limited_query(engine: Engine, sql: str, limit: int | None, offset: 
 
 
 def _execute_mutation_query(engine: Engine, sql: str, database: str | None = None) -> QueryResponse:
+    if is_gaussdb_database_ddl(engine, sql):
+        affected_rows = execute_gaussdb_database_ddl(engine, sql)
+        return QueryResponse(
+            columns=["message", "affected_rows"],
+            rows=[{"message": "SQL 执行成功", "affected_rows": affected_rows}],
+            row_count=1,
+            limited=False,
+            total_count=None,
+        )
+
     with engine.begin() as connection:
         if database:
             preparer = engine.dialect.identifier_preparer
@@ -852,6 +863,21 @@ def _execute_mutation_query(engine: Engine, sql: str, database: str | None = Non
 def _execute_mutation_statements(engine: Engine, statements: list[str], database: str | None = None) -> QueryResponse:
     if len(statements) == 1:
         return _execute_mutation_query(engine, statements[0], database)
+
+    gaussdb_database_ddl = [is_gaussdb_database_ddl(engine, statement) for statement in statements]
+    if any(gaussdb_database_ddl):
+        if not all(gaussdb_database_ddl):
+            raise ValueError("高斯数据库的创建或删除数据库语句不能与其他 SQL 在同一次执行中混用")
+
+        for statement in statements:
+            execute_gaussdb_database_ddl(engine, statement)
+        return QueryResponse(
+            columns=["message", "affected_rows"],
+            rows=[{"message": f"共成功执行 {len(statements)} 条 SQL", "affected_rows": 0}],
+            row_count=1,
+            limited=False,
+            total_count=None,
+        )
 
     total_affected_rows = 0
     with engine.begin() as connection:

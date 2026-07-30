@@ -12,13 +12,13 @@ from uuid import uuid4
 import sqlparse
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import Engine, text
+from sqlalchemy import Engine
 
 from app.db.backup_manager import backup_manager
 from app.db.mongo_utils import MongoClient, is_mongo_client
 from app.db.redis_utils import is_redis_client
 from app.db.metadata import list_columns, list_tables
-from app.db.readonly_query import execute_readonly_query, preview_table
+from app.db.readonly_query import execute_query, execute_readonly_query, preview_table
 from app.schemas.query import QueryResponse
 from app.ai.product_knowledge import get_product_knowledge
 
@@ -1353,23 +1353,7 @@ class DatabaseAgent:
         if is_mongo_client(self.engine) or is_redis_client(self.engine):
             return execute_readonly_query(self.engine, sql, limit, 0, self.database, self.pg_database)
 
-        with self.engine.begin() as connection:
-            if self.database and self.engine.dialect.name == "mysql":
-                preparer = self.engine.dialect.identifier_preparer
-                connection.execute(text(f"USE {preparer.quote(self.database)}"))
-            result = connection.execute(text(sql))
-            if not result.returns_rows:
-                return QueryResponse(columns=[], rows=[], row_count=result.rowcount if result.rowcount >= 0 else 0, limited=False)
-            columns = list(result.keys())
-            if limit is None:
-                rows = [dict(row) for row in result.mappings().fetchall()]
-                limited = False
-                visible_rows = rows
-            else:
-                rows = [dict(row) for row in result.mappings().fetchmany(limit + 1)]
-                limited = len(rows) > limit
-                visible_rows = rows[:limit]
-            return QueryResponse(columns=columns, rows=visible_rows, row_count=len(visible_rows), limited=limited)
+        return execute_query(self.engine, sql, limit, 0, self.database, self.pg_database)
 
 
 def build_system_prompt(db_type: str, db_name: str, workspace: AgentWorkspaceContext | None = None) -> str:
@@ -1431,7 +1415,7 @@ def build_system_prompt(db_type: str, db_name: str, workspace: AgentWorkspaceCon
         "13. 如果工具结果没有 executed=true，必须明确说明尚未执行，不能说创建、修改、删除、备份或恢复成功。\n"
         "14. 用户要求备份数据库时调用 create_database_backup；用户要求恢复备份时先调用 list_database_backups 找到备份记录，再调用 restore_database_backup 触发确认，确认返回 executed=true 后才能说恢复完成。\n"
         "15. AI 上下文数据源列表的第一个是当前执行上下文，后续是用户添加的其他库或模式；跨数据源任务应先说明分析范围。\n"
-        "16. PostgreSQL 查询必须在当前 pg_database 内执行；当前 schema 已作为 search_path 设置，生成 SQL 时优先使用 schema.table，或只使用当前 schema 下的表名，不要生成 database.table 形式。\n"
+        "16. PostgreSQL 和高斯数据库的 SQL 必须在当前 pg_database 内执行；当前 schema 已作为 search_path 设置，生成 SQL 时优先使用 schema.table，或只使用当前 schema 下的表名，不要生成 database.table 形式。\n"
         "17. 生成 SQL 必须优先匹配当前执行上下文里的 dbType 和 serverVersion；不确定版本是否支持某个语法时，使用该数据库更保守、更通用的写法。\n"
         "18. 用户说“当前连接/当前库/当前模式/当前表”时，优先使用工作区里的当前焦点资源；如果没有焦点资源，再使用 AI 上下文数据源列表的第一个。\n"
         "19. 用户只要说生成 SQL、给出 SQL、帮我写 SQL、生成插入语句、生成建表语句，默认都应调用 append_query_sql 把 SQL 写入查询窗口，不执行；只有用户明确说执行、创建、插入、初始化、运行、落库时，才调用 execute_query。用户后续补充“不要执行，只生成”时，也必须改为 append_query_sql。\n"
