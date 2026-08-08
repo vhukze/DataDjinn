@@ -1,4 +1,6 @@
+import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -65,6 +67,46 @@ class ConnectionManagerSshTests(unittest.TestCase):
         self.assertEqual(restored.ssh_auth_type, "password")
         self.assertEqual(restored.ssh_password, "ssh-secret")
 
+    def test_restore_connection_with_unavailable_dpapi_password_keeps_connection_editable(self) -> None:
+        connection_id = "legacy-connection"
+        legacy_store = {
+            "connections": [
+                {
+                    "connection_id": connection_id,
+                    "name": "Legacy MySQL",
+                    "database_type": "mysql",
+                    "host": "db.internal",
+                    "port": 3306,
+                    "username": "root",
+                    "encrypted_password": "aW52YWxpZA==",
+                    "database": "inventory",
+                }
+            ]
+        }
+        self.connection_store_path.write_text(
+            json.dumps(legacy_store, ensure_ascii=False), encoding="utf-8"
+        )
+
+        restored_manager = connection_manager_module.ConnectionManager()
+
+        restored_info = restored_manager.list_connections()[0]
+        restored_request = restored_manager.get_connection_request(connection_id)
+        self.assertEqual(restored_info.name, "Legacy MySQL")
+        self.assertEqual(restored_request.host, "db.internal")
+        self.assertEqual(restored_request.database, "inventory")
+        self.assertFalse(restored_info.has_password)
+        self.assertIsNone(restored_request.password)
+        self.assertEqual(
+            json.loads(self.connection_store_path.read_text(encoding="utf-8")), legacy_store
+        )
+
+        updated = restored_manager.update_connection(
+            connection_id, restored_request.model_copy(update={"password": "new-secret"})
+        )
+
+        self.assertTrue(updated.has_password)
+        self.assertEqual(restored_manager.get_password(connection_id), "new-secret")
+
     def test_test_connection_uses_forwarded_endpoint_and_releases_tunnel(self) -> None:
         fake_tunnel = FakeTunnel(local_port=43107)
         fake_engine = object()
@@ -124,6 +166,50 @@ class ConnectionManagerSshTests(unittest.TestCase):
         self.assertTrue(fake_tunnel.closed)
         self.assertNotIn(created.connection_id, self.manager._ssh_tunnels)
 
+    def test_close_cancels_an_open_attempt_that_is_still_connecting(self) -> None:
+        created = self.manager.create_connection(self.build_ssh_request())
+        fake_engine = object()
+        ping_started = threading.Event()
+        allow_ping_to_finish = threading.Event()
+        open_errors: list[Exception] = []
+
+        def slow_ping(_engine: object) -> None:
+            ping_started.set()
+            allow_ping_to_finish.wait(timeout=2)
+
+        with (
+            patch.object(self.manager, "_open_runtime_engine", return_value=(fake_engine, None)),
+            patch.object(self.manager, "_ping_engine", side_effect=slow_ping),
+            patch.object(self.manager, "_detect_server_version", return_value="8.0.36"),
+            patch.object(self.manager, "_dispose_engine") as dispose_engine,
+        ):
+            opening_thread = threading.Thread(
+                target=lambda: self._capture_open_error(
+                    created.connection_id, "open-attempt", open_errors
+                )
+            )
+            opening_thread.start()
+            self.assertTrue(ping_started.wait(timeout=2))
+
+            closed = self.manager.close_connection(created.connection_id, "open-attempt")
+            allow_ping_to_finish.set()
+            opening_thread.join(timeout=2)
+
+        self.assertFalse(opening_thread.is_alive())
+        self.assertFalse(closed.is_open)
+        self.assertEqual(len(open_errors), 1)
+        self.assertEqual(str(open_errors[0]), "连接已取消")
+        self.assertIsNone(self.manager.get_engine(created.connection_id))
+        dispose_engine.assert_called_once_with(fake_engine)
+
+    def _capture_open_error(
+        self, connection_id: str, open_attempt_id: str, errors: list[Exception]
+    ) -> None:
+        try:
+            self.manager.open_connection(connection_id, open_attempt_id)
+        except Exception as exc:
+            errors.append(exc)
+
     def test_ensure_ssh_gateway_reachable_reports_connection_refused(self) -> None:
         socket_error = OSError("actively refused")
         socket_error.winerror = 10061
@@ -140,7 +226,10 @@ class ConnectionManagerSshTests(unittest.TestCase):
         with patch.object(connection_manager_module.socket, "create_connection", return_value=probe_socket) as create_connection:
             self.manager._ensure_ssh_gateway_reachable("jump.internal", 2222)
 
-        create_connection.assert_called_once_with(("jump.internal", 2222), timeout=5)
+        create_connection.assert_called_once_with(
+            ("jump.internal", 2222),
+            timeout=connection_manager_module.SSH_GATEWAY_CONNECT_TIMEOUT_SECONDS,
+        )
         probe_socket.close.assert_called_once_with()
 
 

@@ -1,5 +1,5 @@
-import { LoadingOutlined } from '@ant-design/icons'
-import { Alert, Menu, Tree, Typography } from 'antd'
+import { DownOutlined, LoadingOutlined, UpOutlined } from '@ant-design/icons'
+import { Alert, Button, Menu, Tree, Typography } from 'antd'
 import type { MenuProps } from 'antd'
 import { memo, useCallback, useLayoutEffect, useRef, useState } from 'react'
 import type { Key, MutableRefObject, RefObject } from 'react'
@@ -32,7 +32,11 @@ type ResourceTreePanelProps = {
   selectedConnectionIds: string[]
   treeSearchOpen: boolean
   treeSearchText: string
+  treeSearchMatchCount: number
+  treeSearchMatchIndex: number
   setTreeSearchText: React.Dispatch<React.SetStateAction<string>>
+  onPreviousTreeSearchMatch: () => void
+  onNextTreeSearchMatch: () => void
   treeContextMenu: { x: number; y: number; node: DatabaseTreeNode } | null
   treeLoadingVersion: number
   treeLoadingKeysRef: MutableRefObject<Set<Key>>
@@ -121,7 +125,11 @@ const ResourceTreePanel = memo(
     selectedConnectionIds,
     treeSearchOpen,
     treeSearchText,
+    treeSearchMatchCount,
+    treeSearchMatchIndex,
     setTreeSearchText,
+    onPreviousTreeSearchMatch,
+    onNextTreeSearchMatch,
     treeContextMenu,
     treeLoadingVersion,
     treeLoadingKeysRef,
@@ -273,12 +281,48 @@ const ResourceTreePanel = memo(
             />
           </div>
           {treeSearchOpen && (
-            <ReactBitsSearchInput
-              ref={treeSearchInputRef}
-              value={treeSearchText}
-              onChange={setTreeSearchText}
-              onClear={() => setTreeSearchText('')}
-            />
+            <div className="tree-search-controls">
+              <ReactBitsSearchInput
+                ref={treeSearchInputRef}
+                value={treeSearchText}
+                onChange={setTreeSearchText}
+                onClear={() => setTreeSearchText('')}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter' || treeSearchMatchCount === 0) {
+                    return
+                  }
+                  event.preventDefault()
+                  if (event.shiftKey) {
+                    onPreviousTreeSearchMatch()
+                    return
+                  }
+                  onNextTreeSearchMatch()
+                }}
+              />
+              <span className="tree-search-counter" aria-live="polite">
+                {treeSearchMatchCount === 0 ? '0/0' : `${treeSearchMatchIndex + 1}/${treeSearchMatchCount}`}
+              </span>
+              <Button
+                className="tree-search-nav-btn"
+                type="text"
+                size="small"
+                icon={<UpOutlined />}
+                aria-label="上一个匹配项"
+                title="上一个匹配项"
+                disabled={treeSearchMatchCount === 0}
+                onClick={onPreviousTreeSearchMatch}
+              />
+              <Button
+                className="tree-search-nav-btn"
+                type="text"
+                size="small"
+                icon={<DownOutlined />}
+                aria-label="下一个匹配项"
+                title="下一个匹配项"
+                disabled={treeSearchMatchCount === 0}
+                onClick={onNextTreeSearchMatch}
+              />
+            </div>
           )}
         </div>
         <div
@@ -610,6 +654,8 @@ const ResourceTreePanel = memo(
     prev.selectedConnectionIds === next.selectedConnectionIds &&
     prev.treeSearchOpen === next.treeSearchOpen &&
     prev.treeSearchText === next.treeSearchText &&
+    prev.treeSearchMatchCount === next.treeSearchMatchCount &&
+    prev.treeSearchMatchIndex === next.treeSearchMatchIndex &&
     prev.treeContextMenu === next.treeContextMenu &&
     prev.treeLoadingVersion === next.treeLoadingVersion
 )

@@ -204,7 +204,6 @@ import {
 import { useWorkspaceStore } from './app/workspace-store'
 import {
   collectTreeNodesByKey,
-  findTreeKeyPathByPredicate,
   getRelativeDropPosition,
   getTreeNodeCopyName,
   isLoadableTreeNode,
@@ -231,6 +230,56 @@ import appIcon from '../../../resources/icon.svg'
 import appLogoHorizontal from '../../../resources/logo-horizontal.svg'
 
 const RESOURCE_TREE_ITEM_HEIGHT = 30
+const SSH_TEST_REQUEST_TIMEOUT_MS = 10_000
+
+type ApiRequestOptions = RequestInit & {
+  timeoutMs?: number
+}
+
+type TreeSearchMatch = {
+  key: string
+  path: string[]
+  node: DatabaseTreeNode
+}
+
+const getConnectionAddress = (connection: Pick<ConnectionInfo, 'host' | 'port'>): string | undefined =>
+  connection.host?.trim()
+    ? `${connection.host}${connection.port ? `:${connection.port}` : ''}`
+    : undefined
+
+const collectTreeSearchMatches = (
+  nodes: DatabaseTreeNode[],
+  connections: ConnectionInfo[],
+  keyword: string
+): TreeSearchMatch[] => {
+  if (!keyword) {
+    return []
+  }
+
+  const connectionsById = new Map(
+    connections.map((connection) => [connection.connection_id, connection])
+  )
+  const matches: TreeSearchMatch[] = []
+  const visit = (currentNodes: DatabaseTreeNode[], parentPath: string[]): void => {
+    for (const node of currentNodes) {
+      const key = String(node.key)
+      const path = [...parentPath, key]
+      const connection = node.connectionId ? connectionsById.get(node.connectionId) : undefined
+      const searchText = connection
+        ? `${connection.name}\n${getConnectionAddress(connection) ?? ''}`.toLowerCase()
+        : ''
+      if (node.kind === 'connection' && searchText.includes(keyword)) {
+        matches.push({ key, path, node })
+      }
+      if (node.children?.length) {
+        visit(node.children as DatabaseTreeNode[], path)
+      }
+    }
+  }
+
+  visit(nodes, [])
+  return matches
+}
 const FOLDER_DROP_PLACEHOLDER_KEY_PREFIX = 'folder-drop-placeholder:'
 const FAST_MODAL_PROPS = {
   destroyOnHidden: true,
@@ -568,6 +617,7 @@ function App(): React.JSX.Element {
   const [connectionLoading, setConnectionLoading] = useState(false)
   const [testingConnection, setTestingConnection] = useState(false)
   const [testingSshConnection, setTestingSshConnection] = useState(false)
+  const connectionTestRunRef = useRef(0)
   const [connectionPasswordPromptOpen, setConnectionPasswordPromptOpen] = useState(false)
   const [connectionPasswordPromptConnectionId, setConnectionPasswordPromptConnectionId] =
     useState<string>('')
@@ -591,11 +641,28 @@ function App(): React.JSX.Element {
   const [aiPanelOpen, setAiPanelOpen] = useState(true)
   const [treeSearchOpen, setTreeSearchOpen] = useState(false)
   const [treeSearchText, setTreeSearchText] = useState('')
+  const [treeSearchMatchIndex, setTreeSearchMatchIndex] = useState(0)
   const treeSearchInputRef = useRef<HTMLInputElement | null>(null)
+  const treeSearchMatchesRef = useRef<TreeSearchMatch[]>([])
   const queryHistoryModalRef = useRef<ImperativeModalHandle | null>(null)
   const settingsModalRef = useRef<ImperativeModalHandle | null>(null)
   const updateModalRef = useRef<ImperativeModalHandle | null>(null)
   const connectionModalHydrationFrameRef = useRef<number | undefined>(undefined)
+  const resetConnectionTestingState = (): void => {
+    connectionTestRunRef.current += 1
+    setTestingConnection(false)
+    setTestingSshConnection(false)
+  }
+
+  const closeConnectionModal = (): void => {
+    resetConnectionTestingState()
+    if (connectionModalHydrationFrameRef.current != null) {
+      window.cancelAnimationFrame(connectionModalHydrationFrameRef.current)
+      connectionModalHydrationFrameRef.current = undefined
+    }
+    setConnectionModalOpen(false)
+    setConnectionModalFolderId(undefined)
+  }
   const [resizingResourcePanel, setResizingResourcePanel] = useState(false)
   const [resizingAiPanel, setResizingAiPanel] = useState(false)
   const [aiContextSources, setAiContextSources] = useState<AIContextSource[]>([])
@@ -1013,18 +1080,24 @@ function App(): React.JSX.Element {
           column: string
           input: HTMLInputElement
           host: HTMLElement
-          originalContent: string
           originalValue: unknown
           initialInputValue: string
+          batchCells?: Array<{ rowKey: string; column: string }>
+          batchHosts?: HTMLElement[]
+          batchOriginalValues?: Array<{ rowKey: string; column: string; value: unknown }>
         }
       | undefined
     >
   >({})
   const committedSelectedCellRangeRefs = useRef<Record<string, string[] | undefined>>({})
+  const cellSelectionAnchorRefs = useRef<
+    Record<string, { rowKey: string; column: string } | undefined>
+  >({})
   const rowDragAnchorRefs = useRef<Record<string, string | undefined>>({})
   const rowSelectionAnchorRefs = useRef<Record<string, string | undefined>>({})
   const rowSelectionDraftRefs = useRef<Record<string, React.Key[] | undefined>>({})
   const treeLoadingKeysRef = useRef<Set<React.Key>>(new Set())
+  const connectionOpenAttemptRefs = useRef<Record<string, string | undefined>>({})
   const dragOverFolderTargetRef = useRef<
     { folderId: string; zone: 'before' | 'after' } | undefined
   >(undefined)
@@ -1097,6 +1170,7 @@ function App(): React.JSX.Element {
       cellInspectorPanelRefs,
       inlineCellEditorRefs,
       committedSelectedCellRangeRefs,
+      cellSelectionAnchorRefs,
       rowDragAnchorRefs,
       rowSelectionAnchorRefs,
       rowSelectionDraftRefs,
@@ -1205,7 +1279,7 @@ function App(): React.JSX.Element {
   }
 
   const requestJsonRaw = useCallback(
-    async <T,>(path: string, options?: RequestInit): Promise<T> => {
+    async <T,>(path: string, options?: ApiRequestOptions): Promise<T> => {
       if (backendStatus.state !== 'online' || !backendStatus.apiBaseUrl) {
         throw new Error(backendStatus.message ?? '后端服务正在恢复，请稍后再试')
       }
@@ -1214,7 +1288,8 @@ function App(): React.JSX.Element {
         const response = await window.api.requestJson<T | ApiErrorResponse>(path, {
           method: options?.method,
           headers: options?.headers as Record<string, string> | undefined,
-          body: typeof options?.body === 'string' ? options.body : undefined
+          body: typeof options?.body === 'string' ? options.body : undefined,
+          timeoutMs: options?.timeoutMs
         })
         if (isApiErrorResponse(response)) {
           throw new Error(response.__datadjinnApiError)
@@ -1227,7 +1302,10 @@ function App(): React.JSX.Element {
     [backendStatus.apiBaseUrl, backendStatus.message, backendStatus.state]
   )
 
-  const getRequestConnectionId = (path: string, options?: RequestInit): string | undefined => {
+  const getRequestConnectionId = (
+    path: string,
+    options?: ApiRequestOptions
+  ): string | undefined => {
     const pathConnectionId = path.match(/^\/connections\/([^/?]+)/)?.[1]
     if (pathConnectionId) {
       return decodeURIComponent(pathConnectionId)
@@ -1260,7 +1338,7 @@ function App(): React.JSX.Element {
   }
 
   const isReconnectableConnectionError = (message: string): boolean =>
-    /连接\s*(?:已关闭|尚未打开|已断开)|\b(?:connection|client)\b(?:\s+\w+){0,4}\s+\b(?:closed|disconnected)\b|\b(?:socket|channel)\s+(?:is\s+)?closed\b/i.test(
+    /连接\s*(?:已关闭|尚未打开|已断开|失效)|\b(?:connection|client|engine|transport|session)\b[^\n]{0,80}\b(?:closed|disconnected|invalid|lost|reset|broken)\b|\b(?:socket|channel)\s+(?:is\s+)?(?:closed|reset|broken)\b/i.test(
       message
     )
 
@@ -1297,20 +1375,31 @@ function App(): React.JSX.Element {
   )
 
   const requestJson = useCallback(
-    async <T,>(path: string, options?: RequestInit): Promise<T> => {
-      try {
-        return await requestJsonRaw<T>(path, options)
-      } catch (err) {
-        const error = normalizeRequestError(err)
-        const connectionId = getRequestConnectionId(path, options)
+    async <T,>(path: string, options?: ApiRequestOptions): Promise<T> => {
+      const connectionId = getRequestConnectionId(path, options)
+      let lastConnectionError: Error | undefined
 
-        if (connectionId && isReconnectableConnectionError(error.message)) {
-          await reopenConnectionSilently(connectionId)
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
           return await requestJsonRaw<T>(path, options)
+        } catch (err) {
+          const error = normalizeRequestError(err)
+          if (!connectionId || !isReconnectableConnectionError(error.message)) {
+            throw error
+          }
+          lastConnectionError = error
+          if (attempt === 1) {
+            break
+          }
+          try {
+            await reopenConnectionSilently(connectionId)
+          } catch {
+            // The next attempt keeps the UI silent while the connection recovers.
+          }
         }
-
-        throw error
       }
+
+      throw new Error(lastConnectionError ? '数据库连接暂时不可用，请稍后重试' : '操作失败')
     },
     [normalizeRequestError, reopenConnectionSilently, requestJsonRaw]
   )
@@ -1431,9 +1520,7 @@ function App(): React.JSX.Element {
       focusedTreeNode?.connectionId === connection.connection_id &&
       focusedTreeNode?.kind === 'connection'
     const isSelected = selectedConnectionIds.includes(connection.connection_id)
-    const connectionAddress = connection.host?.trim()
-      ? `${connection.host}${connection.port ? `:${connection.port}` : ''}`
-      : undefined
+    const connectionAddress = getConnectionAddress(connection)
     const connectionMeta = connectionAddress
       ? `${connection.name} · ${connectionAddress}`
       : connection.name
@@ -1662,29 +1749,53 @@ function App(): React.JSX.Element {
     await locateTreePath(buildActiveTreePath(currentTab))
   }
 
+  const treeSearchMatches = useMemo(
+    () => collectTreeSearchMatches(treeData, connections, treeSearchText.trim().toLowerCase()),
+    [connections, treeData, treeSearchText]
+  )
+
+  const navigateTreeSearchMatch = useCallback(
+    (offset: number): void => {
+      if (treeSearchMatches.length === 0) {
+        return
+      }
+      setTreeSearchMatchIndex(
+        (current) =>
+          (current + offset + treeSearchMatches.length) % treeSearchMatches.length
+      )
+    },
+    [treeSearchMatches.length]
+  )
+
   useEffect(() => {
-    const keyword = treeSearchText.trim().toLowerCase()
-    if (!keyword) {
-      return
-    }
-    const path = findTreeKeyPathByPredicate(treeData, (node) =>
-      getTreeNodeCopyName(node).toLowerCase().includes(keyword)
+    treeSearchMatchesRef.current = treeSearchMatches
+  }, [treeSearchMatches])
+
+  useEffect(() => {
+    setTreeSearchMatchIndex(0)
+  }, [treeSearchText])
+
+  useEffect(() => {
+    setTreeSearchMatchIndex((current) =>
+      treeSearchMatches.length === 0 ? 0 : Math.min(current, treeSearchMatches.length - 1)
     )
-    if (!path || path.length === 0) {
+  }, [treeSearchMatches.length])
+
+  useEffect(() => {
+    const match = treeSearchMatchesRef.current[treeSearchMatchIndex]
+    if (!match) {
       return
     }
-    setExpandedKeys((current) => Array.from(new Set([...current, ...path.slice(0, -1)])))
-    setSelectedTreeKeys([path[path.length - 1]])
-    const nodeMap = collectTreeNodesByKey(treeData)
-    const targetNode = nodeMap.get(path[path.length - 1])
-    if (targetNode) {
-      setFocusedTreeNode(targetNode)
-    }
+    setExpandedKeys((current) => Array.from(new Set([...current, ...match.path.slice(0, -1)])))
+    setSelectedTreeKeys([match.key])
+    setFocusedTreeNode(match.node)
     requestAnimationFrame(() => {
-      const highlighted = resourceTreeViewportRef.current?.querySelector('.tree-search-highlight')
+      const highlighted = resourceTreeViewportRef.current?.querySelector(
+        '.ant-tree-node-content-wrapper.ant-tree-node-selected .tree-search-highlight'
+      ) ?? resourceTreeViewportRef.current?.querySelector('.tree-search-highlight')
       highlighted?.scrollIntoView({ block: 'center' })
     })
-  }, [treeData, treeSearchText])
+  }, [treeSearchMatchIndex, treeSearchText])
 
   useEffect(() => {
     if (!treeSearchOpen) {
@@ -2788,6 +2899,7 @@ function App(): React.JSX.Element {
       return
     }
     selectedCellRefs.current[tabKey] = cellKeys.length > 0 ? cellKeys : undefined
+    updateWorkspaceTab(tabKey, { selectedCellKeys: cellKeys })
   }
 
   const syncInspectorSelection = (tabKey: string, cellKeys: string[]): void => {
@@ -2822,13 +2934,15 @@ function App(): React.JSX.Element {
     }
     current.input.remove()
     if (current.host.isConnected) {
-      if (displayValue !== undefined) {
-        current.host.textContent = displayValue
-      } else {
-        current.host.textContent = current.originalContent
-      }
+      const display = document.createElement('span')
+      display.className = 'table-cell-text'
+      display.textContent = displayValue ?? cellDisplayText(current.originalValue)
+      current.host.replaceChildren(display)
       current.host.classList.remove('editable-cell-inline-editing')
     }
+    current.batchHosts?.forEach((batchHost) => {
+      batchHost.classList.remove('editable-cell-batch-editing')
+    })
     inlineCellEditorRefs.current[tabKey] = undefined
   }
 
@@ -2837,6 +2951,7 @@ function App(): React.JSX.Element {
     requestAnimationFrame(() => {
       committingEditingCellRefs.current[tabKey] = undefined
       syncRenderedCellSelection(tabKey)
+      tableBodyRefs.current[tabKey]?.focus()
     })
   }
 
@@ -2854,6 +2969,18 @@ function App(): React.JSX.Element {
       clearInlineCellEditor(tabKey)
       return
     }
+    current.batchHosts?.forEach((batchHost) => {
+      if (batchHost === current.host) {
+        return
+      }
+      const originalEntry = current.batchOriginalValues?.find(
+        ({ rowKey, column }) =>
+          `${rowKey}:${column}` === batchHost.dataset.cellKey
+      )
+      if (originalEntry) {
+        batchHost.textContent = cellDisplayText(originalEntry.value)
+      }
+    })
     closeEditingCell(tabKey, cellDisplayText(current.originalValue))
     editingCellRefs.current[tabKey] = undefined
     suppressInlineEditorCommitRefs.current[tabKey] = undefined
@@ -2873,6 +3000,19 @@ function App(): React.JSX.Element {
     committingEditingCellRefs.current[tabKey] = true
     const nextValue = current.input.value
     const { rowKey, column } = current
+    if (current.batchCells) {
+      editingCellRefs.current[tabKey] = undefined
+      updatePreviewCells(
+        tabKey,
+        current.batchCells.map(({ rowKey: targetRowKey, column: targetColumn }) => ({
+          rowKey: targetRowKey,
+          column: targetColumn,
+          value: editableValue(nextValue)
+        }))
+      )
+      closeEditingCell(tabKey, nextValue)
+      return
+    }
     if (nextValue === current.initialInputValue) {
       closeEditingCell(tabKey, cellDisplayText(current.originalValue))
       editingCellRefs.current[tabKey] = undefined
@@ -2883,6 +3023,7 @@ function App(): React.JSX.Element {
     flushSync(() => {
       updatePreviewCell(tabKey, rowKey, column, nextEditableValue)
     })
+    clearAllCellSelection(tabKey)
     closeEditingCell(tabKey, cellDisplayText(nextEditableValue))
   }
 
@@ -2891,58 +3032,134 @@ function App(): React.JSX.Element {
     rowKey: string,
     column: string,
     host: HTMLElement,
-    rawValue: unknown
+    rawValue: unknown,
+    options?: {
+      initialValue?: string
+      batchCells?: Array<{ rowKey: string; column: string }>
+      batchOriginalValues?: Array<{ rowKey: string; column: string; value: unknown }>
+    }
   ): void => {
     closeInlineCellEditor(tabKey)
-    clearRenderedCellSelection(tabKey)
+    if (!options?.batchCells) {
+      clearRenderedCellSelection(tabKey)
+    }
     rowDragAnchorRefs.current[tabKey] = undefined
     cellDragAnchorRefs.current[tabKey] = undefined
     pendingCellDragTargetRefs.current[tabKey] = undefined
     runtimeSelectedCellRefs.current[tabKey] = undefined
-    const originalContent = host.textContent ?? ''
     const input = document.createElement('input')
     input.className = 'editable-cell-dom-input'
     const initialInputValue =
-      rawValue === null || rawValue === undefined || isDefaultValueMarker(rawValue)
+      options?.initialValue ??
+      (rawValue === null || rawValue === undefined || isDefaultValueMarker(rawValue)
         ? ''
-        : String(rawValue)
+        : String(rawValue))
     input.value = initialInputValue
     input.dataset.columnKey = column
     input.dataset.rowKey = rowKey
     input.dataset.cellKey = `${rowKey}:${column}`
+    const batchHosts = options?.batchCells
+      ?.map(({ rowKey: targetRowKey, column: targetColumn }) =>
+        tableBodyRefs.current[tabKey]?.querySelector<HTMLElement>(
+          `.editable-cell[data-cell-key="${CSS.escape(`${targetRowKey}:${targetColumn}`)}"]`
+        )
+      )
+      .filter((batchHost): batchHost is HTMLElement => Boolean(batchHost))
+    const updateBatchDisplay = (value: string): void => {
+      batchHosts?.forEach((batchHost) => {
+        if (batchHost !== host && batchHost.isConnected) {
+          batchHost.textContent = value
+        }
+      })
+    }
+    const restoreBatchDisplay = (): void => {
+      batchHosts?.forEach((batchHost) => {
+        if (batchHost === host || !batchHost.isConnected) {
+          return
+        }
+        const originalEntry = options?.batchOriginalValues?.find(
+          ({ rowKey: targetRowKey, column: targetColumn }) =>
+            `${targetRowKey}:${targetColumn}` === batchHost.dataset.cellKey
+        )
+        if (originalEntry) {
+          batchHost.textContent = cellDisplayText(originalEntry.value)
+        }
+      })
+    }
+    let composing = false
     input.addEventListener('pointerdown', (event) => event.stopPropagation())
     input.addEventListener('mousedown', (event) => event.stopPropagation())
     input.addEventListener('mouseup', (event) => event.stopPropagation())
     input.addEventListener('click', (event) => event.stopPropagation())
     input.addEventListener('dblclick', (event) => event.stopPropagation())
     input.addEventListener('keydown', (event) => {
+      if (composing || event.isComposing) {
+        return
+      }
       if (event.key === 'Enter') {
         event.preventDefault()
         commitInlineCellEditor(tabKey)
       }
       if (event.key === 'Escape') {
         event.preventDefault()
-        closeEditingCell(tabKey, cellDisplayText(rawValue))
+        discardInlineCellEditor(tabKey)
       }
     })
-    input.addEventListener('blur', () => commitInlineCellEditor(tabKey))
+    input.addEventListener('compositionstart', () => {
+      composing = true
+      if (options?.initialValue && input.value === options.initialValue) {
+        input.value = ''
+        restoreBatchDisplay()
+      }
+    })
+    input.addEventListener('compositionend', () => {
+      composing = false
+      updateBatchDisplay(input.value)
+    })
+    input.addEventListener('input', () => {
+      if (!composing) {
+        updateBatchDisplay(input.value)
+      }
+    })
+    input.addEventListener('blur', () => {
+      if (!composing) {
+        commitInlineCellEditor(tabKey)
+      }
+    })
     host.textContent = ''
     host.classList.add('editable-cell-inline-editing')
     host.appendChild(input)
+    batchHosts?.forEach((batchHost) => {
+      if (batchHost !== host) {
+        batchHost.classList.add('editable-cell-batch-editing')
+      }
+    })
     inlineCellEditorRefs.current[tabKey] = {
       rowKey,
       column,
       input,
       host,
-      originalContent,
       originalValue: rawValue,
-      initialInputValue
+      initialInputValue,
+      batchCells: options?.batchCells,
+      batchHosts,
+      batchOriginalValues: options?.batchOriginalValues
     }
+    updateBatchDisplay(initialInputValue)
     editingCellRefs.current[tabKey] = { rowKey, column }
-    requestAnimationFrame(() => {
+    const focusInput = (): void => {
       input.focus()
-      input.select()
-    })
+      if (options?.batchCells) {
+        input.setSelectionRange(input.value.length, input.value.length)
+      } else {
+        input.select()
+      }
+    }
+    if (options?.batchCells) {
+      focusInput()
+    } else {
+      requestAnimationFrame(focusInput)
+    }
   }
 
   useEffect(() => {
@@ -3246,6 +3463,8 @@ function App(): React.JSX.Element {
       delete scrollbarDragRefs.current[key]
       delete contextMenuCellSelectionRefs.current[key]
       delete contextMenuCellSelectionSnapshotRefs.current[key]
+      delete committedSelectedCellRangeRefs.current[key]
+      delete cellSelectionAnchorRefs.current[key]
       delete rowSelectionDraftRefs.current[key]
       delete rowSelectionAnchorRefs.current[key]
       delete pendingRowDragTargetRefs.current[key]
@@ -3330,6 +3549,7 @@ function App(): React.JSX.Element {
           setTreeSearchOpen(nextOpen)
           if (!nextOpen) {
             setTreeSearchText('')
+            setTreeSearchMatchIndex(0)
           }
         }
       },
@@ -3455,8 +3675,8 @@ function App(): React.JSX.Element {
   const ensureConnectionOpen = (connectionId?: string): boolean => {
     const connection = getConnection(connectionId)
 
-    if (connection && !connection.is_open) {
-      return false
+    if (connectionId && connection && !connection.is_open) {
+      void reopenConnectionSilently(connectionId).catch(() => undefined)
     }
 
     return true
@@ -4245,8 +4465,14 @@ function App(): React.JSX.Element {
     }))
 
     return [
-      ...(connection.is_open
-        ? [{ key: 'close', label: '关闭连接', icon: <CloseCircleOutlined />, disabled: loading }]
+      ...(connection.is_open || loading
+        ? [
+            {
+              key: 'close',
+              label: loading ? '停止连接' : '关闭连接',
+              icon: <CloseCircleOutlined />
+            }
+          ]
         : [{ key: 'open', label: '打开连接', icon: <PlayCircleOutlined />, disabled: loading }]),
       ...(connection.database_type === 'redis' || connection.database_type === 'sqlite'
         ? []
@@ -4413,7 +4639,7 @@ function App(): React.JSX.Element {
           }}
         >
           <span className={`table-tree-title${loading ? ' is-loading' : ''}`}>
-            {highlightTreeSearchText(String(node.title ?? ''))}
+            {String(node.title ?? '')}
           </span>
           <Tag className="folder-count-tag">{connectionCount}</Tag>
         </Flex>
@@ -4448,7 +4674,7 @@ function App(): React.JSX.Element {
           title={title}
           data-tree-node-key={String(node.key)}
         >
-          {highlightTreeSearchText(title)}
+          {title}
         </span>
       )
     }
@@ -4495,7 +4721,7 @@ function App(): React.JSX.Element {
         >
           <div className="tree-title-with-size">
             <span className={`table-tree-title${loading ? ' is-loading' : ''}`}>
-              {highlightTreeSearchText(String(node.title ?? ''))}
+              {String(node.title ?? '')}
             </span>
             <span className="tree-node-actions">
               {renderAIContextButton(node)}
@@ -4527,7 +4753,7 @@ function App(): React.JSX.Element {
     ) {
       return (
         <span className="resource-tree-node-title" data-tree-node-key={String(node.key)}>
-          {highlightTreeSearchText(String(node.title ?? ''))}
+          {String(node.title ?? '')}
         </span>
       )
     }
@@ -4547,7 +4773,7 @@ function App(): React.JSX.Element {
               : String(node.title ?? '')
           }
         >
-          {highlightTreeSearchText(String(node.title ?? ''))}
+          {String(node.title ?? '')}
         </span>
         <span className="tree-node-actions">
           {node.sizeDisplay && (
@@ -4641,29 +4867,69 @@ function App(): React.JSX.Element {
 
   const clearRuntimeColumnSelection = (tabKey: string): void => {
     const selectedColumn = selectedColumnRefs.current[tabKey]
+    selectedColumnRefs.current[tabKey] = undefined
+    if (selectedColumn) {
+      updateWorkspaceTab(tabKey, { selectedColumns: [], selectedColumnMap: {} })
+    }
+    const containers = [tableBodyRefs.current[tabKey], tableHeaderRefs.current[tabKey]].filter(
+      (container): container is HTMLDivElement => container instanceof HTMLDivElement
+    )
+    containers.forEach((container) => {
+      container.querySelectorAll<HTMLElement>('.column-selected-runtime').forEach((element) => {
+        element.classList.remove('column-selected-runtime')
+      })
+      container
+        .querySelectorAll<HTMLElement>('.column-selected-runtime-inner')
+        .forEach((element) => element.classList.remove('column-selected-runtime-inner'))
+      container
+        .querySelectorAll<HTMLElement>('.column-select-button-runtime-selected')
+        .forEach((element) => element.classList.remove('column-select-button-runtime-selected'))
+      if (selectedColumn) {
+        container
+          .querySelectorAll<HTMLElement>(
+            `[data-column-key="${CSS.escape(selectedColumn)}"]`
+          )
+          .forEach((element) => element.classList.remove('column-selected-runtime'))
+      }
+    })
+  }
+
+  const syncRenderedColumnSelection = (tabKey: string): void => {
+    const selectedColumn = selectedColumnRefs.current[tabKey]
     if (!selectedColumn) {
       return
     }
-    selectedColumnRefs.current[tabKey] = undefined
-    const container = tableBodyRefs.current[tabKey]
-    if (!container) {
-      return
-    }
-    container
-      .querySelectorAll<HTMLElement>(`[data-column-key="${CSS.escape(selectedColumn)}"]`)
-      .forEach((element) => {
-        element.classList.remove('column-selected-runtime')
-      })
-    container
-      .querySelectorAll<HTMLElement>(
-        `.editable-cell[data-cell-column-key="${CSS.escape(selectedColumn)}"]`
-      )
-      .forEach((element) => {
-        element.classList.remove('column-selected-runtime-inner')
-      })
-    container
-      .querySelectorAll(`[data-column-button="${CSS.escape(selectedColumn)}"]`)
-      .forEach((element) => element.classList.remove('column-select-button-runtime-selected'))
+    const containers = [tableBodyRefs.current[tabKey], tableHeaderRefs.current[tabKey]].filter(
+      (container): container is HTMLDivElement => container instanceof HTMLDivElement
+    )
+    containers.forEach((container) => {
+      container
+        .querySelectorAll<HTMLElement>('.column-selected-runtime')
+        .forEach((element) => element.classList.remove('column-selected-runtime'))
+      container
+        .querySelectorAll<HTMLElement>('.column-selected-runtime-inner')
+        .forEach((element) => element.classList.remove('column-selected-runtime-inner'))
+      container
+        .querySelectorAll<HTMLElement>('.column-select-button-runtime-selected')
+        .forEach((element) => element.classList.remove('column-select-button-runtime-selected'))
+      container
+        .querySelectorAll<HTMLElement>(
+          `[data-column-key="${CSS.escape(selectedColumn)}"]`
+        )
+        .forEach((element) => {
+          element.classList.add('column-selected-runtime')
+          element
+            .querySelectorAll<HTMLElement>(
+              `.editable-cell[data-cell-column-key="${CSS.escape(selectedColumn)}"]`
+            )
+            .forEach((cell) => cell.classList.add('column-selected-runtime-inner'))
+        })
+      container
+        .querySelectorAll<HTMLElement>(
+          `[data-column-button="${CSS.escape(selectedColumn)}"]`
+        )
+        .forEach((element) => element.classList.add('column-select-button-runtime-selected'))
+    })
   }
 
   const clearRenderedCellSelection = (tabKey: string): void => {
@@ -4671,14 +4937,22 @@ function App(): React.JSX.Element {
     if (!container) {
       return
     }
-    container
-      .querySelectorAll<HTMLElement>(
-        '.editable-cell.cell-selected-runtime, td.cell-selected-runtime-host, .ant-table-cell.cell-selected-runtime-host'
-      )
-      .forEach((element) => {
-        element.classList.remove('cell-selected-runtime')
-        element.classList.remove('cell-selected-runtime-host')
-      })
+    container.querySelectorAll<HTMLElement>('.editable-cell[data-cell-key]').forEach((cell) => {
+      cell.classList.remove('cell-selected-runtime')
+      const host = cell.closest<HTMLElement>('td, .ant-table-cell')
+      if (!host) {
+        return
+      }
+      host.classList.remove('cell-selected-runtime-host')
+      if (host.classList.contains('editable-cell-draft-host')) {
+        return
+      }
+      host.style.removeProperty('background')
+      host.style.removeProperty('background-color')
+      host.style.removeProperty('background-image')
+      host.style.removeProperty('border-bottom-color')
+      host.style.removeProperty('box-shadow')
+    })
     renderedSelectedCellRefs.current[tabKey] = undefined
   }
 
@@ -4710,9 +4984,24 @@ function App(): React.JSX.Element {
         .querySelectorAll<HTMLElement>(`.editable-cell[data-cell-key="${CSS.escape(cellKey)}"]`)
         .forEach((element) => {
           element.classList.remove('cell-selected-runtime')
-          element
-            .closest<HTMLElement>('td, .ant-table-cell')
-            ?.classList.remove('cell-selected-runtime-host')
+          const host = element.closest<HTMLElement>('td, .ant-table-cell')
+          host?.classList.remove('cell-selected-runtime-host')
+          host?.style.removeProperty('background')
+          host?.style.removeProperty('background-color')
+          host?.style.removeProperty('background-image')
+          host?.style.removeProperty('border-bottom-color')
+          host?.style.removeProperty('box-shadow')
+          if (host?.classList.contains('editable-cell-draft-host')) {
+            host.style.setProperty('background', 'rgba(216, 59, 1, 0.14)', 'important')
+            host.style.setProperty('background-color', 'rgba(216, 59, 1, 0.14)', 'important')
+            host.style.setProperty('background-image', 'none', 'important')
+            host.style.setProperty('border-bottom-color', 'var(--dj-grid-border)', 'important')
+            host.style.setProperty(
+              'box-shadow',
+              'inset 0 -1px 0 var(--dj-grid-border)',
+              'important'
+            )
+          }
         })
     })
 
@@ -4734,6 +5023,17 @@ function App(): React.JSX.Element {
           ) {
             host.classList.add('cell-selected-runtime-host')
           }
+          if (host) {
+            host.style.setProperty('background', 'var(--dj-grid-selection-bg)', 'important')
+            host.style.setProperty('background-color', 'var(--dj-grid-selection-bg)', 'important')
+            host.style.setProperty('background-image', 'none', 'important')
+            host.style.setProperty('border-bottom-color', 'var(--dj-grid-border)', 'important')
+            host.style.setProperty(
+              'box-shadow',
+              'inset 0 -1px 0 var(--dj-grid-border)',
+              'important'
+            )
+          }
         })
       nextRenderedKeys.push(cellKey)
     })
@@ -4743,29 +5043,10 @@ function App(): React.JSX.Element {
   }
 
   const applyRuntimeColumnSelection = (tabKey: string, column: string): void => {
-    const container = tableBodyRefs.current[tabKey]
-    if (!container) {
-      return
-    }
     clearRuntimeColumnSelection(tabKey)
     selectedColumnRefs.current[tabKey] = column
-    container
-      .querySelectorAll<HTMLElement>(`[data-column-key="${CSS.escape(column)}"]`)
-      .forEach((element) => {
-        element.classList.add('column-selected-runtime')
-        element
-          .querySelectorAll<HTMLElement>(
-            `.editable-cell[data-cell-column-key="${CSS.escape(column)}"]`
-          )
-          .forEach((cell) => {
-            cell.classList.add('column-selected-runtime-inner')
-          })
-      })
-    container
-      .querySelectorAll<HTMLElement>(`[data-column-button="${CSS.escape(column)}"]`)
-      .forEach((element) => {
-        element.classList.add('column-select-button-runtime-selected')
-      })
+    updateWorkspaceTab(tabKey, { selectedColumns: [column], selectedColumnMap: { [column]: true } })
+    syncRenderedColumnSelection(tabKey)
   }
 
   const syncRuntimeSortButtons = (
@@ -4828,25 +5109,6 @@ function App(): React.JSX.Element {
   }
 
   const clearAllCellSelection = (tabKey: string): void => {
-    const hasRuntimeSelection = Boolean(runtimeSelectedCellRefs.current[tabKey]?.length)
-    const hasCommittedSelection = Boolean(selectedCellRefs.current[tabKey]?.length)
-    const hasContextSelection = Boolean(contextMenuCellSelectionRefs.current[tabKey])
-    const hasRenderedSelection =
-      Boolean(renderedSelectedCellRefs.current[tabKey]?.length) ||
-      Boolean(
-        tableBodyRefs.current[tabKey]?.querySelector(
-          '.editable-cell.cell-selected-runtime, td.cell-selected-runtime-host, .ant-table-cell.cell-selected-runtime-host'
-        )
-      )
-    if (
-      !hasRuntimeSelection &&
-      !hasCommittedSelection &&
-      !hasContextSelection &&
-      !hasRenderedSelection
-    ) {
-      cancelPendingCellSelectionInteractions(tabKey)
-      return
-    }
     cancelPendingCellSelectionInteractions(tabKey)
     if (pendingRenderedCellSelectionTimeoutRefs.current[tabKey]) {
       window.clearTimeout(pendingRenderedCellSelectionTimeoutRefs.current[tabKey])
@@ -4860,70 +5122,71 @@ function App(): React.JSX.Element {
     contextMenuCellSelectionRefs.current[tabKey] = undefined
     contextMenuCellSelectionSnapshotRefs.current[tabKey] = undefined
     committedSelectedCellRangeRefs.current[tabKey] = undefined
+    cellSelectionAnchorRefs.current[tabKey] = undefined
     updateSelectedCells(tabKey, [])
     clearRenderedCellSelection(tabKey)
     syncInspectorSelection(tabKey, [])
   }
 
   const clearSelectedRowsForTab = (tabKey: string): void => {
-    const selectedRowKeys = (
-      rowSelectionDraftRefs.current[tabKey] ??
-      selectedRowRefs.current[tabKey] ??
-      []
-    ).map((key) => String(key))
-    if (selectedRowKeys.length === 0) {
-      return
-    }
+    const hadSelectedRows = Boolean(
+      rowSelectionDraftRefs.current[tabKey]?.length || selectedRowRefs.current[tabKey]?.length
+    )
     rowSelectionDraftRefs.current[tabKey] = undefined
     selectedRowRefs.current[tabKey] = undefined
+    if (hadSelectedRows) {
+      updateWorkspaceTab(tabKey, { selectedRowKeys: [], selectedRowKeyMap: {} })
+    }
     const container = tableBodyRefs.current[tabKey]
     if (container) {
-      const renderedRowKeys = renderedSelectedRowRefs.current[tabKey] ?? []
-      for (const rowKey of renderedRowKeys) {
-        const trs = container.querySelectorAll<HTMLElement>(
-          'tr[data-row-key="' +
-            CSS.escape(rowKey) +
-            '"], .ant-table-row[data-row-key="' +
-            CSS.escape(rowKey) +
-            '"]'
-        )
-        trs.forEach(function (el) {
-          el.classList.remove('row-selected')
-          el.querySelector<HTMLElement>('.row-number-button')?.classList.remove('selected')
-        })
-      }
+      container.querySelectorAll<HTMLElement>('.row-selected').forEach((element) => {
+        element.classList.remove('row-selected')
+      })
+      container.querySelectorAll<HTMLElement>('.row-number-button.selected').forEach((element) => {
+        element.classList.remove('selected')
+      })
     }
     renderedSelectedRowRefs.current[tabKey] = undefined
   }
 
-  const getResultTableVirtualHolder = (tabKey: string): HTMLDivElement | null =>
-    tableBodyRefs.current[tabKey]?.querySelector<HTMLDivElement>(
-      '.ant-table-tbody-virtual-holder'
-    ) ?? null
-
   const scheduleRenderedCellSelectionSync = (tabKey: string): void => {
-    const isVirtualTable = Boolean(getResultTableVirtualHolder(tabKey))
-    if (isVirtualTable) {
-      if (pendingRenderedCellSelectionTimeoutRefs.current[tabKey]) {
-        window.clearTimeout(pendingRenderedCellSelectionTimeoutRefs.current[tabKey])
+    const syncNonCellSelection = (): void => {
+      syncRenderedColumnSelection(tabKey)
+      if (rowDragAnchorRefs.current[tabKey]) {
+        return
       }
-      pendingRenderedCellSelectionTimeoutRefs.current[tabKey] = window.setTimeout(() => {
-        pendingRenderedCellSelectionTimeoutRefs.current[tabKey] = undefined
-        if (pendingRenderedCellSelectionFrameRefs.current[tabKey]) {
-          return
-        }
-        pendingRenderedCellSelectionFrameRefs.current[tabKey] = window.requestAnimationFrame(() => {
-          pendingRenderedCellSelectionFrameRefs.current[tabKey] = undefined
-          syncRenderedCellSelection(tabKey)
-        })
-      }, 72)
-      return
+      const selectedRows = selectedRowRefs.current[tabKey] ?? []
+      const container = tableBodyRefs.current[tabKey]
+      if (!container) {
+        return
+      }
+      container.querySelectorAll<HTMLElement>('.row-selected').forEach((element) => {
+        element.classList.remove('row-selected')
+      })
+      container.querySelectorAll<HTMLElement>('.row-number-button.selected').forEach((element) => {
+        element.classList.remove('selected')
+      })
+      selectedRows.forEach((rowKey) => {
+        container
+          .querySelectorAll<HTMLElement>(
+            `tr[data-row-key="${CSS.escape(rowKey)}"], .ant-table-row[data-row-key="${CSS.escape(rowKey)}"]`
+          )
+          .forEach((rowElement) => {
+            rowElement.classList.add('row-selected')
+            rowElement.querySelector<HTMLElement>('.row-number-button')?.classList.add('selected')
+          })
+      })
+    }
+    if (pendingRenderedCellSelectionTimeoutRefs.current[tabKey]) {
+      window.clearTimeout(pendingRenderedCellSelectionTimeoutRefs.current[tabKey])
+      pendingRenderedCellSelectionTimeoutRefs.current[tabKey] = undefined
     }
     if (pendingRenderedCellSelectionFrameRefs.current[tabKey]) {
       return
     }
     pendingRenderedCellSelectionFrameRefs.current[tabKey] = window.requestAnimationFrame(() => {
       pendingRenderedCellSelectionFrameRefs.current[tabKey] = undefined
+      syncNonCellSelection()
       syncRenderedCellSelection(tabKey)
     })
   }
@@ -4969,6 +5232,7 @@ function App(): React.JSX.Element {
       addPreviewRow={addPreviewRow}
       markSelectedRowsDeleted={markSelectedRowsDeleted}
       submitPreviewChanges={submitPreviewChanges}
+      submitQueryChanges={submitQueryChanges}
       addRedisRow={addRedisRow}
       submitRedisChanges={submitRedisChanges}
       toggleRedisValue={toggleRedisValue}
@@ -5416,6 +5680,7 @@ function App(): React.JSX.Element {
 
   const openConnectionModal = async (nextDatabaseType: DatabaseType): Promise<void> => {
     const defaults = buildCreateConnectionDefaults(nextDatabaseType)
+    resetConnectionTestingState()
     setConnectionMode('create')
     setEditingConnectionInfoId(undefined)
     setConnectionModalFolderId(undefined)
@@ -5442,6 +5707,7 @@ function App(): React.JSX.Element {
   openConnectionModalRef.current = openConnectionModal
 
   const openEditConnectionModal = async (connection: ConnectionInfo): Promise<void> => {
+    resetConnectionTestingState()
     if (connectionModalHydrationFrameRef.current != null) {
       window.cancelAnimationFrame(connectionModalHydrationFrameRef.current)
       connectionModalHydrationFrameRef.current = undefined
@@ -5520,7 +5786,7 @@ function App(): React.JSX.Element {
       })
     } catch (err) {
       showError(err instanceof Error ? err.message : '加载连接信息失败')
-      setConnectionModalOpen(false)
+      closeConnectionModal()
     } finally {
       setConnectionLoading(false)
     }
@@ -6692,6 +6958,8 @@ function App(): React.JSX.Element {
   }))
 
   const testConnection = async (): Promise<void> => {
+    const testRunId = connectionTestRunRef.current + 1
+    connectionTestRunRef.current = testRunId
     setTestingConnection(true)
 
     try {
@@ -6720,19 +6988,29 @@ function App(): React.JSX.Element {
         body: JSON.stringify(cleanFormValues(values))
       })
 
+      if (connectionTestRunRef.current !== testRunId) {
+        return
+      }
+
       if (result.success) {
         messageApi.success(result.message || '数据库连接测试成功')
       } else {
         showError(result.message || '数据库连接测试失败')
       }
     } catch (err) {
-      showError(err instanceof Error ? err.message : '测试连接失败')
+      if (connectionTestRunRef.current === testRunId) {
+        showError(err instanceof Error ? err.message : '测试连接失败')
+      }
     } finally {
-      setTestingConnection(false)
+      if (connectionTestRunRef.current === testRunId) {
+        setTestingConnection(false)
+      }
     }
   }
 
   const testSshConnection = async (): Promise<void> => {
+    const testRunId = connectionTestRunRef.current + 1
+    connectionTestRunRef.current = testRunId
     setTestingSshConnection(true)
 
     try {
@@ -6762,8 +7040,13 @@ function App(): React.JSX.Element {
       }
       const result = await requestJson<ConnectionTestResponse>('/connections/test-ssh', {
         method: 'POST',
-        body: JSON.stringify(sshPayload)
+        body: JSON.stringify(sshPayload),
+        timeoutMs: SSH_TEST_REQUEST_TIMEOUT_MS
       })
+
+      if (connectionTestRunRef.current !== testRunId) {
+        return
+      }
 
       if (result.success) {
         messageApi.success(result.message || 'SSH 隧道连接测试成功')
@@ -6771,9 +7054,13 @@ function App(): React.JSX.Element {
         showError(result.message || 'SSH 隧道连接测试失败')
       }
     } catch (err) {
-      showError(err instanceof Error ? err.message : '测试 SSH 失败')
+      if (connectionTestRunRef.current === testRunId) {
+        showError(err instanceof Error ? err.message : '测试 SSH 失败')
+      }
     } finally {
-      setTestingSshConnection(false)
+      if (connectionTestRunRef.current === testRunId) {
+        setTestingSshConnection(false)
+      }
     }
   }
 
@@ -6801,7 +7088,7 @@ function App(): React.JSX.Element {
         )
         setConnections(nextConnections)
         setTreeData((current) => replaceConnectionNode(current, connection, buildConnectionNode))
-        setConnectionModalOpen(false)
+        closeConnectionModal()
         return
       }
 
@@ -6825,7 +7112,7 @@ function App(): React.JSX.Element {
       setSelectedConnectionId(connection.connection_id)
       selectConnectionNodes([connection.connection_id], connection.connection_id)
       refreshTree(nextConnections)
-      setConnectionModalOpen(false)
+      closeConnectionModal()
     } catch (err) {
       showError(
         err instanceof Error
@@ -6863,6 +7150,10 @@ function App(): React.JSX.Element {
   }
 
   const openConnectionById = async (connectionId: string): Promise<ConnectionInfo | undefined> => {
+    const openAttemptId = crypto.randomUUID()
+    connectionOpenAttemptRefs.current[connectionId] = openAttemptId
+    const isCurrentOpenAttempt = (): boolean =>
+      connectionOpenAttemptRefs.current[connectionId] === openAttemptId
     setConnectionTreeLoadingText(connectionId, '正在打开连接...')
     try {
       const currentConnection = getConnection(connectionId)
@@ -6876,9 +7167,13 @@ function App(): React.JSX.Element {
         return undefined
       }
 
-      const connection = await requestJson<ConnectionInfo>(`/connections/${connectionId}/open`, {
-        method: 'POST'
-      })
+      const connection = await requestJson<ConnectionInfo>(
+        `/connections/${connectionId}/open?open_attempt_id=${encodeURIComponent(openAttemptId)}`,
+        { method: 'POST' }
+      )
+      if (!isCurrentOpenAttempt()) {
+        return undefined
+      }
 
       setConnections((current) =>
         current.map((c) => (c.connection_id === connectionId ? connection : c))
@@ -6903,13 +7198,22 @@ function App(): React.JSX.Element {
 
       if (connection.database_type === 'sqlite') {
         await ensureDatabasesLoaded(connectionId, connection)
+        if (!isCurrentOpenAttempt()) {
+          return undefined
+        }
         await waitForUiCommit()
       } else {
         setConnectionTreeLoadingText(connectionId, '正在加载库表...')
         await preloadConnectionTree(connection)
+        if (!isCurrentOpenAttempt()) {
+          return undefined
+        }
       }
       return connection
     } catch (err) {
+      if (!isCurrentOpenAttempt()) {
+        return undefined
+      }
       const errorMessage = err instanceof Error ? err.message : '打开连接失败'
       const currentConnection = getConnection(connectionId)
       if (
@@ -6924,7 +7228,10 @@ function App(): React.JSX.Element {
       showError(errorMessage)
       return undefined
     } finally {
-      setConnectionTreeLoadingText(connectionId)
+      if (isCurrentOpenAttempt()) {
+        connectionOpenAttemptRefs.current[connectionId] = undefined
+        setConnectionTreeLoadingText(connectionId)
+      }
     }
   }
 
@@ -6972,10 +7279,17 @@ function App(): React.JSX.Element {
   }
 
   const closeConnectionById = async (connectionId: string): Promise<void> => {
+    const openAttemptId = connectionOpenAttemptRefs.current[connectionId]
+    connectionOpenAttemptRefs.current[connectionId] = undefined
+    setConnectionTreeLoadingText(connectionId)
     try {
-      const connection = await requestJson<ConnectionInfo>(`/connections/${connectionId}/close`, {
-        method: 'POST'
-      })
+      const query = openAttemptId ? `?open_attempt_id=${encodeURIComponent(openAttemptId)}` : ''
+      const connection = await requestJson<ConnectionInfo>(
+        `/connections/${connectionId}/close${query}`,
+        {
+          method: 'POST'
+        }
+      )
       setConnections((current) =>
         current.map((c) => (c.connection_id === connectionId ? connection : c))
       )
@@ -8053,6 +8367,65 @@ function App(): React.JSX.Element {
     }
   }
 
+  const submitQueryChanges = async (tab: WorkspaceTab): Promise<void> => {
+    if (!tab.connectionId || !tab.executedSql || !tab.result) {
+      return
+    }
+
+    clearInlineCellEditor(tab.key)
+    const cleanRow = (row: EditableRow): Record<string, unknown> =>
+      Object.fromEntries(
+        Object.entries(row).filter(
+          ([key]) => !['__rowKey', '__state', '__deleted', '__original'].includes(key)
+        )
+      )
+    const updated = (tab.editRows ?? [])
+      .filter((row) => row.__state === 'updated')
+      .map((row) => ({ original: row.__original ?? cleanRow(row), values: cleanRow(row) }))
+    if (updated.length === 0) {
+      return
+    }
+
+    const connection = getConnection(tab.connectionId)
+    updateWorkspaceTab(tab.key, { loading: true, error: undefined })
+    try {
+      const response = await requestJson<{ updated_count: number }>('/query/data', {
+        method: 'PUT',
+        body: JSON.stringify({
+          connection_id: tab.connectionId,
+          sql: tab.executedSql,
+          updated,
+          database:
+            connection?.database_type === 'mysql' ||
+            connection?.database_type === 'dm' ||
+            connection?.database_type === 'oracle' ||
+            isSchemaScopedType(connection?.database_type) ||
+            connection?.database_type === 'clickhouse'
+              ? tab.databaseName || undefined
+              : undefined,
+          pg_database: isSchemaScopedType(connection?.database_type)
+            ? tab.pgDatabaseName || undefined
+            : undefined
+        })
+      })
+      const rows = (tab.editRows ?? []).map(cleanRow)
+      updateWorkspaceTab(tab.key, {
+        result: { ...tab.result, rows },
+        editRows: buildEditableRows(rows),
+        columnFilterOptions: undefined,
+        loading: false,
+        error: undefined
+      })
+      messageApi.success(`已提交 ${response.updated_count} 项修改`)
+      requestAnimationFrame(() => syncRenderedCellSelection(tab.key))
+    } catch (err) {
+      updateWorkspaceTab(tab.key, {
+        loading: false,
+        error: err instanceof Error ? err.message : '提交查询结果修改失败'
+      })
+    }
+  }
+
   const previewTable = async (
     connectionId: string,
     tableName: string,
@@ -8830,6 +9203,7 @@ function App(): React.JSX.Element {
           page: resolvedTab.page ?? 1,
           selectedRowKeys: [],
           selectedRowKeyMap: {},
+          editRows: isCommandResult ? undefined : buildEditableRows(result.rows),
           columnFilterOptions: undefined,
           loading: false,
           error: undefined,
@@ -9530,7 +9904,11 @@ function App(): React.JSX.Element {
                 selectedConnectionIds={selectedConnectionIds}
                 treeSearchOpen={treeSearchOpen}
                 treeSearchText={treeSearchText}
+                treeSearchMatchCount={treeSearchMatches.length}
+                treeSearchMatchIndex={treeSearchMatchIndex}
                 setTreeSearchText={setTreeSearchText}
+                onPreviousTreeSearchMatch={() => navigateTreeSearchMatch(-1)}
+                onNextTreeSearchMatch={() => navigateTreeSearchMatch(1)}
                 treeContextMenu={treeContextMenu}
                 treeLoadingVersion={treeLoadingVersion}
                 treeLoadingKeysRef={treeLoadingKeysRef}
@@ -11069,10 +11447,7 @@ function App(): React.JSX.Element {
           }))}
           selectedFolderId={connectionModalFolderId}
           onOk={() => void saveConnection()}
-          onCancel={() => {
-            setConnectionModalOpen(false)
-            setConnectionModalFolderId(undefined)
-          }}
+          onCancel={closeConnectionModal}
           onTestConnection={() => void testConnection()}
           onTestSshConnection={() => void testSshConnection()}
           onSelectSqliteFile={() => void selectSqliteFile()}

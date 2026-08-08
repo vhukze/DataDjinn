@@ -20,6 +20,30 @@ class QueryResponse(BaseModel):
     total_count: int | None = None
     sort_column: str | None = None
     sort_direction: str | None = None
+    column_origins: dict[str, "QueryColumnOrigin"] = Field(default_factory=dict)
+
+
+class QueryColumnOrigin(BaseModel):
+    table_name: str
+    column_name: str
+    database_name: str | None = None
+
+
+class QueryRowUpdate(BaseModel):
+    original: dict[str, Any]
+    values: dict[str, Any]
+
+
+class QueryDataChangeRequest(BaseModel):
+    connection_id: str
+    sql: str = Field(min_length=1)
+    database: str | None = None
+    pg_database: str | None = None
+    updated: list[QueryRowUpdate] = Field(default_factory=list)
+
+
+class QueryDataChangeResponse(BaseModel):
+    updated_count: int
 
 
 class QueryCountRequest(BaseModel):

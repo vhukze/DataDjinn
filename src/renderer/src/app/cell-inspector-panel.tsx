@@ -46,10 +46,11 @@ const CellInspectorPanel = memo(
       rowByKey: Map<string, EditableRowLike>
       columnInfoMap?: Record<string, { type: string }>
       editable: boolean
+      editableColumns?: string[]
       onUpdateValue: (rowKey: string, column: string, rawValue: string) => void
     }
   >(function CellInspectorPanel(
-    { tabKey, orderedColumns, rowByKey, columnInfoMap, editable, onUpdateValue },
+    { tabKey, orderedColumns, rowByKey, columnInfoMap, editable, editableColumns, onUpdateValue },
     ref
   ) {
     const [open, setOpen] = useState(false)
@@ -162,6 +163,8 @@ const CellInspectorPanel = memo(
 
     const columnTypeOf = (column: string): string | undefined =>
       columnInfoMap?.[column]?.type ?? undefined
+    const canEditColumn = (column: string): boolean =>
+      editable && (!editableColumns || editableColumns.includes(column))
     const anchorSelection = useMemo(() => {
       if (!bounds) {
         return null
@@ -209,7 +212,7 @@ const CellInspectorPanel = memo(
                     </div>
                     <Input.TextArea
                       className="cell-inspector-field-value"
-                      readOnly={!editable}
+                      readOnly={!canEditColumn(column)}
                       rows={3}
                       value={
                         row?.[column] === null ||
@@ -226,7 +229,7 @@ const CellInspectorPanel = memo(
                             : undefined
                       }
                       onChange={(event) => {
-                        if (!editable) {
+                        if (!canEditColumn(column)) {
                           return
                         }
                         onUpdateValue(rowKey, column, event.currentTarget.value)
@@ -279,7 +282,7 @@ const CellInspectorPanel = memo(
           </Flex>
           <Input.TextArea
             className="cell-inspector-value-area"
-            readOnly={!editable || readonlyJsonMode}
+            readOnly={!canEditColumn(anchorColumn) || readonlyJsonMode}
             value={
               readonlyJsonMode
                 ? (formattedJsonValue ?? '')
@@ -297,7 +300,7 @@ const CellInspectorPanel = memo(
                   : undefined
             }
             onChange={(event) => {
-              if (!editable || readonlyJsonMode) {
+              if (!canEditColumn(anchorColumn) || readonlyJsonMode) {
                 return
               }
               onUpdateValue(anchorRowKey, anchorColumn, event.currentTarget.value)
@@ -415,6 +418,7 @@ const CellInspectorPanel = memo(
     prev.rowByKey === next.rowByKey &&
     prev.columnInfoMap === next.columnInfoMap &&
     prev.editable === next.editable &&
+    prev.editableColumns === next.editableColumns &&
     prev.onUpdateValue === next.onUpdateValue
 )
 

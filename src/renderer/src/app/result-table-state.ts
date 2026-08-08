@@ -22,7 +22,7 @@ const tableFilterValueKey = (value: unknown): string => {
 }
 
 const buildBaseTableRows = (tab: WorkspaceTab): EditableRow[] =>
-  tab.kind === 'preview'
+  tab.kind === 'preview' || tab.kind === 'query'
     ? (tab.editRows ?? [])
     : (tab.result?.rows.map((row, index) => ({ ...row, __rowKey: `query:${index}` })) ?? [])
 

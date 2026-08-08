@@ -73,6 +73,10 @@ export type QueryResponse = {
   total_count?: number | null
   sort_column?: string | null
   sort_direction?: string | null
+  column_origins?: Record<
+    string,
+    { table_name: string; column_name: string; database_name?: string | null }
+  >
 }
 
 export type QueryCountResponse = {

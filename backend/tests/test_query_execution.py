@@ -9,8 +9,10 @@ from sqlalchemy.engine import Engine
 from app.db.connection_manager import ConnectionManager
 from app.db.query_timeout import apply_query_timeout
 from app.db.readonly_query import _split_sql_statements, _with_limit, count_readonly_query, execute_query
+from app.db.query_editing import analyze_query_column_origins, apply_query_data_changes
 from app.request_context import reset_query_timeout_seconds, set_query_timeout_seconds
 from app.schemas.connection import ConnectionRequest
+from app.schemas.query import QueryDataChangeRequest, QueryRowUpdate
 
 
 class FakeClickHouseClient:
@@ -160,6 +162,94 @@ class QueryPaginationTests(unittest.TestCase):
         finally:
             engine.dispose()
 
+
+class QueryResultEditingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        from sqlalchemy import create_engine, text
+
+        self.engine = create_engine("sqlite://")
+        with self.engine.begin() as connection:
+            connection.execute(text("CREATE TABLE departments (id INTEGER PRIMARY KEY, name TEXT)"))
+            connection.execute(
+                text("CREATE TABLE users (id INTEGER PRIMARY KEY, department_id INTEGER, name TEXT)")
+            )
+            connection.execute(text("INSERT INTO departments VALUES (1, 'Engineering')"))
+            connection.execute(text("INSERT INTO users VALUES (1, 1, 'Ada')"))
+            connection.execute(text("CREATE TABLE duplicate_labels (label TEXT)"))
+            connection.execute(text("INSERT INTO duplicate_labels VALUES ('same'), ('same')"))
+
+    def tearDown(self) -> None:
+        self.engine.dispose()
+
+    def test_execute_query_exposes_direct_column_origins(self) -> None:
+        response = execute_query(
+            self.engine,
+            "SELECT id, name FROM users ORDER BY id",
+            1000,
+        )
+
+        self.assertEqual(response.column_origins["id"].table_name, "users")
+        self.assertEqual(response.column_origins["name"].column_name, "name")
+
+    def test_joined_direct_columns_are_mapped_and_updated_by_source_table(self) -> None:
+        from sqlalchemy import text
+
+        sql = (
+            "SELECT u.id AS user_id, u.name AS user_name, d.id AS department_id, "
+            "d.name AS department_name FROM users u JOIN departments d ON d.id = u.department_id"
+        )
+        origins = analyze_query_column_origins(
+            self.engine,
+            sql,
+            ["user_id", "user_name", "department_id", "department_name"],
+        )
+
+        self.assertEqual(origins["user_name"].table_name, "users")
+        self.assertEqual(origins["department_name"].table_name, "departments")
+        updated_count = apply_query_data_changes(
+            self.engine,
+            QueryDataChangeRequest(
+                connection_id="fixture",
+                sql=sql,
+                updated=[
+                    QueryRowUpdate(
+                        original={
+                            "user_id": 1,
+                            "user_name": "Ada",
+                            "department_id": 1,
+                            "department_name": "Engineering",
+                        },
+                        values={
+                            "user_id": 1,
+                            "user_name": "Ada Lovelace",
+                            "department_id": 1,
+                            "department_name": "R&D",
+                        },
+                    )
+                ],
+            ),
+        )
+
+        self.assertEqual(updated_count, 2)
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.execute(text("SELECT name FROM users WHERE id = 1")).scalar_one(), "Ada Lovelace")
+            self.assertEqual(connection.execute(text("SELECT name FROM departments WHERE id = 1")).scalar_one(), "R&D")
+
+    def test_non_unique_original_values_are_rejected_without_writing_any_row(self) -> None:
+        from sqlalchemy import text
+
+        request = QueryDataChangeRequest(
+            connection_id="fixture",
+            sql="SELECT label FROM duplicate_labels",
+            updated=[QueryRowUpdate(original={"label": "same"}, values={"label": "changed"})],
+        )
+
+        with self.assertRaisesRegex(ValueError, "无法唯一定位"):
+            apply_query_data_changes(self.engine, request)
+
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.execute(text("SELECT COUNT(*) FROM duplicate_labels WHERE label = 'same'")).scalar_one(), 2)
+
     def test_clickhouse_query_switches_engine_without_sending_use_statement(self) -> None:
         manager = ConnectionManager()
         engine = manager._create_clickhouse_engine(
@@ -172,16 +262,20 @@ class QueryPaginationTests(unittest.TestCase):
                 database="default",
             )
         )
-        response = SimpleNamespace()
+        response = SimpleNamespace(columns=["value"])
 
         try:
-            with patch("app.db.readonly_query._execute_limited_query", return_value=response) as execute:
+            with (
+                patch("app.db.readonly_query._execute_limited_query", return_value=response) as execute,
+                patch("app.db.readonly_query.analyze_query_column_origins", return_value={}) as analyze,
+            ):
                 actual = execute_query(engine, "SELECT 1", 1000, database="system")
 
             self.assertIs(actual, response)
             selected_engine = execute.call_args.args[0]
             self.assertEqual(selected_engine.url.database, "system")
             self.assertEqual(execute.call_args.args[1], "SELECT 1")
+            analyze.assert_called_once_with(selected_engine, "SELECT 1", ["value"], None, None)
         finally:
             engine.dispose()
 

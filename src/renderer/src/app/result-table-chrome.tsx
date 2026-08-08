@@ -34,6 +34,8 @@ type EditableCellProps = {
   column: string
   value: unknown
   editable: boolean
+  selected: boolean
+  draft?: boolean
   onCellDragEnter: () => void
   onPrepareContextSelection: (tabKey: string, cellKey: string) => string[]
   onOpenContextMenu: (
@@ -43,7 +45,12 @@ type EditableCellProps = {
     clientY: number,
     selection: string[]
   ) => void
-  onStartCellSelection: (tabKey: string, rowKey: string, column: string) => void
+  onStartCellSelection: (
+    tabKey: string,
+    rowKey: string,
+    column: string,
+    modifiers: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }
+  ) => void
   onOpenEditor: (
     tabKey: string,
     rowKey: string,
@@ -60,6 +67,8 @@ export function ResultEditableCell({
   column,
   value,
   editable,
+  selected,
+  draft = false,
   onCellDragEnter,
   onPrepareContextSelection,
   onOpenContextMenu,
@@ -78,13 +87,27 @@ export function ResultEditableCell({
       return
     }
     const host = cell.closest<HTMLElement>('td, .ant-table-cell')
-    const shouldKeepSelected = host?.classList.contains('cell-selected-runtime-host') ?? false
-    cell.classList.toggle('cell-selected-runtime', shouldKeepSelected)
+    cell.classList.toggle('cell-selected-runtime', selected)
+    host?.classList.toggle('cell-selected-runtime-host', selected)
+    host?.classList.toggle('editable-cell-draft-host', draft)
+    if (host && draft) {
+      host.style.setProperty('background', 'rgba(216, 59, 1, 0.14)', 'important')
+      host.style.setProperty('background-color', 'rgba(216, 59, 1, 0.14)', 'important')
+      host.style.setProperty('background-image', 'none', 'important')
+      host.style.setProperty('border-bottom-color', 'var(--dj-grid-border)', 'important')
+      host.style.setProperty('box-shadow', 'inset 0 -1px 0 var(--dj-grid-border)', 'important')
+    } else if (host && !selected) {
+      host.style.removeProperty('background')
+      host.style.removeProperty('background-color')
+      host.style.removeProperty('background-image')
+      host.style.removeProperty('border-bottom-color')
+      host.style.removeProperty('box-shadow')
+    }
   })
   return (
     <span
       ref={cellRef}
-      className={`editable-cell${value === null || value === undefined ? ' editable-cell-null' : ''}`}
+      className={`editable-cell${value === null || value === undefined ? ' editable-cell-null' : ''}${draft ? ' editable-cell-draft' : ''}`}
       data-cell-column-key={column}
       data-row-key={rowKey}
       data-cell-key={cellKey}
@@ -95,6 +118,9 @@ export function ResultEditableCell({
         const selection = onPrepareContextSelection(tabKey, cellKey)
         onOpenContextMenu(tabKey, cellKey, event.clientX, event.clientY, selection)
       }}
+      onPointerDown={(event) => {
+        event.currentTarget.setPointerCapture(event.pointerId)
+      }}
       onMouseDown={(event) => {
         if (event.button !== 0) {
           return
@@ -104,7 +130,11 @@ export function ResultEditableCell({
         }
         clearNativeSelection()
         event.stopPropagation()
-        onStartCellSelection(tabKey, rowKey, column)
+        onStartCellSelection(tabKey, rowKey, column, {
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey,
+          shiftKey: event.shiftKey
+        })
       }}
       onDoubleClick={(event) => {
         if (!editable) {
@@ -520,6 +550,7 @@ type TableToolbarProps = {
   onAddPreviewRow: (tab: WorkspaceTab) => void
   onMarkSelectedRowsDeleted: (tab: WorkspaceTab) => void
   onSubmitPreviewChanges: (tab: WorkspaceTab) => void
+  onSubmitQueryChanges: (tab: WorkspaceTab) => void
   onAddRedisRow: (tab: WorkspaceTab) => void
   onSubmitRedisChanges: (tab: WorkspaceTab) => void
   onBeforePreviewRefresh: (tabKey: string) => void
@@ -546,6 +577,7 @@ export function ResultTableToolbar({
   onAddPreviewRow,
   onMarkSelectedRowsDeleted,
   onSubmitPreviewChanges,
+  onSubmitQueryChanges,
   onAddRedisRow,
   onSubmitRedisChanges,
   onBeforePreviewRefresh,
@@ -561,6 +593,7 @@ export function ResultTableToolbar({
     tab.tableName &&
     connection?.database_type !== 'mongodb' &&
     connection?.database_type !== 'redis'
+  const showQuerySubmit = tab.kind === 'query' && pendingChanges > 0
   const showRedisRefresh = tab.kind === 'redis-browser' && tab.connectionId && tab.databaseName
   const showPreviewSearch = tab.kind === 'preview' || tab.kind === 'redis-browser'
   const showPreviewDdl = Boolean(tab.kind === 'preview' && tab.connectionId && tab.tableName)
@@ -583,7 +616,7 @@ export function ResultTableToolbar({
     event.stopPropagation()
   }
   const leftActions =
-    showRedisRefresh || showPreviewActions ? (
+    showRedisRefresh || showPreviewActions || showQuerySubmit ? (
       <Space size={4} className="table-toolbar-inline-actions">
         {showRedisRefresh && (
           <>
@@ -675,6 +708,19 @@ export function ResultTableToolbar({
               onClick={() => onSubmitPreviewChanges(tab)}
             />
           </>
+        )}
+        {showQuerySubmit && (
+          <Button
+            className="table-toolbar-icon-btn is-pending-save"
+            type="text"
+            size="small"
+            icon={<SaveOutlined />}
+            title="提交"
+            aria-label="提交"
+            loading={tab.loading}
+            onMouseDown={handleToolbarButtonMouseDown}
+            onClick={() => onSubmitQueryChanges(tab)}
+          />
         )}
       </Space>
     ) : null

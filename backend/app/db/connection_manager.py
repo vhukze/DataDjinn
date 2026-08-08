@@ -8,6 +8,7 @@ import re
 import shutil
 import socket
 import sys
+import threading
 import zipfile
 from ctypes import wintypes
 from dataclasses import dataclass
@@ -71,6 +72,7 @@ def _connection_store_path() -> Path:
 
 CONNECTION_STORE_PATH = _connection_store_path()
 CRYPTPROTECT_UI_FORBIDDEN = 0x1
+SSH_GATEWAY_CONNECT_TIMEOUT_SECONDS = 5
 
 
 def _jvm_candidates_from_java_executable(java_executable: str | None) -> list[Path]:
@@ -578,6 +580,10 @@ class ConnectionManager:
         self._ssh_tunnels: dict[str, SshTunnelHandle] = {}
         self._connections: dict[str, ConnectionInfo] = {}
         self._stored_connections: dict[str, StoredConnection] = {}
+        self._unavailable_secret_fields: dict[str, set[str]] = {}
+        self._opening_connection_attempts: dict[str, str] = {}
+        self._cancelled_open_attempts: set[tuple[str, str]] = set()
+        self._connection_open_lock = threading.RLock()
         self._load_stored_connections()
 
     def test_connection(self, request: ConnectionRequest) -> None:
@@ -614,6 +620,7 @@ class ConnectionManager:
         info = self._connection_info(connection_id, request, is_open=False)
         self._connections[connection_id] = info
         self._stored_connections[connection_id] = self._stored_connection(connection_id, request)
+        self._unavailable_secret_fields.pop(connection_id, None)
         self._save_stored_connections()
 
         return info
@@ -633,7 +640,7 @@ class ConnectionManager:
             host=stored.host,
             port=stored.port,
             username=stored.username,
-            password=_decrypt_password(stored.encrypted_password),
+            password=self._decrypt_stored_secret(stored, "password", stored.encrypted_password),
             database=stored.database,
             sqlite_path=stored.sqlite_path,
             driver_id=_manual_driver_id(stored),
@@ -645,9 +652,9 @@ class ConnectionManager:
             ssh_port=stored.ssh_port,
             ssh_username=stored.ssh_username,
             ssh_auth_type=stored.ssh_auth_type or "password",
-            ssh_password=_decrypt_password(stored.encrypted_ssh_password),
+            ssh_password=self._decrypt_stored_secret(stored, "ssh_password", stored.encrypted_ssh_password),
             ssh_private_key_path=stored.ssh_private_key_path,
-            ssh_passphrase=_decrypt_password(stored.encrypted_ssh_passphrase),
+            ssh_passphrase=self._decrypt_stored_secret(stored, "ssh_passphrase", stored.encrypted_ssh_passphrase),
         )
 
     def get_password(self, connection_id: str) -> str:
@@ -656,7 +663,7 @@ class ConnectionManager:
         if stored is None:
             raise ValueError("连接不存在")
 
-        password = _decrypt_password(stored.encrypted_password)
+        password = self._decrypt_stored_secret(stored, "password", stored.encrypted_password)
 
         if password is None:
             return ""
@@ -673,6 +680,7 @@ class ConnectionManager:
             return False
 
         self._connections.pop(connection_id, None)
+        self._unavailable_secret_fields.pop(connection_id, None)
         engine = self._engines.pop(connection_id, None)
         tunnel = self._ssh_tunnels.pop(connection_id, None)
         self._dispose_connection_resources(engine, tunnel)
@@ -698,7 +706,7 @@ class ConnectionManager:
             host=stored.host,
             port=stored.port,
             username=stored.username,
-            password=_decrypt_password(stored.encrypted_password),
+            password=self._decrypt_stored_secret(stored, "password", stored.encrypted_password),
             database=stored.database,
             sqlite_path=stored.sqlite_path,
             driver_id=_manual_driver_id(stored),
@@ -710,48 +718,97 @@ class ConnectionManager:
             ssh_port=stored.ssh_port,
             ssh_username=stored.ssh_username,
             ssh_auth_type=stored.ssh_auth_type or "password",
-            ssh_password=_decrypt_password(stored.encrypted_ssh_password),
+            ssh_password=self._decrypt_stored_secret(stored, "ssh_password", stored.encrypted_ssh_password),
             ssh_private_key_path=stored.ssh_private_key_path,
-            ssh_passphrase=_decrypt_password(stored.encrypted_ssh_passphrase),
+            ssh_passphrase=self._decrypt_stored_secret(stored, "ssh_passphrase", stored.encrypted_ssh_passphrase),
         )
 
-    def open_connection(self, connection_id: str) -> ConnectionInfo:
+    def _decrypt_stored_secret(
+        self, stored: StoredConnection, field: str, encrypted_value: str | None
+    ) -> str | None:
+        try:
+            return _decrypt_password(encrypted_value)
+        except (UnicodeDecodeError, ValueError):
+            self._unavailable_secret_fields.setdefault(stored.connection_id, set()).add(field)
+            return None
+
+    def _raise_if_open_attempt_cancelled(
+        self, connection_id: str, open_attempt_id: str | None
+    ) -> None:
+        if not open_attempt_id:
+            return
+
+        with self._connection_open_lock:
+            attempt_key = (connection_id, open_attempt_id)
+            if attempt_key not in self._cancelled_open_attempts:
+                return
+            self._cancelled_open_attempts.discard(attempt_key)
+
+        raise RuntimeError("连接已取消")
+
+    def open_connection(
+        self, connection_id: str, open_attempt_id: str | None = None
+    ) -> ConnectionInfo:
         stored = self._stored_connections.get(connection_id)
 
         if stored is None:
             raise ValueError("连接不存在")
 
         request = self._request_from_stored(stored)
-        engine, tunnel = self._open_runtime_engine(request)
+        engine: Engine | MongoClient | Redis | None = None
+        tunnel: SshTunnelHandle | None = None
+        if open_attempt_id:
+            with self._connection_open_lock:
+                self._opening_connection_attempts[connection_id] = open_attempt_id
 
         try:
+            self._raise_if_open_attempt_cancelled(connection_id, open_attempt_id)
+            engine, tunnel = self._open_runtime_engine(request)
+            self._raise_if_open_attempt_cancelled(connection_id, open_attempt_id)
             self._ping_engine(engine)
             server_version = self._detect_server_version(engine)
+            self._raise_if_open_attempt_cancelled(connection_id, open_attempt_id)
+
+            with self._connection_open_lock:
+                self._raise_if_open_attempt_cancelled(connection_id, open_attempt_id)
+                old_engine = self._engines.get(connection_id)
+                old_tunnel = self._ssh_tunnels.get(connection_id)
+                self._engines[connection_id] = engine
+                if tunnel is not None:
+                    self._ssh_tunnels[connection_id] = tunnel
+                else:
+                    self._ssh_tunnels.pop(connection_id, None)
+                info = self._connection_info(
+                    connection_id, request, stored, is_open=True, server_version=server_version
+                )
+                self._connections[connection_id] = info
+            self._dispose_connection_resources(old_engine, old_tunnel)
+            return info
         except Exception:
             self._dispose_connection_resources(engine, tunnel)
             raise
+        finally:
+            if open_attempt_id:
+                with self._connection_open_lock:
+                    if self._opening_connection_attempts.get(connection_id) == open_attempt_id:
+                        self._opening_connection_attempts.pop(connection_id, None)
 
-        old_engine = self._engines.get(connection_id)
-        old_tunnel = self._ssh_tunnels.get(connection_id)
-        self._dispose_connection_resources(old_engine, old_tunnel)
-
-        self._engines[connection_id] = engine
-        if tunnel is not None:
-            self._ssh_tunnels[connection_id] = tunnel
-        else:
-            self._ssh_tunnels.pop(connection_id, None)
-        info = self._connection_info(connection_id, request, stored, is_open=True, server_version=server_version)
-        self._connections[connection_id] = info
-        return info
-
-    def close_connection(self, connection_id: str) -> ConnectionInfo:
+    def close_connection(
+        self, connection_id: str, open_attempt_id: str | None = None
+    ) -> ConnectionInfo:
         stored = self._stored_connections.get(connection_id)
 
         if stored is None:
             raise ValueError("连接不存在")
 
-        engine = self._engines.pop(connection_id, None)
-        tunnel = self._ssh_tunnels.pop(connection_id, None)
+        with self._connection_open_lock:
+            if open_attempt_id:
+                self._cancelled_open_attempts.add((connection_id, open_attempt_id))
+            active_attempt_id = self._opening_connection_attempts.get(connection_id)
+            if active_attempt_id:
+                self._cancelled_open_attempts.add((connection_id, active_attempt_id))
+            engine = self._engines.pop(connection_id, None)
+            tunnel = self._ssh_tunnels.pop(connection_id, None)
         self._dispose_connection_resources(engine, tunnel)
 
         request = self._request_from_stored(stored)
@@ -924,7 +981,9 @@ class ConnectionManager:
     def _ensure_ssh_gateway_reachable(self, ssh_host: str, ssh_port: int) -> None:
         gateway_socket: socket.socket | None = None
         try:
-            gateway_socket = socket.create_connection((ssh_host, ssh_port), timeout=5)
+            gateway_socket = socket.create_connection(
+                (ssh_host, ssh_port), timeout=SSH_GATEWAY_CONNECT_TIMEOUT_SECONDS
+            )
         except TimeoutError as exc:
             raise RuntimeError(
                 f"无法连接到 SSH 网关（{ssh_host}:{ssh_port}）：连接超时。请检查 SSH 服务是否已启动、地址和端口是否正确，以及防火墙或安全组是否放行。"
@@ -1364,7 +1423,11 @@ class ConnectionManager:
             host=request.host,
             port=request.port,
             database=self._display_database(request),
-            has_password=bool(request.password or stored and stored.encrypted_password),
+            has_password=bool(request.password) or bool(
+                stored
+                and stored.encrypted_password
+                and "password" not in self._unavailable_secret_fields.get(connection_id, set())
+            ),
             is_open=is_open,
             server_version=server_version,
         )

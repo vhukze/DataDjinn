@@ -2198,7 +2198,9 @@ test.describe('workspace regression', () => {
           () =>
             page
               .locator('.query-execute-button')
-              .evaluate((button) => Math.round(Number.parseFloat(getComputedStyle(button).borderTopRightRadius))),
+              .evaluate((button) =>
+                Math.round(Number.parseFloat(getComputedStyle(button).borderTopRightRadius))
+              ),
           { timeout: 10000 }
         )
         .toBe(0)
@@ -2431,6 +2433,169 @@ test.describe('workspace regression', () => {
         .toBeGreaterThan(0)
 
       await expect(searchBar.locator('.table-search-counter')).not.toHaveText('0/0')
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('tree search should count and navigate matching connections by name or address @bug', async () => {
+    const fixtureUserDataDir = readFixtureUserDataDir()
+    const connectionsPath = path.join(fixtureUserDataDir, 'connections.json')
+    const originalConnectionsRaw = fs.readFileSync(connectionsPath, 'utf-8')
+    const connectionStore = JSON.parse(originalConnectionsRaw)
+    const templateConnection = connectionStore.connections.find(
+      (item) => item.connection_id === fixtureConnectionId
+    )
+    if (!templateConnection) {
+      throw new Error(`Fixture connection not found: ${fixtureConnectionId}`)
+    }
+    const searchConnections = [
+      {
+        id: 'regression-tree-search-first',
+        name: 'Tree search name match',
+        host: '10.88.0.10',
+        port: 15432
+      },
+      {
+        id: 'regression-tree-search-second',
+        name: 'Tree search address match',
+        host: '10.88.0.11',
+        port: 25432
+      }
+    ]
+    for (const connection of searchConnections) {
+      if (!connectionStore.connections.some((item) => item.connection_id === connection.id)) {
+        connectionStore.connections.push({
+          ...templateConnection,
+          connection_id: connection.id,
+          name: connection.name,
+          host: connection.host,
+          port: connection.port
+        })
+      }
+    }
+    fs.writeFileSync(connectionsPath, JSON.stringify(connectionStore, null, 2), 'utf-8')
+
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await ensureTreeNodeExpanded(page, `object-group:${fixtureConnectionId}:::table`)
+
+      await page.getByRole('button', { name: '搜索当前树' }).click()
+      const searchControls = page.locator('.tree-search-controls')
+      const searchInput = searchControls.locator('input')
+      const counter = searchControls.locator('.tree-search-counter')
+      const navigationButtons = searchControls.locator('button.tree-search-nav-btn')
+      await expect(searchInput).toBeVisible({ timeout: 10000 })
+
+      await searchInput.fill('items')
+      await expect(
+        counter,
+        'matching table names must not be counted as connection search results'
+      ).toHaveText('0/0')
+
+      await searchInput.fill('10.88.0.')
+      await expect(counter).toHaveText('1/2')
+      await expect(page.locator('.connection-tree-address mark.tree-search-highlight').first()).toBeVisible()
+
+      const selectedConnectionId = async () =>
+        page
+          .locator('.ant-tree-node-content-wrapper.ant-tree-node-selected .connection-tree-title')
+          .getAttribute('data-connection-id')
+      const firstConnectionId = await selectedConnectionId()
+      expect(searchConnections.map((connection) => connection.id)).toContain(firstConnectionId)
+      const selectedConnectionNode = page.locator(
+        '.ant-tree-node-content-wrapper.ant-tree-node-selected'
+      )
+      await expect(selectedConnectionNode).toHaveCSS('outline-style', 'none')
+      await expect(selectedConnectionNode).not.toHaveCSS('background-image', 'none')
+
+      const highlights = page.locator('mark.tree-search-highlight')
+      await expect(highlights.first()).toHaveCSS('font-weight', '700')
+      await expect(highlights.first()).not.toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+
+      await navigationButtons.nth(1).click()
+      await expect(counter).toHaveText('2/2')
+      await expect
+        .poll(selectedConnectionId, {
+          timeout: 10000,
+          message: 'next search result should select the next matching connection'
+        })
+        .not.toBe(firstConnectionId)
+
+      await navigationButtons.nth(0).click()
+      await expect(counter).toHaveText('1/2')
+      await expect
+        .poll(selectedConnectionId, {
+          timeout: 10000,
+          message: 'previous search result should restore the prior matching connection'
+        })
+        .toBe(firstConnectionId)
+
+      await searchInput.fill('Tree search name')
+      await expect(counter).toHaveText('1/1')
+      await expect(page.locator('.connection-tree-name mark.tree-search-highlight')).toBeVisible()
+
+      await searchInput.fill('15432')
+      await expect(counter).toHaveText('1/1')
+      await expect(page.locator('.connection-tree-address mark.tree-search-highlight')).toBeVisible()
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+    } finally {
+      await electronApp.close()
+      fs.writeFileSync(connectionsPath, originalConnectionsRaw, 'utf-8')
+    }
+  })
+
+  test('tree search should not scroll back to the current result when tree nodes toggle @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+
+      await page.getByRole('button', { name: '搜索当前树' }).click()
+      const searchInput = page.locator('.tree-search-controls input')
+      await searchInput.fill('SQLite')
+      await expect(page.locator('.tree-search-counter')).toHaveText('1/1')
+
+      await page.evaluate(() => {
+        const original = Element.prototype.scrollIntoView
+        const calls = []
+        Element.prototype.scrollIntoView = function (...args) {
+          if (this.classList.contains('tree-search-highlight')) {
+            calls.push(args)
+          }
+          return original.apply(this, args)
+        }
+        window.__treeSearchScrollSpy = { calls, original }
+      })
+
+      const tableGroupKey = `object-group:${fixtureConnectionId}:::table`
+      await toggleTreeNode(page, tableGroupKey)
+      await page.waitForTimeout(250)
+      await toggleTreeNode(page, tableGroupKey)
+      await page.waitForTimeout(250)
+
+      const searchScrollCalls = await page.evaluate(() => {
+        const spy = window.__treeSearchScrollSpy
+        if (spy) {
+          Element.prototype.scrollIntoView = spy.original
+        }
+        delete window.__treeSearchScrollSpy
+        return spy?.calls.length ?? 0
+      })
+      expect(
+        searchScrollCalls,
+        'expanding or collapsing tree nodes must not relocate the view to the current search result'
+      ).toBe(0)
       await expect(page.locator('.app-error-boundary')).toHaveCount(0)
     } finally {
       await electronApp.close()
@@ -3246,9 +3411,13 @@ test.describe('workspace regression', () => {
         'selected preview cell should not use a selection border'
       ).toBe(previewBaselineStyle.boxShadow)
 
-      await firstCell.hover()
+      await page.mouse.move(selectionTargets.first.x, selectionTargets.first.y)
       await page.mouse.down()
-      await sameRowNeighborCell.hover({ force: true })
+      await page.mouse.move(
+        selectionTargets.sameRowNeighbor.x,
+        selectionTargets.sameRowNeighbor.y,
+        { steps: 6 }
+      )
       await page.mouse.up()
       await page.waitForTimeout(120)
 
@@ -3264,6 +3433,285 @@ test.describe('workspace regression', () => {
         dragSelectionState.selectedCount,
         'dragging across preview cells should create a range selection'
       ).toBeGreaterThan(1)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('preview cells should support Ctrl and Shift selection plus batch editing and Delete @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openFixtureTable(page, smallTableName)
+
+      const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      const targets = await activeResult.evaluate((node) => {
+        const cells = Array.from(
+          node.querySelectorAll<HTMLElement>('.editable-cell[data-cell-key]')
+        ).filter((cell) => {
+          const rect = cell.getBoundingClientRect()
+          return rect.width > 0 && rect.height > 0
+        })
+        const first = cells[0]
+        if (!first) {
+          return null
+        }
+        const sameRow = cells.filter((cell) => cell.dataset.rowKey === first.dataset.rowKey)
+        const second = sameRow[1]
+        const third = sameRow[2]
+        if (!second || !third) {
+          return null
+        }
+        return {
+          firstKey: first.dataset.cellKey ?? '',
+          secondKey: second.dataset.cellKey ?? '',
+          thirdKey: third.dataset.cellKey ?? '',
+          rowKey: first.dataset.rowKey ?? '',
+          column: second.dataset.cellColumnKey ?? ''
+        }
+      })
+      expect(targets).not.toBeNull()
+      if (!targets) {
+        throw new Error('preview selection targets are unavailable')
+      }
+
+      const cell = (cellKey: string) =>
+        activeResult.locator(`.editable-cell[data-cell-key="${cellKey}"]:visible`).first()
+      await cell(targets.firstKey).click()
+      await cell(targets.secondKey).click({ modifiers: ['Control'] })
+      await expect(activeResult.locator('.editable-cell.cell-selected-runtime')).toHaveCount(2)
+
+      await page.keyboard.press('b')
+      const inlineEditor = activeResult.locator('.editable-cell-dom-input')
+      await expect(inlineEditor).toHaveValue('b')
+      await expect(cell(targets.secondKey)).toHaveText('b')
+      await page.keyboard.type('atch-value')
+      await page.keyboard.press('Backspace')
+      await expect(inlineEditor).toHaveValue('batch-valu')
+      await expect(cell(targets.secondKey)).toHaveText('batch-valu')
+      await page.keyboard.press('Enter')
+      await expect(cell(targets.firstKey)).toHaveText('batch-valu')
+      await expect(cell(targets.secondKey)).toHaveText('batch-valu')
+
+      await page.keyboard.type('a')
+      await expect(inlineEditor).toBeVisible()
+      await inlineEditor.evaluate((input) => {
+        input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }))
+        input.value = 'zhong'
+        input.dispatchEvent(
+          new InputEvent('input', {
+            bubbles: true,
+            data: 'zhong',
+            inputType: 'insertCompositionText',
+            isComposing: true
+          })
+        )
+      })
+      await expect(inlineEditor).toHaveValue('zhong')
+      await expect(cell(targets.secondKey)).toHaveText('batch-valu')
+      await inlineEditor.evaluate((input) => {
+        input.value = '批量中文'
+        input.dispatchEvent(
+          new CompositionEvent('compositionend', { bubbles: true, data: '批量中文' })
+        )
+        input.dispatchEvent(
+          new InputEvent('input', {
+            bubbles: true,
+            data: '批量中文',
+            inputType: 'insertText'
+          })
+        )
+      })
+      await expect(inlineEditor).toHaveValue('批量中文')
+      await expect(cell(targets.secondKey)).toHaveText('批量中文')
+      await page.keyboard.press('Enter')
+      await expect(cell(targets.firstKey)).toHaveText('批量中文')
+      await expect(cell(targets.secondKey)).toHaveText('批量中文')
+
+      await cell(targets.thirdKey).click({ modifiers: ['Shift'] })
+      await expect(activeResult.locator('.editable-cell.cell-selected-runtime')).toHaveCount(2)
+
+      const rowButton = activeResult
+        .locator(`.ant-table-row[data-row-key="${targets.rowKey}"] .row-number-button`)
+        .first()
+      await rowButton.click()
+      await page.waitForTimeout(50)
+      await page.keyboard.press('r')
+      await expect(inlineEditor).toBeVisible()
+      await inlineEditor.fill('整行值')
+      await page.keyboard.press('Enter')
+      await expect
+        .poll(() =>
+          activeResult
+            .locator(`.ant-table-row[data-row-key="${targets.rowKey}"] .editable-cell`)
+            .allTextContents()
+        )
+        .toEqual(expect.arrayContaining(['整行值']))
+
+      await activeResult.locator(`[data-column-button="${targets.column}"]`).first().click()
+      await page.waitForTimeout(50)
+      await page.keyboard.press('Delete')
+      await expect
+        .poll(() =>
+          activeResult
+            .locator(`.editable-cell[data-cell-column-key="${targets.column}"]`)
+            .allTextContents()
+        )
+        .toEqual(expect.arrayContaining(['']))
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('edited preview cells should retain draft styling and support Backspace plus Delete after blur @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openFixtureTable(page, smallTableName)
+
+      const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      const target = activeResult
+        .locator('.editable-cell[data-cell-column-key="name"]:visible')
+        .first()
+      await expect(target).toBeVisible()
+      const targetRow = target.locator('xpath=ancestor::tr[1]')
+      const rowNumberCell = targetRow.locator('.row-number-cell')
+      const originalRowNumberBackground = await rowNumberCell.evaluate(
+        (node) => window.getComputedStyle(node).backgroundColor
+      )
+
+      await target.dblclick()
+      const inlineEditor = activeResult.locator('.editable-cell-dom-input')
+      await expect(inlineEditor).toBeVisible()
+      await expect(inlineEditor).toHaveCSS('height', '31px')
+      await inlineEditor.fill('draft-value')
+      await inlineEditor.evaluate((input) => input.blur())
+
+      await expect(targetRow).toHaveClass(/row-updated/)
+      await expect(activeResult.locator('.editable-cell.cell-selected-runtime')).toHaveCount(0)
+      await expect(rowNumberCell).toHaveCSS('border-left-width', '3px')
+      await expect(rowNumberCell).toHaveCSS('background-color', originalRowNumberBackground)
+      await expect(target).toHaveClass(/editable-cell-draft/)
+      const draftHost = target.locator('xpath=ancestor::td[1]')
+      await expect(draftHost).toHaveClass(/editable-cell-draft-host/)
+      const draftColors = await target.evaluate((node) => {
+        const host = node.closest<HTMLElement>('td, .ant-table-cell')
+        return {
+          cellBackground: window.getComputedStyle(node).backgroundColor,
+          hostBackground: host ? window.getComputedStyle(host).backgroundColor : '',
+          hostBorder: host ? window.getComputedStyle(host).borderBottomColor : ''
+        }
+      })
+      expect(draftColors.hostBackground).toBe(draftColors.cellBackground)
+      expect(draftColors.hostBorder).not.toBe(draftColors.hostBackground)
+      await target.hover()
+      await expect(target).toHaveCSS('background-color', draftColors.cellBackground)
+      await expect(targetRow.locator('.editable-cell-draft')).toHaveCount(1)
+
+      await target.click()
+      await page.keyboard.press('Backspace')
+      await expect(inlineEditor).toHaveValue('draft-valu')
+      await page.keyboard.press('Enter')
+      await expect(target).toHaveText('draft-valu')
+
+      await activeResult.locator('.result-status').click()
+      await target.click()
+      await expect(activeResult.locator('.editable-cell.cell-selected-runtime')).toHaveCount(1)
+      await expect
+        .poll(() => page.evaluate(() => document.activeElement?.className ?? ''))
+        .toContain('result-table-body')
+      await page.keyboard.press('Delete')
+      await expect(target).toHaveText('')
+
+      const rowHeights = await activeResult.evaluate((node) =>
+        Array.from(node.querySelectorAll<HTMLElement>('.ant-table-row[data-row-key]'))
+          .slice(0, 2)
+          .map((row) => row.getBoundingClientRect().height)
+      )
+      expect(rowHeights).toHaveLength(2)
+      expect(Math.abs(rowHeights[0] - rowHeights[1])).toBeLessThanOrEqual(1)
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('dragging selected cells beyond the table edges should keep scrolling and extending the range @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openFixtureTable(page, largeTableName)
+
+      const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      const dragTarget = await activeResult.evaluate((node) => {
+        const holder = node.querySelector<HTMLElement>(
+          '.result-table .ant-table-tbody-virtual-holder, .result-table .ant-table-body'
+        )
+        if (!holder) {
+          return null
+        }
+        const holderRect = holder.getBoundingClientRect()
+        const firstCell = Array.from(
+          node.querySelectorAll<HTMLElement>('.editable-cell[data-cell-key]')
+        ).find((cell) => {
+          const rect = cell.getBoundingClientRect()
+          return (
+            rect.left >= holderRect.left &&
+            rect.right <= holderRect.right &&
+            rect.top >= holderRect.top &&
+            rect.bottom <= holderRect.bottom
+          )
+        })
+        if (!firstCell) {
+          return null
+        }
+        const cellRect = firstCell.getBoundingClientRect()
+        return {
+          startX: cellRect.left + cellRect.width / 2,
+          startY: cellRect.top + cellRect.height / 2,
+          outsideX: Math.min(window.innerWidth - 2, holderRect.right + 96),
+          outsideY: Math.min(window.innerHeight - 2, holderRect.bottom + 96)
+        }
+      })
+      expect(dragTarget).not.toBeNull()
+      if (!dragTarget) {
+        throw new Error('drag selection target is unavailable')
+      }
+
+      await page.mouse.move(dragTarget.startX, dragTarget.startY)
+      await page.mouse.down()
+      await page.mouse.move(dragTarget.outsideX, dragTarget.outsideY, { steps: 8 })
+      await page.waitForTimeout(380)
+      await page.mouse.up()
+
+      const state = await activeResult.evaluate((node) => {
+        const holder = node.querySelector<HTMLElement>(
+          '.result-table .ant-table-tbody-virtual-holder, .result-table .ant-table-body'
+        )
+        return {
+          scrollTop: holder?.scrollTop ?? 0,
+          scrollLeft: holder?.scrollLeft ?? 0,
+          selectedCount: node.querySelectorAll(
+            '.editable-cell.cell-selected-runtime, .cell-selected-runtime-host'
+          ).length
+        }
+      })
+      expect(state.scrollTop, 'dragging below the table should scroll vertically').toBeGreaterThan(0)
+      expect(state.scrollLeft, 'dragging past the table side should scroll horizontally').toBeGreaterThan(0)
+      expect(state.selectedCount, 'auto-scrolling should continue extending the selected range').toBeGreaterThan(1)
     } finally {
       await electronApp.close()
     }
@@ -3516,6 +3964,45 @@ test.describe('workspace regression', () => {
         dragSelectionState.selectedCount,
         'dragging across query result cells should create a range selection'
       ).toBeGreaterThan(1)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('query results should edit direct source fields and submit the guarded update @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openQueryWorkspace(page)
+
+      const editorTextbox = page.getByRole('textbox', { name: 'Editor content' }).first()
+      await editorTextbox.focus()
+      await page.keyboard.press('Control+A')
+      await page.keyboard.type('select id, name from small_items order by id;')
+      await page.locator('.query-execute-button').first().click()
+
+      const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      const target = activeResult
+        .locator('.editable-cell[data-cell-column-key="name"]:visible')
+        .first()
+      await expect(target).toBeVisible({ timeout: 30000 })
+      await target.dblclick()
+      const inlineEditor = activeResult.locator('.editable-cell-dom-input')
+      await expect(inlineEditor).toBeVisible()
+      await inlineEditor.fill('query-edit-guarded')
+      await inlineEditor.press('Enter')
+      await expect(target).toHaveText('query-edit-guarded')
+
+      const submitButton = activeResult.getByRole('button', { name: '提交' })
+      await expect(submitButton).toBeVisible()
+      await submitButton.click()
+      await expect(submitButton).toHaveCount(0, { timeout: 30000 })
+      await expect(target).toHaveText('query-edit-guarded')
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
     } finally {
       await electronApp.close()
     }
@@ -5813,6 +6300,43 @@ test.describe('workspace regression', () => {
     }
   })
 
+  test('closing the connection editor should clear a pending SSH test loading state @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+
+      await page.locator('.resource-header .resource-add').click()
+      await clickVisibleDropdownMenuItem(page, 'MySQL')
+
+      const modal = page.locator('.connection-editor-modal')
+      await expect(modal).toBeVisible({ timeout: 10000 })
+      await modal.getByRole('switch').click()
+      await modal.getByLabel('SSH 主机').fill('203.0.113.1')
+      await modal.getByLabel('SSH 用户名').fill('jump-user')
+      await modal.getByLabel('SSH 密码').fill('ssh-secret')
+
+      const sshTestButton = modal.locator('.connection-editor-ssh-test-btn')
+      await sshTestButton.click()
+      await expect(sshTestButton).toHaveClass(/ant-btn-loading/)
+
+      await modal.locator('.ant-modal-close').click()
+      await expect(modal).not.toBeVisible({ timeout: 10000 })
+
+      await page.locator('.resource-header .resource-add').click()
+      await clickVisibleDropdownMenuItem(page, 'MySQL')
+      const reopenedModal = page.locator('.connection-editor-modal')
+      await expect(reopenedModal).toBeVisible({ timeout: 10000 })
+      await expect(reopenedModal.locator('.connection-editor-ssh-test-btn')).not.toHaveClass(
+        /ant-btn-loading/
+      )
+    } finally {
+      await electronApp.close()
+    }
+  })
+
   test('row selection background should match cell selection background @bug', async () => {
     const electronApp = await launchRegressionApp()
 
@@ -5969,6 +6493,85 @@ test.describe('workspace regression', () => {
     }
   })
 
+  test('row and column selection should replace cell selection and survive virtual scrolling @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openFixtureTable(page, largeTableName)
+
+      const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      const targets = await activeResult.evaluate((node) => {
+        const cells = Array.from(node.querySelectorAll<HTMLElement>('.editable-cell[data-cell-key]'))
+        const first = cells[0]
+        const neighbor = cells.find(
+          (cell) =>
+            cell.dataset.rowKey === first?.dataset.rowKey &&
+            cell.dataset.cellColumnKey !== first?.dataset.cellColumnKey
+        )
+        if (!(first instanceof HTMLElement) || !(neighbor instanceof HTMLElement)) {
+          return null
+        }
+        return {
+          firstCellKey: first.dataset.cellKey ?? '',
+          rowKey: first.dataset.rowKey ?? '',
+          column: first.dataset.cellColumnKey ?? '',
+          neighborCellKey: neighbor.dataset.cellKey ?? ''
+        }
+      })
+      expect(targets).not.toBeNull()
+      if (!targets) {
+        throw new Error('selection targets are unavailable')
+      }
+
+      const cell = (cellKey: string) =>
+        activeResult.locator(`.editable-cell[data-cell-key="${cellKey}"]:visible`).first()
+      await cell(targets.firstCellKey).click()
+      await cell(targets.neighborCellKey).click({ modifiers: ['Shift'] })
+      await expect(activeResult.locator('.editable-cell.cell-selected-runtime')).toHaveCount(2)
+
+      const rowButton = activeResult
+        .locator(`.ant-table-row[data-row-key="${targets.rowKey}"] .row-number-button`)
+        .first()
+      await rowButton.click()
+      await expect(activeResult.locator('.editable-cell.cell-selected-runtime')).toHaveCount(0)
+      await expect(rowButton).toHaveClass(/selected/)
+
+      const holder = activeResult.locator(
+        '.result-table .ant-table-tbody-virtual-holder, .result-table .ant-table-body'
+      )
+      await holder.evaluate((element) => {
+        element.scrollTop = 420
+        element.dispatchEvent(new Event('scroll', { bubbles: true }))
+      })
+      await page.waitForTimeout(180)
+      await holder.evaluate((element) => {
+        element.scrollTop = 0
+        element.dispatchEvent(new Event('scroll', { bubbles: true }))
+      })
+      await expect(rowButton).toHaveClass(/selected/)
+
+      await activeResult.locator(`[data-column-button="${targets.column}"]`).first().click()
+      await expect(activeResult.locator('.row-number-button.selected')).toHaveCount(0)
+      await expect(activeResult.locator('.editable-cell.cell-selected-runtime')).toHaveCount(0)
+
+      await holder.evaluate((element) => {
+        element.scrollTop = 420
+        element.dispatchEvent(new Event('scroll', { bubbles: true }))
+      })
+      await expect(
+        activeResult.locator(
+          `.editable-cell[data-cell-column-key="${targets.column}"].column-selected-runtime-inner`
+        ).first()
+      ).toBeVisible()
+    } finally {
+      await electronApp.close()
+    }
+  })
+
   test('drag selection should keep the same light background across adjacent rows @bug', async () => {
     const electronApp = await launchRegressionApp()
 
@@ -6040,7 +6643,7 @@ test.describe('workspace regression', () => {
     }
   })
 
-  test('cell range selection should not leave gaps between consecutive blank values @bug', async () => {
+  test('cell range selection should stay within the selected cell bounds @bug', async () => {
     const electronApp = await launchRegressionApp()
 
     try {
@@ -6103,11 +6706,15 @@ test.describe('workspace regression', () => {
       })
       expect(targets).not.toBeNull()
 
-      await page.mouse.move(targets.start.x, targets.start.y)
-      await page.mouse.down()
-      await page.mouse.move(targets.end.x, targets.end.y, { steps: 12 })
-      await page.mouse.up()
-      await page.waitForTimeout(120)
+      const startCell = activeResult.locator(
+        `.editable-cell[data-cell-key="${targets.selectedCellKeys[0]}"]`
+      )
+      const endCell = activeResult.locator(
+        `.editable-cell[data-cell-key="${targets.selectedCellKeys.at(-1)}"]`
+      )
+      await startCell.click()
+      await endCell.click({ modifiers: ['Shift'] })
+      await expect(activeResult.locator('.editable-cell.cell-selected-runtime')).toHaveCount(6)
 
       const selectionGeometry = await activeResult.evaluate((node, cellKeys) => {
         const cells = cellKeys
@@ -6128,33 +6735,32 @@ test.describe('workspace regression', () => {
             top: rect.top,
             bottom: rect.bottom,
             cellBackgroundColor: window.getComputedStyle(cell).backgroundColor,
+            hostBackgroundColor: style?.backgroundColor ?? '',
             borderBottomColor: style?.borderBottomColor ?? '',
-            selectionTailColor: window.getComputedStyle(cell, '::after').backgroundColor,
-            selectionTailHeight: Number.parseFloat(
-              window.getComputedStyle(cell, '::after').height || '0'
-            )
+            selectionTailContent: window.getComputedStyle(cell, '::after').content
           }
         })
       }, targets.selectedCellKeys)
       expect(selectionGeometry).not.toBeNull()
       expect(selectionGeometry).toHaveLength(6)
       expect(
-        selectionGeometry[2].top -
-          (selectionGeometry[0].bottom + selectionGeometry[0].selectionTailHeight),
-        'consecutive selected blank cells should not have a visible vertical gap'
-      ).toBeLessThanOrEqual(0)
-      expect(
         selectionGeometry[0].borderBottomColor,
-        'the selected cell divider should use the selection color so it cannot form a gap'
-      ).toBe(selectionGeometry[0].cellBackgroundColor)
-      expect(
-        selectionGeometry[0].selectionTailColor,
-        'the gap filler should use the same selection color'
-      ).toBe(selectionGeometry[0].cellBackgroundColor)
+        'the selected cell divider should remain visible'
+      ).not.toBe(selectionGeometry[0].cellBackgroundColor)
       expect(
         selectionGeometry[2].borderBottomColor,
-        'the selected cell divider should use the selection color so it cannot form a gap'
-      ).toBe(selectionGeometry[2].cellBackgroundColor)
+        'the selected cell divider should remain visible'
+      ).not.toBe(selectionGeometry[2].cellBackgroundColor)
+      expect(
+        selectionGeometry.every((geometry) => geometry.selectionTailContent === 'none'),
+        'selected cell background must not extend below the cell with a pseudo-element'
+      ).toBe(true)
+      expect(
+        selectionGeometry.every(
+          (geometry) => geometry.hostBackgroundColor === geometry.cellBackgroundColor
+        ),
+        'selected cell hosts must fill the row with the selection color'
+      ).toBe(true)
     } finally {
       await electronApp.close()
     }
@@ -6278,6 +6884,18 @@ test.describe('workspace regression', () => {
           (cell) =>
             cell.dataset.rowKey !== firstRowKey && cell.dataset.cellColumnKey === firstColumnKey
         )
+        const visibleColumns = Array.from(
+          new Set(cells.map((cell) => cell.dataset.cellColumnKey).filter(Boolean))
+        )
+        const thirdColumnKey = visibleColumns[2]
+        const visibleRowKeys = Array.from(
+          new Set(cells.map((cell) => cell.dataset.rowKey).filter(Boolean))
+        )
+        const thirdColumnDragEnd = cells.find(
+          (cell) =>
+            cell.dataset.rowKey === visibleRowKeys[Math.min(5, visibleRowKeys.length - 1)] &&
+            cell.dataset.cellColumnKey === thirdColumnKey
+        )
         const firstHostCell = first.closest<HTMLElement>(
           'td[data-row-key], .ant-table-cell[data-row-key]'
         )
@@ -6288,11 +6906,16 @@ test.describe('workspace regression', () => {
         const columnButton = node.querySelector<HTMLElement>(
           `[data-column-button="${CSS.escape(firstColumnKey)}"]`
         )
+        const thirdColumnButton = node.querySelector<HTMLElement>(
+          `[data-column-button="${CSS.escape(thirdColumnKey ?? '')}"]`
+        )
         if (
           !(rowNeighbor instanceof HTMLElement) ||
           !(columnNeighbor instanceof HTMLElement) ||
+          !(thirdColumnDragEnd instanceof HTMLElement) ||
           !(rowButton instanceof HTMLElement) ||
-          !(columnButton instanceof HTMLElement)
+          !(columnButton instanceof HTMLElement) ||
+          !(thirdColumnButton instanceof HTMLElement)
         ) {
           return null
         }
@@ -6314,11 +6937,15 @@ test.describe('workspace regression', () => {
           start: center(first),
           rowDragEnd: center(rowNeighbor),
           columnDragEnd: center(columnNeighbor),
+          thirdColumnDragEnd: center(thirdColumnDragEnd),
           rowButton: center(rowButton),
           columnButton: center(columnButton),
+          thirdColumnButton: center(thirdColumnButton),
           tableBody: center(tableBodyHost),
           rowKey: firstRowKey,
-          columnKey: firstColumnKey
+          columnKey: firstColumnKey,
+          thirdColumnKey,
+          expectedDraggedCellCount: (Math.min(5, visibleRowKeys.length - 1) + 1) * 3
         }
       })
       expect(selectionTargets).not.toBeNull()
@@ -6339,8 +6966,8 @@ test.describe('workspace regression', () => {
       await page.mouse.up()
       await page.waitForTimeout(120)
 
-      const afterRowSelection = await activeResult.evaluate(
-        (node, rowKey) => ({
+      const afterRowSelection = await activeResult.evaluate(async (node, rowKey) => {
+        const snapshot = () => ({
           runtimeCells: node.querySelectorAll('.editable-cell.cell-selected-runtime').length,
           runtimeHosts: node.querySelectorAll(
             'td.cell-selected-runtime-host, .ant-table-cell.cell-selected-runtime-host'
@@ -6355,40 +6982,56 @@ test.describe('workspace regression', () => {
               rowElement.dataset.rowKey === rowKey &&
               rowElement.querySelector('.row-number-button.selected')
           ).length
-        }),
-        selectionTargets.rowKey
-      )
+        })
+        const frames = [snapshot()]
+        for (let index = 0; index < 4; index += 1) {
+          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+          frames.push(snapshot())
+        }
+        return { final: frames.at(-1)!, frames }
+      }, selectionTargets.rowKey)
 
       expect(
-        afterRowSelection.runtimeCells,
+        afterRowSelection.final.runtimeCells,
         'clicking a row number after drag selection should clear previous cell runtime selection immediately'
       ).toBe(0)
       expect(
-        afterRowSelection.runtimeHosts,
+        afterRowSelection.final.runtimeHosts,
         'clicking a row number after drag selection should clear previous cell host highlight immediately'
       ).toBe(0)
       expect(
-        afterRowSelection.selectedRows,
+        afterRowSelection.final.selectedRows,
         'clicking a row number should still keep the row selection row state visible'
       ).toBeGreaterThan(0)
       expect(
-        afterRowSelection.selectedRowButtons,
+        afterRowSelection.final.selectedRowButtons,
         'clicking a row number should still keep the row selection visible'
       ).toBeGreaterThan(0)
+      expect(
+        afterRowSelection.frames.every(
+          (frame) => frame.runtimeCells === 0 && frame.runtimeHosts === 0
+        ),
+        'row selection must not restore ordinary cell selection in later animation frames'
+      ).toBe(true)
 
       await page.mouse.move(selectionTargets.start.x, selectionTargets.start.y)
       await page.mouse.down()
-      await page.mouse.move(selectionTargets.columnDragEnd.x, selectionTargets.columnDragEnd.y, {
+      await page.mouse.move(selectionTargets.thirdColumnDragEnd.x, selectionTargets.thirdColumnDragEnd.y, {
         steps: 10
       })
       await page.mouse.up()
       await page.waitForTimeout(120)
 
-      await page.mouse.click(selectionTargets.columnButton.x, selectionTargets.columnButton.y)
+      await expect(
+        activeResult.locator('.editable-cell.cell-selected-runtime'),
+        '拖选后必须先形成横跨三列的普通单元格选区，避免列选择用例在空选区上通过'
+      ).toHaveCount(selectionTargets.expectedDraggedCellCount)
+
+      await page.mouse.click(selectionTargets.thirdColumnButton.x, selectionTargets.thirdColumnButton.y)
       await page.waitForTimeout(120)
 
-      const afterColumnSelection = await activeResult.evaluate(
-        (node, columnKey) => ({
+      const afterColumnSelection = await activeResult.evaluate(async (node, columnKey) => {
+        const snapshot = () => ({
           runtimeCells: node.querySelectorAll('.editable-cell.cell-selected-runtime').length,
           runtimeHosts: node.querySelectorAll(
             'td.cell-selected-runtime-host, .ant-table-cell.cell-selected-runtime-host'
@@ -6398,27 +7041,54 @@ test.describe('workspace regression', () => {
           ).length,
           selectedColumnInners: node.querySelectorAll(
             `.editable-cell[data-cell-column-key="${CSS.escape(columnKey)}"].column-selected-runtime-inner`
-          ).length
-        }),
-        selectionTargets.columnKey
-      )
+          ).length,
+          staleCellBackgrounds: Array.from(
+            node.querySelectorAll<HTMLElement>('.editable-cell[data-cell-key]')
+          ).filter((cell) => {
+            if (cell.dataset.cellColumnKey === columnKey) {
+              return false
+            }
+            const host = cell.closest<HTMLElement>('td, .ant-table-cell')
+            return Boolean(host?.style.background || host?.style.backgroundColor)
+          }).length
+        })
+        const frames = [snapshot()]
+        for (let index = 0; index < 4; index += 1) {
+          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+          frames.push(snapshot())
+        }
+        return { final: frames.at(-1)!, frames }
+      }, selectionTargets.thirdColumnKey)
 
       expect(
-        afterColumnSelection.runtimeCells,
+        afterColumnSelection.final.runtimeCells,
         'clicking a column selector after drag selection should clear previous cell runtime selection immediately'
       ).toBe(0)
       expect(
-        afterColumnSelection.runtimeHosts,
+        afterColumnSelection.final.runtimeHosts,
         'clicking a column selector after drag selection should clear previous cell host highlight immediately'
       ).toBe(0)
       expect(
-        afterColumnSelection.selectedColumnHosts,
+        afterColumnSelection.final.selectedColumnHosts,
         'clicking a column selector should still keep the column host selection visible'
       ).toBeGreaterThan(0)
       expect(
-        afterColumnSelection.selectedColumnInners,
+        afterColumnSelection.final.selectedColumnInners,
         'clicking a column selector should still keep the column inner selection visible'
       ).toBeGreaterThan(0)
+      expect(
+        afterColumnSelection.final.staleCellBackgrounds,
+        'clicking the final column header after a three-column drag must clear inline selection backgrounds from the other columns'
+      ).toBe(0)
+      expect(
+        afterColumnSelection.frames.every(
+          (frame) =>
+            frame.runtimeCells === 0 &&
+            frame.runtimeHosts === 0 &&
+            frame.staleCellBackgrounds === 0
+        ),
+        'column selection must not restore ordinary cell selection in later animation frames'
+      ).toBe(true)
     } finally {
       await electronApp.close()
     }
@@ -6656,6 +7326,78 @@ test.describe('workspace regression', () => {
       await page.mouse.dblclick(editableTarget.x, editableTarget.y)
       await expect(inlineEditor).toBeVisible({ timeout: 10000 })
       await expect(inlineEditor).toHaveValue(editableTarget.text)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('long cell text should restore ellipsis after blur editing and selection @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openFixtureTable(page, largeTableName)
+
+      const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      const target = await activeResult.evaluate((node) => {
+        const cell = Array.from(
+          node.querySelectorAll<HTMLElement>('.editable-cell[data-cell-column-key="payload"]')
+        ).find((candidate) => {
+          const text = candidate.querySelector<HTMLElement>('.table-cell-text')
+          return Boolean(text && text.scrollWidth > text.clientWidth)
+        })
+        if (!(cell instanceof HTMLElement)) {
+          return null
+        }
+        const rect = cell.getBoundingClientRect()
+        return {
+          cellKey: cell.dataset.cellKey ?? '',
+          text: cell.textContent ?? '',
+          x: rect.x + rect.width / 2,
+          y: rect.y + rect.height / 2
+        }
+      })
+      expect(target).not.toBeNull()
+      if (!target) {
+        throw new Error('long editable cell target is unavailable')
+      }
+
+      const cell = activeResult.locator(`.editable-cell[data-cell-key="${target.cellKey}"]`)
+      await cell.dblclick()
+      await expect(activeResult.locator('.editable-cell-dom-input')).toBeVisible({ timeout: 10000 })
+      await activeResult.locator('.result-status').click()
+      await expect(activeResult.locator('.editable-cell-dom-input')).toHaveCount(0, { timeout: 10000 })
+
+      const assertDisplay = async () => {
+        const state = await cell.evaluate((node) => {
+          const display = node.querySelector<HTMLElement>('.table-cell-text')
+          if (!(display instanceof HTMLElement)) {
+            return null
+          }
+          const style = window.getComputedStyle(display)
+          return {
+            text: display.textContent ?? '',
+            textOverflow: style.textOverflow,
+            overflow: style.overflow,
+            whiteSpace: style.whiteSpace,
+            clientWidth: display.clientWidth,
+            scrollWidth: display.scrollWidth
+          }
+        })
+        expect(state).not.toBeNull()
+        expect(state?.text).toBe(target.text)
+        expect(state?.textOverflow).toBe('ellipsis')
+        expect(state?.overflow).toBe('hidden')
+        expect(state?.whiteSpace).toBe('nowrap')
+        expect(state?.scrollWidth).toBeGreaterThan(state?.clientWidth ?? 0)
+      }
+
+      await assertDisplay()
+      await cell.click()
+      await assertDisplay()
     } finally {
       await electronApp.close()
     }

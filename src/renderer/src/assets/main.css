@@ -2925,6 +2925,57 @@ body[data-theme='dark'] .ant-popover-message {
   padding: 0;
 }
 
+.tree-search-controls {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 6px 4px 10px;
+  border: 1px solid color-mix(in srgb, var(--dj-border-subtle) 82%, transparent);
+  border-radius: 8px;
+  background:
+    radial-gradient(
+      circle at top center,
+      color-mix(in srgb, white 9%, transparent) 0%,
+      transparent 62%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--dj-bg-panel) 76%, transparent) 0%,
+      color-mix(in srgb, var(--dj-bg-glass) 58%, transparent) 100%
+    );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 10%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, black 4%, transparent);
+}
+
+.tree-search-controls .rb-search-input-row {
+  flex: 1;
+}
+
+.tree-search-counter {
+  flex: 0 0 auto;
+  min-width: 30px;
+  color: var(--dj-text-secondary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.tree-search-nav-btn.ant-btn {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: var(--dj-text-secondary);
+}
+
+.tree-search-nav-btn.ant-btn:not(:disabled):hover {
+  color: var(--dj-accent);
+  background: color-mix(in srgb, var(--dj-accent-soft) 48%, transparent);
+}
+
 .tree-search-input {
   flex: 1;
   min-width: 0;
@@ -2981,10 +3032,18 @@ body[data-theme='dark'] .ant-popover-message {
 }
 
 .tree-search-highlight {
-  padding: 0 1px;
-  border-radius: 3px;
-  color: #5b3a00;
-  background: #ffd76a;
+  padding: 0 2px;
+  border-radius: 2px;
+  color: #332100;
+  font-weight: 700;
+  background: #ffc928;
+  box-shadow: 0 0 0 1px rgba(142, 91, 0, 0.5);
+}
+
+.ant-tree-node-content-wrapper.ant-tree-node-selected .tree-search-highlight {
+  color: #ffffff;
+  background: #b64900;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.7);
 }
 
 .resource-tree-viewport {
@@ -3122,6 +3181,7 @@ body[data-theme='dark'] .ant-popover-message {
 
 .resource-tree-shell .ant-tree-node-content-wrapper.ant-tree-node-selected {
   color: var(--dj-text-primary);
+  outline: none !important;
   background:
     radial-gradient(circle at 10% 18%, var(--dj-liquid-glow-a) 0%, transparent 38%),
     radial-gradient(circle at 88% 26%, var(--dj-liquid-glow-b) 0%, transparent 34%),
@@ -3134,7 +3194,8 @@ body[data-theme='dark'] .ant-popover-message {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.2),
     0 12px 22px color-mix(in srgb, var(--dj-liquid-glow-b) 14%, transparent) !important;
-  transform: translateX(1px);
+  transform: none;
+  transition: none !important;
 }
 
 .resource-tree-shell .ant-tree-treenode.dragging::after {
@@ -6955,10 +7016,14 @@ body:not([data-theme='dark']) .workspace-tabs .ant-tabs-tab-active {
 }
 
 .result-table .ant-table-tbody-virtual-holder > div {
+  width: var(--result-table-width) !important;
+  min-width: var(--result-table-width) !important;
   min-height: var(--result-table-scroll-y) !important;
 }
 
 .result-table .ant-table-tbody-virtual-holder-inner {
+  width: var(--result-table-width) !important;
+  min-width: var(--result-table-width) !important;
   min-height: 100%;
   align-content: flex-start;
 }
@@ -7394,7 +7459,8 @@ body[data-theme='dark'] .redis-key-card {
 .result-table .ant-table-tbody-virtual-holder .cell-selected-runtime-host {
   background: var(--dj-grid-selection-bg) !important;
   background-image: none !important;
-  box-shadow: none !important;
+  border-bottom-color: var(--dj-grid-border) !important;
+  box-shadow: inset 0 -1px 0 var(--dj-grid-border) !important;
 }
 
 /* Keep the entire table cell selected even if Ant Table reuses its host DOM node. */
@@ -7404,8 +7470,8 @@ body[data-theme='dark'] .redis-key-card {
   .ant-table-cell:has(> .editable-cell.cell-selected-runtime) {
   background: var(--dj-grid-selection-bg) !important;
   background-image: none !important;
-  border-bottom-color: var(--dj-grid-selection-bg) !important;
-  box-shadow: none !important;
+  border-bottom-color: var(--dj-grid-border) !important;
+  box-shadow: inset 0 -1px 0 var(--dj-grid-border) !important;
 }
 
 .result-table td.cell-selected-runtime-host .editable-cell,
@@ -7435,17 +7501,6 @@ body[data-theme='dark'] .redis-key-card {
   overflow: visible !important;
 }
 
-.result-table .editable-cell.cell-selected-runtime::after {
-  position: absolute;
-  right: 0;
-  bottom: -4px;
-  left: 0;
-  height: 4px;
-  background: var(--dj-grid-selection-bg);
-  content: '';
-  pointer-events: none;
-}
-
 body:not([data-theme='dark']) .result-table td.cell-selected-runtime-host,
 body:not([data-theme='dark'])
   .result-table
@@ -7453,14 +7508,16 @@ body:not([data-theme='dark'])
   .cell-selected-runtime-host {
   background: var(--dj-grid-selection-bg) !important;
   background-image: none !important;
-  box-shadow: none !important;
+  border-bottom-color: var(--dj-grid-border) !important;
+  box-shadow: inset 0 -1px 0 var(--dj-grid-border) !important;
 }
 
 [data-theme='dark'] .result-table td.cell-selected-runtime-host,
 [data-theme='dark'] .result-table .ant-table-tbody-virtual-holder .cell-selected-runtime-host {
   background: var(--dj-grid-selection-bg) !important;
   background-image: none !important;
-  box-shadow: none !important;
+  border-bottom-color: var(--dj-grid-border) !important;
+  box-shadow: inset 0 -1px 0 var(--dj-grid-border) !important;
 }
 
 body:not([data-theme='dark']) .result-table td.cell-selected-runtime-host .editable-cell,
@@ -11993,6 +12050,11 @@ body:not([data-theme='dark']) .table-search-option.is-active .table-search-flag 
   box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--dj-accent) 82%, white 18%) !important;
 }
 
+.editable-cell.editable-cell-batch-editing {
+  background: color-mix(in srgb, var(--dj-accent) 20%, var(--dj-bg-surface)) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dj-accent) 60%, white 40%) !important;
+}
+
 .result-table .ant-table-cell {
   padding: 0 !important;
 }
@@ -12010,6 +12072,7 @@ body:not([data-theme='dark']) .table-search-option.is-active .table-search-flag 
 
 .editable-cell-dom-input {
   display: block;
+  box-sizing: border-box;
   width: 100%;
   min-width: 0;
   height: 31px;
@@ -12042,15 +12105,50 @@ body:not([data-theme='dark']) .table-search-option.is-active .table-search-flag 
   background: transparent !important;
 }
 
-.row-inserted > td {
+.row-inserted > td,
+.result-table .ant-table-tbody-virtual-holder .row-inserted > .ant-table-cell {
   background: rgba(16, 124, 16, 0.08) !important;
 }
 
-.row-updated > td {
-  background: rgba(216, 59, 1, 0.06) !important;
+.result-table .ant-table-tbody > tr.row-updated > td.row-number-cell,
+.result-table .ant-table-tbody-virtual-holder .ant-table-row.row-updated > .row-number-cell {
+  background: var(--dj-grid-header-bg) !important;
+  background-color: var(--dj-grid-header-bg) !important;
+  background-image: none !important;
+  border-left: 3px solid rgba(216, 59, 1, 0.82) !important;
+  box-shadow: none !important;
 }
 
-.row-deleted > td {
+.result-table td.editable-cell-draft-host,
+.result-table .ant-table-tbody-virtual-holder .editable-cell-draft-host {
+  background: rgba(216, 59, 1, 0.14) !important;
+  background-color: rgba(216, 59, 1, 0.14) !important;
+  background-image: none !important;
+  border-bottom-color: var(--dj-grid-border) !important;
+  box-shadow: inset 0 -1px 0 var(--dj-grid-border) !important;
+}
+
+.result-table .ant-table-tbody-virtual-holder .ant-table-row:nth-child(n) > .ant-table-cell.editable-cell-draft-host,
+.result-table .ant-table-tbody > tr:nth-child(n) > td.editable-cell-draft-host {
+  background: rgba(216, 59, 1, 0.14) !important;
+  background-color: rgba(216, 59, 1, 0.14) !important;
+  background-image: none !important;
+  border-bottom-color: var(--dj-grid-border) !important;
+  box-shadow: inset 0 -1px 0 var(--dj-grid-border) !important;
+}
+
+.result-table .editable-cell.editable-cell-draft {
+  background: rgba(216, 59, 1, 0.14) !important;
+  background-image: none !important;
+  color: var(--dj-text-primary);
+}
+
+.result-table .editable-cell.editable-cell-draft:hover {
+  background: rgba(216, 59, 1, 0.14) !important;
+}
+
+.row-deleted > td,
+.result-table .ant-table-tbody-virtual-holder .row-deleted > .ant-table-cell {
   color: var(--dj-text-tertiary);
   text-decoration: line-through;
   background: rgba(197, 15, 31, 0.04) !important;

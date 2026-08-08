@@ -1,4 +1,3 @@
-import { startTransition } from 'react'
 import type { DatabaseTreeNode } from './tree-model'
 
 type HandleTreeSelectionOptions = {
@@ -42,12 +41,10 @@ export const handleTreeSelectionChange = ({
   setConnectionSelectionAnchorId
 }: HandleTreeSelectionOptions): void => {
   resourceTreeContainer?.focus()
-  startTransition(() => {
-    setFocusedTreeNode(node)
-    if (node.connectionId) {
-      setSelectedConnectionId(node.connectionId)
-    }
-  })
+  setFocusedTreeNode(node)
+  if (node.connectionId) {
+    setSelectedConnectionId(node.connectionId)
+  }
 
   if (node.kind !== 'connection' || !node.connectionId) {
     setSelectedConnectionIds([])

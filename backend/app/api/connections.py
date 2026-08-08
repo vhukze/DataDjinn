@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 
 from app.db.connection_manager import connection_manager
 from app.db.error_utils import friendly_error
@@ -104,9 +104,11 @@ def get_connection_password(connection_id: str) -> ConnectionPasswordResponse:
 
 
 @router.post("/{connection_id}/open", response_model=ConnectionCreateResponse)
-def open_connection(connection_id: str) -> ConnectionCreateResponse:
+def open_connection(
+    connection_id: str, open_attempt_id: str | None = Query(default=None)
+) -> ConnectionCreateResponse:
     try:
-        return connection_manager.open_connection(connection_id)
+        return connection_manager.open_connection(connection_id, open_attempt_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=friendly_error(exc)) from exc
     except Exception as exc:
@@ -115,9 +117,11 @@ def open_connection(connection_id: str) -> ConnectionCreateResponse:
 
 
 @router.post("/{connection_id}/close", response_model=ConnectionCreateResponse)
-def close_connection(connection_id: str) -> ConnectionCreateResponse:
+def close_connection(
+    connection_id: str, open_attempt_id: str | None = Query(default=None)
+) -> ConnectionCreateResponse:
     try:
-        return connection_manager.close_connection(connection_id)
+        return connection_manager.close_connection(connection_id, open_attempt_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=friendly_error(exc)) from exc
 

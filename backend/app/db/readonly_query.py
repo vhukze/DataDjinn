@@ -14,6 +14,7 @@ from app.db.mongo_utils import is_mongo_client, mongo_default_database, serializ
 from app.db.query_timeout import apply_query_timeout
 from app.db.redis_utils import is_redis_client, redis_client_for_database, redis_key_length, redis_key_type, redis_scan_keys, redis_text, serialize_redis_value
 from app.schemas.query import QueryResponse
+from app.db.query_editing import analyze_query_column_origins
 
 READONLY_TYPES = {"SELECT", "WITH"}
 INTERNAL_PAGING_COLUMNS = {"DATADJINN_RN"}
@@ -151,9 +152,13 @@ def execute_readonly_query(engine: Engine, sql: str, limit: int | None, offset: 
         statement = _validate_readonly_sql(sql)
 
         if database and engine.dialect.name in {"mysql", "postgresql", "gaussdb", "dm", "dmPython", "oracle", "clickhouse", "clickhousedb"}:
-            return _execute_on_connection_with_context(engine, statement, limit, offset, database)
-
-        return _execute_limited_query(engine, statement, limit, offset)
+            response = _execute_on_connection_with_context(engine, statement, limit, offset, database)
+        else:
+            response = _execute_limited_query(engine, statement, limit, offset)
+        response.column_origins = analyze_query_column_origins(
+            engine, statement, response.columns, database, pg_database
+        )
+        return response
     finally:
         if cleanup_engine:
             engine.dispose()
@@ -259,8 +264,13 @@ def execute_query(engine: Engine, sql: str, limit: int | None, offset: int = 0, 
 
         if statement_type in READONLY_TYPES:
             if database and engine.dialect.name in {"mysql", "postgresql", "gaussdb", "dm", "dmPython", "oracle", "clickhouse", "clickhousedb"}:
-                return _execute_on_connection_with_context(engine, statement, limit, offset, database)
-            return _execute_limited_query(engine, statement, limit, offset)
+                response = _execute_on_connection_with_context(engine, statement, limit, offset, database)
+            else:
+                response = _execute_limited_query(engine, statement, limit, offset)
+            response.column_origins = analyze_query_column_origins(
+                engine, statement, response.columns, database, pg_database
+            )
+            return response
 
         return _execute_mutation_statements(engine, statements, database)
     finally:

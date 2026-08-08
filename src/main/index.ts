@@ -1161,19 +1161,44 @@ app.whenReady().then(() => {
     async (
       _,
       path: string,
-      options?: { method?: string; headers?: Record<string, string>; body?: string }
+      options?: {
+        method?: string
+        headers?: Record<string, string>
+        body?: string
+        timeoutMs?: number
+      }
     ) => {
       try {
         const apiBaseUrl = await ensureBackendForRequest()
-        const response = await fetch(`${apiBaseUrl}${ensureApiPath(path)}`, {
-          method: options?.method,
-          headers: {
-            'Content-Type': 'application/json',
-            ...options?.headers,
-            ...backendRequestHeaders()
-          },
-          body: options?.body
-        })
+        const timeoutMs = Number(options?.timeoutMs)
+        const hasTimeout = Number.isFinite(timeoutMs) && timeoutMs > 0
+        const controller = hasTimeout ? new AbortController() : undefined
+        const timeoutId = hasTimeout
+          ? setTimeout(() => controller?.abort(), timeoutMs)
+          : undefined
+        let response: Response
+
+        try {
+          response = await fetch(`${apiBaseUrl}${ensureApiPath(path)}`, {
+            method: options?.method,
+            headers: {
+              'Content-Type': 'application/json',
+              ...options?.headers,
+              ...backendRequestHeaders()
+            },
+            body: options?.body,
+            signal: controller?.signal
+          })
+        } catch (error) {
+          if (controller?.signal.aborted) {
+            throw new Error(`请求超时（${Math.ceil(timeoutMs / 1000)} 秒）`)
+          }
+          throw error
+        } finally {
+          if (timeoutId !== undefined) {
+            clearTimeout(timeoutId)
+          }
+        }
 
         const text = await response.text()
         let data: { detail?: string } | null = null

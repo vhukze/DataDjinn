@@ -85,7 +85,12 @@ interface DataDjinnAPI {
   writeTextFile: (filePath: string, content: string) => Promise<boolean>
   requestJson: <T>(
     path: string,
-    options?: { method?: string; headers?: Record<string, string>; body?: string }
+    options?: {
+      method?: string
+      headers?: Record<string, string>
+      body?: string
+      timeoutMs?: number
+    }
   ) => Promise<T>
   streamRequest: (
     streamId: string,

@@ -53,6 +53,7 @@ export type WorkspaceTab = {
   result?: QueryResponse
   columnInfoMap?: Record<string, ColumnInfo>
   editRows?: EditableRow[]
+  selectedCellKeys?: string[]
   selectedRowKeys?: React.Key[]
   selectedRowKeyMap?: Record<string, true>
   selectedColumns?: string[]

@@ -23,7 +23,12 @@ const api = {
     ipcRenderer.invoke('write-text-file', filePath, content),
   requestJson: (
     path: string,
-    options?: { method?: string; headers?: Record<string, string>; body?: string }
+    options?: {
+      method?: string
+      headers?: Record<string, string>
+      body?: string
+      timeoutMs?: number
+    }
   ) => ipcRenderer.invoke('api:request', path, options),
   streamRequest: (
     streamId: string,

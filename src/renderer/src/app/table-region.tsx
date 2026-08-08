@@ -26,6 +26,7 @@ type WorkspaceTabLike = {
   key: string
   kind: string
   tableRenderVersion?: number
+  selectedRowKeys?: React.Key[]
 }
 
 export const getResultTableScrollHeight = (element: HTMLDivElement): number => {
@@ -946,7 +947,7 @@ export const ResultTableBodyView = memo(
           setHeaderRef(currentTarget.querySelector<HTMLDivElement>('.ant-table-header'))
         }}
         onScrollCapture={onScrollCapture}
-        onKeyDown={onKeyDown}
+        onKeyDownCapture={onKeyDown}
         onMouseDown={onMouseDown}
         onMouseUp={onMouseUp}
         onMouseLeave={onMouseLeave}
@@ -956,7 +957,12 @@ export const ResultTableBodyView = memo(
           ref={setTableRef}
           className="result-table"
           rowClassName={(row) =>
-            [row.__deleted ? 'row-deleted' : row.__state ? `row-${row.__state}` : '']
+            [
+              row.__deleted ? 'row-deleted' : row.__state ? `row-${row.__state}` : '',
+              (tab.selectedRowKeys ?? []).map(String).includes(row.__rowKey)
+                ? 'row-selected'
+                : ''
+            ]
               .filter(Boolean)
               .join(' ')
           }
