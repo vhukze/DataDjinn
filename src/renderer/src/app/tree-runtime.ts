@@ -187,6 +187,90 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
 
   const objectGroupChildrenCache = new Map<string, DatabaseTreeNode[]>()
   const objectGroupChildrenPromiseCache = new Map<string, Promise<DatabaseTreeNode[]>>()
+  const tableStatsPromiseCache = new Map<string, Promise<void>>()
+  const TABLE_STATS_DATABASE_TYPES = new Set<DatabaseType>([
+    'mysql',
+    'postgresql',
+    'dm',
+    'gaussdb',
+    'oracle',
+    'mongodb',
+    'redis',
+    'clickhouse'
+  ])
+
+  const tableObjectRequestPath = (
+    connectionId: string,
+    databaseName?: string,
+    pgDatabaseName?: string
+  ): string => {
+    const path = deps.withPgDatabase(
+      `/connections/${connectionId}/objects`,
+      databaseName,
+      pgDatabaseName
+    )
+    return `${path}${databaseName || pgDatabaseName ? '&' : '?'}type=table`
+  }
+
+  const loadTableStats = (
+    cacheKey: string,
+    connectionId: string,
+    databaseName: string | undefined,
+    pgDatabaseName: string | undefined,
+    initialChildren: DatabaseTreeNode[]
+  ): void => {
+    if (tableStatsPromiseCache.has(cacheKey)) {
+      return
+    }
+
+    const groupKey = `object-group:${connectionId}:${pgDatabaseName ?? ''}:${databaseName ?? ''}:table`
+    const clearLoadingState = (children: DatabaseTreeNode[]): DatabaseTreeNode[] =>
+      children.map((child) =>
+        child.kind === 'table' ? { ...child, sizeLoading: false } : child
+      )
+    const statsPromise = deps
+      .requestJson<{ objects: DbObjectInfo[] }>(
+        `${tableObjectRequestPath(connectionId, databaseName, pgDatabaseName)}&include_stats=true`
+      )
+      .then(({ objects }) => {
+        const statsByName = new Map(objects.map((object) => [object.name, object]))
+        const nextChildren = initialChildren.map((child) => {
+          if (child.kind !== 'table' || !child.tableName) {
+            return child
+          }
+          const stats = statsByName.get(child.tableName)
+          return {
+            ...child,
+            sizeDisplay: stats?.size_display ?? null,
+            sizeBytes: stats?.size_bytes ?? null,
+            storageSizeDisplay: stats?.storage_size_display ?? null,
+            storageSizeBytes: stats?.storage_size_bytes ?? null,
+            rowCount: stats?.row_count ?? null,
+            sizeLoading: false
+          }
+        })
+        objectGroupChildrenCache.set(cacheKey, nextChildren)
+        deps.setTreeData((current) => {
+          const next = updateTreeNode(current, groupKey, nextChildren)
+          deps.treeDataRef.current = next
+          return next
+        })
+      })
+      .catch(() => {
+        const nextChildren = clearLoadingState(initialChildren)
+        objectGroupChildrenCache.set(cacheKey, nextChildren)
+        deps.setTreeData((current) => {
+          const next = updateTreeNode(current, groupKey, nextChildren)
+          deps.treeDataRef.current = next
+          return next
+        })
+      })
+      .finally(() => {
+        tableStatsPromiseCache.delete(cacheKey)
+      })
+
+    tableStatsPromiseCache.set(cacheKey, statsPromise)
+  }
 
   const prefetchSqliteObjectGroups = (connectionId: string): void => {
     const connection = deps.getConnection(connectionId)
@@ -246,11 +330,7 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
     }
 
     const requestPromise = (async () => {
-      const path = deps.withPgDatabase(
-        `/connections/${connectionId}/objects`,
-        databaseName,
-        pgDatabaseName
-      )
+      const path = deps.withPgDatabase(`/connections/${connectionId}/objects`, databaseName, pgDatabaseName)
       const requestStartedAt = performance.now()
       const data = await deps.requestJson<{ objects: DbObjectInfo[] }>(
         `${path}${databaseName || pgDatabaseName ? '&' : '?'}type=${objectType}`
@@ -261,6 +341,9 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
         objectCount: data.objects.length,
         duration: Number((performance.now() - requestStartedAt).toFixed(2))
       })
+      const shouldLoadTableStats =
+        objectType === 'table' &&
+        TABLE_STATS_DATABASE_TYPES.has(deps.getConnection(connectionId)?.database_type ?? 'sqlite')
       const nextChildren = data.objects.map<DatabaseTreeNode>((object) => {
         const resolvedType = DB_OBJECT_GROUP_BY_TYPE[object.type as DbObjectType]
           ? (object.type as DbObjectType)
@@ -283,6 +366,7 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
           sizeBytes: object.size_bytes,
           storageSizeDisplay: object.storage_size_display,
           storageSizeBytes: object.storage_size_bytes,
+          sizeLoading: resolvedType === 'table' && shouldLoadTableStats,
           rowCount: object.row_count,
           childrenLoaded: false,
           isLeaf: resolvedType !== 'table'
@@ -485,6 +569,15 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
         deps.treeDataRef.current = next
         return next
       })
+      if (node.objectType === 'table' && cachedChildren.some((child) => child.sizeLoading)) {
+        loadTableStats(
+          objectGroupCacheKey(node.connectionId!, node.objectType, node.databaseName, node.pgDatabaseName),
+          node.connectionId!,
+          node.databaseName,
+          node.pgDatabaseName,
+          cachedChildren
+        )
+      }
       console.info('[perf][tree-runtime] load-children-from-cache', {
         key,
         kind: node.kind,
@@ -510,6 +603,25 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
           deps.treeDataRef.current = next
           return next
         })
+        if (
+          node.kind === 'object-group' &&
+          node.objectType === 'table' &&
+          node.connectionId &&
+          children.some((child) => child.sizeLoading)
+        ) {
+          loadTableStats(
+            objectGroupCacheKey(
+              node.connectionId,
+              node.objectType,
+              node.databaseName,
+              node.pgDatabaseName
+            ),
+            node.connectionId,
+            node.databaseName,
+            node.pgDatabaseName,
+            children
+          )
+        }
       }
       if (expand && !deps.expandedKeysRef.current.includes(key)) {
         deps.expandedKeysRef.current = [...deps.expandedKeysRef.current, key]

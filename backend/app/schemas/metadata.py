@@ -48,6 +48,7 @@ class ColumnInfo(BaseModel):
 
 class TableUpdateColumn(BaseModel):
     name: str
+    source_name: str | None = Field(default=None, max_length=128)
     type: str = Field(min_length=1, max_length=80)
     nullable: bool
     primary_key: bool
@@ -61,6 +62,7 @@ class TableUpdateColumn(BaseModel):
 
 class TableUpdateRequest(BaseModel):
     columns: list[TableUpdateColumn] = Field(min_length=1)
+    table_name: str | None = Field(default=None, max_length=128)
     table_comment: str | None = Field(default=None, max_length=1000)
 
 

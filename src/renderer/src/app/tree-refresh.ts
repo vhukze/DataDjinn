@@ -1,3 +1,4 @@
+import type { MutableRefObject } from 'react'
 import type { ConnectionInfo } from './connection-model'
 import type { DatabaseTreeNode } from './tree-model'
 import type { DatabaseType } from './data-sources'
@@ -7,7 +8,7 @@ type TreeRefreshOptions = {
   connectionId: string
   selectedDatabaseOverride?: string[]
   getConnection: (connectionId?: string) => ConnectionInfo | undefined
-  expandedKeys: React.Key[]
+  expandedKeysRef: MutableRefObject<React.Key[]>
   preloadConnectionTree: (
     connection: ConnectionInfo,
     selectedDatabaseOverride?: string[]
@@ -49,7 +50,7 @@ export const refreshConnectionTreeNode = ({
   connectionId,
   selectedDatabaseOverride,
   getConnection,
-  expandedKeys,
+  expandedKeysRef,
   preloadConnectionTree,
   buildConnectionNode,
   setTreeData,
@@ -66,31 +67,30 @@ export const refreshConnectionTreeNode = ({
     setConnectionTreeLoadingText(connectionId, '正在刷新连接...')
     try {
       const connectionKey = `connection:${connectionId}`
-      const snapshot = expandedKeys.map(String)
-
       if (DATABASE_LEVEL_TYPES.has(connection.database_type)) {
         const databaseNodes = await preloadConnectionTree(connection, selectedDatabaseOverride)
         const selectedNames = new Set(
           databaseNodes.map((node) => node.databaseName).filter(Boolean)
         )
-        const stillExpanded = snapshot.filter((key) => {
-          if (key === connectionKey) {
-            return false
-          }
-          if (key.startsWith(`database:${connectionId}:`)) {
-            if (connection.database_type === 'redis') {
+        setExpandedKeys((current) => {
+          // Resolve this when the request completes so a folder expanded while loading is kept.
+          const stillExpanded = current.map(String).filter((key) => {
+            if (key === connectionKey) {
               return false
             }
-            const dbName = key.slice(`database:${connectionId}:`.length).split(':')[0]
-            return selectedNames.has(dbName)
-          }
-          return (
-            key.startsWith(`pg-schema:${connectionId}:`) ||
-            key.startsWith(`object-group:${connectionId}:`) ||
-            key.startsWith(`table:${connectionId}:`)
-          )
+            if (key.startsWith(`database:${connectionId}:`)) {
+              if (connection.database_type === 'redis') {
+                return false
+              }
+              const dbName = key.slice(`database:${connectionId}:`.length).split(':')[0]
+              return selectedNames.has(dbName)
+            }
+            return true
+          })
+          const next = Array.from(new Set([connectionKey, ...stillExpanded]))
+          expandedKeysRef.current = next
+          return next
         })
-        setExpandedKeys(Array.from(new Set([connectionKey, ...stillExpanded])))
         return
       }
 

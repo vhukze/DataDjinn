@@ -64,6 +64,7 @@ export default function TableDesignerPanel({
 }: TableDesignerPanelProps): React.ReactNode {
   const isCreateMode = mode === 'create'
   const isMongo = connection?.database_type === 'mongodb'
+  const canRename = isCreateMode || connection?.database_type === 'dm'
   const supportsComments = tableDesignerSupportsComments(connection?.database_type)
   const supportsUnique = tableDesignerSupportsUnique(connection?.database_type)
   const supportsAutoIncrement = tableDesignerSupportsAutoIncrement(connection?.database_type)
@@ -264,7 +265,7 @@ export default function TableDesignerPanel({
           size="small"
           value={value}
           placeholder="字段名"
-          disabled={!isCreateMode}
+          disabled={!canRename}
           onChange={(event) => commitColumnPatch(column, { name: event.target.value })}
         />
       )
@@ -389,7 +390,7 @@ export default function TableDesignerPanel({
             size="large"
             value={tableName}
             placeholder={isMongo ? '请输入集合名' : '请输入表名'}
-            disabled={!isCreateMode}
+            disabled={!canRename}
             onChange={(event) => setTableName?.(event.target.value)}
           />
           {!isMongo && (

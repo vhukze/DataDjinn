@@ -54,6 +54,7 @@ export type DatabaseTreeNode = DataNode & {
   sizeBytes?: number | null
   storageSizeDisplay?: string | null
   storageSizeBytes?: number | null
+  sizeLoading?: boolean
   rowCount?: number | null
   comment?: string | null
   columnName?: string
@@ -215,13 +216,35 @@ export const updateTreeNode = (
   key: React.Key,
   children: DatabaseTreeNode[]
 ): DatabaseTreeNode[] => {
+  const inheritFolderTreeContext = (
+    childNodes: DatabaseTreeNode[],
+    folderId?: string
+  ): DatabaseTreeNode[] => {
+    if (!folderId) {
+      return childNodes
+    }
+
+    return childNodes.map((child) => ({
+      ...child,
+      folderId,
+      className: `${child.className ?? ''} tree-folder-connection-descendant`.trim(),
+      children: child.children
+        ? inheritFolderTreeContext(child.children as DatabaseTreeNode[], folderId)
+        : child.children
+    }))
+  }
+
   const visit = (currentNodes: DatabaseTreeNode[]): [DatabaseTreeNode[], boolean] => {
     let changed = false
 
     const nextNodes = currentNodes.map((node) => {
       if (node.key === key) {
         changed = true
-        return { ...node, children, childrenLoaded: true }
+        return {
+          ...node,
+          children: inheritFolderTreeContext(children, node.folderId),
+          childrenLoaded: true
+        }
       }
 
       if (!node.children?.length) {

@@ -1201,7 +1201,7 @@ app.whenReady().then(() => {
         }
 
         const text = await response.text()
-        let data: { detail?: string } | null = null
+        let data: { detail?: string; error_code?: string } | null = null
 
         try {
           data = text ? (JSON.parse(text) as { detail?: string }) : null
@@ -1210,7 +1210,10 @@ app.whenReady().then(() => {
         }
 
         if (!response.ok) {
-          return { __datadjinnApiError: data?.detail ?? (text || `HTTP ${response.status}`) }
+          return {
+            __datadjinnApiError: data?.detail ?? (text || `HTTP ${response.status}`),
+            __datadjinnApiErrorCode: data?.error_code
+          }
         }
 
         return data

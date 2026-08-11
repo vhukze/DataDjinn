@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from sqlalchemy.pool import QueuePool
+
 from app.db import connection_manager as connection_manager_module
 from app.schemas.connection import ConnectionRequest
 
@@ -165,6 +167,63 @@ class ConnectionManagerSshTests(unittest.TestCase):
         dispose_engine.assert_called_once_with(fake_engine)
         self.assertTrue(fake_tunnel.closed)
         self.assertNotIn(created.connection_id, self.manager._ssh_tunnels)
+
+    def test_health_check_failure_releases_the_stale_connection_without_using_error_text(self) -> None:
+        created = self.manager.create_connection(self.build_ssh_request())
+        stale_engine = object()
+        self.manager._engines[created.connection_id] = stale_engine
+        self.manager._connections[created.connection_id] = created.model_copy(update={"is_open": True})
+
+        with (
+            patch.object(self.manager, "_ping_engine", side_effect=RuntimeError("driver failure")),
+            patch.object(self.manager, "_dispose_connection_resources") as dispose_resources,
+        ):
+            self.assertFalse(self.manager.ensure_connection_healthy(created.connection_id, force=True))
+
+        self.assertIsNone(self.manager.get_engine(created.connection_id))
+        self.assertFalse(self.manager.list_connections()[0].is_open)
+        dispose_resources.assert_called_once_with(stale_engine, None)
+
+    def test_jdbc_pool_pre_ping_uses_the_jdbc_dialect_after_reusing_a_connection(self) -> None:
+        class RecordingCursor:
+            def __init__(self, statements: list[str]) -> None:
+                self.statements = statements
+
+            def execute(self, _statement: str) -> None:
+                self.statements.append(_statement)
+
+            def close(self) -> None:
+                pass
+
+        class ReusableConnection:
+            def __init__(self) -> None:
+                self.statements: list[str] = []
+
+            def cursor(self) -> RecordingCursor:
+                return RecordingCursor(self.statements)
+
+            def rollback(self) -> None:
+                pass
+
+            def close(self) -> None:
+                pass
+
+        dialect = connection_manager_module.JdbcReconnectDialect("dm", "SELECT 1 FROM DUAL")
+        raw_connection = ReusableConnection()
+        pool = QueuePool(
+            lambda: connection_manager_module.DmJdbcConnectionAdapter(raw_connection),
+            pre_ping=True,
+            dialect=dialect,
+        )
+
+        first_checkout = pool.connect()
+        first_checkout.close()
+        second_checkout = pool.connect()
+        second_checkout.close()
+        pool.dispose()
+
+        self.assertIs(pool._dialect, dialect)  # type: ignore[attr-defined]
+        self.assertEqual(raw_connection.statements, ["SELECT 1 FROM DUAL"])
 
     def test_close_cancels_an_open_attempt_that_is_still_connecting(self) -> None:
         created = self.manager.create_connection(self.build_ssh_request())

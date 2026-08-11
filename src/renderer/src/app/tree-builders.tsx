@@ -133,6 +133,7 @@ export const buildFolderNode = (
   icon: <FolderOpenOutlined />,
   kind: 'folder',
   folderId: folder.id,
+  className: 'tree-folder-row',
   children: children.length > 0 ? children : [buildFolderDropPlaceholderNode(folder.id, keyPrefix)],
   childrenLoaded: true,
   isLeaf: false
@@ -143,6 +144,7 @@ export type BuildResourceTreeOptions = {
   connectionFolders: ConnectionFolder[]
   folderConnectionOrder: Record<string, string[]>
   rootItemOrder: string[]
+  pinnedRootItemIds: string[]
   rootFolderOrderId: (folderId: string) => string
   rootConnectionOrderId: (connectionId: string) => string
   mergeOrderedIds: (availableIds: string[], preferredIds: string[]) => string[]
@@ -160,6 +162,7 @@ export const buildResourceTree = (
     connectionFolders,
     folderConnectionOrder,
     rootItemOrder,
+    pinnedRootItemIds,
     rootFolderOrderId,
     rootConnectionOrderId,
     mergeOrderedIds,
@@ -171,6 +174,18 @@ export const buildResourceTree = (
   const groupedNodes = new Map<string, DatabaseTreeNode[]>()
   const rootNodeMap = new Map<string, DatabaseTreeNode>()
   const validFolderIds = new Set(connectionFolders.map((folder) => folder.id))
+  const inheritFolderTreeContext = (
+    childNodes: DatabaseTreeNode[],
+    folderId: string
+  ): DatabaseTreeNode[] =>
+    childNodes.map((child) => ({
+      ...child,
+      folderId,
+      className: `${child.className ?? ''} tree-folder-connection-descendant`.trim(),
+      children: child.children
+        ? inheritFolderTreeContext(child.children as DatabaseTreeNode[], folderId)
+        : child.children
+    }))
 
   for (const connection of nextConnections) {
     const existingNode = existingConnectionNodes.get(connection.connection_id)
@@ -188,7 +203,13 @@ export const buildResourceTree = (
 
     if (folderId && validFolderIds.has(folderId)) {
       const items = groupedNodes.get(folderId) ?? []
-      items.push(node)
+      items.push({
+        ...node,
+        className: `${node.className ?? ''} tree-folder-connection-row`.trim(),
+        children: node.children
+          ? inheritFolderTreeContext(node.children as DatabaseTreeNode[], folderId)
+          : node.children
+      })
       groupedNodes.set(folderId, items)
     } else {
       rootNodeMap.set(connection.connection_id, node)
@@ -197,10 +218,24 @@ export const buildResourceTree = (
 
   const folderIds = connectionFolders.map((folder) => folder.id)
   const rootConnectionIds = [...rootNodeMap.keys()]
-  const orderedRootItems = mergeOrderedIds(
+  const rootItems = mergeOrderedIds(
     [...folderIds.map(rootFolderOrderId), ...rootConnectionIds.map(rootConnectionOrderId)],
     rootItemOrder
   )
+  const folderRootItems = rootItems.filter((itemId) => itemId.startsWith('folder:'))
+  const connectionRootItems = rootItems.filter((itemId) => itemId.startsWith('connection:'))
+  const orderRootItemsWithinSection = (itemIds: string[]): string[] => {
+    const itemIdSet = new Set(itemIds)
+    const pinnedItemIds = pinnedRootItemIds.filter((itemId) => itemIdSet.has(itemId))
+    const pinnedItemIdSet = new Set(pinnedItemIds)
+    return [...pinnedItemIds, ...itemIds.filter((itemId) => !pinnedItemIdSet.has(itemId))]
+  }
+  // Root folders and root connections are independently sortable sections. A pin never moves
+  // a connection ahead of folders, or a folder into the connection section.
+  const orderedRootItems = [
+    ...orderRootItemsWithinSection(folderRootItems),
+    ...orderRootItemsWithinSection(connectionRootItems)
+  ]
 
   const folderMap = new Map(connectionFolders.map((folder) => [folder.id, folder]))
 

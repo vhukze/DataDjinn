@@ -17,6 +17,7 @@
   MoonOutlined,
   PlayCircleOutlined,
   PlusOutlined,
+  PushpinOutlined,
   SaveOutlined,
   CloudDownloadOutlined,
   ReloadOutlined,
@@ -499,6 +500,8 @@ const STORAGE_CONNECTION_FOLDER_ASSIGNMENTS = 'datadjinn-connection-folder-assig
 const STORAGE_CONNECTION_FOLDER_ORDER = 'datadjinn-connection-folder-order'
 const STORAGE_ROOT_CONNECTION_ORDER = 'datadjinn-root-connection-order'
 const STORAGE_ROOT_ITEM_ORDER = 'datadjinn-root-item-order'
+const STORAGE_ROOT_ITEM_ORDER_CUSTOMIZED = 'datadjinn-root-item-order-customized'
+const STORAGE_PINNED_ROOT_ITEM_IDS = 'datadjinn-pinned-root-item-ids'
 const STORAGE_FOLDER_CONNECTION_ORDER = 'datadjinn-folder-connection-order'
 const STORAGE_QUERY_WORKSPACES = 'datadjinn-query-workspaces'
 const STORAGE_SHORTCUT_SETTINGS = 'datadjinn-shortcut-settings'
@@ -546,7 +549,12 @@ const stringRecordArrayEquals = (
 const rootFolderOrderId = (folderId: string): string => `folder:${folderId}`
 const rootConnectionOrderId = (connectionId: string): string => `connection:${connectionId}`
 
-type ApiErrorResponse = { __datadjinnApiError: string }
+type ApiErrorResponse = {
+  __datadjinnApiError: string
+  __datadjinnApiErrorCode?: string
+}
+
+type ApiRequestError = Error & { code?: string }
 
 const isApiErrorResponse = (value: unknown): value is ApiErrorResponse =>
   Boolean(
@@ -680,6 +688,7 @@ function App(): React.JSX.Element {
   const [editingDatabaseName, setEditingDatabaseName] = useState<string>()
   const [editingPgDatabaseName, setEditingPgDatabaseName] = useState<string>()
   const [editingTableName, setEditingTableName] = useState<string>()
+  const [editingOriginalTableName, setEditingOriginalTableName] = useState<string>()
   const [editingTableComment, setEditingTableComment] = useState('')
   const [editingColumns, setEditingColumns] = useState<ColumnDef[]>([])
   const [databaseCreateModalOpen, setDatabaseCreateModalOpen] = useState(false)
@@ -786,6 +795,12 @@ function App(): React.JSX.Element {
   const [rootItemOrder, setRootItemOrder] = useState<string[]>(() =>
     readPersistedJson<string[]>(STORAGE_ROOT_ITEM_ORDER, [])
   )
+  const [rootItemOrderCustomized, setRootItemOrderCustomized] = useState(
+    () => localStorage.getItem(STORAGE_ROOT_ITEM_ORDER_CUSTOMIZED) === 'true'
+  )
+  const [pinnedRootItemIds, setPinnedRootItemIds] = useState<string[]>(() =>
+    readPersistedJson<string[]>(STORAGE_PINNED_ROOT_ITEM_IDS, [])
+  )
   const [folderConnectionOrder, setFolderConnectionOrder] = useState<Record<string, string[]>>(() =>
     readPersistedJson<Record<string, string[]>>(STORAGE_FOLDER_CONNECTION_ORDER, {})
   )
@@ -891,6 +906,14 @@ function App(): React.JSX.Element {
   }, [rootItemOrder])
 
   useEffect(() => {
+    localStorage.setItem(STORAGE_ROOT_ITEM_ORDER_CUSTOMIZED, String(rootItemOrderCustomized))
+  }, [rootItemOrderCustomized])
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_PINNED_ROOT_ITEM_IDS, JSON.stringify(pinnedRootItemIds))
+  }, [pinnedRootItemIds])
+
+  useEffect(() => {
     localStorage.setItem(STORAGE_FOLDER_CONNECTION_ORDER, JSON.stringify(folderConnectionOrder))
   }, [folderConnectionOrder])
 
@@ -975,14 +998,25 @@ function App(): React.JSX.Element {
         )
         .map((connection) => rootConnectionOrderId(connection.connection_id))
       const folderIds = connectionFolders.map((folder) => rootFolderOrderId(folder.id))
-      const migratedOrder =
-        current.length > 0
-          ? current
-          : [
-              ...connectionFolderOrder.map(rootFolderOrderId),
-              ...rootConnectionOrder.map(rootConnectionOrderId)
-            ]
-      const next = mergeOrderedIds([...folderIds, ...rootConnectionIds], migratedOrder)
+      const defaultOrder = [...folderIds, ...rootConnectionIds]
+      const next = mergeOrderedIds(
+        [...folderIds, ...rootConnectionIds],
+        rootItemOrderCustomized && current.length > 0 ? current : defaultOrder
+      )
+      return stringArrayEquals(current, next) ? current : next
+    })
+    setPinnedRootItemIds((current) => {
+      const available = new Set([
+        ...connectionFolders.map((folder) => rootFolderOrderId(folder.id)),
+        ...connections
+          .filter(
+            (connection) =>
+              !connectionFolderAssignments[connection.connection_id] ||
+              !validFolderIds.has(connectionFolderAssignments[connection.connection_id])
+          )
+          .map((connection) => rootConnectionOrderId(connection.connection_id))
+      ])
+      const next = current.filter((itemId) => available.has(itemId))
       return stringArrayEquals(current, next) ? current : next
     })
     setFolderConnectionOrder((current) => {
@@ -1003,7 +1037,8 @@ function App(): React.JSX.Element {
     connectionFolders,
     connectionFolderAssignments,
     connectionFolderOrder,
-    rootConnectionOrder
+    rootConnectionOrder,
+    rootItemOrderCustomized
   ])
 
   const [allDatabases, setAllDatabases] = useState<Record<string, string[]>>({})
@@ -1258,8 +1293,15 @@ function App(): React.JSX.Element {
     updateModalRef.current?.close()
   }
 
-  const normalizeRequestError = (error: unknown): Error => {
+  const normalizeRequestError = (error: unknown): ApiRequestError => {
     let message = error instanceof Error ? error.message : String(error || '操作失败')
+    const code =
+      error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      typeof error.code === 'string'
+        ? error.code
+        : undefined
     message = message
       .replace(/^Error invoking remote method 'api:request':\s*Error:\s*/i, '')
       .replace(/\s*\(Background on this error at:[\s\S]*$/i, '')
@@ -1275,7 +1317,7 @@ function App(): React.JSX.Element {
     if (message.includes('Timeout reading from socket')) {
       return new Error('请求后端超时，请检查数据库主机和端口是否正确、服务是否已启动，或稍后重试')
     }
-    return new Error(message || '操作失败')
+    return Object.assign(new Error(message || '操作失败'), code ? { code } : {})
   }
 
   const requestJsonRaw = useCallback(
@@ -1292,7 +1334,10 @@ function App(): React.JSX.Element {
           timeoutMs: options?.timeoutMs
         })
         if (isApiErrorResponse(response)) {
-          throw new Error(response.__datadjinnApiError)
+          throw Object.assign(
+            new Error(response.__datadjinnApiError),
+            response.__datadjinnApiErrorCode ? { code: response.__datadjinnApiErrorCode } : {}
+          )
         }
         return response
       } catch (err) {
@@ -1337,10 +1382,8 @@ function App(): React.JSX.Element {
     }
   }
 
-  const isReconnectableConnectionError = (message: string): boolean =>
-    /连接\s*(?:已关闭|尚未打开|已断开|失效)|\b(?:connection|client|engine|transport|session)\b[^\n]{0,80}\b(?:closed|disconnected|invalid|lost|reset|broken)\b|\b(?:socket|channel)\s+(?:is\s+)?(?:closed|reset|broken)\b/i.test(
-      message
-    )
+  const isReconnectableConnectionError = (error: ApiRequestError): boolean =>
+    error.code === 'CONNECTION_UNAVAILABLE'
 
   const reconnectingConnectionsRef = useRef<Record<string, Promise<void> | undefined>>({})
 
@@ -1377,14 +1420,14 @@ function App(): React.JSX.Element {
   const requestJson = useCallback(
     async <T,>(path: string, options?: ApiRequestOptions): Promise<T> => {
       const connectionId = getRequestConnectionId(path, options)
-      let lastConnectionError: Error | undefined
+      let lastConnectionError: ApiRequestError | undefined
 
       for (let attempt = 0; attempt < 2; attempt += 1) {
         try {
           return await requestJsonRaw<T>(path, options)
         } catch (err) {
           const error = normalizeRequestError(err)
-          if (!connectionId || !isReconnectableConnectionError(error.message)) {
+          if (!connectionId || !isReconnectableConnectionError(error)) {
             throw error
           }
           lastConnectionError = error
@@ -1810,11 +1853,26 @@ function App(): React.JSX.Element {
     nextConnections: ConnectionInfo[],
     currentNodes: DatabaseTreeNode[] = []
   ): DatabaseTreeNode[] => {
+    const validFolderIds = new Set(connectionFolders.map((folder) => folder.id))
+    const defaultRootItemOrder = [
+      ...connectionFolders.map((folder) => rootFolderOrderId(folder.id)),
+      ...nextConnections
+        .filter(
+          (connection) =>
+            !connectionFolderAssignments[connection.connection_id] ||
+            !validFolderIds.has(connectionFolderAssignments[connection.connection_id])
+        )
+        .map((connection) => rootConnectionOrderId(connection.connection_id))
+    ]
     return buildResourceTreeFromModule(nextConnections, currentNodes, {
       connectionFolderAssignments,
       connectionFolders,
       folderConnectionOrder,
-      rootItemOrder,
+      rootItemOrder:
+        rootItemOrderCustomized && rootItemOrder.length > 0
+          ? rootItemOrder
+          : defaultRootItemOrder,
+      pinnedRootItemIds,
       rootFolderOrderId,
       rootConnectionOrderId,
       mergeOrderedIds,
@@ -1834,6 +1892,8 @@ function App(): React.JSX.Element {
     connectionFolders,
     connectionFolderAssignments,
     rootItemOrder,
+    rootItemOrderCustomized,
+    pinnedRootItemIds,
     folderConnectionOrder
   ])
 
@@ -1895,7 +1955,7 @@ function App(): React.JSX.Element {
       connectionId,
       selectedDatabaseOverride,
       getConnection,
-      expandedKeys,
+      expandedKeysRef,
       preloadConnectionTree,
       buildConnectionNode,
       setTreeData,
@@ -1950,8 +2010,8 @@ function App(): React.JSX.Element {
     }
 
     const folderId = globalThis.crypto?.randomUUID?.() ?? `folder-${Date.now()}`
-    setConnectionFolders((current) => [{ id: folderId, name: nextName }, ...current])
-    setConnectionFolderOrder((current) => [folderId, ...current.filter((id) => id !== folderId)])
+    setConnectionFolders((current) => [...current, { id: folderId, name: nextName }])
+    setConnectionFolderOrder((current) => [...current.filter((id) => id !== folderId), folderId])
     setExpandedKeys((current) =>
       current.includes(`folder:${folderId}`) ? current : [...current, `folder:${folderId}`]
     )
@@ -1995,8 +2055,8 @@ function App(): React.JSX.Element {
       )
     } else {
       const folderId = globalThis.crypto?.randomUUID?.() ?? `folder-${Date.now()}`
-      setConnectionFolders((current) => [{ id: folderId, name: nextName }, ...current])
-      setConnectionFolderOrder((current) => [folderId, ...current.filter((id) => id !== folderId)])
+      setConnectionFolders((current) => [...current, { id: folderId, name: nextName }])
+      setConnectionFolderOrder((current) => [...current.filter((id) => id !== folderId), folderId])
       setExpandedKeys((current) =>
         current.includes(`folder:${folderId}`) ? current : [...current, `folder:${folderId}`]
       )
@@ -2024,6 +2084,9 @@ function App(): React.JSX.Element {
       onOk: () => {
         setConnectionFolders((current) => current.filter((item) => item.id !== folderId))
         setConnectionFolderOrder((current) => current.filter((id) => id !== folderId))
+        setPinnedRootItemIds((current) =>
+          current.filter((itemId) => itemId !== rootFolderOrderId(folderId))
+        )
         setFolderConnectionOrder((current) => {
           return Object.fromEntries(Object.entries(current).filter(([id]) => id !== folderId))
         })
@@ -2097,6 +2160,7 @@ function App(): React.JSX.Element {
     targetFolderId: string,
     placeAfter: boolean
   ): void => {
+    setRootItemOrderCustomized(true)
     setConnectionFolderOrder((current) => {
       const ordered = mergeOrderedIds(
         connectionFolders.map((folder) => folder.id),
@@ -2120,36 +2184,12 @@ function App(): React.JSX.Element {
     })
   }
 
-  const reorderRootFolderAroundConnection = (
-    movingFolderId: string,
-    targetConnectionId: string,
-    placeAfter: boolean
-  ): void => {
-    if (connectionFolderAssignments[targetConnectionId]) {
-      return
-    }
-
-    setRootItemOrder((current) => {
-      const available = [
-        ...connectionFolders.map((folder) => rootFolderOrderId(folder.id)),
-        ...connections
-          .filter((connection) => !connectionFolderAssignments[connection.connection_id])
-          .map((connection) => rootConnectionOrderId(connection.connection_id))
-      ]
-      return insertIdsAroundTarget(
-        mergeOrderedIds(available, current),
-        [rootFolderOrderId(movingFolderId)],
-        rootConnectionOrderId(targetConnectionId),
-        placeAfter
-      )
-    })
-  }
-
   const reorderRootConnections = (
     movingConnectionIds: string[],
     targetConnectionId: string,
     placeAfter: boolean
   ): void => {
+    setRootItemOrderCustomized(true)
     setRootConnectionOrder((current) => {
       const rootIds = connections
         .filter((connection) => !connectionFolderAssignments[connection.connection_id])
@@ -2172,33 +2212,6 @@ function App(): React.JSX.Element {
         mergeOrderedIds(available, current),
         movingConnectionIds.map(rootConnectionOrderId),
         rootConnectionOrderId(targetConnectionId),
-        placeAfter
-      )
-    })
-  }
-
-  const reorderRootConnectionsAroundFolder = (
-    movingConnectionIds: string[],
-    targetFolderId: string,
-    placeAfter: boolean
-  ): void => {
-    const movableConnectionIds = movingConnectionIds.filter(
-      (connectionId) => !connectionFolderAssignments[connectionId]
-    )
-    if (movableConnectionIds.length === 0) {
-      return
-    }
-    setRootItemOrder((current) => {
-      const available = [
-        ...connectionFolders.map((folder) => rootFolderOrderId(folder.id)),
-        ...connections
-          .filter((connection) => !connectionFolderAssignments[connection.connection_id])
-          .map((connection) => rootConnectionOrderId(connection.connection_id))
-      ]
-      return insertIdsAroundTarget(
-        mergeOrderedIds(available, current),
-        movableConnectionIds.map(rootConnectionOrderId),
-        rootFolderOrderId(targetFolderId),
         placeAfter
       )
     })
@@ -2389,7 +2402,32 @@ function App(): React.JSX.Element {
     return undefined
   }
 
-  const allowTreeDrop = (): boolean => true
+  const allowTreeDrop = ({ dragNode, dropNode, dropPosition }: {
+    dragNode: unknown
+    dropNode: unknown
+    dropPosition: number
+  }): boolean => {
+    const draggedNode = dragNode as Partial<DatabaseTreeNode>
+    const targetNode = dropNode as Partial<DatabaseTreeNode>
+    const draggedKind = getTreeNodeKindFromKey(draggedNode)
+    const targetKind = getTreeNodeKindFromKey(targetNode)
+
+    if (draggedKind === 'folder') {
+      return targetKind === 'folder' && dropPosition !== 0
+    }
+    if (draggedKind !== 'connection' || targetKind !== 'connection') {
+      return false
+    }
+
+    const draggedConnectionId = draggedNode.connectionId
+    const targetConnectionId = targetNode.connectionId
+    return Boolean(
+      draggedConnectionId &&
+        targetConnectionId &&
+        connectionFolderAssignments[draggedConnectionId] ===
+          connectionFolderAssignments[targetConnectionId]
+    )
+  }
 
   const updateDragOverFolderTarget = (target?: {
     folderId: string
@@ -2479,18 +2517,6 @@ function App(): React.JSX.Element {
     updateDragOverConnectionTarget(undefined)
 
     if ((draggedNode.kind === 'folder' || draggedFolderId) && draggedFolderId) {
-      if (connectionDragTarget) {
-        reorderRootFolderAroundConnection(
-          draggedFolderId,
-          connectionDragTarget.connectionId,
-          connectionDragTarget.zone === 'after'
-        )
-        return
-      }
-      if (targetConnectionId) {
-        reorderRootFolderAroundConnection(draggedFolderId, targetConnectionId, placeAfter)
-        return
-      }
       if (folderDragTarget && draggedFolderId !== folderDragTarget.folderId) {
         reorderFolderNodes(
           draggedFolderId,
@@ -2514,11 +2540,13 @@ function App(): React.JSX.Element {
       return
     }
 
-    const movingConnectionIds = selectedConnectionIds.includes(draggedConnectionId)
+    const draggedConnectionFolderId = connectionFolderAssignments[draggedConnectionId]
+    const movingConnectionIds = (selectedConnectionIds.includes(draggedConnectionId)
       ? selectedConnectionIds
       : [draggedConnectionId]
-
-    const draggedConnectionFolderId = connectionFolderAssignments[draggedConnectionId]
+    ).filter(
+      (connectionId) => connectionFolderAssignments[connectionId] === draggedConnectionFolderId
+    )
     if (connectionDragTarget && !movingConnectionIds.includes(connectionDragTarget.connectionId)) {
       const targetConnectionFolderId =
         connectionDragTarget.folderId ??
@@ -2577,25 +2605,6 @@ function App(): React.JSX.Element {
       }
     }
 
-    if (folderDragTarget && !targetConnectionId) {
-      reorderRootConnectionsAroundFolder(
-        movingConnectionIds,
-        folderDragTarget.folderId,
-        folderDragTarget.zone === 'after'
-      )
-      return
-    }
-
-    if (info.dropToGap) {
-      if (
-        (targetNodeKind === 'folder' || targetFolderId) &&
-        targetFolderId &&
-        relativeDropPosition !== 0
-      ) {
-        reorderRootConnectionsAroundFolder(movingConnectionIds, targetFolderId, placeAfter)
-        return
-      }
-    }
   }
 
   const updateWorkspaceTab = useCallback((key: string, patch: Partial<WorkspaceTab>): void => {
@@ -4038,6 +4047,7 @@ function App(): React.JSX.Element {
     setEditingDatabaseName(databaseName)
     setEditingPgDatabaseName(pgDatabaseName)
     setEditingTableName(tableName)
+    setEditingOriginalTableName(tableName)
     setEditingTableComment('')
     setEditingColumns([])
     setTableEditorOpen(true)
@@ -4061,33 +4071,36 @@ function App(): React.JSX.Element {
   }
 
   const saveTableEditor = async (): Promise<void> => {
-    if (!editingConnectionId || !editingTableName) {
+    if (!editingConnectionId || !editingTableName || !editingOriginalTableName) {
       return
     }
 
     if (!ensureConnectionOpen(editingConnectionId)) {
       return
-    }
+  }
 
-    setTableEditorLoading(true)
+  setTableEditorLoading(true)
+  const updatedTableName = editingTableName.trim()
 
-    try {
+  try {
       const data = await requestJson<ColumnsResponse>(
         withPgDatabase(
-          `/connections/${editingConnectionId}/tables/${encodeURIComponent(editingTableName)}/columns`,
+          `/connections/${editingConnectionId}/tables/${encodeURIComponent(editingOriginalTableName)}/columns`,
           editingDatabaseName,
           editingPgDatabaseName
         ),
         {
           method: 'PUT',
           body: JSON.stringify({
-            table_comment: editingTableComment.trim() || null,
+            table_name: updatedTableName,
+            table_comment: editingTableComment.trim(),
             columns: editingColumns.map((column) => ({
               name: column.name,
+              source_name: column.key,
               type: column.type,
               nullable: column.nullable,
               primary_key: column.primaryKey,
-              comment: column.comment.trim() || null,
+              comment: column.comment.trim(),
               unique: column.unique,
               auto_increment: column.autoIncrement,
               auto_increment_step: column.autoIncrementStep ?? null,
@@ -4099,6 +4112,26 @@ function App(): React.JSX.Element {
       )
       setEditingTableComment(data.table_comment ?? '')
       setEditingColumns(data.columns.map(toColumnDef))
+      if (editingOriginalTableName !== updatedTableName) {
+        setWorkspaceTabs((current) =>
+          current.filter(
+            (tab) =>
+              tab.connectionId !== editingConnectionId ||
+              tab.tableName !== editingOriginalTableName ||
+              tab.databaseName !== editingDatabaseName ||
+              tab.pgDatabaseName !== editingPgDatabaseName
+          )
+        )
+      }
+      if (editingOriginalTableName !== updatedTableName) {
+        if (editingPgDatabaseName) {
+          refreshDatabaseNode(editingConnectionId, editingPgDatabaseName)
+        } else if (editingDatabaseName) {
+          refreshDatabaseNode(editingConnectionId, editingDatabaseName)
+        } else {
+          refreshConnectionNode(editingConnectionId)
+        }
+      }
       setTableEditorOpen(false)
     } catch (err) {
       showError(err instanceof Error ? err.message : '保存表结构失败')
@@ -4458,6 +4491,8 @@ function App(): React.JSX.Element {
   const getConnectionContextMenu = (connection: ConnectionInfo): MenuProps['items'] => {
     const loading = Boolean(connectionTreeLoading[connection.connection_id])
     const currentFolderId = connectionFolderAssignments[connection.connection_id]
+    const rootItemId = rootConnectionOrderId(connection.connection_id)
+    const isPinned = pinnedRootItemIds.includes(rootItemId)
     const folderMenuItems = connectionFolders.map((folder) => ({
       key: `move-folder:${folder.id}`,
       label: folder.name,
@@ -4487,6 +4522,16 @@ function App(): React.JSX.Element {
         ? [{ key: 'run-sql', label: '运行 SQL 文件', icon: <PlayCircleOutlined /> }]
         : []),
       { type: 'divider' as const },
+      ...(!currentFolderId
+        ? [
+            {
+              key: isPinned ? 'unpin-root-item' : 'pin-root-item',
+              label: isPinned ? '取消置顶' : '置顶',
+              icon: <PushpinOutlined />
+            },
+            { type: 'divider' as const }
+          ]
+        : []),
       ...(connection.database_type !== 'sqlite'
         ? [
             {
@@ -4544,7 +4589,15 @@ function App(): React.JSX.Element {
       return []
     }
 
+    const rootItemId = rootFolderOrderId(node.folderId)
+    const isPinned = pinnedRootItemIds.includes(rootItemId)
     return [
+      {
+        key: isPinned ? 'unpin-root-item' : 'pin-root-item',
+        label: isPinned ? '取消置顶' : '置顶',
+        icon: <PushpinOutlined />
+      },
+      { type: 'divider' as const },
       { key: 'rename-folder', label: '重命名分组', icon: <EditOutlined /> },
       { key: 'delete-folder', label: '删除分组', icon: <DeleteOutlined />, danger: true }
     ]
@@ -4577,6 +4630,16 @@ function App(): React.JSX.Element {
 
     const node = treeContextMenu.node
     if (node.kind === 'folder' && node.folderId) {
+      const rootItemId = rootFolderOrderId(node.folderId)
+      if (key === 'pin-root-item') {
+        setPinnedRootItemIds((current) => [
+          rootItemId,
+          ...current.filter((itemId) => itemId !== rootItemId)
+        ])
+      }
+      if (key === 'unpin-root-item') {
+        setPinnedRootItemIds((current) => current.filter((itemId) => itemId !== rootItemId))
+      }
       if (key === 'rename-folder') {
         openRenameFolderModal(node.folderId)
       }
@@ -4584,6 +4647,16 @@ function App(): React.JSX.Element {
         deleteFolder(node.folderId)
       }
     } else if (node.kind === 'connection' && node.connectionId) {
+      const rootItemId = rootConnectionOrderId(node.connectionId)
+      if (!connectionFolderAssignments[node.connectionId] && key === 'pin-root-item') {
+        setPinnedRootItemIds((current) => [
+          rootItemId,
+          ...current.filter((itemId) => itemId !== rootItemId)
+        ])
+      }
+      if (!connectionFolderAssignments[node.connectionId] && key === 'unpin-root-item') {
+        setPinnedRootItemIds((current) => current.filter((itemId) => itemId !== rootItemId))
+      }
       const connection = getConnection(node.connectionId)
       if (connection) {
         handleConnectionContextMenuClick(key, connection)
@@ -4776,14 +4849,20 @@ function App(): React.JSX.Element {
           {String(node.title ?? '')}
         </span>
         <span className="tree-node-actions">
-          {node.sizeDisplay && (
+          {node.sizeLoading ? (
+            <LoadingOutlined
+              spin
+              className="tree-size-loading-icon"
+              title="正在计算占用大小"
+            />
+          ) : node.sizeDisplay ? (
             <span
               className="tree-size-badge"
               title={`数据大小：${node.sizeDisplay}${node.storageSizeDisplay ? `，物理占用：${node.storageSizeDisplay}` : ''}`}
             >
               {node.sizeDisplay}
             </span>
-          )}
+          ) : null}
         </span>
       </Flex>
     )
@@ -6511,6 +6590,9 @@ function App(): React.JSX.Element {
       )
 
       const orderedRootItemIdSet = new Set(orderedRootItemIds)
+      if (orderedRootItemIds.length > 0) {
+        setRootItemOrderCustomized(true)
+      }
       setRootItemOrder((current) => [
         ...current.filter((itemId) => !orderedRootItemIdSet.has(itemId)),
         ...orderedRootItemIds
@@ -11056,7 +11138,7 @@ function App(): React.JSX.Element {
             editingDatabaseName,
             editingPgDatabaseName,
             editingTableName ?? '',
-            undefined,
+            setEditingTableName,
             editingTableComment,
             setEditingTableComment,
             editingColumns,

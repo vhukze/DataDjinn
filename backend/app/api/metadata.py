@@ -123,14 +123,21 @@ def create_table_endpoint(connection_id: str, request: TableCreateRequest) -> Ta
 
 
 @router.get("/{connection_id}/objects", response_model=DbObjectsResponse)
-def get_objects(connection_id: str, database: str | None = None, pg_database: str | None = None, type: str | None = None) -> DbObjectsResponse:
+def get_objects(
+    connection_id: str,
+    database: str | None = None,
+    pg_database: str | None = None,
+    type: str | None = None,
+    include_stats: bool = False,
+    include_comment: bool = False,
+) -> DbObjectsResponse:
     engine = connection_manager.get_engine(connection_id)
 
     if engine is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="连接已关闭，请先打开连接")
 
-    objects = list_db_objects(engine, database, pg_database, type)
-    if type in {None, "table"}:
+    objects = list_db_objects(engine, database, pg_database, type, include_stats)
+    if include_comment and type in {None, "table"}:
         for obj in objects:
             if obj.type == "table" and not obj.comment:
                 obj.comment = get_table_comment(engine, obj.name, database, pg_database)
@@ -345,15 +352,23 @@ def update_columns(connection_id: str, table_name: str, request: TableUpdateRequ
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="连接已关闭，请先打开连接")
 
     try:
-        update_table_columns(engine, table_name, request.columns, database, pg_database, request.table_comment)
+        updated_table_name = update_table_columns(
+            engine,
+            table_name,
+            request.columns,
+            database,
+            pg_database,
+            request.table_comment,
+            request.table_name,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=friendly_error(exc)) from exc
 
     return ColumnsResponse(
-        columns=list_columns(engine, table_name, database, pg_database),
-        table_comment=get_table_comment(engine, table_name, database, pg_database),
+        columns=list_columns(engine, updated_table_name, database, pg_database),
+        table_comment=get_table_comment(engine, updated_table_name, database, pg_database),
     )
 
 

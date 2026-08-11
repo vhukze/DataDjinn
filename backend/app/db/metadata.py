@@ -538,11 +538,18 @@ def create_schema(engine: Engine, database_name: str, schema_name: str) -> Datab
     return DatabaseInfo(name=schema_name)
 
 
-def list_tables(engine: Engine, database_name: str | None = None, pg_database: str | None = None) -> list[TableInfo]:
+def list_tables(
+    engine: Engine,
+    database_name: str | None = None,
+    pg_database: str | None = None,
+    include_stats: bool = True,
+) -> list[TableInfo]:
     if is_mongo_client(engine):
         target_db = database_name or mongo_default_database(engine)
         if not target_db:
             return []
+        if not include_stats:
+            return [TableInfo(name=name) for name in engine[target_db].list_collection_names()]
         tables = []
         for name in engine[target_db].list_collection_names():
             stats = engine[target_db].command("collStats", name)
@@ -559,6 +566,8 @@ def list_tables(engine: Engine, database_name: str | None = None, pg_database: s
     if is_redis_client(engine):
         target = redis_client_for_database(engine, database_name)
         try:
+            if not include_stats:
+                return [TableInfo(name=key) for key in redis_scan_keys(target)]
             tables = []
             for key in redis_scan_keys(target):
                 key_type = redis_key_type(target, key)
@@ -581,6 +590,15 @@ def list_tables(engine: Engine, database_name: str | None = None, pg_database: s
 
     if engine.dialect.name == "mysql":
         with engine.connect() as connection:
+            if not include_stats:
+                rows = connection.execute(
+                    text(
+                        "SELECT t.TABLE_NAME FROM information_schema.TABLES t "
+                        "WHERE t.TABLE_SCHEMA = :database_name ORDER BY t.TABLE_NAME"
+                    ),
+                    {"database_name": database_name or engine.url.database},
+                ).fetchall()
+                return [TableInfo(name=str(row[0])) for row in rows]
             rows = connection.execute(
                 text(
                     "SELECT t.TABLE_NAME, COALESCE(t.TABLE_ROWS, 0) AS TABLE_ROWS, "
@@ -620,6 +638,15 @@ def list_tables(engine: Engine, database_name: str | None = None, pg_database: s
     if _is_schema_scoped_engine(engine):
         schema_name = database_name or "public"
         with engine.connect() as connection:
+            if not include_stats:
+                rows = connection.execute(
+                    text(
+                        "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+                        "WHERE n.nspname = :schema_name AND c.relkind IN ('r', 'p', 'm') ORDER BY c.relname"
+                    ),
+                    {"schema_name": schema_name},
+                ).fetchall()
+                return [TableInfo(name=str(row[0])) for row in rows]
             rows = connection.execute(
                 text(
                     "SELECT c.relname, GREATEST(COALESCE(c.reltuples, 0)::bigint, 0) AS row_count, "
@@ -658,6 +685,15 @@ def list_tables(engine: Engine, database_name: str | None = None, pg_database: s
     if _is_clickhouse_engine(engine):
         target_db = database_name or engine.url.database or "default"
         with engine.connect() as connection:
+            if not include_stats:
+                rows = connection.execute(
+                    text(
+                        "SELECT name FROM system.tables WHERE database = :database_name "
+                        "AND is_temporary = 0 AND engine NOT LIKE '%View' ORDER BY name"
+                    ),
+                    {"database_name": target_db},
+                ).fetchall()
+                return [TableInfo(name=str(row[0])) for row in rows]
             rows = connection.execute(
                 text(
                     "SELECT name, COALESCE(total_rows, 0) AS row_count, COALESCE(total_bytes, 0) AS storage_size_bytes "
@@ -680,15 +716,15 @@ def list_tables(engine: Engine, database_name: str | None = None, pg_database: s
     if _is_oracle_engine(engine):
         schema_name = (database_name or engine.url.username or "").upper()
         with engine.connect() as connection:
-            current_user = _oracle_current_user(connection)
-            segment_sizes = _oracle_table_segment_sizes(connection, schema_name, current_user)
+            if include_stats:
+                current_user = _oracle_current_user(connection)
+                segment_sizes = _oracle_table_segment_sizes(connection, schema_name, current_user)
+            else:
+                segment_sizes = {}
             rows = connection.execute(
                 text(
-                    "SELECT t.TABLE_NAME, COALESCE(t.NUM_ROWS, 0) AS ROW_COUNT, c.COMMENTS "
-                    "FROM ALL_TABLES t "
-                    "LEFT JOIN ALL_TAB_COMMENTS c "
-                    "  ON c.OWNER = t.OWNER AND c.TABLE_NAME = t.TABLE_NAME AND c.TABLE_TYPE = 'TABLE' "
-                    "WHERE t.OWNER = :schema_name "
+                    "SELECT t.TABLE_NAME, COALESCE(t.NUM_ROWS, 0) AS ROW_COUNT "
+                    "FROM ALL_TABLES t WHERE t.OWNER = :schema_name "
                     "ORDER BY t.TABLE_NAME"
                 ),
                 {"schema_name": schema_name},
@@ -697,12 +733,11 @@ def list_tables(engine: Engine, database_name: str | None = None, pg_database: s
         return [
             TableInfo(
                 name=str(row[0]),
-                comment=_clean_optional_text(_db_text(row[2])) if len(row) > 2 else None,
                 row_count=int(row[1] or 0),
-                size_bytes=segment_sizes.get(str(row[0]).upper(), 0),
-                size_display=format_size(segment_sizes.get(str(row[0]).upper(), 0)),
-                storage_size_bytes=segment_sizes.get(str(row[0]).upper(), 0),
-                storage_size_display=format_size(segment_sizes.get(str(row[0]).upper(), 0)),
+                size_bytes=segment_sizes.get(str(row[0]).upper(), 0) if include_stats else None,
+                size_display=format_size(segment_sizes.get(str(row[0]).upper(), 0)) if include_stats else None,
+                storage_size_bytes=segment_sizes.get(str(row[0]).upper(), 0) if include_stats else None,
+                storage_size_display=format_size(segment_sizes.get(str(row[0]).upper(), 0)) if include_stats else None,
             )
             for row in rows
         ]
@@ -711,8 +746,10 @@ def list_tables(engine: Engine, database_name: str | None = None, pg_database: s
         schema_name = (database_name or engine.url.username or "SYSDBA").upper()
 
         with engine.connect() as connection:
-            current_user = _dm_current_user(connection)
-            segment_sizes = _dm_table_segment_sizes(connection, schema_name, current_user)
+            segment_sizes = {}
+            if include_stats:
+                current_user = _dm_current_user(connection)
+                segment_sizes = _dm_table_segment_sizes(connection, schema_name, current_user)
             rows = connection.execute(
                 text(
                     "SELECT t.TABLE_NAME, COALESCE(t.NUM_ROWS, 0) AS ROW_COUNT "
@@ -725,10 +762,10 @@ def list_tables(engine: Engine, database_name: str | None = None, pg_database: s
             TableInfo(
                 name=str(row[0]),
                 row_count=int(row[1] or 0),
-                size_bytes=segment_sizes.get(str(row[0]).upper(), 0),
-                size_display=format_size(segment_sizes.get(str(row[0]).upper(), 0)),
-                storage_size_bytes=segment_sizes.get(str(row[0]).upper(), 0),
-                storage_size_display=format_size(segment_sizes.get(str(row[0]).upper(), 0)),
+                size_bytes=segment_sizes.get(str(row[0]).upper(), 0) if include_stats else None,
+                size_display=format_size(segment_sizes.get(str(row[0]).upper(), 0)) if include_stats else None,
+                storage_size_bytes=segment_sizes.get(str(row[0]).upper(), 0) if include_stats else None,
+                storage_size_display=format_size(segment_sizes.get(str(row[0]).upper(), 0)) if include_stats else None,
             )
             for row in rows
         ]
@@ -737,21 +774,36 @@ def list_tables(engine: Engine, database_name: str | None = None, pg_database: s
     return [TableInfo(name=table_name) for table_name in inspector.get_table_names(schema=database_name)]
 
 
-def list_db_objects(engine: Engine, database_name: str | None = None, pg_database: str | None = None, object_type: str | None = None) -> list[DbObjectInfo]:
+def list_db_objects(
+    engine: Engine,
+    database_name: str | None = None,
+    pg_database: str | None = None,
+    object_type: str | None = None,
+    include_stats: bool = True,
+) -> list[DbObjectInfo]:
     objects: list[DbObjectInfo] = []
 
     if is_mongo_client(engine):
         if object_type not in {None, "table"}:
             return []
-        return [DbObjectInfo(type="table", **table.model_dump()) for table in list_tables(engine, database_name, pg_database)]
+        return [
+            DbObjectInfo(type="table", **table.model_dump())
+            for table in list_tables(engine, database_name, pg_database, include_stats)
+        ]
 
     if is_redis_client(engine):
         if object_type not in {None, "table"}:
             return []
-        return [DbObjectInfo(type="table", **table.model_dump()) for table in list_tables(engine, database_name, pg_database)]
+        return [
+            DbObjectInfo(type="table", **table.model_dump())
+            for table in list_tables(engine, database_name, pg_database, include_stats)
+        ]
 
     if object_type in {None, "table"}:
-        objects.extend(DbObjectInfo(type="table", **table.model_dump()) for table in list_tables(engine, database_name, pg_database))
+        objects.extend(
+            DbObjectInfo(type="table", **table.model_dump())
+            for table in list_tables(engine, database_name, pg_database, include_stats)
+        )
 
     if object_type not in {None, "view", "trigger", "procedure", "function", "sequence", "index"}:
         return objects
@@ -1170,6 +1222,34 @@ def _oracle_table_comment(engine: Engine, table_name: str, schema_name: str) -> 
     return _clean_optional_text(_db_text(row[0])) if row and row[0] is not None else None
 
 
+def _dm_table_comment(engine: Engine, table_name: str, schema_name: str) -> str | None:
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT COMMENTS FROM ALL_TAB_COMMENTS "
+                "WHERE OWNER = :schema_name AND TABLE_NAME = :table_name AND TABLE_TYPE = 'TABLE'"
+            ),
+            {"schema_name": schema_name, "table_name": table_name},
+        ).fetchone()
+    return _clean_optional_text(_db_text(row[0])) if row and row[0] is not None else None
+
+
+def _dm_column_comments(engine: Engine, table_name: str, schema_name: str) -> dict[str, str]:
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT COLUMN_NAME, COMMENTS FROM ALL_COL_COMMENTS "
+                "WHERE OWNER = :schema_name AND TABLE_NAME = :table_name"
+            ),
+            {"schema_name": schema_name, "table_name": table_name},
+        ).fetchall()
+    return {
+        str(row[0]).casefold(): _clean_optional_text(_db_text(row[1])) or ""
+        for row in rows
+        if row[0] is not None and row[1] is not None
+    }
+
+
 def _oracle_column_comments(engine: Engine, table_name: str, schema_name: str) -> dict[str, str]:
     with engine.connect() as connection:
         rows = connection.execute(
@@ -1267,6 +1347,10 @@ def get_table_comment(engine: Engine, table_name: str, database_name: str | None
         schema_name = database_name or "public"
         return _pg_table_comment(engine, table_name, schema_name)
 
+    if engine.dialect.name in {"dm", "dmPython"}:
+        schema_name = (database_name or engine.url.username or "SYSDBA").upper()
+        return _dm_table_comment(engine, table_name, schema_name)
+
     if _is_oracle_engine(engine):
         schema_name = (database_name or engine.url.username or "").upper()
         return _oracle_table_comment(engine, table_name, schema_name)
@@ -1330,7 +1414,8 @@ def list_columns(engine: Engine, table_name: str, database_name: str | None = No
         ]
 
     if engine.dialect.name in {"dm", "dmPython"}:
-        schema_name = database_name or engine.url.username.upper() or "SYSDBA"
+        schema_name = (database_name or engine.url.username or "SYSDBA").upper()
+        column_comments = _dm_column_comments(engine, table_name, schema_name)
         with engine.connect() as connection:
             rows = connection.execute(
                 text(
@@ -1354,6 +1439,7 @@ def list_columns(engine: Engine, table_name: str, database_name: str | None = No
                 type=str(row[1]),
                 nullable=row[2] == "Y",
                 primary_key=str(row[0]) in primary_keys,
+                comment=column_comments.get(str(row[0]).casefold()) or None,
             )
             for row in rows
         ]
@@ -1857,33 +1943,62 @@ def update_table_columns(
     database_name: str | None = None,
     pg_database: str | None = None,
     table_comment: str | None = None,
-) -> None:
+    new_table_name: str | None = None,
+) -> str:
     if pg_database and engine.dialect.name in {"postgresql", "gaussdb"}:
         db_engine = _pg_engine(engine, pg_database)
         try:
-            update_table_columns(db_engine, table_name, next_columns, database_name, None, table_comment)
+            return update_table_columns(
+                db_engine,
+                table_name,
+                next_columns,
+                database_name,
+                None,
+                table_comment,
+                new_table_name,
+            )
         finally:
             if db_engine is not engine:
                 db_engine.dispose()
-        return
 
     _validate_update_columns_v2(engine, table_name, next_columns, database_name)
+    normalized_table_name = (new_table_name or table_name).strip()
+    if not normalized_table_name:
+        raise ValueError("表名不能为空")
 
     if engine.dialect.name == "sqlite":
+        if normalized_table_name != table_name:
+            raise ValueError("当前不支持修改 SQLite 表名")
         _update_sqlite_table_columns_v2(engine, table_name, next_columns)
-        return
+        return table_name
 
     if engine.dialect.name == "mysql":
+        if normalized_table_name != table_name:
+            raise ValueError("当前不支持修改 MySQL 表名")
         _update_mysql_table_columns_v2(engine, table_name, next_columns, database_name, table_comment)
-        return
+        return table_name
 
     if engine.dialect.name in {"postgresql", "gaussdb"}:
+        if normalized_table_name != table_name:
+            raise ValueError("当前不支持修改 PostgreSQL 表名")
         _update_postgresql_table_columns_v2(engine, table_name, next_columns, database_name, table_comment)
-        return
+        return table_name
+
+    if engine.dialect.name in {"dm", "dmPython"}:
+        return _update_dm_table_columns_v2(
+            engine,
+            table_name,
+            next_columns,
+            database_name,
+            normalized_table_name,
+            table_comment,
+        )
 
     if _is_oracle_engine(engine):
+        if normalized_table_name != table_name:
+            raise ValueError("当前不支持修改 Oracle 表名")
         _update_oracle_table_columns_v2(engine, table_name, next_columns, database_name, table_comment)
-        return
+        return table_name
 
     raise ValueError(f"当前不支持修改 {engine.dialect.name} 表结构")
 
@@ -2322,12 +2437,81 @@ def _primary_key_where(primary_keys: list[str], row: dict, prefix: str, preparer
 def _validate_update_columns_v2(engine: Engine, table_name: str, next_columns: list[TableUpdateColumn], database_name: str | None = None) -> None:
     current_columns = list_columns(engine, table_name, database_name)
     current_names = [column.name for column in current_columns]
-    next_names = [column.name.strip() for column in next_columns]
+    source_names = [(column.source_name or column.name).strip() for column in next_columns]
 
-    if current_names != next_names:
-        raise ValueError("当前只支持修改已有字段属性，不支持新增、删除或重命名字段")
+    if current_names != source_names:
+        raise ValueError("字段来源与当前表结构不一致，无法安全修改")
 
     _validate_table_columns(next_columns, engine.dialect.name)
+
+
+def _update_dm_table_columns_v2(
+    engine: Engine,
+    table_name: str,
+    next_columns: list[TableUpdateColumn],
+    database_name: str | None,
+    new_table_name: str,
+    table_comment: str | None = None,
+) -> str:
+    schema_name = (database_name or engine.url.username or "SYSDBA").upper()
+    preparer = engine.dialect.identifier_preparer
+    quoted_table = _quote_table(preparer, table_name, schema_name)
+    current_columns = list_columns(engine, table_name, schema_name)
+    current_by_name = {column.name: column for column in current_columns}
+    source_names = [(column.source_name or column.name).strip() for column in next_columns]
+
+    current_primary_keys = {column.name for column in current_columns if column.primary_key}
+    next_primary_keys = {
+        (column.source_name or column.name).strip() for column in next_columns if column.primary_key
+    }
+    if current_primary_keys != next_primary_keys:
+        raise ValueError("达梦当前不支持在编辑表结构时修改主键，请使用 SQL 执行该操作")
+    if any(column.unique or column.auto_increment or column.minimum or column.maximum for column in next_columns):
+        raise ValueError("达梦当前不支持在编辑表结构时修改唯一、自增或数值范围约束")
+
+    with engine.begin() as connection:
+        for column, source_name in zip(next_columns, source_names, strict=True):
+            target_name = column.name.strip()
+            if source_name != target_name:
+                connection.execute(
+                    text(
+                        f"ALTER TABLE {quoted_table} RENAME COLUMN {preparer.quote(source_name)} "
+                        f"TO {preparer.quote(target_name)}"
+                    )
+                )
+
+        for column, source_name in zip(next_columns, source_names, strict=True):
+            current = current_by_name[source_name]
+            if current.type.strip().upper() == column.type.strip().upper() and current.nullable == column.nullable:
+                continue
+            definition = [preparer.quote(column.name.strip()), column.type.strip()]
+            if current.default_value:
+                definition.extend(["DEFAULT", current.default_value])
+            definition.append("NULL" if column.nullable else "NOT NULL")
+            connection.execute(text(f"ALTER TABLE {quoted_table} MODIFY ({' '.join(definition)})"))
+
+        if new_table_name != table_name:
+            connection.execute(text(f"ALTER TABLE {quoted_table} RENAME TO {preparer.quote(new_table_name)}"))
+
+        quoted_updated_table = _quote_table(preparer, new_table_name, schema_name)
+        for column in next_columns:
+            if column.comment is None:
+                continue
+            comment = _clean_optional_text(column.comment)
+            comment_sql = _sql_string(comment) if comment else "''"
+            connection.execute(
+                text(
+                    f"COMMENT ON COLUMN {quoted_updated_table}.{preparer.quote(column.name.strip())} "
+                    f"IS {comment_sql}"
+                )
+            )
+
+        if table_comment is not None:
+            comment = _clean_optional_text(table_comment)
+            comment_sql = _sql_string(comment) if comment else "''"
+            connection.execute(text(f"COMMENT ON TABLE {quoted_updated_table} IS {comment_sql}"))
+
+    return new_table_name
 
 
 def _update_sqlite_table_columns_v2(engine: Engine, table_name: str, next_columns: list[TableUpdateColumn]) -> None:

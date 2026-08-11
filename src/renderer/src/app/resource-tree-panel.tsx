@@ -58,7 +58,11 @@ type ResourceTreePanelProps = {
   folderDropPlaceholderKeyPrefix: string
   isTreeNodeChildrenLoaded: (node: DatabaseTreeNode) => boolean
   isLoadableTreeNode: (node: DatabaseTreeNode, databaseType?: DatabaseType) => boolean
-  allowTreeDrop: () => boolean
+  allowTreeDrop: (options: {
+    dragNode: unknown
+    dropNode: unknown
+    dropPosition: number
+  }) => boolean
   updateDragOverConnectionTarget: (
     value: { connectionId: string; folderId?: string; zone: 'before' | 'after' } | undefined
   ) => void
@@ -432,6 +436,9 @@ const ResourceTreePanel = memo(
                 itemHeight={itemHeight}
                 motion={false}
                 switcherIcon={(nodeProps) => {
+                  if (String(nodeProps.eventKey).startsWith('folder:')) {
+                    return null
+                  }
                   if (
                     nodeProps.eventKey != null &&
                     treeLoadingKeysRef.current.has(nodeProps.eventKey)

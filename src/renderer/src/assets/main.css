@@ -3297,13 +3297,29 @@ body[data-theme='dark'] .ant-popover-message {
   box-shadow: none !important;
 }
 
-.resource-tree-shell .tree-connection-row > .ant-tree-switcher {
+.resource-tree-shell .tree-connection-row > .ant-tree-switcher,
+.resource-tree-shell .tree-folder-row > .ant-tree-switcher {
   display: none !important;
+  pointer-events: none;
 }
 
-.resource-tree-shell .tree-connection-row > .ant-tree-node-content-wrapper {
+.resource-tree-shell .tree-connection-row > .ant-tree-node-content-wrapper,
+.resource-tree-shell .tree-folder-row > .ant-tree-node-content-wrapper {
   margin-left: 0 !important;
   width: 100%;
+}
+
+/* Group members only need a subtle hierarchy cue; keep deeper database/object levels unchanged. */
+.resource-tree-shell .tree-folder-connection-row > .ant-tree-indent .ant-tree-indent-unit:first-child,
+.resource-tree-shell
+  .tree-folder-connection-descendant
+  > .ant-tree-indent
+  .ant-tree-indent-unit:first-child {
+  width: 11px;
+}
+
+.resource-tree-shell .tree-folder-connection-descendant > .ant-tree-indent {
+  margin-inline-start: -13px;
 }
 
 .resource-tree-shell .ant-tree-switcher:hover,
@@ -3396,11 +3412,23 @@ body[data-theme='dark'] .ant-popover-message {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transform: translateY(0);
   position: relative;
   z-index: 1;
   color: #5d90ff;
   filter: drop-shadow(0 0 6px rgba(93, 144, 255, 0.2));
+}
+
+@keyframes dj-tree-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.resource-tree-shell .anticon.anticon-spin,
+.resource-tree-shell .tree-node-loading-icon.anticon {
+  animation: dj-tree-loading-spin 0.78s linear infinite !important;
+  transform-origin: center;
+  will-change: transform;
 }
 
 .resource-tree-shell .ant-tree-title {
@@ -3926,6 +3954,13 @@ body[data-theme='dark'] .ant-popover-message {
     inset 0 1px 0 rgba(255, 255, 255, 0.16),
     0 8px 14px color-mix(in srgb, black 6%, transparent);
   white-space: nowrap;
+}
+
+.tree-size-loading-icon.anticon {
+  width: 19px;
+  margin-left: 4px;
+  color: var(--dj-accent);
+  font-size: 12px;
 }
 
 .tree-selector-popover .ant-popover-inner {
@@ -5479,9 +5514,17 @@ body[data-theme='dark'] .import-connection-hero {
   margin-top: 8px;
 }
 
-.connection-folder-picker .ant-btn,
-.connection-folder-create-row .ant-btn {
+.connection-folder-picker .ant-btn {
   min-width: 96px;
+}
+
+.connection-folder-create-row .ant-btn:not(.ant-btn-text) {
+  min-width: 96px;
+}
+
+.connection-folder-create-row .ant-btn-text {
+  min-width: 32px;
+  padding-inline: 6px;
 }
 
 .connection-editor-side-actions {

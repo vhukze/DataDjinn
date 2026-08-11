@@ -27,6 +27,18 @@ class LocalApiSecurityTests(unittest.TestCase):
 
         importlib.reload(main_module)
 
+    def test_database_requests_receive_a_structured_connection_unavailable_code(self) -> None:
+        import app.main as main_module
+
+        with patch.object(main_module.connection_manager, "ensure_connection_healthy", return_value=False):
+            response = TestClient(main_module.app).post(
+                "/api/query",
+                json={"connection_id": "stale-connection", "sql": "SELECT 1"},
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error_code"], "CONNECTION_UNAVAILABLE")
+
 
 class QueryTimeoutTests(unittest.TestCase):
     def test_sqlite_timeout_interrupts_an_overdue_statement(self) -> None:

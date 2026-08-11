@@ -286,6 +286,7 @@ const ResultTablePanel = memo(
     const active = useWorkspaceStore((state) => state.activeTabKey === tab.key)
     const tableBodyHostRef = useRef<HTMLDivElement | null>(null)
     const [tableScrollY, setTableScrollY] = useState(320)
+    const [tableViewportWidth, setTableViewportWidth] = useState(0)
     const [searchVisibleLocal, setSearchVisibleLocal] = useState(
       Boolean(searchState.query.trim() || searchState.visible)
     )
@@ -430,6 +431,10 @@ const ResultTablePanel = memo(
         const nextHeight = getResultTableScrollHeight(element)
         if (nextHeight > 0) {
           setTableScrollY((current) => (current === nextHeight ? current : nextHeight))
+        }
+        const nextWidth = element.clientWidth
+        if (nextWidth > 0) {
+          setTableViewportWidth((current) => (current === nextWidth ? current : nextWidth))
         }
       }
 
@@ -853,6 +858,16 @@ const ResultTablePanel = memo(
       matchedCellKeySet,
       searchMatcher
     } = derivedState
+    const getResultColumnWidth = (column: string): number => {
+      const persistedWidth = columnWidths[column]
+      if (persistedWidth !== undefined) {
+        return persistedWidth
+      }
+      if (orderedColumns.length === 1 && tableViewportWidth > 0) {
+        return Math.max(DEFAULT_RESULT_COLUMN_WIDTH, tableViewportWidth - (supportsCellSelection ? 34 : 0))
+      }
+      return DEFAULT_RESULT_COLUMN_WIDTH
+    }
     const highlightedCellHtmlCache = useMemo(
       () => new Map<string, string | null>(),
       [
@@ -2274,10 +2289,10 @@ const ResultTablePanel = memo(
               onPointerDown={(event) => {
                 event.preventDefault()
                 event.stopPropagation()
-                const currentWidth = columnWidths[column] ?? DEFAULT_RESULT_COLUMN_WIDTH
+                const currentWidth = getResultColumnWidth(column)
                 const startTableWidth = Math.max(
                   orderedColumns.reduce(
-                    (total, item) => total + (columnWidths[item] ?? DEFAULT_RESULT_COLUMN_WIDTH),
+                    (total, item) => total + getResultColumnWidth(item),
                     supportsCellSelection ? 34 : 0
                   ),
                   1
@@ -2437,7 +2452,7 @@ const ResultTablePanel = memo(
       title: renderColumnTitle(column),
       dataIndex: column,
       key: column,
-      width: columnWidths[column] ?? DEFAULT_RESULT_COLUMN_WIDTH,
+      width: getResultColumnWidth(column),
       ellipsis: true,
       shouldCellUpdate: (record, previousRecord) =>
         record[column] !== previousRecord[column] ||
@@ -2483,7 +2498,7 @@ const ResultTablePanel = memo(
       : dataColumns
     const tableScrollX = Math.max(
       orderedColumns.reduce(
-        (total, column) => total + (columnWidths[column] ?? DEFAULT_RESULT_COLUMN_WIDTH),
+        (total, column) => total + getResultColumnWidth(column),
         supportsCellSelection ? 34 : 0
       ),
       1

@@ -60,6 +60,7 @@ export const tableDesignerSupportsComments = (databaseType?: DatabaseType): bool
   databaseType === 'mysql' ||
   databaseType === 'postgresql' ||
   databaseType === 'gaussdb' ||
+  databaseType === 'dm' ||
   databaseType === 'oracle'
 export const tableDesignerSupportsUnique = (databaseType?: DatabaseType): boolean =>
   databaseType === 'mysql' ||
@@ -86,6 +87,7 @@ export const tableDesignerSupportsEdit = (databaseType?: DatabaseType): boolean 
   databaseType === 'postgresql' ||
   databaseType === 'gaussdb' ||
   databaseType === 'oracle' ||
+  databaseType === 'dm' ||
   databaseType === 'sqlite'
 export const isIntegerLikeType = (type: string): boolean =>
   INTEGER_TYPE_PREFIXES.some((prefix) => type.trim().toLowerCase().startsWith(prefix))

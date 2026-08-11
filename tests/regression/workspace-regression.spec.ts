@@ -2651,7 +2651,7 @@ test.describe('workspace regression', () => {
     }
   })
 
-  test('sql query long cell content should keep the default column width @smoke', async () => {
+  test('single-column sql query should expand the value column while keeping ellipsis for overflow @smoke', async () => {
     const electronApp = await launchRegressionApp()
 
     try {
@@ -2692,11 +2692,11 @@ test.describe('workspace regression', () => {
       expect(overflowMetrics).not.toBeNull()
       expect(
         overflowMetrics.cellWidth,
-        'default query column width should not expand for long cell content'
-      ).toBeLessThanOrEqual(182)
+        'single-column query value should use the available table width'
+      ).toBeGreaterThan(182)
       expect(
         overflowMetrics.scrollWidth,
-        'query cell text should overflow internally for ellipsis'
+        'long single-column query value should still overflow internally for ellipsis'
       ).toBeGreaterThan(overflowMetrics.clientWidth)
     } finally {
       await electronApp.close()
@@ -4002,6 +4002,70 @@ test.describe('workspace regression', () => {
       await submitButton.click()
       await expect(submitButton).toHaveCount(0, { timeout: 30000 })
       await expect(target).toHaveText('query-edit-guarded')
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('single-column result should keep the row number narrow and match header/body widths @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openQueryWorkspace(page)
+
+      const editorTextbox = await focusMonacoEditor(page)
+      await page.keyboard.press('Control+A')
+      await page.keyboard.type(
+        "select 'This is a deliberately long single-column result value for layout regression' as value from small_items order by id;"
+      )
+      await page.locator('.query-execute-button').first().click()
+
+      const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      await expect(activeResult.locator('.result-table .ant-table-thead')).toBeVisible({
+        timeout: 30000
+      })
+      await expect(activeResult.locator('.editable-cell[data-cell-column-key="value"]')).toHaveCount(4, {
+        timeout: 30000
+      })
+
+      const layout = await activeResult.evaluate((node) => {
+        const rowNumberHeader = node.querySelector<HTMLElement>(
+          '.result-table .ant-table-thead > tr > th.row-number-cell'
+        )
+        const dataHeader = node.querySelector<HTMLElement>(
+          '.result-table .ant-table-thead > tr > th:not(.row-number-cell)'
+        )
+        const dataCell = node.querySelector<HTMLElement>(
+          '.result-table .ant-table-tbody td[data-column-key="value"], .result-table .ant-table-tbody-virtual-holder td[data-column-key="value"]'
+        )
+        const text = node.querySelector<HTMLElement>('.editable-cell[data-cell-column-key="value"]')
+        if (!rowNumberHeader || !dataHeader || !dataCell || !text) {
+          return null
+        }
+        const rowHeaderRect = rowNumberHeader.getBoundingClientRect()
+        const dataHeaderRect = dataHeader.getBoundingClientRect()
+        const dataCellRect = dataCell.getBoundingClientRect()
+        return {
+          rowNumberWidth: rowHeaderRect.width,
+          dataHeaderWidth: dataHeaderRect.width,
+          dataCellWidth: dataCellRect.width,
+          textWidth: text.getBoundingClientRect().width,
+          textClientWidth: text.clientWidth,
+          textScrollWidth: text.scrollWidth,
+          tableWidth: node.querySelector<HTMLElement>('.result-table .ant-table')?.getBoundingClientRect().width
+        }
+      })
+      console.log(`[layout][single-column-result] ${JSON.stringify(layout)}`)
+      expect(layout).not.toBeNull()
+      expect(layout.rowNumberWidth).toBeLessThanOrEqual(60)
+      expect(Math.abs(layout.dataHeaderWidth - layout.dataCellWidth)).toBeLessThanOrEqual(2)
+      expect(layout.textWidth).toBeGreaterThan(100)
+      expect(layout.textScrollWidth).toBeLessThanOrEqual(layout.textClientWidth + 1)
       await expect(page.locator('.app-error-boundary')).toHaveCount(0)
     } finally {
       await electronApp.close()
@@ -8541,6 +8605,268 @@ test.describe('workspace regression', () => {
     }
   })
 
+  test('connection folders should stay before root connections while each section supports pinning, double-click, and creation cancellation @bug', async () => {
+    const electronApp = await launchRegressionApp()
+    const storageKeys = [
+      'datadjinn-connection-folders',
+      'datadjinn-connection-folder-assignments',
+      'datadjinn-connection-folder-order',
+      'datadjinn-folder-connection-order',
+      'datadjinn-root-item-order',
+      'datadjinn-root-item-order-customized',
+      'datadjinn-pinned-root-item-ids'
+    ]
+    let page
+    let storageSnapshot
+
+    try {
+      page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      storageSnapshot = await page.evaluate((keys) => {
+        return Object.fromEntries(keys.map((key) => [key, localStorage.getItem(key)]))
+      }, storageKeys)
+
+      const folderName = `Regression group ${crypto.randomUUID().slice(0, 8)}`
+      await page.locator('.resource-add').click()
+      await page.getByText('新建分组', { exact: true }).click()
+      const folderModal = page.locator('.folder-editor-modal')
+      await expect(folderModal).toBeVisible({ timeout: 10000 })
+      await folderModal.locator('input').fill(folderName)
+      await page.locator('.ant-modal-footer .ant-btn-primary').last().click()
+      await expect(folderModal).toBeHidden()
+
+      const readFolderId = () =>
+        page.evaluate((name) => {
+          const folders = JSON.parse(localStorage.getItem('datadjinn-connection-folders') ?? '[]')
+          return folders.find((folder) => folder?.name === name)?.id ?? null
+        }, folderName)
+      await expect.poll(readFolderId, { timeout: 10000 }).not.toBeNull()
+      const folderId = await readFolderId()
+      expect(folderId).not.toBeNull()
+      const folderKey = `folder:${folderId}`
+      const connectionKey = `connection:${fixtureConnectionId}`
+      const rootNodeKeys = () =>
+        page.evaluate(() => {
+          return Array.from(
+            document.querySelectorAll('.resource-tree-node-title[data-tree-node-key]')
+          )
+            .map((node) => node.getAttribute('data-tree-node-key'))
+            .filter((key) => key?.startsWith('connection:') || key?.startsWith('folder:'))
+        })
+
+      await expect(treeNode(page, folderKey)).toBeVisible({ timeout: 10000 })
+      await expect.poll(rootNodeKeys).toEqual(expect.arrayContaining([connectionKey, folderKey]))
+      expect((await rootNodeKeys()).indexOf(folderKey)).toBeLessThan(
+        (await rootNodeKeys()).indexOf(connectionKey)
+      )
+
+      await page.evaluate(({ nextConnectionKey, nextFolderKey }) => {
+        localStorage.setItem('datadjinn-root-item-order-customized', 'true')
+        localStorage.setItem(
+          'datadjinn-root-item-order',
+          JSON.stringify([nextConnectionKey, nextFolderKey])
+        )
+      }, { nextConnectionKey: connectionKey, nextFolderKey: folderKey })
+      await page.reload()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await expect(treeNode(page, folderKey)).toBeVisible({ timeout: 10000 })
+      expect(
+        (await rootNodeKeys()).indexOf(folderKey),
+        'a legacy mixed root order must still render every folder before root connections'
+      ).toBeLessThan((await rootNodeKeys()).indexOf(connectionKey))
+
+      const folderNode = treeNode(page, folderKey)
+      const folderBox = await folderNode.boundingBox()
+      expect(folderBox).not.toBeNull()
+      await page.mouse.click(folderBox.x + 48, folderBox.y + folderBox.height / 2, {
+        button: 'right'
+      })
+      const menu = page.locator('.tree-context-menu-panel')
+      await expect(menu.getByText('置顶', { exact: true })).toBeVisible({ timeout: 10000 })
+      await menu.getByText('置顶', { exact: true }).click()
+      await expect.poll(rootNodeKeys).toEqual(expect.arrayContaining([folderKey, connectionKey]))
+      expect((await rootNodeKeys()).indexOf(folderKey)).toBeLessThan(
+        (await rootNodeKeys()).indexOf(connectionKey)
+      )
+
+      const pinnedFolderBox = await folderNode.boundingBox()
+      expect(pinnedFolderBox).not.toBeNull()
+      await page.mouse.click(pinnedFolderBox.x + 48, pinnedFolderBox.y + pinnedFolderBox.height / 2, {
+        button: 'right'
+      })
+      await expect(menu.getByText('取消置顶', { exact: true })).toBeVisible({ timeout: 10000 })
+      await page.keyboard.press('Escape')
+
+      const connectionNode = treeNode(page, connectionKey)
+      const connectionBox = await connectionNode.boundingBox()
+      expect(connectionBox).not.toBeNull()
+      await page.mouse.click(connectionBox.x + 80, connectionBox.y + connectionBox.height / 2, {
+        button: 'right'
+      })
+      await expect(menu.getByText('置顶', { exact: true })).toBeVisible({ timeout: 10000 })
+      await menu.getByText('置顶', { exact: true }).click()
+      await expect.poll(rootNodeKeys).toEqual(expect.arrayContaining([folderKey, connectionKey]))
+      expect(
+        (await rootNodeKeys()).indexOf(folderKey),
+        'pinning a root connection must not move it before the folder section'
+      ).toBeLessThan((await rootNodeKeys()).indexOf(connectionKey))
+
+      await folderNode.dragTo(connectionNode)
+      await expect.poll(rootNodeKeys).toEqual(expect.arrayContaining([folderKey, connectionKey]))
+      expect(
+        (await rootNodeKeys()).indexOf(folderKey),
+        'dropping a folder onto a root connection must not cross the section boundary'
+      ).toBeLessThan((await rootNodeKeys()).indexOf(connectionKey))
+
+      await connectionNode.dragTo(folderNode)
+      await expect.poll(rootNodeKeys).toEqual(expect.arrayContaining([folderKey, connectionKey]))
+      expect(
+        (await rootNodeKeys()).indexOf(folderKey),
+        'dropping a root connection onto a folder must not cross the section boundary'
+      ).toBeLessThan((await rootNodeKeys()).indexOf(connectionKey))
+      await page.keyboard.press('Escape')
+
+      const folderMetrics = await folderNode.evaluate((node) => {
+        const treeNode = node.closest('.ant-tree-treenode')
+        const switcher = treeNode?.querySelector(':scope > .ant-tree-switcher')
+        const contentWrapper = treeNode?.querySelector(':scope > .ant-tree-node-content-wrapper')
+        return {
+          hasSwitcherGlyph: Boolean(treeNode?.querySelector('.tree-switcher-glyph')),
+          switcherDisplay: switcher ? window.getComputedStyle(switcher).display : null,
+          switcherWidth: switcher?.getBoundingClientRect().width ?? null,
+          contentLeft: contentWrapper?.getBoundingClientRect().left ?? null,
+          expanded: treeNode?.classList.contains('ant-tree-treenode-switcher-open') ?? false
+        }
+      })
+      expect(folderMetrics.hasSwitcherGlyph).toBe(false)
+      expect(folderMetrics.switcherDisplay).toBe('none')
+      expect(folderMetrics.switcherWidth).toBe(0)
+      const connectionContentLeft = await connectionNode.evaluate((node) =>
+        node.closest('.ant-tree-treenode')
+          ?.querySelector(':scope > .ant-tree-node-content-wrapper')
+          ?.getBoundingClientRect().left ?? null
+      )
+      expect(folderMetrics.contentLeft).toBe(connectionContentLeft)
+      await folderNode.dblclick()
+      await expect
+        .poll(
+          () =>
+            folderNode.evaluate(
+              (node) =>
+                node.closest('.ant-tree-treenode')?.classList.contains('ant-tree-treenode-switcher-open') ??
+                false
+            ),
+          { timeout: 10000 }
+        )
+        .toBe(!folderMetrics.expanded)
+
+      await page.locator('.resource-add').click()
+      await page
+        .locator('.resource-create-dropdown .ant-dropdown-menu-item:visible')
+        .filter({ hasText: 'SQLite' })
+        .click()
+      const connectionModal = page.locator('.connection-editor-modal')
+      await expect(connectionModal).toBeVisible({ timeout: 10000 })
+      await connectionModal.getByRole('button', { name: '新建分组' }).click()
+      const inlineFolderInput = connectionModal.locator('.connection-folder-create-row input')
+      await expect(inlineFolderInput).toBeVisible({ timeout: 10000 })
+      await connectionModal.getByRole('button', { name: '取消新建分组' }).click()
+      await expect(inlineFolderInput).toBeHidden()
+
+      await page.evaluate(
+        ({ connectionId, targetFolderId }) => {
+          localStorage.setItem(
+            'datadjinn-connection-folder-assignments',
+            JSON.stringify({ [connectionId]: targetFolderId })
+          )
+          localStorage.setItem(
+            'datadjinn-folder-connection-order',
+            JSON.stringify({ [targetFolderId]: [connectionId] })
+          )
+        },
+        { connectionId: fixtureConnectionId, targetFolderId: folderId }
+      )
+      await page.reload()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await doubleClickTreeNode(page, folderKey)
+      await expect(treeNode(page, connectionKey)).toBeVisible({ timeout: 10000 })
+
+      const groupedConnectionMetrics = await treeNode(page, connectionKey).evaluate((node) => {
+        const treeNode = node.closest('.ant-tree-treenode')
+        const contentWrapper = treeNode?.querySelector(':scope > .ant-tree-node-content-wrapper')
+        return {
+          className: treeNode?.className ?? '',
+          contentLeft: contentWrapper?.getBoundingClientRect().left ?? null
+        }
+      })
+      expect(groupedConnectionMetrics.className).toContain('tree-folder-connection-row')
+      expect(groupedConnectionMetrics.contentLeft).not.toBeNull()
+      expect(folderMetrics.contentLeft).not.toBeNull()
+      expect(groupedConnectionMetrics.contentLeft - folderMetrics.contentLeft).toBeGreaterThanOrEqual(8)
+      expect(groupedConnectionMetrics.contentLeft - folderMetrics.contentLeft).toBeLessThanOrEqual(14)
+
+      await openFixtureConnection(page)
+      await expect
+        .poll(
+          () =>
+            folderNode.evaluate(
+              (node) =>
+                node.closest('.ant-tree-treenode')?.classList.contains(
+                  'ant-tree-treenode-switcher-open'
+                ) ?? false
+            ),
+          { timeout: 15000 }
+        )
+        .toBe(true)
+
+      const tableGroupKey = `object-group:${fixtureConnectionId}:::table`
+      await expect(treeNode(page, tableGroupKey)).toBeVisible({ timeout: 10000 })
+      const groupedTableGroupMetrics = await treeNode(page, tableGroupKey).evaluate((node) => {
+        const treeNode = node.closest('.ant-tree-treenode')
+        const contentWrapper = treeNode?.querySelector(':scope > .ant-tree-node-content-wrapper')
+        return {
+          className: treeNode?.className ?? '',
+          contentLeft: contentWrapper?.getBoundingClientRect().left ?? null
+        }
+      })
+      expect(groupedTableGroupMetrics.className).toContain('tree-folder-connection-descendant')
+      expect(groupedTableGroupMetrics.contentLeft - groupedConnectionMetrics.contentLeft).toBeGreaterThanOrEqual(31)
+      expect(groupedTableGroupMetrics.contentLeft - groupedConnectionMetrics.contentLeft).toBeLessThanOrEqual(35)
+
+      await ensureTreeNodeExpanded(page, tableGroupKey)
+      const tableKey = `table:${fixtureConnectionId}:::table:${smallTableName}`
+      await expect.poll(async () => revealTreeNode(page, tableKey), { timeout: 15000 }).toBe(true)
+      const groupedTableMetrics = await treeNode(page, tableKey).evaluate((node) => {
+        const treeNode = node.closest('.ant-tree-treenode')
+        const contentWrapper = treeNode?.querySelector(':scope > .ant-tree-node-content-wrapper')
+        return {
+          className: treeNode?.className ?? '',
+          contentLeft: contentWrapper?.getBoundingClientRect().left ?? null
+        }
+      })
+      expect(groupedTableMetrics.className).toContain('tree-folder-connection-descendant')
+      expect(groupedTableMetrics.contentLeft - groupedTableGroupMetrics.contentLeft).toBeGreaterThanOrEqual(22)
+      expect(groupedTableMetrics.contentLeft - groupedTableGroupMetrics.contentLeft).toBeLessThanOrEqual(26)
+    } finally {
+      if (page && storageSnapshot) {
+        await page.evaluate(({ snapshot }) => {
+          Object.entries(snapshot).forEach(([key, value]) => {
+            if (value === null) {
+              localStorage.removeItem(key)
+            } else {
+              localStorage.setItem(key, value)
+            }
+          })
+        }, { snapshot: storageSnapshot })
+      }
+      await electronApp.close()
+    }
+  })
+
   test('tree context menu should flip upward when there is not enough space below @bug', async () => {
     const electronApp = await launchRegressionApp({ windowHeight: 520 })
 
@@ -8689,33 +9015,24 @@ test.describe('workspace regression', () => {
   test('switching selected connection rows should update immediately on single click @smoke @bug', async () => {
     const fixtureUserDataDir = readFixtureUserDataDir()
     const connectionsPath = path.join(fixtureUserDataDir, 'connections.json')
-    const secondSqlitePath = path.join(fixtureUserDataDir, 'regression-second-selection.sqlite')
-    if (!fs.existsSync(secondSqlitePath)) {
-      fs.copyFileSync(path.join(fixtureUserDataDir, 'regression-fixture.sqlite'), secondSqlitePath)
-    }
-
     const originalConnectionsRaw = fs.readFileSync(connectionsPath, 'utf-8')
     const connectionStore = JSON.parse(originalConnectionsRaw)
-    const secondConnectionId = 'regression-sqlite-fixture-second'
-    const alreadyExists = connectionStore.connections.some(
-      (item) => item.connection_id === secondConnectionId
+    const templateConnection = connectionStore.connections.find(
+      (item) => item.connection_id === fixtureConnectionId
     )
-    if (!alreadyExists) {
-      const templateConnection = connectionStore.connections.find(
-        (item) => item.connection_id === fixtureConnectionId
-      )
-      if (!templateConnection) {
-        throw new Error(`Fixture connection not found: ${fixtureConnectionId}`)
-      }
-      connectionStore.connections.push({
-        ...templateConnection,
-        connection_id: secondConnectionId,
-        name: '回归选择切换 SQLite 2',
-        database: secondSqlitePath,
-        sqlite_path: secondSqlitePath
-      })
-      fs.writeFileSync(connectionsPath, JSON.stringify(connectionStore, null, 2), 'utf-8')
+    if (!templateConnection) {
+      throw new Error(`Fixture connection not found: ${fixtureConnectionId}`)
     }
+    const performanceConnections = Array.from({ length: 180 }, (_, index) => ({
+      ...templateConnection,
+      connection_id: `regression-selection-load-${String(index + 1).padStart(3, '0')}`,
+      name: `回归选择性能 SQLite ${String(index + 1).padStart(3, '0')}`
+    }))
+    connectionStore.connections = connectionStore.connections.filter(
+      (connection) => !connection.connection_id.startsWith('regression-selection-load-')
+    )
+    connectionStore.connections.push(...performanceConnections)
+    fs.writeFileSync(connectionsPath, JSON.stringify(connectionStore, null, 2), 'utf-8')
 
     const electronApp = await launchRegressionApp()
 
@@ -8726,7 +9043,7 @@ test.describe('workspace regression', () => {
       await ensureWindowSize(page)
 
       const firstKey = `connection:${fixtureConnectionId}`
-      const secondKey = `connection:${secondConnectionId}`
+      const secondKey = `connection:${performanceConnections[0].connection_id}`
       await expect.poll(async () => revealTreeNode(page, firstKey), { timeout: 15000 }).toBe(true)
       await expect.poll(async () => revealTreeNode(page, secondKey), { timeout: 15000 }).toBe(true)
 
@@ -8738,32 +9055,123 @@ test.describe('workspace regression', () => {
       await firstNode.click()
       await expect(firstNode).toHaveClass(/is-selected/, { timeout: 5000 })
 
-      const switchedInTime = await page.evaluate(async (targetKey) => {
+      const secondNodeBox = await secondNode.boundingBox()
+      expect(secondNodeBox).not.toBeNull()
+      const cdpSession = await page.context().newCDPSession(page)
+      const tracingCompleted = new Promise<{ stream: string }>((resolve) => {
+        cdpSession.once('Tracing.tracingComplete', resolve)
+      })
+      await cdpSession.send('Tracing.start', {
+        categories: [
+          'devtools.timeline',
+          'disabled-by-default-devtools.timeline',
+          'disabled-by-default-devtools.timeline.frame',
+          'disabled-by-default-devtools.timeline.picture',
+          'blink.user_timing'
+        ].join(','),
+        transferMode: 'ReturnAsStream'
+      })
+      await page.evaluate((targetKey) => {
         const target = document.querySelector(
           `.resource-tree-node-title[data-tree-node-key="${CSS.escape(targetKey)}"]`
         )
         if (!(target instanceof HTMLElement)) {
+          return
+        }
+        window.__treeSelectionTiming = {
+          start: 0,
+          classAppliedAt: null,
+          paintedAt: null
+        }
+        const observer = new MutationObserver(() => {
+          const timing = window.__treeSelectionTiming
+          if (!timing || timing.classAppliedAt !== null || !target.classList.contains('is-selected')) {
+            return
+          }
+          timing.classAppliedAt = performance.now()
+          window.requestAnimationFrame(() => {
+            timing.paintedAt = performance.now()
+            observer.disconnect()
+          })
+        })
+        observer.observe(target, { attributes: true, attributeFilter: ['class'] })
+      }, secondKey)
+      await page.evaluate(() => {
+        performance.mark('tree-selection-click-start')
+        window.__treeSelectionTiming.start = performance.now()
+      })
+      await page.mouse.click(secondNodeBox.x + secondNodeBox.width / 2, secondNodeBox.y + secondNodeBox.height / 2)
+
+      const selectionTiming = await page.evaluate(async (targetKey) => {
+        const timing = window.__treeSelectionTiming
+        const target = document.querySelector(
+          `.resource-tree-node-title[data-tree-node-key="${CSS.escape(targetKey)}"]`
+        )
+        if (!timing || !(target instanceof HTMLElement)) {
           return null
         }
-        const start = performance.now()
-        target.click()
-        while (performance.now() - start < 160) {
+        while (performance.now() - timing.start < 500) {
           if (target.classList.contains('is-selected')) {
-            return performance.now() - start
+            await new Promise((resolve) => window.requestAnimationFrame(() => resolve(undefined)))
+            return {
+              classAppliedMs: timing.classAppliedAt === null ? null : timing.classAppliedAt - timing.start,
+              paintedMs: timing.paintedAt === null ? null : timing.paintedAt - timing.start
+            }
           }
           await new Promise((resolve) => window.requestAnimationFrame(() => resolve(undefined)))
         }
         return null
       }, secondKey)
 
+      await page.waitForTimeout(120)
+      await cdpSession.send('Tracing.end')
+      const { stream } = await tracingCompleted
+      let traceJson = ''
+      for (;;) {
+        const chunk = await cdpSession.send('IO.read', { handle: stream })
+        traceJson += chunk.data
+        if (chunk.eof) {
+          break
+        }
+      }
+      await cdpSession.send('IO.close', { handle: stream })
+      const traceEvents = JSON.parse(traceJson).traceEvents as Array<{
+        name: string
+        ts?: number
+        dur?: number
+      }>
+      const clickTraceEvent = traceEvents.find(
+        (event) => event.name === 'tree-selection-click-start' && typeof event.ts === 'number'
+      )
+      const traceWindowEnd = (clickTraceEvent?.ts ?? 0) + 160_000
+      const renderEvents = traceEvents
+        .filter(
+          (event) =>
+            typeof event.ts === 'number' &&
+            event.ts >= (clickTraceEvent?.ts ?? Number.POSITIVE_INFINITY) &&
+            event.ts <= traceWindowEnd &&
+            ['Paint', 'RasterTask', 'CompositeLayers', 'DrawFrame'].includes(event.name)
+        )
+        .map((event) => ({
+          name: event.name,
+          startMs: Number(((event.ts! - clickTraceEvent!.ts!) / 1_000).toFixed(2)),
+          durationMs: Number(((event.dur ?? 0) / 1_000).toFixed(2))
+        }))
+
       expect(
-        switchedInTime,
+        selectionTiming,
         'clicking another connection row should switch selection without a noticeable delay'
       ).not.toBeNull()
       expect(
-        switchedInTime,
+        selectionTiming.classAppliedMs,
         'connection row selection should update within a short interaction frame budget'
       ).toBeLessThan(160)
+      console.log(
+        `[perf][tree-selection][180-connections] ${JSON.stringify(selectionTiming)}`
+      )
+      console.log(
+        `[perf][tree-selection-render][180-connections] ${JSON.stringify(renderEvents)}`
+      )
       await expect(secondNode).toHaveClass(/is-selected/, { timeout: 5000 })
     } finally {
       await electronApp.close()
@@ -9101,7 +9509,7 @@ test.describe('workspace regression', () => {
     }
   })
 
-  test('tree DDL action should silently reopen a closed connection and imports should use the import icon @bug', async () => {
+  test('tree DDL action should use the structured unavailable code to silently reopen a closed connection @bug', async () => {
     const electronApp = await launchRegressionApp()
 
     try {
@@ -9147,6 +9555,126 @@ test.describe('workspace regression', () => {
       await expect(ddlDialog.locator('.ddl-preview-shell .vs-whitespace')).toHaveCount(0)
       await expect(treeNode(page, `connection:${fixtureConnectionId}`)).toHaveClass(/is-open/)
       await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('Dameng table designer should expose safe table and column rename support @bug', async () => {
+    const sharedSource = fs.readFileSync(
+      path.join(projectRoot, 'src', 'renderer', 'src', 'app', 'app-shared.tsx'),
+      'utf-8'
+    )
+    const panelSource = fs.readFileSync(
+      path.join(projectRoot, 'src', 'renderer', 'src', 'app', 'table-designer-panel.tsx'),
+      'utf-8'
+    )
+    const appSource = fs.readFileSync(
+      path.join(projectRoot, 'src', 'renderer', 'src', 'App.tsx'),
+      'utf-8'
+    )
+
+    expect(sharedSource).toContain("databaseType === 'dm'")
+    expect(panelSource).toContain("const canRename = isCreateMode || connection?.database_type === 'dm'")
+    expect(panelSource).toContain('disabled={!canRename}')
+    expect(appSource).toContain('encodeURIComponent(editingOriginalTableName)')
+    expect(appSource).toContain('table_name: editingTableName.trim()')
+    expect(appSource).toContain('source_name: column.key')
+  })
+
+  test('Dameng table designer should keep comments editable and preserve the loaded table group on non-rename saves @bug', async () => {
+    const sharedSource = fs.readFileSync(
+      path.join(projectRoot, 'src', 'renderer', 'src', 'app', 'app-shared.tsx'),
+      'utf-8'
+    )
+    const appSource = fs.readFileSync(
+      path.join(projectRoot, 'src', 'renderer', 'src', 'App.tsx'),
+      'utf-8'
+    )
+
+    expect(sharedSource).toContain("databaseType === 'dm'")
+    expect(appSource).toContain('const updatedTableName = editingTableName.trim()')
+    expect(appSource).toContain('if (editingOriginalTableName !== updatedTableName) {\n        if (editingPgDatabaseName)')
+    expect(appSource).toContain('table_comment: editingTableComment.trim()')
+    expect(appSource).toContain('comment: column.comment.trim()')
+  })
+
+  test('refreshing a grouped connection should retain the latest folder expansion @bug', async () => {
+    const refreshSource = fs.readFileSync(
+      path.join(projectRoot, 'src', 'renderer', 'src', 'app', 'tree-refresh.ts'),
+      'utf-8'
+    )
+
+    expect(refreshSource).toContain('expandedKeysRef: MutableRefObject<React.Key[]>')
+    expect(refreshSource).toContain('setExpandedKeys((current) => {')
+    expect(refreshSource).toContain('return true')
+    expect(refreshSource).toContain('expandedKeysRef.current = next')
+  })
+
+  test('tree loading indicators should rotate continuously @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      const animation = await page.evaluate(() => {
+        const tree = document.querySelector('.resource-tree-shell')
+        if (!(tree instanceof HTMLElement)) {
+          return null
+        }
+        const icon = document.createElement('span')
+        icon.className = 'anticon anticon-spin tree-node-loading-icon'
+        tree.append(icon)
+        const style = window.getComputedStyle(icon)
+        const result = {
+          name: style.animationName,
+          duration: style.animationDuration,
+          iterationCount: style.animationIterationCount
+        }
+        icon.remove()
+        return result
+      })
+
+      expect(animation).toEqual({
+        name: 'dj-tree-loading-spin',
+        duration: '0.78s',
+        iterationCount: 'infinite'
+      })
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('table tree should show names before deferred size statistics are requested @bug', async () => {
+    const runtimeSource = fs.readFileSync(
+      path.join(projectRoot, 'src', 'renderer', 'src', 'app', 'tree-runtime.ts'),
+      'utf-8'
+    )
+    const appSource = fs.readFileSync(
+      path.join(projectRoot, 'src', 'renderer', 'src', 'App.tsx'),
+      'utf-8'
+    )
+
+    expect(runtimeSource).toContain('include_stats=true')
+    expect(runtimeSource).toContain("sizeLoading: resolvedType === 'table' && shouldLoadTableStats")
+    expect(runtimeSource).toContain('children.some((child) => child.sizeLoading)')
+    expect(appSource).toContain('node.sizeLoading ? (')
+    expect(appSource).toContain('tree-size-loading-icon')
+
+    const electronApp = await launchRegressionApp()
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+
+      await openFixtureConnection(page)
+      await ensureTreeNodeExpanded(page, `object-group:${fixtureConnectionId}:::table`)
+      await expect(treeNode(page, `table:${fixtureConnectionId}:::table:${smallTableName}`)).toBeVisible()
+
+      const objectNames = await page.evaluate(async (connectionId) => {
+        const response = await window.api.requestJson(`/connections/${connectionId}/objects?type=table`)
+        return response.objects.map((item) => item.name)
+      }, fixtureConnectionId)
+      expect(objectNames).toContain(smallTableName)
     } finally {
       await electronApp.close()
     }

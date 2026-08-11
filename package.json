@@ -1,6 +1,6 @@
 {
   "name": "datadjinn",
-  "version": "0.2.16",
+  "version": "0.2.17",
   "description": "AI-powered desktop database client",
   "main": "./out/main/index.js",
   "author": "vhukze",

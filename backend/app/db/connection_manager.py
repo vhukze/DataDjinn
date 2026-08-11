@@ -9,6 +9,7 @@ import shutil
 import socket
 import sys
 import threading
+import time
 import zipfile
 from ctypes import wintypes
 from dataclasses import dataclass
@@ -73,6 +74,7 @@ def _connection_store_path() -> Path:
 CONNECTION_STORE_PATH = _connection_store_path()
 CRYPTPROTECT_UI_FORBIDDEN = 0x1
 SSH_GATEWAY_CONNECT_TIMEOUT_SECONDS = 5
+CONNECTION_HEALTH_CHECK_INTERVAL_SECONDS = 30
 
 
 def _jvm_candidates_from_java_executable(java_executable: str | None) -> list[Path]:
@@ -408,6 +410,30 @@ class DmJdbcConnectionAdapter:
         return getattr(self._connection, name)
 
 
+class JdbcReconnectDialect(default.DefaultDialect):
+    def __init__(self, name: str, ping_statement: str) -> None:
+        super().__init__(paramstyle="qmark")
+        self.name = name
+        self.driver = "jdbc"
+        self.dbapi = DmJdbcDbApi
+        self.loaded_dbapi = DmJdbcDbApi
+        self.bind_typing = BindTyping.NONE
+        self.supports_statement_cache = False
+        self._ping_statement = ping_statement
+
+    def do_ping(self, dbapi_connection: DmJdbcConnectionAdapter) -> bool:
+        cursor: DmJdbcCursorAdapter | None = None
+        try:
+            cursor = dbapi_connection.cursor()
+            cursor.execute(self._ping_statement)
+            return True
+        except Exception:
+            return False
+        finally:
+            if cursor is not None:
+                cursor.close()
+
+
 def _set_jdbc_autocommit(connection: Any, enabled: bool) -> None:
     raw_connection = getattr(connection, "jconn", None)
     if raw_connection is None:
@@ -581,6 +607,7 @@ class ConnectionManager:
         self._connections: dict[str, ConnectionInfo] = {}
         self._stored_connections: dict[str, StoredConnection] = {}
         self._unavailable_secret_fields: dict[str, set[str]] = {}
+        self._connection_health_checked_at: dict[str, float] = {}
         self._opening_connection_attempts: dict[str, str] = {}
         self._cancelled_open_attempts: set[tuple[str, str]] = set()
         self._connection_open_lock = threading.RLock()
@@ -615,6 +642,7 @@ class ConnectionManager:
 
         old_engine = self._engines.pop(connection_id, None)
         old_tunnel = self._ssh_tunnels.pop(connection_id, None)
+        self._connection_health_checked_at.pop(connection_id, None)
         self._dispose_connection_resources(old_engine, old_tunnel)
 
         info = self._connection_info(connection_id, request, is_open=False)
@@ -673,6 +701,49 @@ class ConnectionManager:
     def get_engine(self, connection_id: str) -> Engine | MongoClient | Redis | None:
         return self._engines.get(connection_id)
 
+    def ensure_connection_healthy(
+        self,
+        connection_id: str,
+        *,
+        force: bool = False,
+        max_idle_seconds: int = CONNECTION_HEALTH_CHECK_INTERVAL_SECONDS,
+    ) -> bool:
+        now = time.monotonic()
+        with self._connection_open_lock:
+            engine = self._engines.get(connection_id)
+            last_checked_at = self._connection_health_checked_at.get(connection_id)
+
+        if engine is None:
+            return False
+        if not force and last_checked_at is not None and now - last_checked_at < max_idle_seconds:
+            return True
+
+        try:
+            self._ping_engine(engine)
+        except Exception:
+            with self._connection_open_lock:
+                if self._engines.get(connection_id) is not engine:
+                    return self._engines.get(connection_id) is not None
+                failed_engine = self._engines.pop(connection_id, None)
+                failed_tunnel = self._ssh_tunnels.pop(connection_id, None)
+                self._connection_health_checked_at.pop(connection_id, None)
+                stored = self._stored_connections.get(connection_id)
+                if stored is not None:
+                    self._connections[connection_id] = self._connection_info(
+                        connection_id,
+                        self._request_from_stored(stored),
+                        stored,
+                        is_open=False,
+                    )
+            self._dispose_connection_resources(failed_engine, failed_tunnel)
+            return False
+
+        with self._connection_open_lock:
+            if self._engines.get(connection_id) is engine:
+                self._connection_health_checked_at[connection_id] = now
+                return True
+            return self._engines.get(connection_id) is not None
+
     def delete_connection(self, connection_id: str) -> bool:
         stored = self._stored_connections.pop(connection_id, None)
 
@@ -681,6 +752,7 @@ class ConnectionManager:
 
         self._connections.pop(connection_id, None)
         self._unavailable_secret_fields.pop(connection_id, None)
+        self._connection_health_checked_at.pop(connection_id, None)
         engine = self._engines.pop(connection_id, None)
         tunnel = self._ssh_tunnels.pop(connection_id, None)
         self._dispose_connection_resources(engine, tunnel)
@@ -782,6 +854,7 @@ class ConnectionManager:
                     connection_id, request, stored, is_open=True, server_version=server_version
                 )
                 self._connections[connection_id] = info
+                self._connection_health_checked_at[connection_id] = time.monotonic()
             self._dispose_connection_resources(old_engine, old_tunnel)
             return info
         except Exception:
@@ -809,6 +882,7 @@ class ConnectionManager:
                 self._cancelled_open_attempts.add((connection_id, active_attempt_id))
             engine = self._engines.pop(connection_id, None)
             tunnel = self._ssh_tunnels.pop(connection_id, None)
+            self._connection_health_checked_at.pop(connection_id, None)
         self._dispose_connection_resources(engine, tunnel)
 
         request = self._request_from_stored(stored)
@@ -1235,14 +1309,9 @@ class ConnectionManager:
                 _set_jdbc_autocommit(connection, False)
                 return DmJdbcConnectionAdapter(connection)
 
-            dialect = default.DefaultDialect(paramstyle="qmark")
-            dialect.name = "dm"
-            dialect.dbapi = DmJdbcDbApi
-            dialect.loaded_dbapi = DmJdbcDbApi
-            dialect.bind_typing = BindTyping.NONE
-            dialect.supports_statement_cache = False
+            dialect = JdbcReconnectDialect("dm", "SELECT 1 FROM DUAL")
             engine = Engine(
-                QueuePool(connect_jdbc, pre_ping=False),
+                QueuePool(connect_jdbc, pre_ping=True, dialect=dialect),
                 dialect,
                 URL.create("dm-jdbc", username=request.username, host=request.host, port=request.port),
             )
@@ -1306,16 +1375,11 @@ class ConnectionManager:
             _set_jdbc_autocommit(connection, False)
             return DmJdbcConnectionAdapter(connection)
 
-        dialect = default.DefaultDialect(paramstyle="qmark")
-        dialect.name = "gaussdb"
-        dialect.dbapi = DmJdbcDbApi
-        dialect.loaded_dbapi = DmJdbcDbApi
-        dialect.bind_typing = BindTyping.NONE
-        dialect.supports_statement_cache = False
+        dialect = JdbcReconnectDialect("gaussdb", "SELECT 1")
         request_snapshot = request.model_copy(deep=True)
 
         engine = Engine(
-            QueuePool(connect_jdbc, pre_ping=False),
+            QueuePool(connect_jdbc, pre_ping=True, dialect=dialect),
             dialect,
             URL.create("gaussdb-jdbc", username=request.username, host=request.host, port=request.port, database=request.database),
         )

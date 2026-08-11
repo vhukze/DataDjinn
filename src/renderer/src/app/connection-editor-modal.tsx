@@ -10,7 +10,7 @@ import {
   Switch,
   Typography
 } from 'antd'
-import { PlusOutlined } from '@ant-design/icons'
+import { CloseOutlined, PlusOutlined } from '@ant-design/icons'
 import { memo, useEffect, useState } from 'react'
 import type { FormInstance } from 'antd'
 import type { DatabaseType } from './data-sources'
@@ -136,6 +136,11 @@ export const ConnectionEditorModal = memo(function ConnectionEditorModal({
     setNewFolderName('')
   }
 
+  const cancelFolderCreation = (): void => {
+    setCreatingFolder(false)
+    setNewFolderName('')
+  }
+
   return (
     <Modal
       title={mode === 'edit' ? '编辑数据库连接' : '保存数据库连接'}
@@ -218,6 +223,13 @@ export const ConnectionEditorModal = memo(function ConnectionEditorModal({
                     >
                       添加
                     </Button>
+                    <Button
+                      type="text"
+                      icon={<CloseOutlined />}
+                      aria-label="取消新建分组"
+                      title="取消新建分组"
+                      onClick={cancelFolderCreation}
+                    />
                   </div>
                 )}
               </Form.Item>
