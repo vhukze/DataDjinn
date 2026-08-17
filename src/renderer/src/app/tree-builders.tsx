@@ -1,4 +1,4 @@
-import { ApartmentOutlined, DatabaseOutlined, FolderOpenOutlined } from '@ant-design/icons'
+import { ApartmentOutlined, DatabaseOutlined } from '@ant-design/icons'
 import type { ReactNode } from 'react'
 import type { ConnectionInfo, DatabaseInfo } from './connection-model'
 import type { DatabaseType } from './data-sources'
@@ -126,14 +126,14 @@ export const buildFolderDropPlaceholderNode = (
 export const buildFolderNode = (
   folder: ConnectionFolder,
   children: DatabaseTreeNode[],
-  keyPrefix: string
+  keyPrefix: string,
+  isNested = false
 ): DatabaseTreeNode => ({
   key: `folder:${folder.id}`,
   title: folder.name,
-  icon: <FolderOpenOutlined />,
   kind: 'folder',
   folderId: folder.id,
-  className: 'tree-folder-row',
+  className: `tree-folder-row${isNested ? ' tree-folder-child-row' : ''}`,
   children: children.length > 0 ? children : [buildFolderDropPlaceholderNode(folder.id, keyPrefix)],
   childrenLoaded: true,
   isLeaf: false
@@ -142,6 +142,7 @@ export const buildFolderNode = (
 export type BuildResourceTreeOptions = {
   connectionFolderAssignments: Record<string, string>
   connectionFolders: ConnectionFolder[]
+  folderOrder: string[]
   folderConnectionOrder: Record<string, string[]>
   rootItemOrder: string[]
   pinnedRootItemIds: string[]
@@ -149,7 +150,11 @@ export type BuildResourceTreeOptions = {
   rootConnectionOrderId: (connectionId: string) => string
   mergeOrderedIds: (availableIds: string[], preferredIds: string[]) => string[]
   buildConnectionNode: (connection: ConnectionInfo) => DatabaseTreeNode
-  buildFolderNode: (folder: ConnectionFolder, children: DatabaseTreeNode[]) => DatabaseTreeNode
+  buildFolderNode: (
+    folder: ConnectionFolder,
+    children: DatabaseTreeNode[],
+    isNested?: boolean
+  ) => DatabaseTreeNode
 }
 
 export const buildResourceTree = (
@@ -160,6 +165,7 @@ export const buildResourceTree = (
   const {
     connectionFolderAssignments,
     connectionFolders,
+    folderOrder,
     folderConnectionOrder,
     rootItemOrder,
     pinnedRootItemIds,
@@ -216,7 +222,23 @@ export const buildResourceTree = (
     }
   }
 
-  const folderIds = connectionFolders.map((folder) => folder.id)
+  const folderMap = new Map(connectionFolders.map((folder) => [folder.id, folder]))
+  const parentFolderIdById = new Map(
+    connectionFolders.map((folder) => [
+      folder.id,
+      folder.parentId && folder.parentId !== folder.id && folderMap.has(folder.parentId)
+        ? folder.parentId
+        : undefined
+    ])
+  )
+  const childFolderIdsByParentId = new Map<string | undefined, string[]>()
+  connectionFolders.forEach((folder) => {
+    const parentId = parentFolderIdById.get(folder.id)
+    const children = childFolderIdsByParentId.get(parentId) ?? []
+    children.push(folder.id)
+    childFolderIdsByParentId.set(parentId, children)
+  })
+  const folderIds = childFolderIdsByParentId.get(undefined) ?? []
   const rootConnectionIds = [...rootNodeMap.keys()]
   const rootItems = mergeOrderedIds(
     [...folderIds.map(rootFolderOrderId), ...rootConnectionIds.map(rootConnectionOrderId)],
@@ -237,7 +259,42 @@ export const buildResourceTree = (
     ...orderRootItemsWithinSection(connectionRootItems)
   ]
 
-  const folderMap = new Map(connectionFolders.map((folder) => [folder.id, folder]))
+  const buildFolderTree = (folderId: string, ancestorFolderIds: Set<string>): DatabaseTreeNode | undefined => {
+    const folder = folderMap.get(folderId)
+    if (!folder || ancestorFolderIds.has(folderId)) {
+      return undefined
+    }
+
+    const nextAncestorFolderIds = new Set(ancestorFolderIds)
+    nextAncestorFolderIds.add(folderId)
+    const childFolderIds = mergeOrderedIds(
+      childFolderIdsByParentId.get(folderId) ?? [],
+      folderOrder
+    )
+    const childFolderNodes = childFolderIds
+      .map((childFolderId) => buildFolderTree(childFolderId, nextAncestorFolderIds))
+      .filter((node): node is DatabaseTreeNode => Boolean(node))
+
+    const childNodes = groupedNodes.get(folder.id) ?? []
+    const childNodeMap = new Map(
+      childNodes.map((node) => [node.connectionId ?? String(node.key), node])
+    )
+    const orderedChildIds = mergeOrderedIds(
+      childNodes.map((node) => node.connectionId ?? String(node.key)),
+      folderConnectionOrder[folder.id] ?? []
+    )
+
+    return buildFolderNode(
+      folder,
+      [
+        ...childFolderNodes,
+        ...orderedChildIds
+          .map((connectionId) => childNodeMap.get(connectionId))
+          .filter((node): node is DatabaseTreeNode => Boolean(node))
+      ],
+      Boolean(parentFolderIdById.get(folder.id))
+    )
+  }
 
   return orderedRootItems
     .map((itemId) => {
@@ -246,26 +303,7 @@ export const buildResourceTree = (
       }
 
       const folderId = itemId.slice('folder:'.length)
-      const folder = folderMap.get(folderId)
-      if (!folder) {
-        return undefined
-      }
-
-      const childNodes = groupedNodes.get(folder.id) ?? []
-      const childNodeMap = new Map(
-        childNodes.map((node) => [node.connectionId ?? String(node.key), node])
-      )
-      const orderedChildIds = mergeOrderedIds(
-        childNodes.map((node) => node.connectionId ?? String(node.key)),
-        folderConnectionOrder[folder.id] ?? []
-      )
-
-      return buildFolderNode(
-        folder,
-        orderedChildIds
-          .map((connectionId) => childNodeMap.get(connectionId))
-          .filter((node): node is DatabaseTreeNode => Boolean(node))
-      )
+      return buildFolderTree(folderId, new Set())
     })
     .filter((node): node is DatabaseTreeNode => Boolean(node))
 }

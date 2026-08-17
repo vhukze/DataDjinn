@@ -8,6 +8,7 @@ import {
   DownloadOutlined,
   DownOutlined,
   LeftOutlined,
+  LoadingOutlined,
   MinusOutlined,
   PlusOutlined,
   ReloadOutlined,
@@ -20,7 +21,7 @@ import type React from 'react'
 import { useLayoutEffect, useRef } from 'react'
 import { ResultTableHeader, WhereClauseInput } from './table-region'
 import type { ConnectionInfo } from './connection-model'
-import type { TableSearchUiState, WorkspaceTab, RedisKeyEdit } from './workspace-model'
+import type { MultiStatementResult, TableSearchUiState, WorkspaceTab, RedisKeyEdit } from './workspace-model'
 
 type SearchMeta = {
   matchCount: number
@@ -203,6 +204,14 @@ export function ResultStatusBar({
         if (event.button !== 0) {
           return
         }
+        const target = event.target as HTMLElement
+        if (
+          target.closest(
+            '.table-toolbar-inline-actions, .result-status-pager-shell, .preview-where-field, button, input, [role="button"]'
+          )
+        ) {
+          return
+        }
         onPointerClearSelection?.()
       }}
     >
@@ -313,15 +322,110 @@ export function QueryExecutionStatusCard({
         />
         <CloseCircleOutlined />
         <div className="query-execution-card-body">
-          <Typography.Text className="query-execution-error-text">
-            {tab.error || '未知错误'}
-          </Typography.Text>
+          <div className="query-execution-error-scroll">
+            <Typography.Text className="query-execution-error-text">
+              {tab.error || '未知错误'}
+            </Typography.Text>
+          </div>
         </div>
       </div>
     )
   }
 
   return null
+}
+
+export function MultiStatementExecutionCard({ results }: { results: MultiStatementResult[] }): React.ReactNode {
+  if (results.length === 0) {
+    return null
+  }
+
+  return (
+    <div className="query-multi-execution-card" data-testid="multi-statement-results">
+      {results.map((item) => {
+        const result = item.result
+        const isCommandResult = Boolean(
+          result &&
+            result.columns.length === 2 &&
+            result.columns.includes('message') &&
+            result.columns.includes('affected_rows')
+        )
+
+        return (
+          <div
+            className={`query-execution-card query-multi-execution-item ${item.status}`}
+            data-testid={`multi-statement-item-${item.index}`}
+            key={item.index}
+          >
+            {item.status === 'running' ? <LoadingOutlined spin /> : null}
+            {item.status === 'success' ? <CheckCircleOutlined /> : null}
+            {item.status === 'error' ? <CloseCircleOutlined /> : null}
+            <div className="query-execution-card-body query-multi-execution-body">
+              <div className="query-execution-card-heading">
+                <Typography.Text strong>{`SQL ${item.index + 1}`}</Typography.Text>
+                <Typography.Text type="secondary">
+                  {item.status === 'running' ? '执行中' : item.status === 'success' ? '执行成功' : '执行失败'}
+                </Typography.Text>
+              </div>
+              <Typography.Text code className="query-execution-sql">
+                {item.sql}
+              </Typography.Text>
+              {item.status === 'success' && isCommandResult ? (
+                <div className="query-multi-execution-command">
+                  <Typography.Text strong>执行成功</Typography.Text>
+                  <Typography.Text type="secondary">
+                    影响数据 {item.affectedRows ?? 0} 行
+                  </Typography.Text>
+                </div>
+              ) : null}
+              {item.status === 'success' && result && result.columns.length === 0 ? (
+                <Typography.Text type="secondary">执行成功</Typography.Text>
+              ) : null}
+              {item.status === 'success' && result && result.columns.length > 0 && !isCommandResult ? (
+                <div className="query-multi-execution-result">
+                  <Typography.Text type="secondary">
+                    返回 {result.row_count ?? result.rows.length} 行结果
+                  </Typography.Text>
+                  {result.rows.length > 0 ? (
+                    <div className="query-multi-execution-grid">
+                      <div
+                        className="query-multi-execution-grid-row header"
+                        style={{ gridTemplateColumns: `repeat(${result.columns.length}, minmax(120px, 1fr))` }}
+                      >
+                        {result.columns.map((column) => (
+                          <Typography.Text strong key={column}>
+                            {column}
+                          </Typography.Text>
+                        ))}
+                      </div>
+                      {result.rows.map((row, rowIndex) => (
+                        <div
+                          className="query-multi-execution-grid-row"
+                          key={rowIndex}
+                          style={{ gridTemplateColumns: `repeat(${result.columns.length}, minmax(120px, 1fr))` }}
+                        >
+                          {result.columns.map((column) => (
+                            <Typography.Text key={column}>{String(row[column] ?? '')}</Typography.Text>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              {item.status === 'error' ? (
+                <div className="query-execution-error-scroll">
+                  <Typography.Text className="query-execution-error-text">
+                    {item.error || '执行失败'}
+                  </Typography.Text>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
 }
 
 type WhereInputProps = {

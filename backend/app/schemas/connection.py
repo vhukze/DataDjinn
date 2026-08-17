@@ -26,6 +26,8 @@ class ConnectionRequest(BaseModel):
     ssh_password: str | None = None
     ssh_private_key_path: str | None = None
     ssh_passphrase: str | None = None
+    git_versioning_enabled: bool = False
+    git_versioning_scopes: list[str] = Field(default_factory=list)
 
 
 class ConnectionInfo(BaseModel):
@@ -38,6 +40,7 @@ class ConnectionInfo(BaseModel):
     has_password: bool = False
     is_open: bool = False
     server_version: str | None = None
+    git_versioning_enabled: bool = False
 
 
 class ConnectionPasswordResponse(BaseModel):

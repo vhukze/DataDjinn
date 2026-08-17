@@ -6,6 +6,9 @@ export default defineConfig({
   main: {},
   preload: {},
   renderer: {
+    esbuild: {
+      pure: ['console.info']
+    },
     resolve: {
       alias: {
         '@renderer': resolve('src/renderer/src')

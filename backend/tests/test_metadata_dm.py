@@ -2,6 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from fastapi import BackgroundTasks
 from sqlalchemy.engine import default
 
 from app.api import metadata as metadata_api
@@ -113,8 +114,12 @@ class DamengMetadataUpdateTests(unittest.TestCase):
             patch.object(metadata_api, "update_table_columns", return_value="NEW_TABLE") as update,
             patch.object(metadata_api, "list_columns", return_value=renamed_columns) as list_updated,
             patch.object(metadata_api, "get_table_comment", return_value="") as get_comment,
+            patch.object(metadata_api.schema_versioning_service, "schedule_snapshot") as schedule_snapshot,
         ):
-            response = metadata_api.update_columns("dm-connection", "OLD_TABLE", request, "APP")
+            background_tasks = BackgroundTasks()
+            response = metadata_api.update_columns(
+                "dm-connection", "OLD_TABLE", request, background_tasks, "APP"
+            )
 
         self.assertEqual(response.columns, renamed_columns)
         update.assert_called_once_with(
@@ -128,6 +133,9 @@ class DamengMetadataUpdateTests(unittest.TestCase):
         )
         list_updated.assert_called_once_with(engine, "NEW_TABLE", "APP", None)
         get_comment.assert_called_once_with(engine, "NEW_TABLE", "APP", None)
+        schedule_snapshot.assert_called_once_with(
+            background_tasks, "dm-connection", "修改表结构 NEW_TABLE"
+        )
 
     def test_renames_the_exact_source_column_and_table(self) -> None:
         engine = FakeDmEngine()

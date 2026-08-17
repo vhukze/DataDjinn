@@ -10,9 +10,10 @@ from app.api.backup import router as backup_router
 from app.api.connections import router as connections_router
 from app.api.health import router as health_router
 from app.api.drivers import router as drivers_router
-from app.api.ai_router import router as ai_router
 from app.api.metadata import router as metadata_router
 from app.api.query import router as query_router
+from app.api.git_sync import router as git_sync_router
+from app.api.git_versioning import router as git_versioning_router
 from app.db.connection_manager import connection_manager
 from app.request_context import normalize_query_timeout_seconds, reset_query_timeout_seconds, set_query_timeout_seconds
 
@@ -90,4 +91,5 @@ app.include_router(drivers_router, prefix="/api")
 app.include_router(metadata_router, prefix="/api")
 app.include_router(query_router, prefix="/api")
 app.include_router(backup_router, prefix="/api")
-app.include_router(ai_router, prefix="/api")
+app.include_router(git_sync_router, prefix="/api")
+app.include_router(git_versioning_router, prefix="/api")

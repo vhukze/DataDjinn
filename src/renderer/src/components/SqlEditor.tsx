@@ -81,6 +81,13 @@ export interface SqlCompletionTable {
   columns?: SqlCompletionColumn[]
 }
 
+export interface SqlCompletionRoutine {
+  name: string
+  type: 'procedure' | 'function'
+  databaseName?: string
+  schemaName?: string
+}
+
 export interface SqlCompletionContext {
   dialect?: SqlDialect
   connectionId?: string
@@ -91,6 +98,8 @@ export interface SqlCompletionContext {
   schemas?: string[]
   tables?: SqlCompletionTable[]
   columns?: SqlCompletionColumn[]
+  routines?: SqlCompletionRoutine[]
+  loadRoutines?: () => Promise<SqlCompletionRoutine[]>
   loadTableColumns?: (tableNames: string[]) => Promise<SqlCompletionColumn[]>
 }
 
@@ -113,6 +122,7 @@ export interface SqlEditorSelectionPayload {
 
 export interface SqlEditorHandle {
   getSelectionPayload: () => SqlEditorSelectionPayload
+  getValue: () => string
   formatSelectionOrStatement: () => void
 }
 
@@ -207,7 +217,12 @@ const COMMON_KEYWORDS = [
   'BLOB',
   'BEGIN',
   'COMMIT',
-  'ROLLBACK'
+  'ROLLBACK',
+  'CALL',
+  'EXEC',
+  'EXECUTE',
+  'PROCEDURE',
+  'FUNCTION'
 ]
 
 const DIALECT_KEYWORDS: Record<SqlDialect, string[]> = {
@@ -348,6 +363,8 @@ const getCompletionMode = (text: string): 'table' | 'column' | 'all' => {
   return 'all'
 }
 
+const isRoutineCallContext = (text: string): boolean => /\b(?:CALL|EXEC(?:UTE)?)\s+[^\s;()]*$/i.test(text)
+
 const getDotQualifier = (text: string): string | undefined => {
   const match = text.match(/([A-Za-z_][\w$]*|`[^`]+`|"[^"]+")\.$/)
   return match?.[1]?.replace(/^`|`$/g, '').replace(/^"|"$/g, '')
@@ -423,7 +440,7 @@ const findExecutableSqlOffset = (sql: string): number => {
   return -1
 }
 
-const splitSqlStatements = (sql: string): { text: string; start: number; end: number }[] => {
+export const splitSqlStatements = (sql: string): { text: string; start: number; end: number }[] => {
   const statements: { text: string; start: number; end: number }[] = []
   const implicitStatementStarters = new Set([
     'SELECT',
@@ -718,10 +735,13 @@ function SqlEditor({
   const readyRef = useRef<((handle: SqlEditorHandle | null) => void) | undefined>(onReady)
   const statementDecorationIdsRef = useRef<string[]>([])
   const statementExecuteDecorationIdsRef = useRef<string[]>([])
+  const callKeywordDecorationIdsRef = useRef<string[]>([])
   const statementExecuteDecorationKeyRef = useRef('')
   const lastSelectionDispatchKeyRef = useRef('')
   const editorSelectionSyncFrameRef = useRef<number | undefined>(undefined)
   const editorContentSyncTimeoutRef = useRef<number | undefined>(undefined)
+  const routineCompletionTimeoutRef = useRef<number | undefined>(undefined)
+  const editorLayoutFrameRef = useRef<number | undefined>(undefined)
   const latestValueRef = useRef(value)
   const cachedStatementsRef = useRef<{
     model: Monaco.editor.ITextModel | null
@@ -768,6 +788,14 @@ function SqlEditor({
         window.clearTimeout(editorContentSyncTimeoutRef.current)
         editorContentSyncTimeoutRef.current = undefined
       }
+      if (routineCompletionTimeoutRef.current) {
+        window.clearTimeout(routineCompletionTimeoutRef.current)
+        routineCompletionTimeoutRef.current = undefined
+      }
+      if (editorLayoutFrameRef.current) {
+        window.cancelAnimationFrame(editorLayoutFrameRef.current)
+        editorLayoutFrameRef.current = undefined
+      }
       readyRef.current?.(null)
       completionDisposableRef.current?.dispose()
       completionDisposableRef.current = null
@@ -775,6 +803,7 @@ function SqlEditor({
       if (editor) {
         editor.deltaDecorations(statementDecorationIdsRef.current, [])
         editor.deltaDecorations(statementExecuteDecorationIdsRef.current, [])
+        editor.deltaDecorations(callKeywordDecorationIdsRef.current, [])
       }
       statementExecuteDecorationKeyRef.current = ''
     }
@@ -820,6 +849,7 @@ function SqlEditor({
         }
         const textBefore = getTextBeforePosition(model, position)
         const mode = getCompletionMode(textBefore)
+        const routineCallContext = isRoutineCallContext(textBefore)
         const qualifier = getDotQualifier(textBefore)
         const statementTables = getStatementTableReferences(
           getStatementTextAtOffset(model.getValue(), model.getOffsetAt(position))
@@ -828,6 +858,7 @@ function SqlEditor({
         const keywordSort = mode === 'all' ? '1' : '4'
         const tableSort = mode === 'table' ? '0' : '2'
         const columnSort = mode === 'column' || qualifier ? '0' : '3'
+        const routineSort = routineCallContext ? '0' : '3'
 
         for (const keyword of uniqueBy(
           [...COMMON_KEYWORDS, ...DIALECT_KEYWORDS[context.dialect ?? 'sqlite']],
@@ -858,6 +889,27 @@ function SqlEditor({
             insertText: quoteIdentifier(table.name, context.dialect),
             detail: [table.schemaName, table.databaseName].filter(Boolean).join('.') || '表',
             sortText: `${tableSort}_${table.name}`,
+            range
+          })
+        }
+
+        const loadedRoutines =
+          routineCallContext && context.loadRoutines ? await context.loadRoutines() : []
+        const routines = uniqueBy(
+          [...(context.routines ?? []), ...loadedRoutines],
+          (routine) =>
+            `${routine.databaseName ?? ''}.${routine.schemaName ?? ''}.${routine.type}.${routine.name}`
+        ).filter((routine) => !routineCallContext || routine.type === 'procedure')
+        for (const routine of routines) {
+          suggestions.push({
+            label: routine.name,
+            kind:
+              routine.type === 'procedure'
+                ? monaco.languages.CompletionItemKind.Method
+                : monaco.languages.CompletionItemKind.Function,
+            insertText: quoteIdentifier(routine.name, context.dialect),
+            detail: routine.type === 'procedure' ? '存储过程' : '函数',
+            sortText: `${routineSort}_${routine.name}`,
             range
           })
         }
@@ -1106,6 +1158,30 @@ function SqlEditor({
     statementExecuteDecorationKeyRef.current = nextDecorationKey
   }
 
+  const updateCallKeywordDecorations = (editor: Monaco.editor.IStandaloneCodeEditor): void => {
+    const monacoInstance = monacoRef.current
+    const model = editor.getModel()
+    if (!monacoInstance || !model) {
+      return
+    }
+
+    const decorations: Monaco.editor.IModelDeltaDecoration[] = []
+    for (let lineNumber = 1; lineNumber <= model.getLineCount(); lineNumber += 1) {
+      const line = model.getLineContent(lineNumber)
+      for (const match of line.matchAll(/\bCALL\b/gi)) {
+        const startColumn = (match.index ?? 0) + 1
+        decorations.push({
+          range: new monacoInstance.Range(lineNumber, startColumn, lineNumber, startColumn + 4),
+          options: { inlineClassName: 'sql-editor-call-keyword' }
+        })
+      }
+    }
+    callKeywordDecorationIdsRef.current = editor.deltaDecorations(
+      callKeywordDecorationIdsRef.current,
+      decorations
+    )
+  }
+
   const syncEditorState = (editor: Monaco.editor.IStandaloneCodeEditor): void => {
     const model = editor.getModel()
     const statements = getCachedStatements(model)
@@ -1114,6 +1190,7 @@ function SqlEditor({
     lastSelectionDispatchKeyRef.current = `${activeStatementKeyRef.current}:${statements.length}`
     updateStatementDecorations(editor, currentStatement)
     updateStatementExecuteDecorations(editor, statements)
+    updateCallKeywordDecorations(editor)
     selectionChangeRef.current?.(buildSelectionPayload(editor, statements, currentStatement, false))
   }
 
@@ -1160,9 +1237,59 @@ function SqlEditor({
     }, CONTENT_SYNC_DEBOUNCE_MS)
   }
 
+  const scheduleRoutineCallCompletion = (editor: Monaco.editor.IStandaloneCodeEditor): void => {
+    if (readOnly) {
+      return
+    }
+    if (routineCompletionTimeoutRef.current) {
+      window.clearTimeout(routineCompletionTimeoutRef.current)
+    }
+    routineCompletionTimeoutRef.current = window.setTimeout(() => {
+      routineCompletionTimeoutRef.current = undefined
+      const model = editor.getModel()
+      const position = editor.getPosition()
+      if (!model || !position || !isRoutineCallContext(getTextBeforePosition(model, position))) {
+        return
+      }
+      const refreshSuggestions = (): void => {
+        const currentModel = editor.getModel()
+        const currentPosition = editor.getPosition()
+        if (
+          !currentModel ||
+          !currentPosition ||
+          !isRoutineCallContext(getTextBeforePosition(currentModel, currentPosition))
+        ) {
+          return
+        }
+        editor.trigger('datadjinn-routine-completion', 'editor.action.cancelSuggestWidget', {})
+        editor.trigger('datadjinn-routine-completion', 'editor.action.triggerSuggest', {})
+      }
+      const loadRoutines = contextRef.current?.loadRoutines
+      if (!loadRoutines) {
+        refreshSuggestions()
+        return
+      }
+      void loadRoutines().finally(refreshSuggestions)
+    }, 80)
+  }
+
+  const scheduleEditorLayout = (editor: Monaco.editor.IStandaloneCodeEditor): void => {
+    if (editorLayoutFrameRef.current) {
+      window.cancelAnimationFrame(editorLayoutFrameRef.current)
+    }
+    editorLayoutFrameRef.current = window.requestAnimationFrame(() => {
+      editorLayoutFrameRef.current = window.requestAnimationFrame(() => {
+        editorLayoutFrameRef.current = undefined
+        editor.layout()
+      })
+    })
+  }
+
   const handleMount: OnMount = (editor, monaco) => {
     editorRef.current = editor
     monacoRef.current = monaco
+    // Lazy-loaded editor panels can be measured before their parent splitter has settled.
+    scheduleEditorLayout(editor)
     if (!readOnly) {
       registerCompletionProvider(monaco)
     }
@@ -1205,6 +1332,7 @@ function SqlEditor({
         const currentStatement = getCurrentStatementInfo(editor, statements)
         return buildSelectionPayload(editor, statements, currentStatement, true)
       },
+      getValue: () => editor.getValue(),
       formatSelectionOrStatement: () => {
         const statements = getCachedStatements(editor.getModel())
         formatSelectionOrStatement(getCurrentStatementInfo(editor, statements) ?? undefined)
@@ -1213,7 +1341,11 @@ function SqlEditor({
 
     editor.onDidChangeCursorSelection(() => scheduleEditorSelectionSync(editor))
 
-    editor.onDidChangeModelContent(() => scheduleEditorContentSync(editor))
+    editor.onDidChangeModelContent(() => {
+      scheduleEditorContentSync(editor)
+      scheduleRoutineCallCompletion(editor)
+      scheduleEditorLayout(editor)
+    })
 
     editor.onMouseDown((event) => {
       if (

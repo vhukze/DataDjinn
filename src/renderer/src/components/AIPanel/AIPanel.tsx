@@ -4,14 +4,12 @@ import {
   CloseCircleOutlined,
   CloseOutlined,
   DatabaseOutlined,
-  DeleteOutlined,
   DownOutlined,
   ExclamationCircleOutlined,
   LoadingOutlined,
   PlusOutlined,
   RightOutlined,
   SendOutlined,
-  SettingOutlined,
   StopOutlined,
   ToolOutlined,
   UpOutlined
@@ -23,16 +21,13 @@ import {
   Collapse,
   Dropdown,
   Flex,
-  Form,
   Input,
-  InputNumber,
   List,
   Modal,
   Progress,
   Select,
   Space,
   Steps,
-  Switch,
   Tag,
   Typography,
   message
@@ -249,27 +244,6 @@ const createAIConfigItem = (config?: Partial<AIConfigItem>): AIConfigItem => ({
       ? Math.round(config.max_context_tokens)
       : undefined
 })
-
-const activeAIConfig = (configs: AIConfigItem[]): AIConfig | null => {
-  const active = configs.find((item) => item.enabled)
-  if (
-    !active ||
-    !active.base_url ||
-    !active.api_key ||
-    !active.model ||
-    !active.max_context_tokens
-  ) {
-    return null
-  }
-
-  return {
-    provider: active.provider ?? 'openai-compatible',
-    base_url: active.base_url,
-    api_key: active.api_key,
-    model: active.model,
-    max_context_tokens: active.max_context_tokens
-  }
-}
 
 const AUTO_COMPACT_USAGE_RATIO = 0.8
 const MIN_MESSAGES_TO_COMPACT = 6
@@ -561,9 +535,6 @@ export default function AIPanel({
     })
   }
   const [configs, setConfigs] = useState<AIConfigItem[]>([])
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [testing, setTesting] = useState(false)
-  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
   const [sending, setSending] = useState(false)
   const [compacting, setCompacting] = useState(false)
   const [confirmingId, setConfirmingId] = useState<string | null>(null)
@@ -649,7 +620,7 @@ export default function AIPanel({
   const contextLevel =
     contextUsagePercent >= 80 ? 'full' : contextUsagePercent >= 60 ? 'warning' : 'ok'
 
-  useEffect(() => {
+  const loadConfigs = (): void => {
     void Promise.all([window.api.getAIConfigs(), window.api.getAIConfig()]).then(
       ([storedConfigs, legacyConfig]) => {
         const nextConfigs =
@@ -672,12 +643,19 @@ export default function AIPanel({
         setSelectedConfigId(initialActive?.id ?? '')
       }
     )
+  }
+
+  useEffect(() => {
+    loadConfigs()
     void window.api.getAISessions().then((stored) => {
       const restoredSessions = normalizePersistedSessions(stored as AISession[])
       const restored = restoredSessions.length > 0 ? restoredSessions : [createSession()]
       setSessions(restored)
       setActiveSessionId(restored[0].id)
     })
+    const refreshConfigs = (): void => loadConfigs()
+    window.addEventListener('datadjinn-ai-configs-changed', refreshConfigs)
+    return () => window.removeEventListener('datadjinn-ai-configs-changed', refreshConfigs)
   }, [])
 
   useEffect(() => {
@@ -1310,70 +1288,6 @@ export default function AIPanel({
       return false
     } finally {
       setCompacting(false)
-    }
-  }
-
-  const saveConfigs = async (nextConfigs: AIConfigItem[] = configs): Promise<AIConfigItem[]> => {
-    const saved = await window.api.setAIConfigs(nextConfigs)
-    setConfigs(saved)
-    return saved
-  }
-
-  const addConfig = (): void => {
-    setConfigs((current) => [
-      ...current,
-      createAIConfigItem({ name: `AI 配置 ${current.length + 1}` })
-    ])
-  }
-
-  const updateConfig = (id: string, patch: Partial<AIConfigItem>): void => {
-    setConfigs((current) =>
-      current.map((item) => (item.id === id ? createAIConfigItem({ ...item, ...patch }) : item))
-    )
-  }
-
-  const removeConfig = (id: string): void => {
-    setConfigs((current) => current.filter((item) => item.id !== id))
-  }
-
-  const toggleConfig = (id: string, enabled: boolean): void => {
-    setConfigs((current) =>
-      current.map((item) => ({ ...item, enabled: enabled && item.id === id }))
-    )
-  }
-
-  const testAI = async (): Promise<void> => {
-    setTesting(true)
-    setTestResult(null)
-    try {
-      const saved = await saveConfigs()
-      const next = activeAIConfig(saved)
-      if (!next) {
-        throw new Error('请先启用一条完整的 AI 配置')
-      }
-      const result = await requestJson<{ success: boolean; message: string }>('/ai/ping', {
-        method: 'POST',
-        body: JSON.stringify({ config: next })
-      })
-      const nextResult = {
-        success: result.success,
-        message: result.message || (result.success ? 'AI 配置可用' : 'AI 配置不可用')
-      }
-      setTestResult(nextResult)
-      if (result.success) {
-        messageApi.success(nextResult.message)
-      } else {
-        showError(nextResult.message)
-      }
-    } catch (err) {
-      const nextResult = {
-        success: false,
-        message: err instanceof Error ? err.message : '测试连接失败'
-      }
-      setTestResult(nextResult)
-      showError(nextResult.message)
-    } finally {
-      setTesting(false)
     }
   }
 
@@ -2177,14 +2091,6 @@ export default function AIPanel({
             >
               新建
             </Button>
-            <Button
-              size="small"
-              className="ai-panel-ghost-btn"
-              icon={<SettingOutlined />}
-              onClick={() => setSettingsOpen(true)}
-            >
-              设置
-            </Button>
           </div>
         </Space>
       </Flex>
@@ -2356,178 +2262,6 @@ export default function AIPanel({
           </div>
         </div>
       </Space>
-      <Modal
-        title={
-          <Space className="ai-settings-title" size={10}>
-            <span className="ai-settings-title-orb">
-              <SettingOutlined />
-            </span>
-            <span className="ai-settings-title-copy">
-              <Typography.Text strong>AI 设置</Typography.Text>
-              <Typography.Text type="secondary">配置模型、上下文与连接测试</Typography.Text>
-            </span>
-          </Space>
-        }
-        open={settingsOpen}
-        onCancel={() => setSettingsOpen(false)}
-        footer={null}
-        width={640}
-        className="ai-settings-modal"
-      >
-        <Space direction="vertical" className="full-width ai-settings-body" size="middle">
-          <Flex justify="space-between" align="center" className="ai-settings-toolbar">
-            <Typography.Text type="secondary">
-              可添加多个 OpenAI 兼容接口配置；同一时间最多启用一个，也可以全部关闭。
-            </Typography.Text>
-            <Button
-              className="ai-panel-ghost-btn ai-settings-add-btn"
-              icon={<PlusOutlined />}
-              onClick={addConfig}
-            >
-              添加配置
-            </Button>
-          </Flex>
-          {configs.length === 0 ? (
-            <Alert
-              type="info"
-              showIcon
-              message="暂无 AI 配置"
-              description="添加配置并启用后，Djinn Agent 才会连接 AI。"
-            />
-          ) : (
-            <Collapse
-              accordion={false}
-              className="ai-config-collapse"
-              items={configs.map((item, index) => ({
-                key: item.id,
-                className: item.enabled ? 'ai-config-panel-enabled' : undefined,
-                label: (
-                  <Space>
-                    <Typography.Text strong>{item.name || `AI 配置 ${index + 1}`}</Typography.Text>
-                    <Tag>
-                      {item.provider === 'anthropic' ? 'Anthropic 兼容接口' : 'OpenAI 兼容接口'}
-                    </Tag>
-                    {item.enabled && <Tag color="success">已启用</Tag>}
-                  </Space>
-                ),
-                extra: (
-                  <Space onClick={(event) => event.stopPropagation()}>
-                    <Switch
-                      className="ai-config-switch"
-                      size="small"
-                      checked={item.enabled}
-                      onChange={(checked) => toggleConfig(item.id, checked)}
-                    />
-                    <Button
-                      type="text"
-                      danger
-                      size="small"
-                      icon={<DeleteOutlined />}
-                      onClick={() => removeConfig(item.id)}
-                    />
-                  </Space>
-                ),
-                children: (
-                  <Form layout="vertical" className="ai-settings-form">
-                    <Form.Item label="配置名称">
-                      <Input
-                        value={item.name}
-                        placeholder="例如：Claude 中转"
-                        onChange={(event) => updateConfig(item.id, { name: event.target.value })}
-                      />
-                    </Form.Item>
-                    <Form.Item label="接口类型">
-                      <Select
-                        popupClassName="ai-settings-select-popup"
-                        value={item.provider ?? 'openai-compatible'}
-                        options={[
-                          { label: 'OpenAI 兼容接口', value: 'openai-compatible' },
-                          { label: 'Anthropic 兼容接口', value: 'anthropic' }
-                        ]}
-                        onChange={(value) => updateConfig(item.id, { provider: value })}
-                      />
-                    </Form.Item>
-                    <Form.Item label="Base URL" required>
-                      <Input
-                        value={item.base_url}
-                        placeholder="例如：https://api.openai.com/v1"
-                        onChange={(event) =>
-                          updateConfig(item.id, { base_url: event.target.value })
-                        }
-                      />
-                    </Form.Item>
-                    <Form.Item label="API Key" required>
-                      <Input.Password
-                        className="ai-settings-api-key-input"
-                        value={item.api_key}
-                        onChange={(event) => updateConfig(item.id, { api_key: event.target.value })}
-                      />
-                    </Form.Item>
-                    <Form.Item label="Model" required>
-                      <Input
-                        value={item.model}
-                        placeholder="例如：claude-sonnet-4-6 或 gpt-4o-mini"
-                        onChange={(event) => updateConfig(item.id, { model: event.target.value })}
-                      />
-                    </Form.Item>
-                    <Form.Item
-                      label="最大上下文"
-                      required
-                      extra="这里按 k 单位填写真实最大上下文，例如填 200 表示 200k，填 1000 表示 1M。"
-                    >
-                      <InputNumber
-                        min={1}
-                        step={1}
-                        className="full-width"
-                        value={
-                          typeof item.max_context_tokens === 'number' && item.max_context_tokens > 0
-                            ? item.max_context_tokens / 1000
-                            : undefined
-                        }
-                        placeholder="例如：200"
-                        formatter={(value) =>
-                          value === undefined || value === null ? '' : `${value}`
-                        }
-                        parser={(value) => {
-                          const normalized = String(value ?? '').replace(/[^\d.]/g, '')
-                          return normalized ? Number(normalized) : 0
-                        }}
-                        onChange={(value) => {
-                          updateConfig(item.id, {
-                            max_context_tokens:
-                              typeof value === 'number' && Number.isFinite(value) && value > 0
-                                ? Math.max(1000, Math.round(value) * 1000)
-                                : undefined
-                          })
-                        }}
-                      />
-                    </Form.Item>
-                  </Form>
-                )
-              }))}
-            />
-          )}
-          {testResult && (
-            <Alert
-              type={testResult.success ? 'success' : 'error'}
-              showIcon
-              message={testResult.message}
-            />
-          )}
-          <Space className="ai-settings-actions">
-            <Button
-              type="primary"
-              className="ai-settings-primary-btn"
-              onClick={() => void saveConfigs().then(() => setSettingsOpen(false))}
-            >
-              保存
-            </Button>
-            <Button className="ai-panel-ghost-btn" loading={testing} onClick={() => void testAI()}>
-              测试连接
-            </Button>
-          </Space>
-        </Space>
-      </Modal>
     </div>
   )
 }

@@ -314,6 +314,36 @@ class RoutineTests(unittest.TestCase):
         self.assertIn("proc.pronargdefaults", statement)
         self.assertTrue(parameters[0].has_default)
 
+    def test_dameng_parameter_metadata_falls_back_to_procedure_ddl(self) -> None:
+        engine = MagicMock()
+        engine.dialect.name = "dm"
+        engine.url.username = "APP"
+        connection = engine.connect.return_value.__enter__.return_value
+        connection.execute.return_value.fetchall.return_value = []
+
+        with patch(
+            "app.db.routine_executor.get_object_ddl",
+            return_value=(
+                "CREATE OR REPLACE PROCEDURE generate_ds_stat(\n"
+                "  datasource_id_int BIGINT,\n"
+                "  target_name IN VARCHAR(200) DEFAULT 'all',\n"
+                "  updated_count OUT INTEGER\n"
+                ") AS\nBEGIN\n  NULL;\nEND;"
+            ),
+        ) as get_ddl:
+            parameters = list_routine_parameters(engine, "generate_ds_stat", "APP")
+
+        self.assertIn("ALL_ARGUMENTS", str(connection.execute.call_args.args[0]))
+        get_ddl.assert_called_once_with(engine, "generate_ds_stat", "procedure", "APP")
+        self.assertEqual(
+            [(item.name, item.mode, item.data_type, item.has_default) for item in parameters],
+            [
+                ("datasource_id_int", "IN", "BIGINT", False),
+                ("target_name", "IN", "VARCHAR(200)", True),
+                ("updated_count", "OUT", "INTEGER", False),
+            ],
+        )
+
     def test_postgresql_execution_skips_default_and_returns_output_rows(self) -> None:
         engine = MagicMock()
         engine.dialect.name = "postgresql"
@@ -369,6 +399,30 @@ class RoutineTests(unittest.TestCase):
         cursor.callproc.assert_called_once_with("refresh_total", [5, None])
         cursor.execute.assert_any_call("SELECT @_refresh_total_1")
         self.assertEqual(response.rows, [{"new_total": 12}])
+        raw_connection.commit.assert_called_once()
+
+    def test_dameng_jdbc_execution_uses_positional_call_parameters(self) -> None:
+        engine = MagicMock()
+        engine.dialect.name = "dm"
+        engine.dialect.identifier_preparer.quote.side_effect = lambda value: f'"{value}"'
+        raw_connection = engine.raw_connection.return_value
+        cursor = raw_connection.cursor.return_value
+        cursor.description = None
+        cursor.nextset.return_value = False
+        parameters = [
+            RoutineParameterInfo(name="datasource_id_int", mode="IN", data_type="BIGINT", position=1)
+        ]
+
+        response = execute_routine(
+            engine,
+            "generate_ds_stat",
+            parameters,
+            [RoutineArgumentValue(name="datasource_id_int", value="929")],
+            "APP",
+        )
+
+        cursor.execute.assert_called_once_with('CALL "APP"."generate_ds_stat"(?)', [929])
+        self.assertEqual(response.rows, [{"message": "存储过程执行成功", "affected_rows": 0}])
         raw_connection.commit.assert_called_once()
 
     def test_oracle_execution_uses_named_parameters_and_returns_output_values(self) -> None:

@@ -1,8 +1,9 @@
-import type { ReactNode } from 'react'
-import QueryWorkspacePanel from './query-workspace-panel'
+import { lazy, Suspense, type ReactNode } from 'react'
 import type { ConnectionInfo } from './connection-model'
 import type { SqlCompletionContext, SqlEditorHandle } from '../components/SqlEditor'
 import type { SqlEditorExecutionContext, WorkspaceTab } from './workspace-model'
+
+const QueryWorkspacePanel = lazy(() => import('./query-workspace-panel'))
 
 type ShortcutSettingsLike = {
   sql_execute: string
@@ -72,32 +73,34 @@ export const renderWorkspaceTabContent = ({
 
   if (tab.kind === 'query') {
     return (
-      <QueryWorkspacePanel
-        tab={tab}
-        theme={theme}
-        connection={getConnection(tab.connectionId)}
-        connections={connections}
-        allDatabases={allDatabases}
-        allSchemas={allSchemas}
-        shortcutSettings={shortcutSettings}
-        executionContext={executionContext}
-        queryResultToggleRef={(element) => setQueryResultToggleRef(tab.key, element)}
-        getDefaultDatabaseName={getDefaultDatabaseName}
-        getDefaultPgDatabase={getDefaultPgDatabase}
-        getDefaultPgSchema={getDefaultPgSchema}
-        isSchemaScopedType={isSchemaScopedType}
-        isDatabaseScopedType={isDatabaseScopedType}
-        ensureDatabasesLoaded={ensureDatabasesLoaded}
-        ensureSchemasLoaded={ensureSchemasLoaded}
-        preloadCompletionForDatabase={preloadCompletionForDatabase}
-        updateWorkspaceTab={updateWorkspaceTab}
-        renderResultTable={renderResultTable}
-        runQuery={runQuery}
-        buildSqlCompletionContext={buildSqlCompletionContext}
-        scheduleQuerySqlDraftCommit={scheduleQuerySqlDraftCommit}
-        handleSqlExecutionContextChange={handleSqlExecutionContextChange}
-        onEditorReady={(tabKey, handle) => setSqlEditorHandle(tabKey, handle)}
-      />
+      <Suspense fallback={<div className="deferred-modal-loading">正在加载 SQL 工作区...</div>}>
+        <QueryWorkspacePanel
+          tab={tab}
+          theme={theme}
+          connection={getConnection(tab.connectionId)}
+          connections={connections}
+          allDatabases={allDatabases}
+          allSchemas={allSchemas}
+          shortcutSettings={shortcutSettings}
+          executionContext={executionContext}
+          queryResultToggleRef={(element) => setQueryResultToggleRef(tab.key, element)}
+          getDefaultDatabaseName={getDefaultDatabaseName}
+          getDefaultPgDatabase={getDefaultPgDatabase}
+          getDefaultPgSchema={getDefaultPgSchema}
+          isSchemaScopedType={isSchemaScopedType}
+          isDatabaseScopedType={isDatabaseScopedType}
+          ensureDatabasesLoaded={ensureDatabasesLoaded}
+          ensureSchemasLoaded={ensureSchemasLoaded}
+          preloadCompletionForDatabase={preloadCompletionForDatabase}
+          updateWorkspaceTab={updateWorkspaceTab}
+          renderResultTable={renderResultTable}
+          runQuery={runQuery}
+          buildSqlCompletionContext={buildSqlCompletionContext}
+          scheduleQuerySqlDraftCommit={scheduleQuerySqlDraftCommit}
+          handleSqlExecutionContextChange={handleSqlExecutionContextChange}
+          onEditorReady={(tabKey, handle) => setSqlEditorHandle(tabKey, handle)}
+        />
+      </Suspense>
     )
   }
 

@@ -119,6 +119,16 @@ def _promote_vendor(staging_dir: Path) -> Path:
 
 def main() -> None:
     VENDOR_PARENT_DIR.mkdir(parents=True, exist_ok=True)
+    if VENDOR_DIR.exists():
+        try:
+            _validate_vendor(VENDOR_DIR)
+        except (OSError, RuntimeError):
+            pass
+        else:
+            _write_manifest(VENDOR_DIR)
+            print(f"JPype {JPYPE_VERSION} vendor already ready: {VENDOR_DIR}")
+            return
+
     staging_dir = Path(tempfile.mkdtemp(prefix="jpype15-build-", dir=VENDOR_PARENT_DIR))
     _install_vendor(staging_dir)
 

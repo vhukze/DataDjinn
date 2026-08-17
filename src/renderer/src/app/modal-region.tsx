@@ -1,9 +1,19 @@
 import { LoadingOutlined } from '@ant-design/icons'
 import { Modal } from 'antd'
-import { forwardRef, memo, useEffect, useImperativeHandle, useRef, useState } from 'react'
+import {
+  forwardRef,
+  lazy,
+  memo,
+  Suspense,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState
+} from 'react'
 import type { ReactNode } from 'react'
-import SqlEditor from '../components/SqlEditor'
 import type { SqlDialect } from '../components/SqlEditor'
+
+const SqlEditor = lazy(() => import('../components/SqlEditor'))
 
 export type DdlPreviewModalHandle = {
   open: (payload: { title: string; dialect: SqlDialect; load: () => Promise<string> }) => void
@@ -65,14 +75,16 @@ export const DdlPreviewModal = memo(
         maskTransitionName=""
       >
         <div className="ddl-preview-shell">
-          <SqlEditor
-            value={loading ? '-- 加载中...' : content}
-            onChange={() => undefined}
-            theme={theme}
-            readOnly
-            height="60vh"
-            completionContext={{ dialect }}
-          />
+          <Suspense fallback={<div className="deferred-modal-loading">正在加载编辑器...</div>}>
+            <SqlEditor
+              value={loading ? '-- 加载中...' : content}
+              onChange={() => undefined}
+              theme={theme}
+              readOnly
+              height="60vh"
+              completionContext={{ dialect }}
+            />
+          </Suspense>
         </div>
       </Modal>
     )
@@ -173,6 +185,7 @@ export const ImperativeModalHost = memo(
         width={width}
         footer={footer}
         className={className}
+        centered
         maskClosable={maskClosable}
         destroyOnHidden
         transitionName=""

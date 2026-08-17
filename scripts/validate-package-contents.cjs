@@ -40,7 +40,6 @@ for (const requiredEntry of requiredEntries) {
 
 const requiredBackendEntries = [
   'backend/datadjinn-backend.exe',
-  'backend/_internal/org.jpype.jar',
   'backend/_internal/clickhouse_connect',
   'backend/_internal/oracledb',
   'backend/_internal/pymongo',
@@ -49,6 +48,17 @@ const requiredBackendEntries = [
 for (const requiredEntry of requiredBackendEntries) {
   if (!fs.existsSync(path.join(resourcesDirectory, requiredEntry))) {
     throw new Error(`安装目录缺少离线后端依赖：${requiredEntry}`)
+  }
+}
+
+const forbiddenBackendEntries = [
+  'backend/_internal/org.jpype.jar',
+  'backend/_internal/jpype',
+  'backend/_internal/jaydebeapi'
+]
+for (const forbiddenEntry of forbiddenBackendEntries) {
+  if (fs.existsSync(path.join(resourcesDirectory, forbiddenEntry))) {
+    throw new Error(`安装目录仍包含应由 JDBC 扩展提供的运行时：${forbiddenEntry}`)
   }
 }
 

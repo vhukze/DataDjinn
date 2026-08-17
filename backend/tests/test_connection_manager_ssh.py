@@ -69,6 +69,92 @@ class ConnectionManagerSshTests(unittest.TestCase):
         self.assertEqual(restored.ssh_auth_type, "password")
         self.assertEqual(restored.ssh_password, "ssh-secret")
 
+    def test_create_and_restore_connection_preserves_git_versioning_preference(self) -> None:
+        created = self.manager.create_connection(
+            ConnectionRequest(
+                name="Versioned SQLite",
+                database_type="sqlite",
+                sqlite_path=str(Path(self.temp_dir.name) / "versioned.db"),
+                git_versioning_enabled=True,
+                git_versioning_scopes=["main"],
+            )
+        )
+
+        self.assertTrue(created.git_versioning_enabled)
+        self.assertTrue(self.manager.get_connection_request(created.connection_id).git_versioning_enabled)
+        self.assertEqual(self.manager.get_connection_request(created.connection_id).git_versioning_scopes, ["main"])
+
+        restored_manager = connection_manager_module.ConnectionManager()
+        restored = restored_manager.list_connections()
+        self.assertEqual(len(restored), 1)
+        self.assertTrue(restored[0].git_versioning_enabled)
+        self.assertEqual(restored_manager.get_connection_request(restored[0].connection_id).git_versioning_scopes, ["main"])
+
+    def test_sync_snapshot_contains_secrets_but_excludes_device_specific_paths(self) -> None:
+        request = self.build_ssh_request().model_copy(
+            update={
+                "driver_id": "local-driver",
+                "driver_path": "C:/local/dmjdbc.jar",
+                "ssh_auth_type": "private_key",
+                "ssh_private_key_path": "C:/Users/test/.ssh/id_ed25519",
+                "ssh_passphrase": "private-key-secret",
+                "git_versioning_enabled": True,
+                "git_versioning_scopes": ["SALES"],
+            }
+        )
+        created = self.manager.create_connection(request)
+
+        snapshot = self.manager.export_sync_connections()[created.connection_id]
+
+        self.assertEqual(snapshot["password"], "db-secret")
+        self.assertEqual(snapshot["ssh_passphrase"], "private-key-secret")
+        self.assertEqual(snapshot["git_versioning_scopes"], ["SALES"])
+        self.assertNotIn("driver_id", snapshot)
+        self.assertNotIn("driver_path", snapshot)
+        self.assertNotIn("ssh_private_key_path", snapshot)
+
+    def test_replace_sync_connections_preserves_local_paths_and_remote_ids(self) -> None:
+        existing = self.manager.create_connection(
+            self.build_ssh_request().model_copy(
+                update={
+                    "driver_id": "local-driver",
+                    "driver_path": "C:/local/driver.jar",
+                    "ssh_auth_type": "private_key",
+                    "ssh_private_key_path": "C:/local/id_ed25519",
+                }
+            )
+        )
+        incoming = self.manager.export_sync_connections()
+        incoming[existing.connection_id]["name"] = "远程修改名称"
+        incoming["remote-connection-id"] = ConnectionRequest(
+            name="远程 SQLite",
+            database_type="sqlite",
+            sqlite_path="D:/shared/demo.db",
+        ).model_dump()
+
+        result = self.manager.replace_sync_connections(incoming)
+
+        self.assertEqual({item.connection_id for item in result}, {existing.connection_id, "remote-connection-id"})
+        restored = self.manager.get_connection_request(existing.connection_id)
+        self.assertEqual(restored.name, "远程修改名称")
+        self.assertEqual(restored.driver_id, "local-driver")
+        self.assertEqual(restored.driver_path, "C:/local/driver.jar")
+        self.assertEqual(restored.ssh_private_key_path, str(Path("C:/local/id_ed25519").resolve()))
+
+    def test_replace_sync_connections_removes_connections_deleted_by_merged_snapshot(self) -> None:
+        removed = self.manager.create_connection(self.build_ssh_request())
+        retained = self.manager.create_connection(
+            ConnectionRequest(name="保留", database_type="sqlite", sqlite_path="D:/keep.db")
+        )
+        snapshot = self.manager.export_sync_connections()
+        snapshot.pop(removed.connection_id)
+
+        self.manager.replace_sync_connections(snapshot)
+
+        self.assertEqual([item.connection_id for item in self.manager.list_connections()], [retained.connection_id])
+        persisted = json.loads(self.connection_store_path.read_text(encoding="utf-8"))
+        self.assertEqual([item["connection_id"] for item in persisted["connections"]], [retained.connection_id])
+
     def test_restore_connection_with_unavailable_dpapi_password_keeps_connection_editable(self) -> None:
         connection_id = "legacy-connection"
         legacy_store = {

@@ -114,6 +114,7 @@ const api = {
   openReleasePage: (url?: string) => ipcRenderer.invoke('update:open-release', url),
   getAppInfo: () => ipcRenderer.invoke('app:get-info'),
   openProjectHome: () => ipcRenderer.invoke('app:open-project-home'),
+  openExternalUrl: (url: string) => ipcRenderer.invoke('app:open-external-url', url),
   notifyRendererReady: () => ipcRenderer.send('app:renderer-ready'),
   onUpdateAvailable: (callback: (info: unknown) => void) => {
     const listener = (_: Electron.IpcRendererEvent, info: unknown): void => callback(info)
@@ -151,6 +152,21 @@ const api = {
   getQuerySettings: () => ipcRenderer.invoke('query-settings:get'),
   setQueryTimeoutMinutes: (timeoutMinutes: number) =>
     ipcRenderer.invoke('query-settings:set', timeoutMinutes),
+  getMcpSettings: () => ipcRenderer.invoke('mcp-settings:get'),
+  setMcpSettings: (settings: unknown) => ipcRenderer.invoke('mcp-settings:set', settings),
+  getSyncLocalState: () => ipcRenderer.invoke('sync-local-state:get'),
+  setSyncLocalState: (state: unknown) => ipcRenderer.invoke('sync-local-state:set', state),
+  clearSyncLocalState: () => ipcRenderer.invoke('sync-local-state:clear'),
+  getAppSyncSettings: () => ipcRenderer.invoke('sync-app-settings:get'),
+  applyAppSyncSettings: (settings: unknown) =>
+    ipcRenderer.invoke('sync-app-settings:apply', settings),
+  getOptionalModules: () => ipcRenderer.invoke('optional-modules:list'),
+  installOptionalModule: (moduleId: string) =>
+    ipcRenderer.invoke('optional-modules:install', moduleId),
+  uninstallOptionalModule: (moduleId: string) =>
+    ipcRenderer.invoke('optional-modules:uninstall', moduleId),
+  getOptionalModuleLaunchConfig: (moduleId: string) =>
+    ipcRenderer.invoke('optional-modules:launch-config', moduleId),
   minimizeWindow: () => ipcRenderer.invoke('window:minimize'),
   toggleMaximizeWindow: () => ipcRenderer.invoke('window:maximize-toggle'),
   closeWindow: () => ipcRenderer.invoke('window:close'),

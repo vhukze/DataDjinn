@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from typing import Any
 
 from sqlalchemy import Engine, create_engine, text
 
+from app.db.metadata import get_object_ddl
 from app.db.query_timeout import apply_query_timeout
 from app.db.readonly_query import _serialize_sql_value
 from app.schemas.metadata import RoutineArgumentValue, RoutineParameterInfo
@@ -46,6 +48,75 @@ def coerce_routine_value(value: str | None, data_type: str | None) -> Any:
 def _normalize_mode(value: Any) -> str:
     normalized = str(value or "IN").replace("/", "").replace(" ", "").upper()
     return "INOUT" if normalized in {"INOUT", "INOUTPARAMETER"} else normalized if normalized in {"IN", "OUT"} else "IN"
+
+
+_ROUTINE_HEADER_PATTERN = re.compile(
+    r"\bCREATE\s+(?:OR\s+REPLACE\s+)?PROCEDURE\s+"
+    r"(?:\"(?:[^\"]|\"\")+\"|[A-Z_$#][A-Z0-9_$#]*)"
+    r"(?:\s*\.\s*(?:\"(?:[^\"]|\"\")+\"|[A-Z_$#][A-Z0-9_$#]*))?"
+    r"\s*(?:\((?P<parameters>.*?)\))?\s*(?:AS|IS)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_ROUTINE_PARAMETER_NAME_PATTERN = re.compile(
+    r"^\s*(?P<name>\"(?:[^\"]|\"\")+\"|[A-Z_$#][A-Z0-9_$#]*)\s+(?P<definition>.+?)\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+_ROUTINE_PARAMETER_MODE_PATTERN = re.compile(r"^(?:(IN\s+OUT|INOUT|IN|OUT)\b\s*)?(?P<type>.+)$", re.IGNORECASE | re.DOTALL)
+_ROUTINE_PARAMETER_DEFAULT_PATTERN = re.compile(r"\s+(?:DEFAULT\b|:=).*$", re.IGNORECASE | re.DOTALL)
+
+
+def _split_routine_parameter_definitions(definitions: str) -> list[str]:
+    items: list[str] = []
+    start = 0
+    depth = 0
+    quote: str | None = None
+    for index, character in enumerate(definitions):
+        if quote:
+            if character == quote:
+                quote = None
+            continue
+        if character in {"'", '\"'}:
+            quote = character
+        elif character == "(":
+            depth += 1
+        elif character == ")":
+            depth = max(0, depth - 1)
+        elif character == "," and depth == 0:
+            items.append(definitions[start:index])
+            start = index + 1
+    items.append(definitions[start:])
+    return items
+
+
+def _parameters_from_routine_ddl(ddl: str) -> list[RoutineParameterInfo]:
+    header = _ROUTINE_HEADER_PATTERN.search(ddl)
+    definitions = header.group("parameters") if header else None
+    if not definitions or not definitions.strip():
+        return []
+
+    parameters: list[RoutineParameterInfo] = []
+    for position, definition in enumerate(_split_routine_parameter_definitions(definitions), start=1):
+        parameter = _ROUTINE_PARAMETER_NAME_PATTERN.match(definition)
+        if not parameter:
+            return []
+        mode_and_type = _ROUTINE_PARAMETER_MODE_PATTERN.match(parameter.group("definition"))
+        if not mode_and_type:
+            return []
+        raw_name = parameter.group("name")
+        name = raw_name[1:-1].replace('\"\"', '\"') if raw_name.startswith('\"') else raw_name
+        data_type = _ROUTINE_PARAMETER_DEFAULT_PATTERN.sub("", mode_and_type.group("type")).strip()
+        if not data_type:
+            return []
+        parameters.append(
+            RoutineParameterInfo(
+                name=name,
+                mode=_normalize_mode(mode_and_type.group(1)),
+                data_type=data_type,
+                position=position,
+                has_default=bool(_ROUTINE_PARAMETER_DEFAULT_PATTERN.search(mode_and_type.group("type"))),
+            )
+        )
+    return parameters
 
 
 def _target_schema(engine: Engine, database: str | None) -> str:
@@ -133,7 +204,7 @@ def list_routine_parameters(
                     text(sql),
                     {"schema": schema.upper(), "name": routine_name.upper()},
                 ).fetchall()
-            return [
+            parameters = [
                 RoutineParameterInfo(
                     name=str(row[0] or f"arg{row[3]}"),
                     mode=_normalize_mode(row[1]),
@@ -143,6 +214,13 @@ def list_routine_parameters(
                 )
                 for row in rows
             ]
+            if parameters or dialect not in {"dm", "dmPython"}:
+                return parameters
+
+            # Some Dameng driver versions expose ALL_ARGUMENTS without procedure arguments.
+            # Its generated DDL is authoritative and lets the execution dialog stay usable.
+            ddl = get_object_ddl(engine, routine_name, "procedure", schema)
+            return _parameters_from_routine_ddl(ddl)
 
         raise ValueError("当前数据库不支持执行存储过程")
     finally:
@@ -353,6 +431,44 @@ def _execute_dbapi_routine(
         raw_connection.close()
 
 
+def _execute_dameng_jdbc_routine(
+    engine: Engine,
+    routine_name: str,
+    schema: str,
+    parameters: list[RoutineParameterInfo],
+    arguments: list[RoutineArgumentValue],
+) -> QueryResponse:
+    provided = _argument_map(arguments)
+    if any(parameter.mode != "IN" for parameter in parameters):
+        raise ValueError("达梦 JDBC 驱动暂不支持带输出参数的存储过程，请改用 dmPython 驱动执行")
+    if any(argument.use_default for argument in arguments):
+        raise ValueError("达梦 JDBC 驱动暂不支持跳过默认参数，请填写参数值后执行")
+
+    raw_connection = engine.raw_connection()
+    cursor = raw_connection.cursor()
+    preparer = engine.dialect.identifier_preparer
+    qualified_name = f"{preparer.quote(schema)}.{preparer.quote(routine_name)}"
+    values = [_argument_value(parameter, provided) for parameter in parameters]
+    statement = f"CALL {qualified_name}({', '.join('?' for _ in values)})"
+    try:
+        cursor.execute(statement, values)
+        columns, rows = _rows_from_cursor(cursor)
+        while hasattr(cursor, "nextset") and cursor.nextset():
+            if not rows and cursor.description:
+                columns, rows = _rows_from_cursor(cursor)
+        raw_connection.commit()
+        if not rows:
+            columns = ["message", "affected_rows"]
+            rows = [{"message": "存储过程执行成功", "affected_rows": 0}]
+        return QueryResponse(columns=columns, rows=rows, row_count=len(rows), limited=False)
+    except Exception:
+        raw_connection.rollback()
+        raise
+    finally:
+        cursor.close()
+        raw_connection.close()
+
+
 def execute_routine(
     engine: Engine,
     routine_name: str,
@@ -367,6 +483,14 @@ def execute_routine(
         schema = _target_schema(engine, database)
         if engine.dialect.name in {"postgresql", "gaussdb"}:
             return _execute_postgresql_routine(
+                engine,
+                routine_name,
+                schema,
+                parameters,
+                arguments,
+            )
+        if engine.dialect.name == "dm":
+            return _execute_dameng_jdbc_routine(
                 engine,
                 routine_name,
                 schema,

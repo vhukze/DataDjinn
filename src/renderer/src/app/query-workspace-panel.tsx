@@ -313,9 +313,22 @@ const QueryWorkspacePanel = memo(function QueryWorkspacePanel({
                 type="primary"
                 icon={<PlayCircleOutlined />}
                 loading={tab.loading}
+                aria-busy={tab.loading}
+                data-query-execution-phase={tab.queryExecutionPhase ?? 'idle'}
+                title={
+                  tab.queryExecutionPhase === 'opening-connection'
+                    ? '正在打开连接，请稍候'
+                    : tab.queryExecutionPhase === 'executing'
+                      ? '正在执行 SQL，请稍候'
+                      : EXECUTE_LABEL
+                }
                 onClick={() => void runQuery(tab)}
               >
-                {EXECUTE_LABEL}
+                {tab.queryExecutionPhase === 'opening-connection'
+                  ? '正在打开连接…'
+                  : tab.queryExecutionPhase === 'executing'
+                    ? '正在执行…'
+                    : EXECUTE_LABEL}
               </Button>
               {statementMenuItems.length > 0 && (
                 <Dropdown

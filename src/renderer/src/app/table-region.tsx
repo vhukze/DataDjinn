@@ -3,7 +3,16 @@ import { Button, Checkbox, Flex, Input, Space, Table, Typography } from 'antd'
 import type { InputRef } from 'antd'
 import type { ColumnsType, TableRef } from 'antd/es/table'
 import { createPortal } from 'react-dom'
-import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  memo,
+  startTransition,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
 import type React from 'react'
 
 type EditableRowLike = Record<string, unknown> & {
@@ -908,6 +917,95 @@ export const ResultTableBodyView = memo(
     void tab.tableRenderVersion
     const bodyRef = useRef<HTMLDivElement | null>(null)
     const effectiveTableScrollY = tableScrollY
+
+    useLayoutEffect(() => {
+      if (!virtual) {
+        return
+      }
+      const container = bodyRef.current
+      if (!container) {
+        return
+      }
+      const columnWidths = tableColumns.map((column) =>
+        typeof column.width === 'number' ? column.width : 0
+      )
+      const applyHeaderColumnWidths = (): void => {
+        const headerTable = container.querySelector<HTMLTableElement>('.ant-table-header > table')
+        if (!headerTable) {
+          return
+        }
+        const width = `${tableScrollX}px`
+        headerTable.style.setProperty('width', width, 'important')
+        headerTable.style.setProperty('min-width', width, 'important')
+        headerTable.querySelectorAll<HTMLTableColElement>('colgroup > col').forEach((column, index) => {
+          const columnWidth = columnWidths[index]
+          if (!columnWidth) {
+            return
+          }
+          const nextWidth = `${columnWidth}px`
+          column.style.setProperty('width', nextWidth, 'important')
+          column.style.setProperty('min-width', nextWidth, 'important')
+          column.style.setProperty('max-width', nextWidth, 'important')
+        })
+      }
+      applyHeaderColumnWidths()
+      const frameId = window.requestAnimationFrame(applyHeaderColumnWidths)
+      return () => window.cancelAnimationFrame(frameId)
+    }, [tableColumns, tableScrollX, virtual])
+
+    useEffect(() => {
+      if (!virtual) {
+        return
+      }
+      const container = bodyRef.current
+      const holder = container?.querySelector<HTMLElement>('.ant-table-tbody-virtual-holder')
+      if (!container || !holder) {
+        return
+      }
+      const syncHeaderScroll = (): void => {
+        const header = container.querySelector<HTMLElement>('.ant-table-header')
+        if (header && Math.abs(header.scrollLeft - holder.scrollLeft) > 1) {
+          header.scrollLeft = holder.scrollLeft
+        }
+      }
+      syncHeaderScroll()
+      holder.addEventListener('scroll', syncHeaderScroll)
+      return () => holder.removeEventListener('scroll', syncHeaderScroll)
+    }, [tab.tableRenderVersion, tableScrollX, virtual])
+
+    useEffect(() => {
+      if (!virtual) {
+        return
+      }
+      const holder = bodyRef.current?.querySelector<HTMLElement>('.ant-table-tbody-virtual-holder')
+      if (!holder) {
+        return
+      }
+      const handleShiftWheel = (event: WheelEvent): void => {
+        if (!event.shiftKey || event.deltaX !== 0 || event.deltaY === 0) {
+          return
+        }
+        const header = bodyRef.current?.querySelector<HTMLElement>('.ant-table-header')
+        const currentScrollLeft = header?.scrollLeft ?? 0
+        const nextScrollLeft = Math.max(
+          0,
+          Math.min(holder.scrollWidth - holder.clientWidth, currentScrollLeft + event.deltaY)
+        )
+        if (nextScrollLeft === currentScrollLeft) {
+          return
+        }
+        event.preventDefault()
+        holder.dispatchEvent(
+          new WheelEvent('wheel', {
+            bubbles: true,
+            cancelable: true,
+            deltaX: nextScrollLeft - currentScrollLeft
+          })
+        )
+      }
+      holder.addEventListener('wheel', handleShiftWheel, { passive: false })
+      return () => holder.removeEventListener('wheel', handleShiftWheel)
+    }, [tab.tableRenderVersion, virtual])
 
     return (
       <div

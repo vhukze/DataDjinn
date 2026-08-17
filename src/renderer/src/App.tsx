@@ -9,7 +9,9 @@
   EditOutlined,
   DeleteOutlined,
   AimOutlined,
+  AppstoreOutlined,
   FolderAddOutlined,
+  FolderOutlined,
   FolderOpenOutlined,
   LoadingOutlined,
   LinkOutlined,
@@ -20,6 +22,7 @@
   PushpinOutlined,
   SaveOutlined,
   CloudDownloadOutlined,
+  CloudSyncOutlined,
   ReloadOutlined,
   RobotOutlined,
   SearchOutlined,
@@ -31,6 +34,8 @@
 import {
   Alert,
   AutoComplete,
+  Avatar,
+  Badge,
   Button,
   Checkbox,
   ConfigProvider,
@@ -42,7 +47,6 @@ import {
   Layout,
   Menu,
   Modal,
-  Popover,
   Progress,
   Segmented,
   Select,
@@ -55,31 +59,42 @@ import {
   message
 } from 'antd'
 import { ApartmentOutlined } from '@ant-design/icons'
-import type { MenuProps } from 'antd'
+import type { InputRef, MenuProps } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { flushSync } from 'react-dom'
 import {
-  memo,
   startTransition,
   useCallback,
   useDeferredValue,
   useEffect,
   useMemo,
   useRef,
-  useState
+  useState,
+  lazy,
+  Suspense
 } from 'react'
 import { useTheme } from './context/ThemeContext'
 import type {
   SqlCompletionColumn,
   SqlCompletionContext,
+  SqlCompletionRoutine,
   SqlCompletionTable,
   SqlDialect,
   SqlEditorHandle
 } from './components/SqlEditor'
+import { splitSqlStatements } from './components/SqlEditor'
 import AIDockPanelHost from './app/ai-dock-panel-host'
+import AISettingsPanel from './app/ai-settings-panel'
+import { DEFAULT_MCP_SETTINGS } from './app/app-model'
 import type {
   AppInfo,
   BackendStatus,
+  GitHubAuthStatus,
+  GitHubDeviceAuthorization,
+  GitHubDeviceAuthorizationPoll,
+  McpSettings,
+  OptionalModuleInfo,
+  OptionalModuleLaunchConfig,
   QuerySettings,
   SettingsSection,
   ShortcutAction,
@@ -122,7 +137,6 @@ import {
   ImportConnectionFolderPlan,
   ImportConnectionResult,
   ImportConnectionSource,
-  IMPORT_CONNECTION_SOURCE_OPTIONS,
   isCellValueEqual,
   isDatabaseScopedType,
   isDefaultValueMarker,
@@ -168,9 +182,8 @@ import {
   buildJdbcUrl,
   supportsJdbcUrl
 } from './app/connection-clipboard'
-import ResultTablePanel, { type HorizontalScrollTableRef } from './app/result-table-panel'
+import type { HorizontalScrollTableRef } from './app/result-table-panel'
 import { clampResultColumnWidth } from './app/query-utils'
-import TableDesignerPanel from './app/table-designer-panel'
 import { buildActiveTreePath, locateTreePathInView } from './app/tree-navigation'
 import { refreshConnectionTreeNode, refreshDatabaseTreeNode } from './app/tree-refresh'
 import { handleTreeSelectionChange, selectConnectionTreeNodes } from './app/tree-selection'
@@ -187,6 +200,7 @@ import type {
   PersistedQueryWorkspace,
   RedisKeyEdit,
   SqlEditorExecutionContext,
+  MultiStatementResult,
   TableSearchUiState,
   WorkspaceTab
 } from './app/workspace-model'
@@ -199,9 +213,92 @@ import {
 import {
   buildConnectionNode as buildConnectionNodeFromModule,
   buildFolderNode as buildFolderNodeFromModule,
-  buildResourceTree as buildResourceTreeFromModule,
-  type ConnectionTypeIcons
+  buildResourceTree as buildResourceTreeFromModule
 } from './app/tree-builders'
+import {
+  buildPersistedQueryWorkspace,
+  upsertPersistedQueryWorkspace
+} from './app/workspace-persistence'
+import {
+  buildGitSyncTreeOrder,
+  buildGitSyncTreeDiff,
+  createDefaultGitSyncConflictChoices,
+  describeGitSyncConflict,
+  formatGitSyncConflictValue,
+  groupGitSyncConflicts
+} from './app/git-sync-conflicts'
+import type { TableDataSnapshotDiff } from './app/data-versioning-diff'
+import { DataVersionDiffModal } from './app/data-version-diff-modal'
+import { ConnectionVersionManagementModal } from './app/connection-version-management-modal'
+import {
+  ConnectionExportModal,
+  ConnectionImportModal,
+  ConnectionImportResultModal,
+  ConnectionPasswordPromptModal
+} from './app/connection-transfer-modals'
+import { BackupModal, CreateTableModal, FolderEditorModal } from './app/resource-operation-modals'
+import {
+  AUTO_SYNC_INTERVAL_MS,
+  BACKEND_COLORS,
+  BACKEND_LABELS,
+  collectTreeSearchMatches,
+  createConnectionTypeIcons,
+  FAST_MODAL_PROPS,
+  FAST_PRELOADED_DROPDOWN_PROPS,
+  FOLDER_DROP_PLACEHOLDER_KEY_PREFIX,
+  formatQueryHistoryTime,
+  getConnectionAddress,
+  getQueryHistoryPreviewText,
+  getSyncDeviceId,
+  insertIdsAroundTarget,
+  isApiErrorResponse,
+  mergeOrderedIds,
+  readPersisted,
+  readPersistedJson,
+  RESOURCE_PANEL_MIN_WIDTH,
+  RESOURCE_TREE_ITEM_HEIGHT,
+  rootConnectionOrderId,
+  rootFolderOrderId,
+  SSH_TEST_REQUEST_TIMEOUT_MS,
+  STORAGE_CONNECTION_FOLDER_ASSIGNMENTS,
+  STORAGE_CONNECTION_FOLDER_ORDER,
+  STORAGE_CONNECTION_FOLDERS,
+  STORAGE_DB,
+  STORAGE_FOLDER_CONNECTION_ORDER,
+  STORAGE_PINNED_ROOT_ITEM_IDS,
+  STORAGE_QUERY_WORKSPACES,
+  STORAGE_ROOT_CONNECTION_ORDER,
+  STORAGE_ROOT_ITEM_ORDER_CUSTOMIZED,
+  STORAGE_ROOT_ITEM_ORDER,
+  STORAGE_SCHEMA,
+  STORAGE_SHORTCUT_SETTINGS,
+  stringArrayEquals,
+  stringRecordArrayEquals,
+  showErrorModal,
+  TreeSelectorPopover,
+  WorkspaceTabCountBadge,
+  type ApiErrorResponse,
+  type ApiRequestError,
+  type ApiRequestOptions,
+  type ConnectionTransferTestWindow,
+  type ExportDataScope,
+  type ExportFormat,
+  type ExportOrigin,
+  type GitHubDeviceFlowTestWindow,
+  type GitSyncConflict,
+  type GitSyncFileStatus,
+  type GitSyncLocalState,
+  type GitSyncMergeResult,
+  type GitSyncPayload,
+  type RoutineArgumentDraft,
+  type RoutineExecutionTarget,
+  type SchemaSnapshot,
+  type SchemaSnapshotResult,
+  type SchemaVersionInfo,
+  type TableDataSnapshot,
+  type TreeSearchMatch,
+  type VersioningScopeConfig
+} from './app/app-runtime-support'
 import { useWorkspaceStore } from './app/workspace-store'
 import {
   collectTreeNodesByKey,
@@ -230,355 +327,8 @@ import oracleIcon from './assets/icons/oracle.png'
 import appIcon from '../../../resources/icon.svg'
 import appLogoHorizontal from '../../../resources/logo-horizontal.svg'
 
-const RESOURCE_TREE_ITEM_HEIGHT = 30
-const SSH_TEST_REQUEST_TIMEOUT_MS = 10_000
-
-type ApiRequestOptions = RequestInit & {
-  timeoutMs?: number
-}
-
-type TreeSearchMatch = {
-  key: string
-  path: string[]
-  node: DatabaseTreeNode
-}
-
-const getConnectionAddress = (connection: Pick<ConnectionInfo, 'host' | 'port'>): string | undefined =>
-  connection.host?.trim()
-    ? `${connection.host}${connection.port ? `:${connection.port}` : ''}`
-    : undefined
-
-const collectTreeSearchMatches = (
-  nodes: DatabaseTreeNode[],
-  connections: ConnectionInfo[],
-  keyword: string
-): TreeSearchMatch[] => {
-  if (!keyword) {
-    return []
-  }
-
-  const connectionsById = new Map(
-    connections.map((connection) => [connection.connection_id, connection])
-  )
-  const matches: TreeSearchMatch[] = []
-  const visit = (currentNodes: DatabaseTreeNode[], parentPath: string[]): void => {
-    for (const node of currentNodes) {
-      const key = String(node.key)
-      const path = [...parentPath, key]
-      const connection = node.connectionId ? connectionsById.get(node.connectionId) : undefined
-      const searchText = connection
-        ? `${connection.name}\n${getConnectionAddress(connection) ?? ''}`.toLowerCase()
-        : ''
-      if (node.kind === 'connection' && searchText.includes(keyword)) {
-        matches.push({ key, path, node })
-      }
-      if (node.children?.length) {
-        visit(node.children as DatabaseTreeNode[], path)
-      }
-    }
-  }
-
-  visit(nodes, [])
-  return matches
-}
-const FOLDER_DROP_PLACEHOLDER_KEY_PREFIX = 'folder-drop-placeholder:'
-const FAST_MODAL_PROPS = {
-  destroyOnHidden: true,
-  transitionName: '',
-  maskTransitionName: ''
-} as const
-
-const FAST_DROPDOWN_PROPS = {
-  destroyOnHidden: true,
-  transitionName: ''
-} as const
-
-type ExportFormat = 'sql' | 'csv' | 'json' | 'markdown'
-type ExportOrigin = 'tree' | 'result'
-type ExportDataScope = 'current_page' | 'all'
-type RoutineExecutionTarget = {
-  connectionId: string
-  name: string
-  databaseName?: string
-  pgDatabaseName?: string
-}
-type RoutineArgumentDraft = {
-  value: string
-  isNull: boolean
-  useDefault: boolean
-}
-
-const FAST_PRELOADED_DROPDOWN_PROPS = {
-  ...FAST_DROPDOWN_PROPS,
-  forceRender: true
-} as const
-
-type ConnectionTransferTestWindow = typeof window & {
-  __DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_FILE_PATH__?: string
-  __DATADJINN_TEST_CONNECTION_TRANSFER_IMPORT_CONTENT__?: string
-  __DATADJINN_TEST_CONNECTION_TRANSFER_EXPORT_PATH__?: string
-  __DATADJINN_TEST_CONNECTION_TRANSFER_EXPORT_HANDLER__?: (payload: {
-    filePath: string
-    content: string
-  }) => void | Promise<void>
-}
-
-type TreeSelectorPopoverProps = {
-  options: string[]
-  selectedValues: string[]
-  onCommit: (nextSelected: string[]) => void
-}
-
-const TreeSelectorPopover = memo(function TreeSelectorPopover({
-  options,
-  selectedValues,
-  onCommit
-}: TreeSelectorPopoverProps): React.ReactNode {
-  const [open, setOpen] = useState(false)
-  const [draftSelected, setDraftSelected] = useState<string[]>(selectedValues)
-  const closeAndCommit = useCallback((): void => {
-    setOpen(false)
-    onCommit(draftSelected)
-  }, [draftSelected, onCommit])
-
-  useEffect(() => {
-    if (!open) {
-      setDraftSelected(selectedValues)
-    }
-  }, [open, selectedValues])
-
-  useEffect(() => {
-    if (!open) {
-      return
-    }
-
-    const handlePointerDown = (event: PointerEvent): void => {
-      const target = event.target as HTMLElement | null
-      if (!target) {
-        return
-      }
-      if (target.closest('.tree-selector-popover') || target.closest('.selector-badge')) {
-        return
-      }
-      closeAndCommit()
-    }
-
-    const handleKeyDown = (event: KeyboardEvent): void => {
-      if (event.key !== 'Escape') {
-        return
-      }
-      event.preventDefault()
-      closeAndCommit()
-    }
-
-    window.addEventListener('pointerdown', handlePointerDown, true)
-    window.addEventListener('keydown', handleKeyDown, true)
-    return () => {
-      window.removeEventListener('pointerdown', handlePointerDown, true)
-      window.removeEventListener('keydown', handleKeyDown, true)
-    }
-  }, [closeAndCommit, open])
-
-  return (
-    <Popover
-      trigger={[]}
-      open={open}
-      overlayClassName="tree-selector-popover no-motion-overlay"
-      destroyOnHidden={false}
-      forceRender
-      motion={{ motionName: '' }}
-      content={
-        <div className="tree-selector-popover-body">
-          <Flex vertical gap={8}>
-            <Button
-              className="tree-selector-toggle-btn"
-              size="small"
-              type="link"
-              onClick={(event) => {
-                event.stopPropagation()
-                setDraftSelected(draftSelected.length === options.length ? [options[0]] : options)
-              }}
-            >
-              {draftSelected.length === options.length ? '取消全选' : '全选'}
-            </Button>
-            <Checkbox.Group
-              className="tree-selector-checkbox-group"
-              value={draftSelected}
-              onChange={(values) => {
-                if (values.length === 0) {
-                  return
-                }
-                setDraftSelected(values as string[])
-              }}
-            >
-              <Flex vertical gap={6}>
-                {options.map((item) => (
-                  <Checkbox className="tree-selector-checkbox" key={item} value={item}>
-                    {item}
-                  </Checkbox>
-                ))}
-              </Flex>
-            </Checkbox.Group>
-          </Flex>
-        </div>
-      }
-    >
-      <Tag
-        className="selector-badge"
-        onMouseDown={(event) => {
-          event.stopPropagation()
-        }}
-        onClick={(event) => {
-          event.preventDefault()
-          event.stopPropagation()
-          flushSync(() => {
-            if (open) {
-              closeAndCommit()
-              return
-            }
-            setDraftSelected(selectedValues)
-            setOpen(true)
-          })
-        }}
-      >
-        {selectedValues.length}/{options.length}
-      </Tag>
-    </Popover>
-  )
-})
-
-const formatQueryHistoryTime = (timestamp?: number): string => {
-  if (!timestamp) {
-    return '未知时间'
-  }
-  return new Intl.DateTimeFormat('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit'
-  }).format(timestamp)
-}
-
-const getQueryHistoryPreviewText = (sql?: string): string => {
-  const normalized = (sql ?? '').replace(/\s+/g, ' ').trim()
-  return normalized || '空查询'
-}
-
-const WorkspaceTabCountBadge = (): React.JSX.Element => {
-  const workspaceTabCount = useWorkspaceStore((state) => state.tabs.length)
-  return (
-    <span className="summary-pill summary-pill-tabs">
-      <strong>{workspaceTabCount}</strong>
-      <span className="summary-label">工作页</span>
-    </span>
-  )
-}
-
-const BACKEND_LABELS: Record<BackendStatus['state'], string> = {
-  starting: '服务启动中',
-  online: '服务正常',
-  failed: '服务异常',
-  stopped: '服务已停止',
-  crashed: '服务已崩溃'
-}
-
-const BACKEND_COLORS: Record<
-  BackendStatus['state'],
-  'success' | 'processing' | 'error' | 'default'
-> = {
-  starting: 'processing',
-  online: 'success',
-  failed: 'error',
-  stopped: 'default',
-  crashed: 'error'
-}
-
-const STORAGE_DB = 'datadjinn-selected-databases'
-const STORAGE_SCHEMA = 'datadjinn-selected-schemas'
-const STORAGE_CONNECTION_FOLDERS = 'datadjinn-connection-folders'
-const STORAGE_CONNECTION_FOLDER_ASSIGNMENTS = 'datadjinn-connection-folder-assignments'
-const STORAGE_CONNECTION_FOLDER_ORDER = 'datadjinn-connection-folder-order'
-const STORAGE_ROOT_CONNECTION_ORDER = 'datadjinn-root-connection-order'
-const STORAGE_ROOT_ITEM_ORDER = 'datadjinn-root-item-order'
-const STORAGE_ROOT_ITEM_ORDER_CUSTOMIZED = 'datadjinn-root-item-order-customized'
-const STORAGE_PINNED_ROOT_ITEM_IDS = 'datadjinn-pinned-root-item-ids'
-const STORAGE_FOLDER_CONNECTION_ORDER = 'datadjinn-folder-connection-order'
-const STORAGE_QUERY_WORKSPACES = 'datadjinn-query-workspaces'
-const STORAGE_SHORTCUT_SETTINGS = 'datadjinn-shortcut-settings'
-const RESOURCE_PANEL_MIN_WIDTH = 304
-const readPersisted = (key: string): Record<string, string[]> => {
-  try {
-    const stored = localStorage.getItem(key)
-    return stored ? JSON.parse(stored) : {}
-  } catch {
-    return {}
-  }
-}
-
-const readPersistedJson = <T,>(key: string, fallback: T): T => {
-  try {
-    const stored = localStorage.getItem(key)
-    return stored ? (JSON.parse(stored) as T) : fallback
-  } catch {
-    return fallback
-  }
-}
-
-const mergeOrderedIds = (availableIds: string[], preferredIds: string[]): string[] => {
-  const available = new Set(availableIds)
-  const ordered = preferredIds.filter((id) => available.has(id))
-  const orderedSet = new Set(ordered)
-  return [...ordered, ...availableIds.filter((id) => !orderedSet.has(id))]
-}
-
-const stringArrayEquals = (left: string[], right: string[]): boolean =>
-  left.length === right.length && left.every((item, index) => item === right[index])
-
-const stringRecordArrayEquals = (
-  left: Record<string, string[]>,
-  right: Record<string, string[]>
-): boolean => {
-  const leftKeys = Object.keys(left).sort()
-  const rightKeys = Object.keys(right).sort()
-  return (
-    stringArrayEquals(leftKeys, rightKeys) &&
-    leftKeys.every((key) => stringArrayEquals(left[key] ?? [], right[key] ?? []))
-  )
-}
-
-const rootFolderOrderId = (folderId: string): string => `folder:${folderId}`
-const rootConnectionOrderId = (connectionId: string): string => `connection:${connectionId}`
-
-type ApiErrorResponse = {
-  __datadjinnApiError: string
-  __datadjinnApiErrorCode?: string
-}
-
-type ApiRequestError = Error & { code?: string }
-
-const isApiErrorResponse = (value: unknown): value is ApiErrorResponse =>
-  Boolean(
-    value &&
-    typeof value === 'object' &&
-    '__datadjinnApiError' in value &&
-    typeof value.__datadjinnApiError === 'string'
-  )
-
-const insertIdsAroundTarget = (
-  ids: string[],
-  movingIds: string[],
-  targetId: string,
-  placeAfter: boolean
-): string[] => {
-  const movingSet = new Set(movingIds)
-  const filtered = ids.filter((id) => !movingSet.has(id))
-  const targetIndex = filtered.indexOf(targetId)
-  if (targetIndex < 0) {
-    return [...filtered, ...movingIds]
-  }
-  const insertIndex = placeAfter ? targetIndex + 1 : targetIndex
-  return [...filtered.slice(0, insertIndex), ...movingIds, ...filtered.slice(insertIndex)]
-}
+const TableDesignerPanel = lazy(() => import('./app/table-designer-panel'))
+const ResultTablePanel = lazy(() => import('./app/result-table-panel'))
 
 function App(): React.JSX.Element {
   const [form] = Form.useForm<ConnectionFormValues>()
@@ -587,21 +337,7 @@ function App(): React.JSX.Element {
     useState<DatabaseType>('sqlite')
   const driverType = Form.useWatch('driver_type', driverForm) ?? 'jdbc'
   const [messageApi, contextHolder] = message.useMessage()
-  const showError = (error: unknown, fallback = '操作失败'): void => {
-    const content =
-      error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
-    Modal.error({
-      title: '操作失败',
-      centered: true,
-      okText: '确认',
-      width: 720,
-      content: (
-        <Space direction="vertical" className="full-width">
-          <Input.TextArea value={content} autoSize={{ minRows: 4, maxRows: 12 }} readOnly />
-        </Space>
-      )
-    })
-  }
+  const showError = showErrorModal
   const [backendStatus, setBackendStatus] = useState<BackendStatus>({
     state: 'starting',
     message: '后端状态初始化中'
@@ -637,6 +373,7 @@ function App(): React.JSX.Element {
   const setActiveTabKey = useWorkspaceStore((state) => state.setActiveTabKey)
   const setWorkspaceTabsAndActiveTabKey = useWorkspaceStore((state) => state.setTabsAndActiveTabKey)
   const workspaceTabSummaryCount = useWorkspaceStore((state) => state.tabSummaries.length)
+  const queryPersistenceRevision = useWorkspaceStore((state) => state.queryPersistenceRevision)
   const getWorkspaceTabs = useCallback(() => useWorkspaceStore.getState().tabs, [])
   const [sqlExecutionContextByTab, setSqlExecutionContextByTab] = useState<
     Record<string, SqlEditorExecutionContext>
@@ -651,6 +388,10 @@ function App(): React.JSX.Element {
   const [treeSearchText, setTreeSearchText] = useState('')
   const [treeSearchMatchIndex, setTreeSearchMatchIndex] = useState(0)
   const treeSearchInputRef = useRef<HTMLInputElement | null>(null)
+  const folderEditorInputRef = useRef<InputRef | null>(null)
+  const gitSyncPassphraseConfirmInputRef = useRef<InputRef | null>(null)
+  const nextGitSyncPassphraseInputRef = useRef<InputRef | null>(null)
+  const nextGitSyncPassphraseConfirmInputRef = useRef<InputRef | null>(null)
   const treeSearchMatchesRef = useRef<TreeSearchMatch[]>([])
   const queryHistoryModalRef = useRef<ImperativeModalHandle | null>(null)
   const settingsModalRef = useRef<ImperativeModalHandle | null>(null)
@@ -771,6 +512,66 @@ function App(): React.JSX.Element {
   const [newTableComment, setNewTableComment] = useState('')
   const [newTableColumns, setNewTableColumns] = useState<ColumnDef[]>([])
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('app')
+  const [gitHubAuthStatus, setGitHubAuthStatus] = useState<GitHubAuthStatus>({
+    authorized: false
+  })
+  const [gitHubAuthorizationPending, setGitHubAuthorizationPending] = useState(false)
+  const [gitHubDeviceAuthorization, setGitHubDeviceAuthorization] =
+    useState<GitHubDeviceAuthorization>()
+  const [gitSyncPassphrase, setGitSyncPassphrase] = useState('')
+  const [gitSyncPassphraseConfirm, setGitSyncPassphraseConfirm] = useState('')
+  const [changingGitSyncPassphrase, setChangingGitSyncPassphrase] = useState(false)
+  const [currentGitSyncPassphrase, setCurrentGitSyncPassphrase] = useState('')
+  const [nextGitSyncPassphrase, setNextGitSyncPassphrase] = useState('')
+  const [nextGitSyncPassphraseConfirm, setNextGitSyncPassphraseConfirm] = useState('')
+  const [gitSyncBusy, setGitSyncBusy] = useState(false)
+  const [gitSyncLastSyncedAt, setGitSyncLastSyncedAt] = useState<number>()
+  const [gitSyncRemoteExists, setGitSyncRemoteExists] = useState(false)
+  const [gitSyncBaseline, setGitSyncBaseline] = useState<GitSyncPayload>()
+  const gitSyncRestoreTargetRef = useRef<{
+    connectionIds: Set<string>
+    folderIds: Set<string>
+    assignments: Record<string, string>
+  } | undefined>(undefined)
+  const gitSyncAssignmentRecoveryRef = useRef<string | undefined>(undefined)
+  const [gitSyncAutoEnabled, setGitSyncAutoEnabled] = useState(false)
+  const [gitSyncConflicts, setGitSyncConflicts] = useState<GitSyncConflict[]>([])
+  const [gitSyncConflictChoices, setGitSyncConflictChoices] = useState<
+    Record<string, 'local' | 'remote'>
+  >({})
+  const [gitSyncPendingPayload, setGitSyncPendingPayload] = useState<GitSyncPayload>()
+  const [gitSyncPendingRemoteSha, setGitSyncPendingRemoteSha] = useState<string>()
+  const [gitSyncPendingPassphrase, setGitSyncPendingPassphrase] = useState('')
+  const [schemaVersionConnectionId, setSchemaVersionConnectionId] = useState<string>()
+  const [schemaVersionModalOpen, setSchemaVersionModalOpen] = useState(false)
+  const [schemaVersions, setSchemaVersions] = useState<SchemaVersionInfo[]>([])
+  const [schemaVersionsLoading, setSchemaVersionsLoading] = useState(false)
+  const [schemaSnapshotCreating, setSchemaSnapshotCreating] = useState(false)
+  const [versioningScopeConfig, setVersioningScopeConfig] = useState<VersioningScopeConfig>()
+  const [versioningScopeDraft, setVersioningScopeDraft] = useState<string[]>([])
+  const [versioningScopesLoading, setVersioningScopesLoading] = useState(false)
+  const [versioningScopesSaving, setVersioningScopesSaving] = useState(false)
+  const [dataVersionTables, setDataVersionTables] = useState<TableInfo[]>([])
+  const [dataVersionTableName, setDataVersionTableName] = useState<string>()
+  const [dataVersions, setDataVersions] = useState<SchemaVersionInfo[]>([])
+  const [dataVersionsLoading, setDataVersionsLoading] = useState(false)
+  const [dataVersionDiffModalOpen, setDataVersionDiffModalOpen] = useState(false)
+  const [dataVersionDiffLoading, setDataVersionDiffLoading] = useState(false)
+  const [dataVersionDiff, setDataVersionDiff] = useState<TableDataSnapshotDiff>()
+  const [dataVersionDiffTarget, setDataVersionDiffTarget] = useState<{
+    connectionId: string
+    tableName: string
+    version: SchemaVersionInfo
+  }>()
+  const [dataVersionDiffTab, setDataVersionDiffTab] = useState<'added' | 'deleted' | 'updated'>(
+    'updated'
+  )
+  const versioningScopeLabel =
+    versioningScopeConfig?.scope_kind === 'database' ? '数据库' : '模式'
+  const hasConfiguredVersioningScope =
+    versioningScopeConfig?.scope_kind === 'single' ||
+    Boolean(versioningScopeConfig && versioningScopeConfig.selected_scopes.length > 0)
+  const [dataSnapshotCreating, setDataSnapshotCreating] = useState(false)
   const [shortcutSettings, setShortcutSettings] = useState<ShortcutSettings>(() => ({
     ...DEFAULT_SHORTCUT_SETTINGS,
     ...readPersistedJson<Partial<ShortcutSettings>>(STORAGE_SHORTCUT_SETTINGS, {})
@@ -807,11 +608,22 @@ function App(): React.JSX.Element {
   const [folderEditorOpen, setFolderEditorOpen] = useState(false)
   const [folderEditorMode, setFolderEditorMode] = useState<'create' | 'rename'>('create')
   const [editingFolderId, setEditingFolderId] = useState<string>()
+  const [creatingFolderParentId, setCreatingFolderParentId] = useState<string>()
   const [folderNameDraft, setFolderNameDraft] = useState('')
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
   const [javaRestartRequired, setJavaRestartRequired] = useState(false)
   const [updateSettings, setUpdateSettings] = useState<UpdateSettings | null>(null)
   const [querySettings, setQuerySettings] = useState<QuerySettings>({ timeoutMinutes: 15 })
+  const [mcpSettings, setMcpSettings] = useState<McpSettings>(DEFAULT_MCP_SETTINGS)
+  const [optionalModules, setOptionalModules] = useState<OptionalModuleInfo[]>([])
+  const [optionalModulesLoaded, setOptionalModulesLoaded] = useState(false)
+  const dataVersioningModuleInstalled = optionalModules.some(
+    (module) => module.id === 'data-versioning' && module.installed
+  )
+  const [mcpLaunchConfig, setMcpLaunchConfig] = useState<OptionalModuleLaunchConfig | null>(null)
+  const [installingOptionalModuleId, setInstallingOptionalModuleId] = useState<
+    OptionalModuleInfo['id'] | null
+  >(null)
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [downloadingUpdate, setDownloadingUpdate] = useState(false)
@@ -930,6 +742,48 @@ function App(): React.JSX.Element {
       return
     }
 
+    const gitSyncRestoreTarget = gitSyncRestoreTargetRef.current
+    if (gitSyncRestoreTarget) {
+      const currentConnectionIds = new Set(connections.map((connection) => connection.connection_id))
+      const currentFolderIds = new Set(connectionFolders.map((folder) => folder.id))
+      const connectionsReady = [...gitSyncRestoreTarget.connectionIds].every((connectionId) =>
+        currentConnectionIds.has(connectionId)
+      )
+      const foldersReady = [...gitSyncRestoreTarget.folderIds].every((folderId) =>
+        currentFolderIds.has(folderId)
+      )
+      const expectedAssignments = Object.fromEntries(
+        Object.entries(gitSyncRestoreTarget.assignments).filter(
+          ([connectionId, folderId]) =>
+            currentConnectionIds.has(connectionId) && currentFolderIds.has(folderId)
+        )
+      )
+      const currentAssignments = Object.fromEntries(
+        Object.entries(connectionFolderAssignments).filter(
+          ([connectionId, folderId]) =>
+            currentConnectionIds.has(connectionId) && currentFolderIds.has(folderId)
+        )
+      )
+      const expectedAssignmentEntries = Object.entries(expectedAssignments).sort(([left], [right]) =>
+        left.localeCompare(right)
+      )
+      const currentAssignmentEntries = Object.entries(currentAssignments).sort(([left], [right]) =>
+        left.localeCompare(right)
+      )
+      const assignmentsReady =
+        expectedAssignmentEntries.length === currentAssignmentEntries.length &&
+        expectedAssignmentEntries.every(
+          ([connectionId, folderId], index) =>
+            currentAssignmentEntries[index]?.[0] === connectionId &&
+            currentAssignmentEntries[index]?.[1] === folderId
+        )
+      if (!connectionsReady || !foldersReady || !assignmentsReady) {
+        return
+      }
+      gitSyncRestoreTargetRef.current = undefined
+      return
+    }
+
     const validConnectionIds = new Set(connections.map((connection) => connection.connection_id))
     const validFolderIds = new Set(connectionFolders.map((folder) => folder.id))
 
@@ -1041,9 +895,99 @@ function App(): React.JSX.Element {
     rootItemOrderCustomized
   ])
 
+  useEffect(() => {
+    if (!connectionsInitialized || !gitSyncBaseline) {
+      return
+    }
+
+    const recoveryKey = `${gitSyncBaseline.device_id}:${gitSyncBaseline.generated_at}`
+    if (gitSyncAssignmentRecoveryRef.current === recoveryKey) {
+      return
+    }
+    gitSyncAssignmentRecoveryRef.current = recoveryKey
+
+    const preferences = gitSyncBaseline.preferences
+    const rawAssignments = preferences.connection_folder_assignments
+    if (!rawAssignments || typeof rawAssignments !== 'object' || Array.isArray(rawAssignments)) {
+      return
+    }
+
+    const currentConnectionIds = new Set(connections.map((connection) => connection.connection_id))
+    const currentFolderIds = new Set(connectionFolders.map((folder) => folder.id))
+    const baselineFolders = Array.isArray(preferences.connection_folders)
+      ? preferences.connection_folders
+          .filter(
+            (folder): folder is { id: string } =>
+              Boolean(folder) &&
+              typeof folder === 'object' &&
+              !Array.isArray(folder) &&
+              typeof (folder as { id?: unknown }).id === 'string'
+          )
+          .map((folder) => folder.id)
+      : []
+    if (baselineFolders.length === 0 || baselineFolders.some((folderId) => !currentFolderIds.has(folderId))) {
+      return
+    }
+
+    const recoveredAssignments = Object.fromEntries(
+      Object.entries(rawAssignments).flatMap(([connectionId, folderId]) =>
+        currentConnectionIds.has(connectionId) &&
+        typeof folderId === 'string' &&
+        currentFolderIds.has(folderId)
+          ? ([[connectionId, folderId]] as [string, string][])
+          : []
+      )
+    )
+    if (Object.keys(recoveredAssignments).length === 0) {
+      return
+    }
+
+    const currentAssignments = Object.fromEntries(
+      Object.entries(connectionFolderAssignments).filter(
+        ([connectionId, folderId]) =>
+          currentConnectionIds.has(connectionId) && currentFolderIds.has(folderId)
+      )
+    )
+    if (Object.keys(currentAssignments).length > 0) {
+      return
+    }
+
+    setConnectionFolderAssignments(recoveredAssignments)
+    const rawFolderOrder = preferences.folder_connection_order
+    if (rawFolderOrder && typeof rawFolderOrder === 'object' && !Array.isArray(rawFolderOrder)) {
+      setFolderConnectionOrder(
+        Object.fromEntries(
+          Object.entries(rawFolderOrder).flatMap(([folderId, connectionIds]) => {
+            if (!currentFolderIds.has(folderId) || !Array.isArray(connectionIds)) {
+              return []
+            }
+            const orderedIds = connectionIds.filter(
+              (connectionId): connectionId is string =>
+                typeof connectionId === 'string' && recoveredAssignments[connectionId] === folderId
+            )
+            return [[folderId, orderedIds]]
+          })
+        )
+      )
+    }
+  }, [
+    connectionFolderAssignments,
+    connectionFolders,
+    connections,
+    connectionsInitialized,
+    gitSyncBaseline
+  ])
+
   const [allDatabases, setAllDatabases] = useState<Record<string, string[]>>({})
   const [allSchemas, setAllSchemas] = useState<Record<string, string[]>>({})
   const [completionTables, setCompletionTables] = useState<Record<string, string[]>>({})
+  const [completionRoutines, setCompletionRoutines] = useState<
+    Record<string, SqlCompletionRoutine[]>
+  >({})
+  const completionRoutineCacheRef = useRef<Record<string, SqlCompletionRoutine[]>>({})
+  const completionRoutineRequestRef = useRef<
+    Record<string, Promise<SqlCompletionRoutine[]> | undefined>
+  >({})
   const completionColumnCacheRef = useRef<Record<string, SqlCompletionColumn[]>>({})
   const completionColumnRequestRef = useRef<Record<string, Promise<SqlCompletionColumn[]>>>({})
   const [dragOverFolderTarget, setDragOverFolderTarget] = useState<{
@@ -1070,6 +1014,8 @@ function App(): React.JSX.Element {
   const tableHeaderRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const pendingPreviewRowScrollRefs = useRef<Record<string, string | undefined>>({})
   const tableScrollTopRefs = useRef<Record<string, number | undefined>>({})
+  const tableScrollLeftRefs = useRef<Record<string, number | undefined>>({})
+  const tableScrollRestoreLocks = useRef<Record<string, number | undefined>>({})
   const pendingRenderedCellSelectionTimeoutRefs = useRef<Record<string, number | undefined>>({})
   const resourceTreeContainerRef = useRef<HTMLDivElement | null>(null)
   const resourceTreeViewportRef = useRef<HTMLDivElement | null>(null)
@@ -1182,6 +1128,8 @@ function App(): React.JSX.Element {
       tableHeaderRefs,
       pendingPreviewRowScrollRefs,
       tableScrollTopRefs,
+      tableScrollLeftRefs,
+      tableScrollRestoreLocks,
       selectedColumnRefs,
       selectedCellRefs,
       selectedRowRefs,
@@ -1214,7 +1162,7 @@ function App(): React.JSX.Element {
     []
   )
 
-  const { theme, toggleTheme } = useTheme()
+  const { theme, setTheme, toggleTheme } = useTheme()
 
   const refreshUpdateSettings = async (): Promise<void> => {
     const settings = await window.api.getUpdateSettings()
@@ -1234,13 +1182,465 @@ function App(): React.JSX.Element {
     setQuerySettings(settings)
   }
 
-  const handleUpdateAvailable = (info: UpdateInfo, open = true): void => {
+  const refreshMcpSettings = async (): Promise<void> => {
+    const settings = await window.api.getMcpSettings()
+    setMcpSettings(settings)
+  }
+
+  const refreshGitHubAuthStatus = async (): Promise<void> => {
+    const auth = await requestJson<GitHubAuthStatus>('/git-sync/auth/status')
+    setGitHubAuthStatus(auth)
+    if (!auth.authorized) {
+      setGitSyncRemoteExists(false)
+      return
+    }
+    try {
+      const remote = await requestJson<GitSyncFileStatus>('/git-sync/file/status')
+      setGitSyncRemoteExists(remote.exists)
+      if (remote.repository) {
+        setGitHubAuthStatus((current) => ({
+          ...current,
+          repository_full_name: remote.repository?.full_name,
+          repository_url: remote.repository?.html_url
+        }))
+      }
+    } catch {
+      setGitSyncRemoteExists(false)
+    }
+  }
+
+  const refreshGitSyncLocalState = async (): Promise<void> => {
+    const state = (await window.api.getSyncLocalState()) as GitSyncLocalState
+    setGitSyncPassphrase(state.passphrase ?? '')
+    setGitSyncPassphraseConfirm(state.passphrase ?? '')
+    setGitSyncLastSyncedAt(state.lastSyncedAt)
+    setGitSyncAutoEnabled(Boolean(state.autoSyncEnabled))
+    setGitSyncBaseline(state.basePayload)
+  }
+
+  const startGitHubAuthorization = async (): Promise<void> => {
+    if (gitHubAuthorizationPending) {
+      return
+    }
+    setGitHubAuthorizationPending(true)
+    try {
+      const testWindow = window as GitHubDeviceFlowTestWindow
+      const authorization =
+        testWindow.__DATADJINN_TEST_GITHUB_DEVICE_AUTHORIZATION__ ??
+        (await requestJson<GitHubDeviceAuthorization>('/git-sync/auth/device', {
+          method: 'POST'
+        }))
+      setGitHubDeviceAuthorization(authorization)
+      await window.api.openExternalUrl(
+        authorization.verification_uri_complete ?? authorization.verification_uri
+      )
+      messageApi.info(`已打开浏览器，请确认 GitHub 授权。授权码：${authorization.user_code}`)
+
+      let pollIntervalMs = authorization.interval_seconds * 1000
+      while (Date.now() < authorization.expires_at * 1000) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, pollIntervalMs))
+        const result =
+          testWindow.__DATADJINN_TEST_GITHUB_DEVICE_POLL__ ??
+          (await requestJson<GitHubDeviceAuthorizationPoll>('/git-sync/auth/device/poll', {
+            method: 'POST',
+            body: JSON.stringify({ session_id: authorization.session_id })
+          }))
+        if (result.status === 'pending') {
+          pollIntervalMs = (result.interval_seconds ?? authorization.interval_seconds) * 1000
+          continue
+        }
+        if (result.status === 'authorized' && result.auth) {
+          setGitHubAuthStatus(result.auth)
+          setGitHubDeviceAuthorization(undefined)
+          try {
+            await refreshGitHubAuthStatus()
+            const localState = (await window.api.getSyncLocalState()) as GitSyncLocalState
+            if (localState.passphrase) {
+              await synchronizeGitPayload(localState.passphrase, localState.passphrase, {
+                silent: true
+              })
+            }
+          } catch (syncError) {
+            showError(syncError instanceof Error ? syncError.message : '授权后的自动同步失败')
+          }
+          messageApi.success(`已授权 GitHub 账号 ${result.auth.login ?? ''}`.trim())
+          return
+        }
+        throw new Error(result.message ?? 'GitHub 授权未完成')
+      }
+      throw new Error('GitHub 授权已超时，请重新登录')
+    } catch (error) {
+      setGitHubDeviceAuthorization(undefined)
+      showError(error instanceof Error ? error.message : 'GitHub 授权失败')
+    } finally {
+      setGitHubAuthorizationPending(false)
+    }
+  }
+
+  const signOutGitHub = async (): Promise<void> => {
+    try {
+      await requestJson<{ success: boolean }>('/git-sync/auth', { method: 'DELETE' })
+      await window.api.clearSyncLocalState()
+      setGitHubAuthStatus({ authorized: false })
+      setGitSyncPassphrase('')
+      setGitSyncPassphraseConfirm('')
+      setGitSyncLastSyncedAt(undefined)
+      setGitSyncRemoteExists(false)
+      messageApi.success('已退出 GitHub 授权')
+    } catch (error) {
+      showError(error instanceof Error ? error.message : '退出 GitHub 授权失败')
+    }
+  }
+
+  const loadVersioningScopes = async (connectionId: string): Promise<void> => {
+    setVersioningScopesLoading(true)
+    try {
+      const config = await requestJson<VersioningScopeConfig>(
+        `/git-versioning/connections/${connectionId}/scopes`
+      )
+      setVersioningScopeConfig(config)
+      setVersioningScopeDraft(config.selected_scopes)
+    } catch (error) {
+      setVersioningScopeConfig(undefined)
+      setVersioningScopeDraft([])
+      showError(error instanceof Error ? error.message : '加载版本管理范围失败')
+    } finally {
+      setVersioningScopesLoading(false)
+    }
+  }
+
+  const saveVersioningScopes = async (connectionId: string): Promise<void> => {
+    if (versioningScopesSaving) {
+      return
+    }
+    setVersioningScopesSaving(true)
+    try {
+      const config = await requestJson<VersioningScopeConfig>(
+        `/git-versioning/connections/${connectionId}/scopes`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({ selected_scopes: versioningScopeDraft })
+        }
+      )
+      setVersioningScopeConfig(config)
+      setVersioningScopeDraft(config.selected_scopes)
+      messageApi.success('已保存 Git 纳管范围')
+    } catch (error) {
+      showError(error instanceof Error ? error.message : '保存版本管理范围失败')
+    } finally {
+      setVersioningScopesSaving(false)
+    }
+  }
+
+  const loadSchemaVersions = async (connectionId: string): Promise<void> => {
+    if (!connectionId) {
+      setSchemaVersions([])
+      return
+    }
+    setSchemaVersionsLoading(true)
+    try {
+      setSchemaVersions(
+        await requestJson<SchemaVersionInfo[]>(
+          `/git-versioning/connections/${connectionId}/versions?limit=20`
+        )
+      )
+    } catch (error) {
+      setSchemaVersions([])
+      showError(error instanceof Error ? error.message : '加载结构版本失败')
+    } finally {
+      setSchemaVersionsLoading(false)
+    }
+  }
+
+  const createSchemaSnapshot = async (connectionId: string): Promise<void> => {
+    if (schemaSnapshotCreating) {
+      return
+    }
+    setSchemaSnapshotCreating(true)
+    try {
+      const result = await requestJson<SchemaSnapshotResult>(
+        `/git-versioning/connections/${connectionId}/snapshots`,
+        { method: 'POST', body: JSON.stringify({ reason: '手动创建结构快照' }) }
+      )
+      messageApi.success(result.changed ? '已创建新的结构版本' : '结构没有变化，已保持当前版本')
+      await loadSchemaVersions(connectionId)
+    } catch (error) {
+      showError(error instanceof Error ? error.message : '创建结构快照失败')
+    } finally {
+      setSchemaSnapshotCreating(false)
+    }
+  }
+
+  const loadDataVersionTables = async (connectionId: string): Promise<void> => {
+    try {
+      const result = await requestJson<{ tables: TableInfo[] }>(`/connections/${connectionId}/tables`)
+      setDataVersionTables(result.tables)
+      setDataVersionTableName((current) =>
+        current && result.tables.some((table) => table.name === current)
+          ? current
+          : result.tables[0]?.name
+      )
+    } catch (error) {
+      setDataVersionTables([])
+      setDataVersionTableName(undefined)
+      showError(error instanceof Error ? error.message : '加载可纳管的数据表失败')
+    }
+  }
+
+  const loadDataVersions = async (connectionId: string, tableName: string): Promise<void> => {
+    if (!tableName) {
+      setDataVersions([])
+      return
+    }
+    setDataVersionsLoading(true)
+    try {
+      const query = new URLSearchParams({ table_name: tableName, limit: '20' })
+      setDataVersions(
+        await requestJson<SchemaVersionInfo[]>(
+          `/git-versioning/connections/${connectionId}/data-snapshots/versions?${query.toString()}`
+        )
+      )
+    } catch (error) {
+      setDataVersions([])
+      showError(error instanceof Error ? error.message : '加载数据版本失败')
+    } finally {
+      setDataVersionsLoading(false)
+    }
+  }
+
+  const createDataSnapshot = async (connectionId: string, tableName: string): Promise<void> => {
+    if (dataSnapshotCreating || !tableName) {
+      return
+    }
+    setDataSnapshotCreating(true)
+    try {
+      const result = await requestJson<{ changed: boolean; snapshot: TableDataSnapshot }>(
+        `/git-versioning/connections/${connectionId}/data-snapshots`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ table_name: tableName, reason: '手动创建数据快照' })
+        }
+      )
+      messageApi.success(result.changed ? '已创建新的数据版本' : '数据没有变化，已保持当前版本')
+      await loadDataVersions(connectionId, tableName)
+    } catch (error) {
+      showError(error instanceof Error ? error.message : '创建数据快照失败')
+    } finally {
+      setDataSnapshotCreating(false)
+    }
+  }
+
+  const openSchemaVersionModal = (connectionId: string): void => {
+    setSchemaVersionConnectionId(connectionId)
+    setSchemaVersions([])
+    setDataVersions([])
+    setDataVersionTables([])
+    setDataVersionTableName(undefined)
+    setVersioningScopeConfig(undefined)
+    setVersioningScopeDraft([])
+    setSchemaVersionModalOpen(true)
+    void loadVersioningScopes(connectionId)
+    if (gitHubAuthStatus.authorized) {
+      void loadSchemaVersions(connectionId)
+      if (dataVersioningModuleInstalled) {
+        void loadDataVersionTables(connectionId)
+      }
+    }
+  }
+
+  const closeSchemaVersionModal = (): void => {
+    setSchemaVersionModalOpen(false)
+    setSchemaVersions([])
+    setDataVersions([])
+    setDataVersionTables([])
+    setDataVersionTableName(undefined)
+    setVersioningScopeConfig(undefined)
+    setVersioningScopeDraft([])
+    setSchemaVersionConnectionId(undefined)
+  }
+
+  useEffect(() => {
+    if (
+      schemaVersionModalOpen &&
+      schemaVersionConnectionId &&
+      dataVersionTableName &&
+      gitHubAuthStatus.authorized &&
+      dataVersioningModuleInstalled
+    ) {
+      void loadDataVersions(schemaVersionConnectionId, dataVersionTableName)
+    }
+  }, [
+    dataVersionTableName,
+    gitHubAuthStatus.authorized,
+    schemaVersionConnectionId,
+    schemaVersionModalOpen,
+    dataVersioningModuleInstalled
+  ])
+
+  const viewSchemaVersion = (connectionId: string, version: SchemaVersionInfo): void => {
+    const connection = getConnection(connectionId)
+    ddlPreviewModalRef.current?.open({
+      title: `${connection?.name ?? '连接'} · 结构版本 ${version.id.slice(0, 7)}`,
+      dialect: (connection?.database_type ?? 'sqlite') as SqlDialect,
+      load: async () => {
+        const snapshot = await requestJson<SchemaSnapshot>(
+          `/git-versioning/connections/${connectionId}/versions/${version.id}`
+        )
+        const header = [
+          `-- DataDjinn 结构版本：${version.id}`,
+          `-- 创建时间：${new Date(snapshot.captured_at).toLocaleString()}`,
+          `-- 对象数量：${snapshot.objects.length}`
+        ]
+        const definitions = snapshot.objects.map((item) => {
+          const scope = item.scope ? `${item.scope}.` : ''
+          return `-- ${item.type}: ${scope}${item.name}\n${item.ddl}`
+        })
+        const skipped = snapshot.skipped_objects.length
+          ? [`-- 未纳入快照的对象：\n${snapshot.skipped_objects.map((item) => `-- ${item}`).join('\n')}`]
+          : []
+        return [...header, ...definitions, ...skipped].join('\n\n')
+      }
+    })
+  }
+
+  const viewDataVersion = (connectionId: string, tableName: string, version: SchemaVersionInfo): void => {
+    const connection = getConnection(connectionId)
+    ddlPreviewModalRef.current?.open({
+      title: `${connection?.name ?? '连接'} · ${tableName} 数据版本 ${version.id.slice(0, 7)}`,
+      dialect: (connection?.database_type ?? 'sqlite') as SqlDialect,
+      load: async () => {
+        const query = new URLSearchParams({ table_name: tableName })
+        const snapshot = await requestJson<TableDataSnapshot>(
+          `/git-versioning/connections/${connectionId}/data-snapshots/versions/${version.id}?${query.toString()}`
+        )
+        return JSON.stringify(snapshot, null, 2)
+      }
+    })
+  }
+
+  const viewDataVersionDiff = (
+    connectionId: string,
+    tableName: string,
+    version: SchemaVersionInfo
+  ): void => {
+    setDataVersionDiffTarget({ connectionId, tableName, version })
+    setDataVersionDiff(undefined)
+    setDataVersionDiffTab('updated')
+    setDataVersionDiffModalOpen(true)
+    setDataVersionDiffLoading(true)
+    void (async () => {
+      try {
+        const query = new URLSearchParams({ table_name: tableName })
+        const diff = await requestJson<TableDataSnapshotDiff>(
+          `/git-versioning/connections/${connectionId}/data-snapshots/versions/${version.id}/diff?${query.toString()}`
+        )
+        setDataVersionDiff(diff)
+        setDataVersionDiffTab(
+          diff.updated.length > 0 ? 'updated' : diff.added.length > 0 ? 'added' : 'deleted'
+        )
+      } catch (error) {
+        setDataVersionDiffModalOpen(false)
+        showError(error instanceof Error ? error.message : '加载数据版本差异失败')
+      } finally {
+        setDataVersionDiffLoading(false)
+      }
+    })()
+  }
+
+  const initializeGitHubSyncRepository = async (): Promise<void> => {
+    try {
+      const repository = await requestJson<{ full_name: string; html_url: string }>('/git-sync/repository', {
+        method: 'POST'
+      })
+      setGitHubAuthStatus((current) => ({
+        ...current,
+        repository_full_name: repository.full_name,
+        repository_url: repository.html_url
+      }))
+      messageApi.success('已创建并绑定 GitHub 私有同步仓库')
+    } catch (error) {
+      showError(error instanceof Error ? error.message : '创建私有同步仓库失败')
+    }
+  }
+
+  const refreshOptionalModules = async (): Promise<void> => {
+    setOptionalModules(await window.api.getOptionalModules())
+    setOptionalModulesLoaded(true)
+  }
+
+  const refreshMcpLaunchConfig = async (): Promise<void> => {
+    setMcpLaunchConfig(await window.api.getOptionalModuleLaunchConfig('mcp'))
+  }
+
+  const mcpModuleInstalled = optionalModules.some(
+    (module) => module.id === 'mcp' && module.installed
+  )
+  const aiModuleInstalled = optionalModules.some(
+    (module) => module.id === 'ai' && module.installed
+  )
+  const jdbcModuleInstalled = optionalModules.some(
+    (module) => module.id === 'jdbc' && module.installed
+  )
+  const aiPanelVisible = optionalModulesLoaded && aiModuleInstalled && aiPanelOpen
+
+  useEffect(() => {
+    void refreshOptionalModules().catch(() => setOptionalModulesLoaded(true))
+  }, [])
+
+  useEffect(() => {
+    if (optionalModulesLoaded && !aiModuleInstalled && aiPanelOpen) {
+      setAiPanelOpen(false)
+    }
+  }, [aiModuleInstalled, aiPanelOpen, optionalModulesLoaded])
+
+  const installOptionalModule = async (moduleId: OptionalModuleInfo['id']): Promise<void> => {
+    if (installingOptionalModuleId) {
+      return
+    }
+    setInstallingOptionalModuleId(moduleId)
+    try {
+      setOptionalModules(await window.api.installOptionalModule(moduleId))
+      setOptionalModulesLoaded(true)
+      if (moduleId === 'mcp') {
+        await refreshMcpLaunchConfig()
+      }
+      if (moduleId === 'ai') {
+        setAiPanelOpen(true)
+      }
+      messageApi.success('扩展模块已安装')
+    } catch (error) {
+      showError(error instanceof Error ? error.message : '安装扩展模块失败')
+    } finally {
+      setInstallingOptionalModuleId(null)
+    }
+  }
+
+  const uninstallOptionalModule = async (moduleId: OptionalModuleInfo['id']): Promise<void> => {
+    try {
+      setOptionalModules(await window.api.uninstallOptionalModule(moduleId))
+      setOptionalModulesLoaded(true)
+      if (moduleId === 'mcp') {
+        await refreshMcpSettings()
+        setMcpLaunchConfig(null)
+      }
+      if (moduleId === 'ai') {
+        setAiPanelOpen(false)
+      }
+      messageApi.success('扩展模块已卸载')
+    } catch (error) {
+      showError(error instanceof Error ? error.message : '卸载扩展模块失败')
+    }
+  }
+
+  const updateMcpSettings = async (patch: Partial<McpSettings>): Promise<void> => {
+    const settings = await window.api.setMcpSettings({ ...mcpSettings, ...patch })
+    setMcpSettings(settings)
+  }
+
+  const handleUpdateAvailable = (info: UpdateInfo): void => {
     setUpdateInfo(info)
     if (!downloadingUpdate) {
       setUpdateProgress(null)
-    }
-    if (open && info.latestVersion !== updateSettings?.skippedUpdateVersion) {
-      openUpdateModal()
     }
   }
 
@@ -1250,7 +1650,7 @@ function App(): React.JSX.Element {
       const info = await window.api.checkForUpdates()
       setUpdateInfo(info)
       if (info.available) {
-        handleUpdateAvailable(info, true)
+        handleUpdateAvailable(info)
       } else if (manual) {
         messageApi.success('当前已经是最新版本')
       }
@@ -1508,6 +1908,46 @@ function App(): React.JSX.Element {
     return result.flat()
   }
 
+  const loadSqlCompletionRoutines = async (tab: WorkspaceTab): Promise<SqlCompletionRoutine[]> => {
+    if (!tab.connectionId) {
+      return []
+    }
+
+    const cacheKey = `${tab.connectionId}:${tab.databaseName ?? ''}`
+    const cached = completionRoutineCacheRef.current[cacheKey]
+    if (cached) {
+      return cached
+    }
+
+    const pending = completionRoutineRequestRef.current[cacheKey]
+    if (pending) {
+      return pending
+    }
+
+    const databaseQuery = tab.databaseName ? `?database=${encodeURIComponent(tab.databaseName)}` : ''
+    const request = requestJson<{ objects: DbObjectInfo[] }>(
+      `/connections/${tab.connectionId}/objects${databaseQuery}${databaseQuery ? '&' : '?'}type=procedure`
+    )
+      .then((data) =>
+        data.objects.flatMap<SqlCompletionRoutine>((object) =>
+          object.type === 'procedure' || object.type === 'function'
+            ? [{ name: object.name, type: object.type, databaseName: tab.databaseName }]
+            : []
+        )
+      )
+      .catch(() => [])
+      .then((routines) => {
+        completionRoutineCacheRef.current[cacheKey] = routines
+        setCompletionRoutines((current) => ({ ...current, [cacheKey]: routines }))
+        return routines
+      })
+      .finally(() => {
+        delete completionRoutineRequestRef.current[cacheKey]
+      })
+    completionRoutineRequestRef.current[cacheKey] = request
+    return request
+  }
+
   const buildSqlCompletionContext = (tab: WorkspaceTab): SqlCompletionContext => {
     const connection = getConnection(tab.connectionId)
     const scopeKey = tab.connectionId
@@ -1546,6 +1986,8 @@ function App(): React.JSX.Element {
       schemas: schemaKey ? (allSchemas[schemaKey] ?? []) : [],
       tables,
       columns,
+      routines: cacheKey ? (completionRoutines[cacheKey] ?? []) : [],
+      loadRoutines: () => loadSqlCompletionRoutines(tab),
       loadTableColumns: (tableNames) => loadSqlCompletionColumns(tab, tableNames)
     }
   }
@@ -1568,6 +2010,8 @@ function App(): React.JSX.Element {
       ? `${connection.name} · ${connectionAddress}`
       : connection.name
     const currentFolderId = connectionFolderAssignments[connection.connection_id]
+    const isPinnedRootConnection =
+      !currentFolderId && pinnedRootItemIds.includes(rootConnectionOrderId(connection.connection_id))
     const connectionDropZone =
       dragOverConnectionTarget?.connectionId === connection.connection_id
         ? dragOverConnectionTarget.zone
@@ -1621,19 +2065,27 @@ function App(): React.JSX.Element {
           title={connectionMeta}
           data-connection-id={connection.connection_id}
           data-tree-node-key={String(node.key)}
+          onDragStart={() => {
+            const folderId = connectionFolderAssignments[connection.connection_id]
+            draggingConnectionIdsRef.current = (selectedConnectionIds.includes(
+              connection.connection_id
+            )
+              ? selectedConnectionIds
+              : [connection.connection_id]
+            ).filter((connectionId) => connectionFolderAssignments[connectionId] === folderId)
+            draggingConnectionFolderIdRef.current = folderId
+          }}
           onDragOver={(event) => {
             const movingConnectionIds = draggingConnectionIdsRef.current
             if (
               movingConnectionIds.length === 0 ||
-              movingConnectionIds.includes(connection.connection_id)
+              movingConnectionIds.includes(connection.connection_id) ||
+              !currentFolderId ||
+              draggingConnectionFolderIdRef.current !== currentFolderId
             ) {
               return
             }
-            if (!currentFolderId || draggingConnectionFolderIdRef.current !== currentFolderId) {
-              return
-            }
             event.preventDefault()
-            event.stopPropagation()
             const rect = event.currentTarget.getBoundingClientRect()
             updateDragOverConnectionTarget({
               connectionId: connection.connection_id,
@@ -1645,12 +2097,10 @@ function App(): React.JSX.Element {
             const movingConnectionIds = draggingConnectionIdsRef.current
             if (
               movingConnectionIds.length === 0 ||
-              movingConnectionIds.includes(connection.connection_id)
+              movingConnectionIds.includes(connection.connection_id) ||
+              !currentFolderId ||
+              draggingConnectionFolderIdRef.current !== currentFolderId
             ) {
-              clearConnectionDragState()
-              return
-            }
-            if (!currentFolderId || draggingConnectionFolderIdRef.current !== currentFolderId) {
               clearConnectionDragState()
               return
             }
@@ -1670,6 +2120,24 @@ function App(): React.JSX.Element {
             <Typography.Text className="connection-tree-name" ellipsis title={connection.name}>
               {highlightTreeSearchText(connection.name)}
             </Typography.Text>
+            {isPinnedRootConnection && (
+              <PushpinOutlined className="tree-root-pin-icon" title="已置顶" />
+            )}
+            {connection.git_versioning_enabled && (
+              <button
+                type="button"
+                className="connection-git-status-icon"
+                title="打开该连接的 Git 版本管理"
+                aria-label={`打开 ${connection.name} 的 Git 版本管理`}
+                onClick={(event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  openSchemaVersionModal(connection.connection_id)
+                }}
+              >
+                <GithubOutlined />
+              </button>
+            )}
             {connectionAddress && (
               <Typography.Text
                 type="secondary"
@@ -1726,26 +2194,17 @@ function App(): React.JSX.Element {
     )
   }
 
-  const connectionTypeIcons: ConnectionTypeIcons = {
-    postgresql: <img src={postgresIcon} alt="PG" style={{ width: 16, height: 16 }} />,
-    gaussdb: <DatabaseOutlined />,
-    mongodb: <img src={mongoIcon} alt="MongoDB" style={{ width: 16, height: 16 }} />,
-    redis: <img src={redisIcon} alt="Redis" style={{ width: 16, height: 16 }} />,
-    clickhouse: <img src={clickhouseIcon} alt="ClickHouse" style={{ width: 16, height: 16 }} />,
-    oracle: <img src={oracleIcon} alt="Oracle" style={{ width: 16, height: 16 }} />,
-    mysql: <img src={mysqlIcon} alt="MySQL" style={{ width: 16, height: 16 }} />,
-    dm: <img src={dmIcon} alt="DM" style={{ width: 16, height: 16 }} />,
-    sqlite: <img src={sqliteIcon} alt="SQLite" style={{ width: 16, height: 16 }} />
-  }
+  const connectionTypeIcons = createConnectionTypeIcons()
 
   const buildConnectionNode = (connection: ConnectionInfo): DatabaseTreeNode =>
     buildConnectionNodeFromModule(connection, connectionTypeIcons)
 
   const buildFolderNode = (
     folder: ConnectionFolder,
-    children: DatabaseTreeNode[]
+    children: DatabaseTreeNode[],
+    isNested?: boolean
   ): DatabaseTreeNode =>
-    buildFolderNodeFromModule(folder, children, FOLDER_DROP_PLACEHOLDER_KEY_PREFIX)
+    buildFolderNodeFromModule(folder, children, FOLDER_DROP_PLACEHOLDER_KEY_PREFIX, isNested)
 
   const highlightTreeSearchText = (text: string): React.ReactNode => {
     const keyword = treeSearchText.trim()
@@ -1854,8 +2313,15 @@ function App(): React.JSX.Element {
     currentNodes: DatabaseTreeNode[] = []
   ): DatabaseTreeNode[] => {
     const validFolderIds = new Set(connectionFolders.map((folder) => folder.id))
+    const rootFolders = connectionFolders.filter(
+      (folder) => !folder.parentId || !validFolderIds.has(folder.parentId)
+    )
+    const orderedRootFolderIds = mergeOrderedIds(
+      rootFolders.map((folder) => folder.id),
+      connectionFolderOrder
+    )
     const defaultRootItemOrder = [
-      ...connectionFolders.map((folder) => rootFolderOrderId(folder.id)),
+      ...orderedRootFolderIds.map(rootFolderOrderId),
       ...nextConnections
         .filter(
           (connection) =>
@@ -1867,6 +2333,7 @@ function App(): React.JSX.Element {
     return buildResourceTreeFromModule(nextConnections, currentNodes, {
       connectionFolderAssignments,
       connectionFolders,
+      folderOrder: connectionFolderOrder,
       folderConnectionOrder,
       rootItemOrder:
         rootItemOrderCustomized && rootItemOrder.length > 0
@@ -1877,7 +2344,7 @@ function App(): React.JSX.Element {
       rootConnectionOrderId,
       mergeOrderedIds,
       buildConnectionNode,
-      buildFolderNode: (folder, children) => buildFolderNode(folder, children)
+      buildFolderNode: (folder, children, isNested) => buildFolderNode(folder, children, isNested)
     })
   }
 
@@ -2018,9 +2485,10 @@ function App(): React.JSX.Element {
     return folderId
   }
 
-  const openCreateFolderModal = (): void => {
+  const openCreateFolderModal = (parentFolderId?: string): void => {
     setFolderEditorMode('create')
     setEditingFolderId(undefined)
+    setCreatingFolderParentId(parentFolderId)
     setFolderNameDraft('')
     setFolderEditorOpen(true)
   }
@@ -2032,6 +2500,7 @@ function App(): React.JSX.Element {
     }
     setFolderEditorMode('rename')
     setEditingFolderId(folderId)
+    setCreatingFolderParentId(undefined)
     setFolderNameDraft(folder.name)
     setFolderEditorOpen(true)
   }
@@ -2055,16 +2524,28 @@ function App(): React.JSX.Element {
       )
     } else {
       const folderId = globalThis.crypto?.randomUUID?.() ?? `folder-${Date.now()}`
-      setConnectionFolders((current) => [...current, { id: folderId, name: nextName }])
-      setConnectionFolderOrder((current) => [...current.filter((id) => id !== folderId), folderId])
+      setConnectionFolders((current) => [
+        ...current,
+        { id: folderId, name: nextName, parentId: creatingFolderParentId }
+      ])
+      if (!creatingFolderParentId) {
+        setConnectionFolderOrder((current) => [...current.filter((id) => id !== folderId), folderId])
+      }
       setExpandedKeys((current) =>
-        current.includes(`folder:${folderId}`) ? current : [...current, `folder:${folderId}`]
+        Array.from(
+          new Set([
+            ...current,
+            `folder:${folderId}`,
+            ...(creatingFolderParentId ? [`folder:${creatingFolderParentId}`] : [])
+          ])
+        )
       )
       setSelectedTreeKeys([`folder:${folderId}`])
     }
 
     setFolderEditorOpen(false)
     setEditingFolderId(undefined)
+    setCreatingFolderParentId(undefined)
     setFolderNameDraft('')
   }
 
@@ -2076,13 +2557,19 @@ function App(): React.JSX.Element {
 
     Modal.confirm({
       title: `删除分组“${folder.name}”`,
-      content: '删除后，里面的连接会自动移回根目录，不会删除连接本身。是否继续？',
+      content: '删除后，里面的连接会自动移回根目录，子分组会提升到当前层级，不会删除连接本身。是否继续？',
       okText: '删除',
       okButtonProps: { danger: true },
       cancelText: '取消',
       centered: true,
       onOk: () => {
-        setConnectionFolders((current) => current.filter((item) => item.id !== folderId))
+        setConnectionFolders((current) =>
+          current
+            .filter((item) => item.id !== folderId)
+            .map((item) =>
+              item.parentId === folderId ? { ...item, parentId: folder.parentId } : item
+            )
+        )
         setConnectionFolderOrder((current) => current.filter((id) => id !== folderId))
         setPinnedRootItemIds((current) =>
           current.filter((itemId) => itemId !== rootFolderOrderId(folderId))
@@ -2107,6 +2594,26 @@ function App(): React.JSX.Element {
       return
     }
 
+    const treeViewport = resourceTreeViewportRef.current
+    const treeScrollHost =
+      treeViewport?.querySelector<HTMLElement>('.ant-tree-list-holder') ?? treeViewport
+    const scrollTop = treeScrollHost?.scrollTop
+    const restoreTreeScrollPosition = (): void => {
+      if (scrollTop === undefined) {
+        return
+      }
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          const nextViewport = resourceTreeViewportRef.current
+          const nextScrollHost =
+            nextViewport?.querySelector<HTMLElement>('.ant-tree-list-holder') ?? nextViewport
+          if (nextScrollHost) {
+            nextScrollHost.scrollTop = scrollTop
+          }
+        })
+      })
+    }
+
     setConnectionFolderAssignments((current) => {
       const next = { ...current }
       for (const connectionId of connectionIds) {
@@ -2118,6 +2625,7 @@ function App(): React.JSX.Element {
       }
       return next
     })
+    restoreTreeScrollPosition()
 
     setRootConnectionOrder((current) => {
       if (folderId) {
@@ -2465,7 +2973,7 @@ function App(): React.JSX.Element {
     dragNode: unknown
     dropToGap?: boolean
     dropPosition?: number
-    event?: React.MouseEvent<HTMLElement>
+    event?: { clientY: number; target: EventTarget | null }
   }): void => {
     const targetNode = info.node as DatabaseTreeNode
     const draggedNode = info.dragNode as DatabaseTreeNode
@@ -2495,24 +3003,26 @@ function App(): React.JSX.Element {
         : undefined)
     const targetNodeKind = getTreeNodeKindFromKey(targetNode)
     const folderDragTarget = dragOverFolderTargetRef.current
-    const dropConnectionElement =
-      info.event?.target instanceof HTMLElement
-        ? info.event.target.closest<HTMLElement>('[data-connection-id]')
+    const connectionDragTarget = dragOverConnectionTargetRef.current
+    const eventTarget = info.event?.target
+    const connectionTitleElement =
+      eventTarget instanceof Element
+        ? eventTarget.closest<HTMLElement>('.connection-tree-title[data-connection-id]')
         : undefined
-    const dropConnectionId = dropConnectionElement?.dataset.connectionId
-    const dropConnectionTarget = dropConnectionId
-      ? {
-          connectionId: dropConnectionId,
-          folderId: connectionFolderAssignments[dropConnectionId],
-          zone: (() => {
-            const rect = dropConnectionElement.getBoundingClientRect()
-            return info.event && info.event.clientY - rect.top >= rect.height / 2
-              ? ('after' as const)
-              : ('before' as const)
-          })()
-        }
-      : undefined
-    const connectionDragTarget = dropConnectionTarget ?? dragOverConnectionTargetRef.current
+    const pointerConnectionId = connectionTitleElement?.dataset.connectionId
+    const pointerConnectionTarget =
+      connectionTitleElement && pointerConnectionId && info.event
+        ? {
+            connectionId: pointerConnectionId,
+            folderId: connectionFolderAssignments[pointerConnectionId],
+            zone:
+              info.event.clientY - connectionTitleElement.getBoundingClientRect().top >=
+              connectionTitleElement.getBoundingClientRect().height / 2
+                ? ('after' as const)
+                : ('before' as const)
+          }
+        : undefined
+    const effectiveConnectionDragTarget = connectionDragTarget ?? pointerConnectionTarget
     updateDragOverFolderTarget(undefined)
     updateDragOverConnectionTarget(undefined)
 
@@ -2547,24 +3057,27 @@ function App(): React.JSX.Element {
     ).filter(
       (connectionId) => connectionFolderAssignments[connectionId] === draggedConnectionFolderId
     )
-    if (connectionDragTarget && !movingConnectionIds.includes(connectionDragTarget.connectionId)) {
+    if (
+      effectiveConnectionDragTarget &&
+      !movingConnectionIds.includes(effectiveConnectionDragTarget.connectionId)
+    ) {
       const targetConnectionFolderId =
-        connectionDragTarget.folderId ??
-        connectionFolderAssignments[connectionDragTarget.connectionId]
+        effectiveConnectionDragTarget.folderId ??
+        connectionFolderAssignments[effectiveConnectionDragTarget.connectionId]
       if (targetConnectionFolderId) {
         if (draggedConnectionFolderId === targetConnectionFolderId) {
           reorderFolderConnections(
             targetConnectionFolderId,
             movingConnectionIds,
-            connectionDragTarget.connectionId,
-            connectionDragTarget.zone === 'after'
+            effectiveConnectionDragTarget.connectionId,
+            effectiveConnectionDragTarget.zone === 'after'
           )
         }
       } else if (!draggedConnectionFolderId) {
         reorderRootConnections(
           movingConnectionIds,
-          connectionDragTarget.connectionId,
-          connectionDragTarget.zone === 'after'
+          effectiveConnectionDragTarget.connectionId,
+          effectiveConnectionDragTarget.zone === 'after'
         )
       }
       return
@@ -2680,6 +3193,7 @@ function App(): React.JSX.Element {
     applyColWidth(headerColElements[columnIndex])
     applyColWidth(bodyColElements[columnIndex])
     headerCells.forEach((th) => {
+      th.style.setProperty('--result-column-width', nextWidth)
       th.style.width = nextWidth
       th.style.minWidth = nextWidth
       th.style.maxWidth = nextWidth
@@ -2696,6 +3210,7 @@ function App(): React.JSX.Element {
     applyLiveColumnWidth(width, columnIndex, headerCells, headerColElements, [])
     const nextWidth = `${clampResultColumnWidth(width)}px`
     virtualCells.forEach((element) => {
+      element.style.setProperty('--result-column-width', nextWidth)
       element.style.flex = `0 0 ${nextWidth}`
       element.style.width = nextWidth
       element.style.minWidth = nextWidth
@@ -2709,10 +3224,11 @@ function App(): React.JSX.Element {
     startTableWidth: number,
     tableWidthHost?: HTMLElement
   ): void => {
-    tableWidthHost?.style.setProperty(
-      '--result-table-width',
-      `${Math.max(1, startTableWidth + (width - startWidth))}px`
-    )
+    const nextTableWidth = `${Math.max(1, startTableWidth + (width - startWidth))}px`
+    tableWidthHost?.style.setProperty('--result-table-width', nextTableWidth)
+    const headerTable = tableWidthHost?.querySelector<HTMLTableElement>('.ant-table-header > table')
+    headerTable?.style.setProperty('width', nextTableWidth, 'important')
+    headerTable?.style.setProperty('min-width', nextTableWidth, 'important')
   }
 
   const renameWorkspaceTab = useCallback(
@@ -2723,40 +3239,16 @@ function App(): React.JSX.Element {
   )
 
   const persistQueryWorkspace = (tab: WorkspaceTab): void => {
-    if (tab.kind !== 'query') {
+    const nextItem = buildPersistedQueryWorkspace(tab, getConnection)
+    if (!nextItem) {
       return
     }
-    const sql = tab.sql ?? ''
-    const connection = getConnection(tab.connectionId)
-    const nextItem: PersistedQueryWorkspace = {
-      key: tab.key,
-      title: tab.title,
-      connectionId: tab.connectionId,
-      connectionName: connection?.name,
-      databaseName: tab.databaseName,
-      pgDatabaseName: tab.pgDatabaseName,
-      sql,
-      limit: tab.limit,
-      queryEditorHeight: tab.queryEditorHeight,
-      persistedAt: tab.persistedAt ?? Date.now()
-    }
+
+    const storedItems = readPersistedJson<PersistedQueryWorkspace[]>(STORAGE_QUERY_WORKSPACES, [])
+    const nextStoredItems = upsertPersistedQueryWorkspace(storedItems, nextItem)
+    localStorage.setItem(STORAGE_QUERY_WORKSPACES, JSON.stringify(nextStoredItems))
     setPersistedQueryWorkspaces((current) => {
-      const currentItem = current.find((item) => item.key === tab.key)
-      if (
-        currentItem &&
-        currentItem.title === nextItem.title &&
-        currentItem.connectionId === nextItem.connectionId &&
-        currentItem.connectionName === nextItem.connectionName &&
-        currentItem.databaseName === nextItem.databaseName &&
-        currentItem.pgDatabaseName === nextItem.pgDatabaseName &&
-        currentItem.sql === nextItem.sql &&
-        currentItem.limit === nextItem.limit &&
-        currentItem.queryEditorHeight === nextItem.queryEditorHeight
-      ) {
-        return current
-      }
-      const next = [nextItem, ...current.filter((item) => item.key !== tab.key)]
-      return next.slice(0, 200)
+      return upsertPersistedQueryWorkspace(current, nextItem)
     })
   }
 
@@ -2815,7 +3307,7 @@ function App(): React.JSX.Element {
       delete queryWorkspacePersistTimersRef.current[tabKey]
       delete queryWorkspacePersistSnapshotRef.current[tabKey]
     })
-  }, [getWorkspaceTabs, workspaceTabSummaryCount])
+  }, [getWorkspaceTabs, queryPersistenceRevision, workspaceTabSummaryCount])
 
   useEffect(
     () => () => {
@@ -2955,12 +3447,21 @@ function App(): React.JSX.Element {
     inlineCellEditorRefs.current[tabKey] = undefined
   }
 
-  const closeEditingCell = (tabKey: string, displayValue?: string): void => {
+  const closeEditingCell = (
+    tabKey: string,
+    displayValue?: string,
+    restoreFocus = false
+  ): void => {
     closeInlineCellEditor(tabKey, displayValue)
+    if (restoreFocus) {
+      tableBodyRefs.current[tabKey]?.focus()
+    }
     requestAnimationFrame(() => {
       committingEditingCellRefs.current[tabKey] = undefined
       syncRenderedCellSelection(tabKey)
-      tableBodyRefs.current[tabKey]?.focus()
+      if (restoreFocus) {
+        tableBodyRefs.current[tabKey]?.focus()
+      }
     })
   }
 
@@ -2995,14 +3496,17 @@ function App(): React.JSX.Element {
     suppressInlineEditorCommitRefs.current[tabKey] = undefined
   }
 
-  const commitInlineCellEditor = (tabKey: string): void => {
+  const commitInlineCellEditor = (
+    tabKey: string,
+    options?: { restoreFocus?: boolean }
+  ): void => {
     const current = inlineCellEditorRefs.current[tabKey]
     if (!current || committingEditingCellRefs.current[tabKey]) {
       return
     }
     if (suppressInlineEditorCommitRefs.current[tabKey]) {
       suppressInlineEditorCommitRefs.current[tabKey] = undefined
-      closeEditingCell(tabKey, cellDisplayText(current.originalValue))
+      closeEditingCell(tabKey, cellDisplayText(current.originalValue), options?.restoreFocus)
       editingCellRefs.current[tabKey] = undefined
       return
     }
@@ -3011,19 +3515,21 @@ function App(): React.JSX.Element {
     const { rowKey, column } = current
     if (current.batchCells) {
       editingCellRefs.current[tabKey] = undefined
-      updatePreviewCells(
-        tabKey,
-        current.batchCells.map(({ rowKey: targetRowKey, column: targetColumn }) => ({
-          rowKey: targetRowKey,
-          column: targetColumn,
-          value: editableValue(nextValue)
-        }))
-      )
-      closeEditingCell(tabKey, nextValue)
+      flushSync(() => {
+        updatePreviewCells(
+          tabKey,
+          current.batchCells!.map(({ rowKey: targetRowKey, column: targetColumn }) => ({
+            rowKey: targetRowKey,
+            column: targetColumn,
+            value: editableValue(nextValue)
+          }))
+        )
+      })
+      closeEditingCell(tabKey, nextValue, options?.restoreFocus)
       return
     }
     if (nextValue === current.initialInputValue) {
-      closeEditingCell(tabKey, cellDisplayText(current.originalValue))
+      closeEditingCell(tabKey, cellDisplayText(current.originalValue), options?.restoreFocus)
       editingCellRefs.current[tabKey] = undefined
       return
     }
@@ -3033,7 +3539,7 @@ function App(): React.JSX.Element {
       updatePreviewCell(tabKey, rowKey, column, nextEditableValue)
     })
     clearAllCellSelection(tabKey)
-    closeEditingCell(tabKey, cellDisplayText(nextEditableValue))
+    closeEditingCell(tabKey, cellDisplayText(nextEditableValue), options?.restoreFocus)
   }
 
   const openInlineCellEditor = (
@@ -3107,7 +3613,7 @@ function App(): React.JSX.Element {
       }
       if (event.key === 'Enter') {
         event.preventDefault()
-        commitInlineCellEditor(tabKey)
+        commitInlineCellEditor(tabKey, { restoreFocus: true })
       }
       if (event.key === 'Escape') {
         event.preventDefault()
@@ -3366,7 +3872,7 @@ function App(): React.JSX.Element {
       )
       const boundedSize = Math.min(
         nextSize,
-        Math.max(RESOURCE_PANEL_MIN_WIDTH, shellWidth - (aiPanelOpen ? aiPanelSize : 0) - 260)
+        Math.max(RESOURCE_PANEL_MIN_WIDTH, shellWidth - (aiPanelVisible ? aiPanelSize : 0) - 260)
       )
       if (resourcePanelRef.current) {
         resourcePanelRef.current.style.width = `${boundedSize}px`
@@ -3490,6 +3996,9 @@ function App(): React.JSX.Element {
       delete selectedColumnRefs.current[key]
       delete tableBodyRefs.current[key]
       delete tableHeaderRefs.current[key]
+      delete tableScrollTopRefs.current[key]
+      delete tableScrollLeftRefs.current[key]
+      delete tableScrollRestoreLocks.current[key]
       delete sqlExecutionContextRef.current[key]
       delete sqlExecutionContextStructureKeyRef.current[key]
       delete sqlEditorHandleRefs.current[key]
@@ -3542,6 +4051,21 @@ function App(): React.JSX.Element {
       connectionId ? connectionMap.get(connectionId) : undefined,
     [connectionMap]
   )
+  useEffect(() => {
+    const flushQueryWorkspacePersistence = (): void => {
+      let nextItems = readPersistedJson<PersistedQueryWorkspace[]>(STORAGE_QUERY_WORKSPACES, [])
+      for (const tab of getWorkspaceTabs()) {
+        const nextItem = buildPersistedQueryWorkspace(tab, getConnection)
+        if (nextItem) {
+          nextItems = upsertPersistedQueryWorkspace(nextItems, nextItem)
+        }
+      }
+      localStorage.setItem(STORAGE_QUERY_WORKSPACES, JSON.stringify(nextItems))
+    }
+
+    window.addEventListener('beforeunload', flushQueryWorkspacePersistence)
+    return () => window.removeEventListener('beforeunload', flushQueryWorkspacePersistence)
+  }, [getConnection, getWorkspaceTabs])
   const { enableVirtualTree, resourceTreeHeight } = useResourceTreeViewport({
     treeData,
     resourceTreeViewportRef
@@ -4179,6 +4703,9 @@ function App(): React.JSX.Element {
   }
 
   const renderAIContextButton = (node: DatabaseTreeNode): React.ReactNode => {
+    if (!aiModuleInstalled) {
+      return null
+    }
     const connection = getConnection(node.connectionId)
     const isSQLiteDatabaseNode =
       node.kind === 'connection' && connection?.database_type === 'sqlite'
@@ -4225,6 +4752,9 @@ function App(): React.JSX.Element {
     }
     if (key === 'run-sql') {
       void openSqlFileDialog(connection.connection_id)
+    }
+    if (key === 'schema-versions') {
+      openSchemaVersionModal(connection.connection_id)
     }
     if (key === 'copy-connection-details') {
       void copyConnectionDetails(connection.connection_id)
@@ -4493,11 +5023,39 @@ function App(): React.JSX.Element {
     const currentFolderId = connectionFolderAssignments[connection.connection_id]
     const rootItemId = rootConnectionOrderId(connection.connection_id)
     const isPinned = pinnedRootItemIds.includes(rootItemId)
-    const folderMenuItems = connectionFolders.map((folder) => ({
-      key: `move-folder:${folder.id}`,
-      label: folder.name,
-      disabled: currentFolderId === folder.id
-    }))
+    const folderById = new Map(connectionFolders.map((folder) => [folder.id, folder]))
+    const childFolderIdsByParentId = new Map<string | undefined, string[]>()
+    connectionFolders.forEach((folder) => {
+      const parentId =
+        folder.parentId && folder.parentId !== folder.id && folderById.has(folder.parentId)
+          ? folder.parentId
+          : undefined
+      const childIds = childFolderIdsByParentId.get(parentId) ?? []
+      childIds.push(folder.id)
+      childFolderIdsByParentId.set(parentId, childIds)
+    })
+    const buildFolderMenuItems = (
+      parentId: string | undefined,
+      ancestorIds: Set<string>
+    ): NonNullable<MenuProps['items']> =>
+      (childFolderIdsByParentId.get(parentId) ?? []).flatMap((folderId) => {
+        const folder = folderById.get(folderId)
+        if (!folder || ancestorIds.has(folderId)) {
+          return []
+        }
+        const nextAncestorIds = new Set(ancestorIds)
+        nextAncestorIds.add(folderId)
+        const children = buildFolderMenuItems(folderId, nextAncestorIds)
+        return [
+          {
+            key: `move-folder:${folder.id}`,
+            label: folder.name,
+            disabled: currentFolderId === folder.id,
+            ...(children.length > 0 ? { children } : {})
+          }
+        ]
+      })
+    const folderMenuItems = buildFolderMenuItems(undefined, new Set())
 
     return [
       ...(connection.is_open || loading
@@ -4520,6 +5078,11 @@ function App(): React.JSX.Element {
           ]),
       ...(connection.database_type !== 'mongodb' && connection.database_type !== 'redis'
         ? [{ key: 'run-sql', label: '运行 SQL 文件', icon: <PlayCircleOutlined /> }]
+        : []),
+      ...(connection.git_versioning_enabled &&
+      connection.database_type !== 'mongodb' &&
+      connection.database_type !== 'redis'
+        ? [{ key: 'schema-versions', label: '版本管理', icon: <HistoryOutlined /> }]
         : []),
       { type: 'divider' as const },
       ...(!currentFolderId
@@ -4589,15 +5152,21 @@ function App(): React.JSX.Element {
       return []
     }
 
+    const folder = connectionFolders.find((item) => item.id === node.folderId)
     const rootItemId = rootFolderOrderId(node.folderId)
     const isPinned = pinnedRootItemIds.includes(rootItemId)
     return [
-      {
-        key: isPinned ? 'unpin-root-item' : 'pin-root-item',
-        label: isPinned ? '取消置顶' : '置顶',
-        icon: <PushpinOutlined />
-      },
-      { type: 'divider' as const },
+      ...(!folder?.parentId
+        ? [
+            {
+              key: isPinned ? 'unpin-root-item' : 'pin-root-item',
+              label: isPinned ? '取消置顶' : '置顶',
+              icon: <PushpinOutlined />
+            },
+            { type: 'divider' as const }
+          ]
+        : []),
+      { key: 'create-child-folder', label: '添加子分组', icon: <FolderAddOutlined /> },
       { key: 'rename-folder', label: '重命名分组', icon: <EditOutlined /> },
       { key: 'delete-folder', label: '删除分组', icon: <DeleteOutlined />, danger: true }
     ]
@@ -4631,14 +5200,18 @@ function App(): React.JSX.Element {
     const node = treeContextMenu.node
     if (node.kind === 'folder' && node.folderId) {
       const rootItemId = rootFolderOrderId(node.folderId)
-      if (key === 'pin-root-item') {
+      const isRootFolder = !connectionFolders.find((item) => item.id === node.folderId)?.parentId
+      if (isRootFolder && key === 'pin-root-item') {
         setPinnedRootItemIds((current) => [
           rootItemId,
           ...current.filter((itemId) => itemId !== rootItemId)
         ])
       }
-      if (key === 'unpin-root-item') {
+      if (isRootFolder && key === 'unpin-root-item') {
         setPinnedRootItemIds((current) => current.filter((itemId) => itemId !== rootItemId))
+      }
+      if (key === 'create-child-folder') {
+        openCreateFolderModal(node.folderId)
       }
       if (key === 'rename-folder') {
         openRenameFolderModal(node.folderId)
@@ -4689,6 +5262,10 @@ function App(): React.JSX.Element {
       const connectionCount = folderChildren.filter((child) => child.kind === 'connection').length
       const folderDropZone =
         dragOverFolderTarget?.folderId === node.folderId ? dragOverFolderTarget.zone : undefined
+      const isPinnedRootFolder =
+        !connectionFolders.find((folder) => folder.id === node.folderId)?.parentId &&
+        pinnedRootItemIds.includes(rootFolderOrderId(node.folderId))
+      const isExpanded = expandedKeys.includes(node.key as React.Key)
       return (
         <Flex
           align="center"
@@ -4711,9 +5288,13 @@ function App(): React.JSX.Element {
             }
           }}
         >
+          <span className={`folder-title-icon${isExpanded ? ' is-expanded' : ''}`} aria-hidden="true">
+            {isExpanded ? <FolderOpenOutlined /> : <FolderOutlined />}
+          </span>
           <span className={`table-tree-title${loading ? ' is-loading' : ''}`}>
             {String(node.title ?? '')}
           </span>
+          {isPinnedRootFolder && <PushpinOutlined className="tree-root-pin-icon" title="已置顶" />}
           <Tag className="folder-count-tag">{connectionCount}</Tag>
         </Flex>
       )
@@ -5294,52 +5875,54 @@ function App(): React.JSX.Element {
   }
 
   const renderResultTable = (tab: WorkspaceTab): React.ReactNode => (
-    <ResultTablePanel
-      tab={tab}
-      searchState={getImmediateTableSearchState(tab)}
-      refs={resultTableRefs}
-      getConnection={getConnection}
-      updateWorkspaceTab={updateWorkspaceTab}
-      updateTableSearchState={updateTableSearchState}
-      changeTabPage={changeTabPage}
-      changeTabLastPage={changeTabLastPage}
-      changeTabLimit={changeTabLimit}
-      previewTable={previewTable}
-      previewRedisDatabase={previewRedisDatabase}
-      showObjectDdl={showObjectDdl}
-      openResultExportModal={openResultExportModal}
-      addPreviewRow={addPreviewRow}
-      markSelectedRowsDeleted={markSelectedRowsDeleted}
-      submitPreviewChanges={submitPreviewChanges}
-      submitQueryChanges={submitQueryChanges}
-      addRedisRow={addRedisRow}
-      submitRedisChanges={submitRedisChanges}
-      toggleRedisValue={toggleRedisValue}
-      updateRedisEdit={updateRedisEdit}
-      deleteRedisRow={deleteRedisRow}
-      updatePreviewCell={updatePreviewCell}
-      updatePreviewCells={updatePreviewCells}
-      syncRenderedCellSelection={syncRenderedCellSelection}
-      clearInlineCellEditor={clearInlineCellEditor}
-      discardInlineCellEditor={discardInlineCellEditor}
-      commitInlineCellEditor={commitInlineCellEditor}
-      openInlineCellEditor={openInlineCellEditor}
-      scheduleRenderedCellSelectionSync={scheduleRenderedCellSelectionSync}
-      clearRuntimeColumnSelection={clearRuntimeColumnSelection}
-      clearActiveSearchCellHighlight={clearActiveSearchCellHighlight}
-      clearAllCellSelection={clearAllCellSelection}
-      clearSelectedRowsForTab={clearSelectedRowsForTab}
-      applyRuntimeColumnSelection={applyRuntimeColumnSelection}
-      applyRuntimeCellSelection={applyRuntimeCellSelection}
-      applyRuntimeCellRangeSelection={applyRuntimeCellRangeSelection}
-      commitRuntimeCellSelection={commitRuntimeCellSelection}
-      setCommittedCellSelection={setCommittedCellSelection}
-      syncRuntimeSortButtons={syncRuntimeSortButtons}
-      showError={showError}
-      messageApi={messageApi}
-      isSchemaScopedType={isSchemaScopedType}
-      tableSearchShortcut={shortcutSettings.table_search}
-    />
+    <Suspense fallback={<div className="deferred-modal-loading">正在加载数据表格...</div>}>
+      <ResultTablePanel
+        tab={tab}
+        searchState={getImmediateTableSearchState(tab)}
+        refs={resultTableRefs}
+        getConnection={getConnection}
+        updateWorkspaceTab={updateWorkspaceTab}
+        updateTableSearchState={updateTableSearchState}
+        changeTabPage={changeTabPage}
+        changeTabLastPage={changeTabLastPage}
+        changeTabLimit={changeTabLimit}
+        previewTable={previewTable}
+        previewRedisDatabase={previewRedisDatabase}
+        showObjectDdl={showObjectDdl}
+        openResultExportModal={openResultExportModal}
+        addPreviewRow={addPreviewRow}
+        markSelectedRowsDeleted={markSelectedRowsDeleted}
+        submitPreviewChanges={submitPreviewChanges}
+        submitQueryChanges={submitQueryChanges}
+        addRedisRow={addRedisRow}
+        submitRedisChanges={submitRedisChanges}
+        toggleRedisValue={toggleRedisValue}
+        updateRedisEdit={updateRedisEdit}
+        deleteRedisRow={deleteRedisRow}
+        updatePreviewCell={updatePreviewCell}
+        updatePreviewCells={updatePreviewCells}
+        syncRenderedCellSelection={syncRenderedCellSelection}
+        clearInlineCellEditor={clearInlineCellEditor}
+        discardInlineCellEditor={discardInlineCellEditor}
+        commitInlineCellEditor={commitInlineCellEditor}
+        openInlineCellEditor={openInlineCellEditor}
+        scheduleRenderedCellSelectionSync={scheduleRenderedCellSelectionSync}
+        clearRuntimeColumnSelection={clearRuntimeColumnSelection}
+        clearActiveSearchCellHighlight={clearActiveSearchCellHighlight}
+        clearAllCellSelection={clearAllCellSelection}
+        clearSelectedRowsForTab={clearSelectedRowsForTab}
+        applyRuntimeColumnSelection={applyRuntimeColumnSelection}
+        applyRuntimeCellSelection={applyRuntimeCellSelection}
+        applyRuntimeCellRangeSelection={applyRuntimeCellRangeSelection}
+        commitRuntimeCellSelection={commitRuntimeCellSelection}
+        setCommittedCellSelection={setCommittedCellSelection}
+        syncRuntimeSortButtons={syncRuntimeSortButtons}
+        showError={showError}
+        messageApi={messageApi}
+        isSchemaScopedType={isSchemaScopedType}
+        tableSearchShortcut={shortcutSettings.table_search}
+      />
+    </Suspense>
   )
 
   const renderResultTableRef = useRef(renderResultTable)
@@ -5407,22 +5990,42 @@ function App(): React.JSX.Element {
       const cacheKey = `${connectionId}:${databaseName ?? ''}`
       const connection = getConnection(connectionId)
 
-      if (!connection?.is_open || completionTables[cacheKey]) {
+      if (!connection?.is_open || (completionTables[cacheKey] && completionRoutines[cacheKey])) {
         return
       }
 
       try {
         const databaseQuery = databaseName ? `?database=${encodeURIComponent(databaseName)}` : ''
-        const data = await requestJson<{ tables: TableInfo[] }>(
-          `/connections/${connectionId}/tables${databaseQuery}`
-        )
-        const tableNames = data.tables.map((t) => t.name)
-        setCompletionTables((current) => ({ ...current, [cacheKey]: tableNames }))
+        const routinePath = `/connections/${connectionId}/objects${databaseQuery}${
+          databaseQuery ? '&' : '?'
+        }type=procedure`
+        const [tableResult, routineResult] = await Promise.allSettled([
+          requestJson<{ tables: TableInfo[] }>(`/connections/${connectionId}/tables${databaseQuery}`),
+          requestJson<{ objects: DbObjectInfo[] }>(routinePath)
+        ])
+        if (tableResult.status === 'fulfilled') {
+          setCompletionTables((current) => ({
+            ...current,
+            [cacheKey]: tableResult.value.tables.map((table) => table.name)
+          }))
+        }
+        if (routineResult.status === 'fulfilled') {
+          const routines = routineResult.value.objects.flatMap<SqlCompletionRoutine>((object) =>
+            object.type === 'procedure' || object.type === 'function'
+              ? [{ name: object.name, type: object.type, databaseName }]
+              : []
+          )
+          completionRoutineCacheRef.current[cacheKey] = routines
+          setCompletionRoutines((current) => ({
+            ...current,
+            [cacheKey]: routines
+          }))
+        }
       } catch {
         // ignore
       }
     },
-    [completionTables, getConnection, requestJson]
+    [completionRoutines, completionTables, getConnection, requestJson]
   )
 
   const preloadCompletionForDatabaseRef = useRef(preloadCompletionForDatabase)
@@ -5643,6 +6246,324 @@ function App(): React.JSX.Element {
     refreshTree(data.connections)
   }
 
+  const buildLocalGitSyncPayload = async (): Promise<GitSyncPayload> => {
+    const [connectionSnapshot, appSettings] = await Promise.all([
+      requestJson<{ connections: Record<string, Record<string, unknown>> }>('/git-sync/local/connections'),
+      window.api.getAppSyncSettings()
+    ])
+    return {
+      format: 'datadjinn-sync',
+      version: 1,
+      generated_at: new Date().toISOString(),
+      device_id: getSyncDeviceId(),
+      connections: connectionSnapshot.connections,
+      settings: appSettings as unknown as Record<string, unknown>,
+      preferences: {
+        theme,
+        shortcut_settings: shortcutSettings,
+        connection_folders: connectionFolders,
+        connection_folder_assignments: connectionFolderAssignments,
+        tree_order: buildGitSyncTreeOrder({
+          folders: connectionFolders,
+          connectionIds: connections.map((connection) => connection.connection_id),
+          assignments: connectionFolderAssignments,
+          folderOrder: connectionFolderOrder,
+          folderConnectionOrder,
+          rootItemOrder,
+          rootConnectionOrder,
+          pinnedRootItemIds,
+          rootItemOrderCustomized
+        }),
+        pinned_root_item_ids: pinnedRootItemIds,
+        selected_databases: selectedDatabases,
+        selected_schemas: selectedSchemas
+      }
+    }
+  }
+
+  const applyGitSyncPayload = async (payload: GitSyncPayload): Promise<void> => {
+    const isRecord = (value: unknown): value is Record<string, unknown> =>
+      Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+    const toStringArray = (value: unknown): string[] =>
+      Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+    const toStringRecord = (value: unknown): Record<string, string> =>
+      isRecord(value)
+        ? Object.fromEntries(
+            Object.entries(value).flatMap(([key, item]) =>
+              key && typeof item === 'string' ? ([[key, item]] as [string, string][]) : []
+            )
+          )
+        : {}
+    const toStringArrayRecord = (value: unknown): Record<string, string[]> =>
+      isRecord(value)
+        ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, toStringArray(item)]))
+        : {}
+    const preferences = payload.preferences
+
+    gitSyncRestoreTargetRef.current = {
+      connectionIds: new Set(Object.keys(payload.connections)),
+      folderIds: new Set(
+        Array.isArray(preferences.connection_folders)
+          ? preferences.connection_folders.flatMap((folder) =>
+              isRecord(folder) && typeof folder.id === 'string' ? [folder.id] : []
+            )
+          : []
+      ),
+      assignments: toStringRecord(preferences.connection_folder_assignments)
+    }
+
+    await requestJson<{ connection_count: number }>('/git-sync/local/connections', {
+      method: 'PUT',
+      body: JSON.stringify({ connections: payload.connections })
+    })
+    // 先让连接列表进入 React 状态，再恢复分组归属，避免连接归属清理逻辑误删远端映射。
+    await loadConnections()
+    await window.api.applyAppSyncSettings(payload.settings as never)
+    if (preferences.theme === 'dark' || preferences.theme === 'light') {
+      setTheme(preferences.theme)
+    }
+    if (isRecord(preferences.shortcut_settings)) {
+      const syncedShortcuts = preferences.shortcut_settings
+      setShortcutSettings(
+        (current) =>
+          ({
+            ...DEFAULT_SHORTCUT_SETTINGS,
+            ...current,
+            ...syncedShortcuts
+          }) as ShortcutSettings
+      )
+    }
+    if (Array.isArray(preferences.connection_folders)) {
+      setConnectionFolders(
+        preferences.connection_folders.filter(
+          (item): item is ConnectionFolder =>
+            isRecord(item) && typeof item.id === 'string' && typeof item.name === 'string'
+        )
+      )
+    }
+    setConnectionFolderAssignments(toStringRecord(preferences.connection_folder_assignments))
+    const syncedTreeOrder = isRecord(preferences.tree_order) ? preferences.tree_order : undefined
+    if (syncedTreeOrder) {
+      const syncedRoots = toStringArray(syncedTreeOrder.roots)
+      setRootItemOrder(syncedRoots)
+      setRootConnectionOrder(
+        syncedRoots
+          .filter((itemId) => itemId.startsWith('connection:'))
+          .map((itemId) => itemId.slice('connection:'.length))
+      )
+      setRootItemOrderCustomized(syncedTreeOrder.customized === true)
+      const syncedChildren = toStringArrayRecord(syncedTreeOrder.children)
+      if (Object.keys(syncedChildren).length > 0) {
+        setConnectionFolderOrder(
+          [syncedRoots, ...Object.values(syncedChildren)]
+            .flatMap((itemIds) => itemIds.filter((itemId) => itemId.startsWith('folder:')))
+            .map((itemId) => itemId.slice('folder:'.length))
+        )
+        setFolderConnectionOrder(
+          Object.fromEntries(
+            Object.entries(syncedChildren).map(([folderId, itemIds]) => [
+              folderId,
+              itemIds
+                .filter((itemId) => itemId.startsWith('connection:'))
+                .map((itemId) => itemId.slice('connection:'.length))
+            ])
+          )
+        )
+      } else {
+        setConnectionFolderOrder(toStringArray(syncedTreeOrder.folder_order))
+        setFolderConnectionOrder(toStringArrayRecord(syncedTreeOrder.folder_connections))
+      }
+    } else {
+      setConnectionFolderOrder(toStringArray(preferences.connection_folder_order))
+      setRootConnectionOrder(toStringArray(preferences.root_connection_order))
+      setRootItemOrder(toStringArray(preferences.root_item_order))
+      setRootItemOrderCustomized(preferences.root_item_order_customized === true)
+      setFolderConnectionOrder(toStringArrayRecord(preferences.folder_connection_order))
+    }
+    setPinnedRootItemIds(toStringArray(preferences.pinned_root_item_ids))
+    setSelectedDatabases(toStringArrayRecord(preferences.selected_databases))
+    setSelectedSchemas(toStringArrayRecord(preferences.selected_schemas))
+    await Promise.all([refreshUpdateSettings(), refreshQuerySettings(), refreshMcpSettings()])
+    window.dispatchEvent(new CustomEvent('datadjinn-ai-configs-changed'))
+  }
+
+  const finishGitSync = async (
+    payload: GitSyncPayload,
+    passphrase: string,
+    remoteSha?: string,
+    silent = false
+  ): Promise<void> => {
+    const pushed = await requestJson<{ sha: string }>('/git-sync/file', {
+      method: 'PUT',
+      body: JSON.stringify({ passphrase, payload, remote_sha: remoteSha })
+    })
+    await applyGitSyncPayload(payload)
+    const syncedAt = Date.now()
+    await window.api.setSyncLocalState({
+      passphrase,
+      basePayload: payload,
+      remoteSha: pushed.sha,
+      lastSyncedAt: syncedAt
+    })
+    setGitSyncLastSyncedAt(syncedAt)
+    setGitSyncRemoteExists(true)
+    setGitSyncPassphrase(passphrase)
+    setGitSyncPassphraseConfirm(passphrase)
+    if (!silent) {
+      messageApi.success('已同步应用设置和连接信息')
+    }
+  }
+
+  const synchronizeGitPayload = async (
+    readPassphrase: string,
+    writePassphrase = readPassphrase,
+    options?: { silent?: boolean }
+  ): Promise<boolean> => {
+    const [local, localState, pulled] = await Promise.all([
+      buildLocalGitSyncPayload(),
+      window.api.getSyncLocalState() as Promise<GitSyncLocalState>,
+      requestJson<{ exists: boolean; sha?: string; payload?: GitSyncPayload }>('/git-sync/file/pull', {
+        method: 'POST',
+        body: JSON.stringify({ passphrase: readPassphrase })
+      })
+    ])
+    if (!pulled.exists || !pulled.payload) {
+      await finishGitSync(local, writePassphrase, undefined, options?.silent)
+      return true
+    }
+
+    const base = localState.basePayload ?? {
+      ...local,
+      connections: {},
+      settings: local.settings,
+      preferences: local.preferences
+    }
+    const merged = await requestJson<GitSyncMergeResult>('/git-sync/merge', {
+      method: 'POST',
+      body: JSON.stringify({ base, local, remote: pulled.payload })
+    })
+    if (merged.conflicts.length > 0) {
+      setGitSyncConflicts(merged.conflicts)
+      setGitSyncConflictChoices(createDefaultGitSyncConflictChoices(merged.conflicts))
+      setGitSyncPendingPayload(merged.payload)
+      setGitSyncPendingRemoteSha(pulled.sha)
+      setGitSyncPendingPassphrase(writePassphrase)
+      return false
+    }
+    await finishGitSync(merged.payload, writePassphrase, pulled.sha, options?.silent)
+    return true
+  }
+
+  const startGitSync = async (options?: {
+    automatic?: boolean
+    passphrase?: string
+  }): Promise<void> => {
+    const automatic = Boolean(options?.automatic)
+    const passphrase = (options?.passphrase ?? gitSyncPassphrase).trim()
+    if (passphrase.length < 8) {
+      if (!automatic) {
+        messageApi.warning('请设置至少 8 个字符的同步口令')
+      }
+      return
+    }
+    if (
+      !gitSyncLastSyncedAt &&
+      !gitSyncRemoteExists &&
+      gitSyncPassphraseConfirm.trim() &&
+      passphrase !== gitSyncPassphraseConfirm.trim()
+    ) {
+      if (!automatic) {
+        messageApi.warning('两次同步口令不一致')
+      }
+      return
+    }
+    if (!gitHubAuthStatus.authorized) {
+      if (!automatic) {
+        openSettings('sync')
+        messageApi.info('请先登录 GitHub 后再同步')
+      }
+      return
+    }
+
+    setGitSyncBusy(true)
+    try {
+      await synchronizeGitPayload(passphrase, passphrase, { silent: automatic })
+    } catch (error) {
+      if (!automatic) {
+        showError(error instanceof Error ? error.message : '同步失败')
+      }
+    } finally {
+      setGitSyncBusy(false)
+    }
+  }
+
+  const setGitSyncAutoSyncEnabled = async (enabled: boolean): Promise<void> => {
+    const state = await window.api.setSyncLocalState({ autoSyncEnabled: enabled })
+    setGitSyncAutoEnabled(Boolean(state.autoSyncEnabled))
+  }
+
+  const changeGitSyncPassphrase = async (): Promise<void> => {
+    const currentPassphrase = currentGitSyncPassphrase.trim()
+    const nextPassphrase = nextGitSyncPassphrase.trim()
+    if (!currentPassphrase) {
+      messageApi.warning('请输入当前同步口令')
+      return
+    }
+    if (nextPassphrase.length < 8) {
+      messageApi.warning('新同步口令至少需要 8 个字符')
+      return
+    }
+    if (nextPassphrase !== nextGitSyncPassphraseConfirm.trim()) {
+      messageApi.warning('两次输入的新同步口令不一致')
+      return
+    }
+    if (!gitHubAuthStatus.authorized) {
+      openSettings('sync')
+      messageApi.info('请先登录 GitHub 后再修改同步口令')
+      return
+    }
+
+    setGitSyncBusy(true)
+    try {
+      await synchronizeGitPayload(currentPassphrase, nextPassphrase)
+      setChangingGitSyncPassphrase(false)
+      setCurrentGitSyncPassphrase('')
+      setNextGitSyncPassphrase('')
+      setNextGitSyncPassphraseConfirm('')
+    } catch (error) {
+      showError(error instanceof Error ? error.message : '修改同步口令失败')
+    } finally {
+      setGitSyncBusy(false)
+    }
+  }
+
+  const resolveGitSyncConflicts = async (): Promise<void> => {
+    if (!gitSyncPendingPayload || gitSyncConflicts.some((item) => !gitSyncConflictChoices[item.key])) {
+      messageApi.warning('请为每项冲突选择保留本机或远程配置')
+      return
+    }
+    setGitSyncBusy(true)
+    try {
+      const resolved = await requestJson<GitSyncPayload>('/git-sync/merge/resolve', {
+        method: 'POST',
+        body: JSON.stringify({
+          payload: gitSyncPendingPayload,
+          conflicts: gitSyncConflicts,
+          choices: gitSyncConflictChoices
+        })
+      })
+      await finishGitSync(resolved, gitSyncPendingPassphrase, gitSyncPendingRemoteSha)
+      setGitSyncConflicts([])
+      setGitSyncPendingPayload(undefined)
+      setGitSyncPendingRemoteSha(undefined)
+      setGitSyncPendingPassphrase('')
+    } catch (error) {
+      showError(error instanceof Error ? error.message : '处理同步冲突失败')
+    } finally {
+      setGitSyncBusy(false)
+    }
+  }
+
   const {
     ensureQueryContextTreeExpanded,
     preloadConnectionTree,
@@ -5657,11 +6578,17 @@ function App(): React.JSX.Element {
   )
   const buildConnectionSshDefaults = (): Pick<
     ConnectionFormValues,
-    'ssh_enabled' | 'ssh_port' | 'ssh_auth_type'
+    | 'ssh_enabled'
+    | 'ssh_port'
+    | 'ssh_auth_type'
+    | 'git_versioning_enabled'
+    | 'git_versioning_scopes'
   > => ({
     ssh_enabled: false,
     ssh_port: 22,
-    ssh_auth_type: 'password'
+    ssh_auth_type: 'password',
+    git_versioning_enabled: false,
+    git_versioning_scopes: []
   })
 
   const buildCreateConnectionDefaults = (nextDatabaseType: DatabaseType): ConnectionFormValues => {
@@ -5845,7 +6772,9 @@ function App(): React.JSX.Element {
         driver_id: formValues.driver_id,
         dm_driver_id: formValues.dm_driver_id,
         ssh_enabled: formValues.ssh_enabled,
-        ssh_auth_type: formValues.ssh_auth_type
+        ssh_auth_type: formValues.ssh_auth_type,
+        git_versioning_enabled: Boolean(formValues.git_versioning_enabled),
+        git_versioning_scopes: formValues.git_versioning_scopes
       })
       const applyDeferredSshFields = (): void => {
         form.setFieldsValue({
@@ -6044,11 +6973,22 @@ function App(): React.JSX.Element {
   }
 
   const cleanFormValues = (values: ConnectionFormValues): ConnectionFormValues => {
+    const gitVersioning = {
+      git_versioning_enabled: Boolean(values.git_versioning_enabled),
+      git_versioning_scopes: Array.from(
+        new Set(
+          (values.git_versioning_scopes ?? [])
+            .map((scope) => scope.trim())
+            .filter(Boolean)
+        )
+      )
+    }
     if (values.database_type === 'sqlite') {
       return {
         name: values.name,
         database_type: 'sqlite',
-        sqlite_path: values.sqlite_path
+        sqlite_path: values.sqlite_path,
+        ...gitVersioning
       }
     }
 
@@ -6061,6 +7001,7 @@ function App(): React.JSX.Element {
         username: values.username,
         password: values.password,
         database: values.database,
+        ...gitVersioning,
         ...buildConnectionSshPayload(values)
       }
     }
@@ -6075,6 +7016,7 @@ function App(): React.JSX.Element {
         password: values.password,
         database: values.database,
         driver_id: values.driver_id ?? values.dm_driver_id,
+        ...gitVersioning,
         ...buildConnectionSshPayload(values)
       }
     }
@@ -6089,6 +7031,7 @@ function App(): React.JSX.Element {
         password: values.password,
         database: values.database,
         driver_id: values.driver_id,
+        ...gitVersioning,
         ...buildConnectionSshPayload(values)
       }
     }
@@ -6102,6 +7045,7 @@ function App(): React.JSX.Element {
         username: values.username,
         password: values.password,
         database: values.database,
+        ...gitVersioning,
         ...buildConnectionSshPayload(values)
       }
     }
@@ -6115,6 +7059,7 @@ function App(): React.JSX.Element {
         username: values.username,
         password: values.password,
         database: values.database,
+        ...gitVersioning,
         ...buildConnectionSshPayload(values)
       }
     }
@@ -6128,6 +7073,7 @@ function App(): React.JSX.Element {
         username: values.username,
         password: values.password,
         database: values.database,
+        ...gitVersioning,
         ...buildConnectionSshPayload(values)
       }
     }
@@ -6141,6 +7087,7 @@ function App(): React.JSX.Element {
         username: values.username,
         password: values.password,
         database: values.database,
+        ...gitVersioning,
         ...buildConnectionSshPayload(values)
       }
     }
@@ -6153,6 +7100,7 @@ function App(): React.JSX.Element {
       username: values.username,
       password: values.password,
       database: values.database,
+      ...gitVersioning,
       ...buildConnectionSshPayload(values)
     }
   }
@@ -6414,10 +7362,14 @@ function App(): React.JSX.Element {
 
   const closeImportConnectionModal = useCallback((): void => {
     setImportConnectionModalOpen(false)
-  }, [])
+    resetImportConnectionState()
+  }, [resetImportConnectionState])
 
   const closeExportConnectionModal = useCallback((): void => {
     setExportConnectionModalOpen(false)
+    setExportConnectionSecret('')
+    setExportConnectionSecretConfirm('')
+    setExportingConnections(false)
   }, [])
 
   const closeImportConnectionResultModal = (): void => {
@@ -6921,6 +7873,21 @@ function App(): React.JSX.Element {
         void refreshQuerySettings().catch(() => undefined)
       }
 
+      if (section === 'mcp') {
+        void refreshMcpSettings().catch(() => undefined)
+        void refreshOptionalModules().catch(() => undefined)
+        void refreshMcpLaunchConfig().catch(() => undefined)
+      }
+
+      if (section === 'sync') {
+        void refreshGitHubAuthStatus().catch(() => undefined)
+        void refreshGitSyncLocalState().catch(() => undefined)
+      }
+
+      if (section === 'extensions') {
+        void refreshOptionalModules().catch(() => undefined)
+      }
+
       if (section === 'drivers') {
         resetDriverForm(selectedDriverDatabaseType)
         void loadDrivers()
@@ -6950,6 +7917,18 @@ function App(): React.JSX.Element {
     }
     if (section === 'sql') {
       void refreshQuerySettings().catch(() => undefined)
+    }
+    if (section === 'mcp') {
+      void refreshMcpSettings().catch(() => undefined)
+      void refreshOptionalModules().catch(() => undefined)
+      void refreshMcpLaunchConfig().catch(() => undefined)
+    }
+    if (section === 'sync') {
+      void refreshGitHubAuthStatus().catch(() => undefined)
+      void refreshGitSyncLocalState().catch(() => undefined)
+    }
+    if (section === 'extensions') {
+      void refreshOptionalModules().catch(() => undefined)
     }
   }
 
@@ -7802,25 +8781,27 @@ function App(): React.JSX.Element {
   ): React.ReactNode => {
     const connection = connectionId ? getConnection(connectionId) : undefined
     return (
-      <TableDesignerPanel
-        mode={mode}
-        connection={connection}
-        databaseName={databaseName}
-        pgDatabaseName={pgDatabaseName}
-        tableName={tableName}
-        setTableName={setTableName}
-        tableComment={tableComment}
-        setTableComment={setTableComment}
-        columns={columns}
-        loading={loading}
-        isSchemaScopedType={isSchemaScopedType}
-        onUpdateColumn={(key, patch) => {
-          const updateColumn = mode === 'create' ? updateNewColumn : updateEditingColumn
-          updateColumn(key, patch)
-        }}
-        onAddColumn={addNewColumn}
-        onRemoveColumn={removeNewColumn}
-      />
+      <Suspense fallback={<div className="deferred-modal-loading">正在加载表设计器...</div>}>
+        <TableDesignerPanel
+          mode={mode}
+          connection={connection}
+          databaseName={databaseName}
+          pgDatabaseName={pgDatabaseName}
+          tableName={tableName}
+          setTableName={setTableName}
+          tableComment={tableComment}
+          setTableComment={setTableComment}
+          columns={columns}
+          loading={loading}
+          isSchemaScopedType={isSchemaScopedType}
+          onUpdateColumn={(key, patch) => {
+            const updateColumn = mode === 'create' ? updateNewColumn : updateEditingColumn
+            updateColumn(key, patch)
+          }}
+          onAddColumn={addNewColumn}
+          onRemoveColumn={removeNewColumn}
+        />
+      </Suspense>
     )
   }
   const createTable = async (): Promise<void> => {
@@ -8352,7 +9333,11 @@ function App(): React.JSX.Element {
       (tab.selectedRowKeyMap
         ? Object.keys(tab.selectedRowKeyMap)
         : (tab.selectedRowKeys ?? []).map(String))
-    const selected = new Set(selectedRowKeys)
+    const currentRowKeys = new Set((tab.editRows ?? []).map((row) => row.__rowKey))
+    const selected = new Set(selectedRowKeys.map(String).filter((rowKey) => currentRowKeys.has(rowKey)))
+    if (selected.size === 0) {
+      return
+    }
     const editRows = (tab.editRows ?? [])
       .filter((row) => !(row.__state === 'inserted' && selected.has(row.__rowKey)))
       .map((row) => (selected.has(row.__rowKey) ? { ...row, __deleted: true } : row))
@@ -8529,6 +9514,11 @@ function App(): React.JSX.Element {
     const existingPreviewTab = getWorkspaceTabs().find((tab) => tab.key === tabKey)
     const tabExists = Boolean(existingPreviewTab)
     clearInlineCellEditor(tabKey)
+    delete rowSelectionDraftRefs.current[tabKey]
+    delete selectedRowRefs.current[tabKey]
+    delete renderedSelectedRowRefs.current[tabKey]
+    delete rowDragAnchorRefs.current[tabKey]
+    delete rowSelectionAnchorRefs.current[tabKey]
 
     startTransition(() => {
       setSelectedConnectionId(connectionId)
@@ -8927,13 +9917,17 @@ function App(): React.JSX.Element {
       return undefined
     }
 
-    let connection = getConnection(tab.connectionId)
+    let connection = getConnectionRef.current(tab.connectionId)
     if (!connection) {
       return undefined
     }
 
     let treeOpenedForExecution = false
     if (!connection.is_open) {
+      updateWorkspaceTab(tab.key, {
+        loading: true,
+        queryExecutionPhase: 'opening-connection'
+      })
       const openedConnection = await openConnectionById(tab.connectionId)
       if (!openedConnection) {
         return undefined
@@ -9175,7 +10169,9 @@ function App(): React.JSX.Element {
 
   const runQuery = useCallback(
     async (tab: WorkspaceTab, selectedSql?: string): Promise<void> => {
-      const liveSelectionPayload = sqlEditorHandleRefs.current[tab.key]?.getSelectionPayload()
+      const sqlEditorHandle = sqlEditorHandleRefs.current[tab.key]
+      const liveEditorSql = sqlEditorHandle?.getValue()
+      const liveSelectionPayload = sqlEditorHandle?.getSelectionPayload()
       const executionContext =
         liveSelectionPayload ??
         sqlExecutionContextRef.current[tab.key] ??
@@ -9194,9 +10190,29 @@ function App(): React.JSX.Element {
         return
       }
 
+      const currentConnection = getConnectionRef.current(tab.connectionId)
+      updateWorkspaceTab(tab.key, {
+        loading: true,
+        queryExecutionPhase: currentConnection?.is_open === false ? 'opening-connection' : 'executing',
+        error: undefined,
+        resultVisible: true,
+        resultCollapsed: false,
+        resultKind: 'query',
+        commandMessage: undefined,
+        commandAffectedRows: undefined,
+        multiStatementResults: undefined
+      })
+
       const resolvedTab = await resolveQueryExecutionContext(tab)
       if (!resolvedTab) {
+        updateWorkspaceTab(tab.key, { loading: false, queryExecutionPhase: undefined })
         return
+      }
+      updateWorkspaceTab(resolvedTab.key, { queryExecutionPhase: 'executing' })
+      if (liveEditorSql !== undefined && liveEditorSql !== resolvedTab.sql) {
+        const nextTab = { ...resolvedTab, sql: liveEditorSql }
+        updateWorkspaceTab(resolvedTab.key, { sql: liveEditorSql })
+        persistQueryWorkspaceRef.current(nextTab)
       }
       if (resolvedTab.treeOpenedForExecution) {
         await locateTreePath([
@@ -9214,7 +10230,7 @@ function App(): React.JSX.Element {
         ])
       }
 
-      const connection = getConnection(resolvedTab.connectionId)
+      const connection = getConnectionRef.current(resolvedTab.connectionId)
 
       if (
         (isDatabaseScopedType(connection?.database_type) ||
@@ -9222,29 +10238,116 @@ function App(): React.JSX.Element {
           connection?.database_type === 'oracle') &&
         !resolvedTab.databaseName
       ) {
+        updateWorkspaceTab(resolvedTab.key, { loading: false, queryExecutionPhase: undefined })
         return
       }
 
       if (isSchemaScopedType(connection?.database_type) && !resolvedTab.pgDatabaseName) {
+        updateWorkspaceTab(resolvedTab.key, { loading: false, queryExecutionPhase: undefined })
         return
       }
 
       if (isSchemaScopedType(connection?.database_type) && !resolvedTab.databaseName) {
+        updateWorkspaceTab(resolvedTab.key, { loading: false, queryExecutionPhase: undefined })
         return
       }
 
       updateWorkspaceTab(resolvedTab.key, {
         loading: true,
+        queryExecutionPhase: 'executing',
         error: undefined,
         resultVisible: true,
         resultCollapsed: false,
         resultKind: 'query',
         commandMessage: undefined,
-        commandAffectedRows: undefined
+        commandAffectedRows: undefined,
+        multiStatementResults: undefined
       })
 
       try {
         const connection = getConnection(resolvedTab.connectionId)
+        const selectedStatements = splitSqlStatements(sqlToExecute)
+        if (selectedStatements.length > 1) {
+          const multiStatementResults: MultiStatementResult[] = []
+          updateWorkspaceTab(resolvedTab.key, {
+            result: undefined,
+            resultKind: 'query',
+            multiStatementResults: []
+          })
+
+          for (const [index, statement] of selectedStatements.entries()) {
+            const runningResult: MultiStatementResult = {
+              index,
+              sql: statement.text,
+              status: 'running'
+            }
+            multiStatementResults.push(runningResult)
+            updateWorkspaceTab(resolvedTab.key, {
+              multiStatementResults: [...multiStatementResults]
+            })
+
+            try {
+              const result = await requestJson<QueryResponse>('/query', {
+                method: 'POST',
+                body: JSON.stringify({
+                  connection_id: resolvedTab.connectionId,
+                  sql: statement.text,
+                  limit: resolvedTab.limit ?? QUERY_DEFAULT_LIMIT,
+                  offset: 0,
+                  database:
+                    connection?.database_type === 'mysql' ||
+                    connection?.database_type === 'dm' ||
+                    connection?.database_type === 'oracle' ||
+                    isSchemaScopedType(connection?.database_type) ||
+                    connection?.database_type === 'mongodb' ||
+                    connection?.database_type === 'redis' ||
+                    connection?.database_type === 'clickhouse'
+                      ? resolvedTab.databaseName || undefined
+                      : undefined,
+                  pg_database: isSchemaScopedType(connection?.database_type)
+                    ? resolvedTab.pgDatabaseName || undefined
+                    : undefined
+                })
+              })
+              const commandRow =
+                result.columns.length === 2 &&
+                result.columns.includes('message') &&
+                result.columns.includes('affected_rows') &&
+                result.rows.length === 1
+                  ? result.rows[0]
+                  : undefined
+              multiStatementResults[index] = {
+                index,
+                sql: statement.text,
+                status: 'success',
+                result,
+                affectedRows:
+                  typeof commandRow?.affected_rows === 'number' ? commandRow.affected_rows : null
+              }
+            } catch (err) {
+              multiStatementResults[index] = {
+                index,
+                sql: statement.text,
+                status: 'error',
+                error: err instanceof Error ? err.message : '查询失败'
+              }
+            }
+            updateWorkspaceTab(resolvedTab.key, {
+              multiStatementResults: [...multiStatementResults]
+            })
+          }
+
+          updateWorkspaceTab(resolvedTab.key, {
+            loading: false,
+            queryExecutionPhase: undefined,
+            executedSql: sqlToExecute,
+            multiStatementResults: [...multiStatementResults],
+            resultVisible: true,
+            resultCollapsed: false,
+            resultKind: 'query'
+          })
+          return
+        }
         const result = await requestJson<QueryResponse>('/query', {
           method: 'POST',
           body: JSON.stringify({
@@ -9288,6 +10391,7 @@ function App(): React.JSX.Element {
           editRows: isCommandResult ? undefined : buildEditableRows(result.rows),
           columnFilterOptions: undefined,
           loading: false,
+          queryExecutionPhase: undefined,
           error: undefined,
           resultVisible: true,
           resultCollapsed: false,
@@ -9304,6 +10408,7 @@ function App(): React.JSX.Element {
       } catch (err) {
         updateWorkspaceTab(resolvedTab.key, {
           loading: false,
+          queryExecutionPhase: undefined,
           error: err instanceof Error ? err.message : '查询失败',
           resultVisible: true,
           resultCollapsed: false,
@@ -9451,7 +10556,7 @@ function App(): React.JSX.Element {
   useEffect(() => {
     void refreshUpdateSettings().catch(() => undefined)
     const unsubscribers = [
-      window.api.onUpdateAvailable((info) => handleUpdateAvailable(info, true)),
+      window.api.onUpdateAvailable((info) => handleUpdateAvailable(info)),
       window.api.onUpdateNotAvailable((info) => setUpdateInfo(info)),
       window.api.onUpdateDownloadProgress((progress) => {
         setDownloadingUpdate(true)
@@ -9485,6 +10590,36 @@ function App(): React.JSX.Element {
     void checkHealth(true)
     void loadConnections().catch(() => undefined)
   }, [backendStatus.state, backendStatus.apiBaseUrl])
+
+  useEffect(() => {
+    if (backendStatus.state !== 'online' || !backendStatus.apiBaseUrl) {
+      return
+    }
+    void refreshGitHubAuthStatus().catch(() => undefined)
+    void refreshGitSyncLocalState().catch(() => undefined)
+  }, [backendStatus.state, backendStatus.apiBaseUrl])
+
+  useEffect(() => {
+    if (!gitSyncAutoEnabled || !gitHubAuthStatus.authorized || !gitSyncLastSyncedAt || gitSyncBusy) {
+      return
+    }
+
+    let cancelled = false
+    const synchronizeInBackground = async (): Promise<void> => {
+      if (cancelled) {
+        return
+      }
+      const state = (await window.api.getSyncLocalState()) as GitSyncLocalState
+      if (state.passphrase) {
+        await startGitSync({ automatic: true, passphrase: state.passphrase })
+      }
+    }
+    const timer = window.setInterval(() => void synchronizeInBackground(), AUTO_SYNC_INTERVAL_MS)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [gitHubAuthStatus.authorized, gitSyncAutoEnabled, gitSyncBusy, gitSyncLastSyncedAt])
 
   useEffect(() => {
     if (startupUiReady) {
@@ -9522,6 +10657,28 @@ function App(): React.JSX.Element {
   const updateStatusMessage = updateInfo?.available
     ? `发现新版本 ${updateInfo.latestVersion ?? ''}`
     : `当前版本 ${updateSettings?.currentVersion ?? updateInfo?.currentVersion ?? ''}`
+  const gitSyncMenu: MenuProps = {
+    items: [
+      {
+        key: 'status',
+        disabled: true,
+        label: gitSyncLastSyncedAt
+          ? `上次同步：${new Date(gitSyncLastSyncedAt).toLocaleString()}`
+          : '尚未建立同步基线'
+      },
+      { type: 'divider' },
+      { key: 'sync', icon: <CloudSyncOutlined />, label: '立即同步' },
+      { key: 'settings', icon: <SettingOutlined />, label: '同步与版本设置' }
+    ],
+    onClick: ({ key }) => {
+      if (key === 'sync') {
+        void startGitSync()
+      }
+      if (key === 'settings') {
+        openSettings('sync')
+      }
+    }
+  }
 
   const backendReady = backendStatus.state === 'online'
   const showBackendStatusTag =
@@ -9695,7 +10852,7 @@ function App(): React.JSX.Element {
     [connections]
   )
   const aiPanelContent = useMemo(() => {
-    if (!aiPanelOpen) {
+    if (!aiPanelOpen || !aiModuleInstalled) {
       return null
     }
 
@@ -9721,6 +10878,7 @@ function App(): React.JSX.Element {
     )
   }, [
     aiPanelOpen,
+    aiModuleInstalled,
     requestJson,
     aiContextConnection,
     aiDbName,
@@ -9755,6 +10913,48 @@ function App(): React.JSX.Element {
     { label: 'JSON', value: 'json' as const },
     { label: 'Markdown', value: 'markdown' as const }
   ]
+  const gitSyncConflictDisplayContext = useMemo(() => {
+    const connectionNames: Record<string, string> = Object.fromEntries(
+      connections.map((connection) => [connection.connection_id, connection.name])
+    )
+    for (const [connectionId, payload] of Object.entries(gitSyncPendingPayload?.connections ?? {})) {
+      if (typeof payload.name === 'string' && !connectionNames[connectionId]) {
+        connectionNames[connectionId] = payload.name
+      }
+    }
+
+    const folderNames: Record<string, string> = Object.fromEntries(
+      connectionFolders.map((folder) => [folder.id, folder.name])
+    )
+    const folderParents: Record<string, string | undefined> = Object.fromEntries(
+      connectionFolders.map((folder) => [folder.id, folder.parentId])
+    )
+    const pendingFolders = gitSyncPendingPayload?.preferences.connection_folders
+    if (Array.isArray(pendingFolders)) {
+      for (const folder of pendingFolders) {
+        if (
+          folder &&
+          typeof folder === 'object' &&
+          !Array.isArray(folder) &&
+          typeof (folder as { id?: unknown }).id === 'string' &&
+          typeof (folder as { name?: unknown }).name === 'string'
+        ) {
+          const item = folder as { id: string; name: string }
+          if (!folderNames[item.id]) {
+            folderNames[item.id] = item.name
+          }
+          if (!folderParents[item.id] && typeof (folder as { parentId?: unknown }).parentId === 'string') {
+            folderParents[item.id] = (folder as { parentId: string }).parentId
+          }
+        }
+      }
+    }
+    return { connectionNames, folderNames, folderParents }
+  }, [connections, connectionFolders, gitSyncPendingPayload])
+  const gitSyncConflictGroups = useMemo(
+    () => groupGitSyncConflicts(gitSyncConflicts),
+    [gitSyncConflicts]
+  )
 
   return (
     <ConfigProvider
@@ -9825,20 +11025,34 @@ function App(): React.JSX.Element {
                 aria-label="设置"
               />
               <Button
-                className={`toolbar-icon-btn${updateInfo?.available || downloadingUpdate ? ' is-highlighted' : ''}`}
-                type={updateInfo?.available || downloadingUpdate ? 'primary' : 'text'}
+                className="toolbar-icon-btn"
+                type="text"
                 size="small"
-                icon={<CloudDownloadOutlined />}
                 loading={checkingUpdate}
                 onClick={() => {
                   openUpdateModal()
-                  if (!downloadingUpdate) {
+                  if (!updateInfo?.available && !downloadingUpdate) {
                     void checkForUpdates(true)
                   }
                 }}
                 title="检查更新"
                 aria-label="检查更新"
-              />
+              >
+                <Badge dot={Boolean(updateInfo?.available) && !downloadingUpdate}>
+                  <CloudDownloadOutlined />
+                </Badge>
+              </Button>
+              <Dropdown menu={gitSyncMenu} trigger={['click']}>
+                <Button
+                  className={`toolbar-icon-btn${gitSyncLastSyncedAt ? ' is-highlighted' : ''}`}
+                  type={gitSyncLastSyncedAt ? 'primary' : 'text'}
+                  size="small"
+                  icon={<CloudSyncOutlined />}
+                  loading={gitSyncBusy}
+                  title="同步与版本"
+                  aria-label="同步与版本"
+                />
+              </Dropdown>
               <Button
                 className="toolbar-icon-btn"
                 type="text"
@@ -9846,17 +11060,23 @@ function App(): React.JSX.Element {
                 icon={<ReloadOutlined />}
                 loading={healthLoading}
                 onClick={() => void checkHealth()}
-                title="同步状态"
-                aria-label="同步状态"
+                title="检查后端服务状态"
+                aria-label="检查后端服务状态"
               />
               <Button
-                className={`toolbar-icon-btn${aiPanelOpen ? ' is-highlighted' : ''}`}
-                type={aiPanelOpen ? 'primary' : 'text'}
+                className={`toolbar-icon-btn${aiModuleInstalled && aiPanelOpen ? ' is-highlighted' : ''}`}
+                type={aiModuleInstalled && aiPanelOpen ? 'primary' : 'text'}
                 size="small"
                 icon={<MessageOutlined />}
-                onClick={() => setAiPanelOpen((open) => !open)}
-                title={aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'}
-                aria-label={aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'}
+                onClick={() => {
+                  if (!aiModuleInstalled) {
+                    openSettings('ai')
+                    return
+                  }
+                  setAiPanelOpen((open) => !open)
+                }}
+                title={!aiModuleInstalled ? '安装 AI 助手模块' : aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'}
+                aria-label={!aiModuleInstalled ? '安装 AI 助手模块' : aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'}
               />
               <Button
                 className="theme-toggle-btn"
@@ -10044,7 +11264,7 @@ function App(): React.JSX.Element {
               mainPanelRef={mainPanelRef}
               aiDockPanelRef={aiDockPanelRef}
               theme={theme}
-              aiPanelOpen={aiPanelOpen}
+              aiPanelOpen={aiPanelVisible}
               aiPanelSize={aiPanelSize}
               resizingAiPanel={resizingAiPanel}
               resizingResourcePanel={resizingResourcePanel}
@@ -10065,7 +11285,7 @@ function App(): React.JSX.Element {
           ref={updateModalRef}
           title="应用更新"
           footer={null}
-          width={680}
+          width={760}
           className="update-window-modal"
           maskClosable={false}
           deferContentMount
@@ -10167,7 +11387,7 @@ function App(): React.JSX.Element {
           ref={queryHistoryModalRef}
           title="历史查询窗口"
           footer={null}
-          width={760}
+          width={940}
           className="query-history-window-modal"
           deferContentMount
         >
@@ -10256,360 +11476,112 @@ function App(): React.JSX.Element {
             )
           }
         </ImperativeModalHost>
-        <Modal
-          title="导出连接"
+        <ConnectionExportModal
           open={exportConnectionModalOpen}
-          width={760}
-          className="export-connection-modal"
-          onCancel={closeExportConnectionModal}
-          afterOpenChange={(nextOpen) => {
-            if (!nextOpen) {
-              setExportConnectionSecret('')
-              setExportConnectionSecretConfirm('')
-              setExportingConnections(false)
-            }
-          }}
-          maskClosable={false}
-          {...FAST_MODAL_PROPS}
-          footer={
-            <Space>
-              <Button onClick={closeExportConnectionModal}>关闭</Button>
-              <Button
-                type="primary"
-                loading={exportingConnections}
-                onClick={() => void exportAllConnections()}
-              >
-                导出
-              </Button>
-            </Space>
-          }
-        >
-          <Space direction="vertical" className="full-width import-connection-layout" size={18}>
-            <div className="import-connection-hero">
-              <div className="import-connection-hero-badge">Connection Export</div>
-              <Typography.Title level={4}>导出当前所有连接、密码与分组结构</Typography.Title>
-              <Typography.Text type="secondary">
-                导出文件会使用你设置的口令进行整体加密，可在另一台设备通过 DataDjinn 导入。
-              </Typography.Text>
-            </div>
-            <Form layout="vertical" className="import-connection-form">
-              <Form.Item
-                label="导出口令"
-                className="import-connection-field"
-                extra="请妥善保管此口令，另一台设备导入时需要使用同一个口令解密。"
-              >
-                <Input.Password
-                  value={exportConnectionSecret}
-                  placeholder="请输入导出口令"
-                  onChange={(event) => setExportConnectionSecret(event.target.value)}
-                />
-              </Form.Item>
-              <Form.Item label="确认导出口令" className="import-connection-field">
-                <Input.Password
-                  value={exportConnectionSecretConfirm}
-                  placeholder="请再次输入导出口令"
-                  onChange={(event) => setExportConnectionSecretConfirm(event.target.value)}
-                />
-              </Form.Item>
-            </Form>
-          </Space>
-        </Modal>
-        <Modal
-          title="导入连接"
+          secret={exportConnectionSecret}
+          secretConfirm={exportConnectionSecretConfirm}
+          exporting={exportingConnections}
+          onClose={closeExportConnectionModal}
+          onSecretChange={setExportConnectionSecret}
+          onSecretConfirmChange={setExportConnectionSecretConfirm}
+          onExport={() => void exportAllConnections()}
+        />
+        <ConnectionImportModal
           open={importConnectionModalOpen}
-          width={980}
-          className="import-connection-modal"
-          onCancel={closeImportConnectionModal}
-          afterOpenChange={(nextOpen) => {
-            if (!nextOpen) {
-              resetImportConnectionState()
-            }
+          source={importConnectionSource}
+          rawText={importConnectionRawText}
+          filePath={importConnectionFilePath}
+          secret={importConnectionSecret}
+          parsing={importConnectionParsing}
+          importing={importingConnections}
+          candidates={importConnectionCandidates}
+          previewColumns={importConnectionPreviewColumns}
+          onClose={closeImportConnectionModal}
+          onSourceChange={(source) => {
+            setImportConnectionSource(source)
+            setImportConnectionRawText('')
+            setImportConnectionFilePath('')
+            setImportConnectionSecret('')
+            setImportConnectionCandidates([])
+            setImportConnectionFolderPlan(null)
+            setImportConnectionBundle(null)
           }}
-          maskClosable={false}
-          {...FAST_MODAL_PROPS}
-          footer={
-            <Space>
-              <Button onClick={closeImportConnectionModal}>关闭</Button>
-              <Button loading={importConnectionParsing} onClick={parseImportConnections}>
-                解析
-              </Button>
-              <Button
-                type="primary"
-                loading={importingConnections}
-                disabled={
-                  importConnectionCandidates.filter(
-                    (candidate) => candidate.payload && candidate.status !== 'error'
-                  ).length === 0
-                }
-                onClick={() => void importParsedConnections()}
-              >
-                导入
-              </Button>
-            </Space>
-          }
-        >
-          <Space direction="vertical" className="full-width import-connection-layout" size={18}>
-            <div className="import-connection-hero">
-              <div className="import-connection-hero-badge">Data Source Import</div>
-              <Typography.Title level={4}>
-                {importConnectionSource === 'datadjinn'
-                  ? '导入 DataDjinn 连接文件，恢复连接、密码与分组结构'
-                  : importConnectionSource === 'dbeaver'
-                    ? '上传 DBeaver 的 data-sources.json，批量导入连接和分组'
-                    : '粘贴 DataGrip / IDEA 数据源配置，批量导入到 DataDjinn'}
-              </Typography.Title>
-              <Typography.Text type="secondary">
-                {importConnectionSource === 'datadjinn'
-                  ? '先选择加密导出文件并输入口令，再解析确认导入。'
-                  : importConnectionSource === 'dbeaver'
-                    ? '请上传 DBeaver 的 data-sources.json。默认位置通常在：用户目录\\AppData\\Roaming\\DBeaverData\\workspace6\\General\\.dbeaver\\data-sources.json'
-                    : '先解析，再确认导入。解析结果会提前展示可导入状态和失败原因。'}
-              </Typography.Text>
-            </div>
-            <Form layout="vertical" className="import-connection-form">
-              <Form.Item label="来源" className="import-connection-field">
-                <Select
-                  value={importConnectionSource}
-                  options={IMPORT_CONNECTION_SOURCE_OPTIONS}
-                  onChange={(value) => {
-                    setImportConnectionSource(value as ImportConnectionSource)
-                    setImportConnectionRawText('')
-                    setImportConnectionFilePath('')
-                    setImportConnectionSecret('')
-                    setImportConnectionCandidates([])
-                    setImportConnectionFolderPlan(null)
-                    setImportConnectionBundle(null)
-                  }}
-                />
-              </Form.Item>
-              {importConnectionSource === 'datadjinn' ? (
-                <>
-                  <Form.Item
-                    label="连接文件"
-                    className="import-connection-field"
-                    extra="选择通过 DataDjinn 导出的 .ddj 加密连接文件。"
-                  >
-                    <div className="import-connection-file-row">
-                      <Input
-                        value={importConnectionFilePath}
-                        readOnly
-                        placeholder="请选择 .ddj 文件"
-                      />
-                      <Button onClick={() => void chooseImportConnectionTransferFile()}>
-                        选择文件
-                      </Button>
-                    </div>
-                  </Form.Item>
-                  <Form.Item
-                    label="导入口令"
-                    className="import-connection-field"
-                    extra="请输入导出时设置的口令，用于解密连接文件。"
-                  >
-                    <Input.Password
-                      value={importConnectionSecret}
-                      placeholder="请输入导入口令"
-                      onChange={(event) => setImportConnectionSecret(event.target.value)}
-                    />
-                  </Form.Item>
-                </>
-              ) : importConnectionSource === 'dbeaver' ? (
-                <Form.Item
-                  label="DBeaver 连接文件"
-                  className="import-connection-field"
-                  extra="请选择 DBeaver 导出的 data-sources.json，分组信息也会一并解析。"
-                >
-                  <div className="import-connection-file-row">
-                    <Input
-                      value={importConnectionFilePath}
-                      readOnly
-                      placeholder="请选择 data-sources.json 文件"
-                    />
-                    <Button onClick={() => void chooseImportConnectionTransferFile()}>
-                      选择文件
-                    </Button>
-                  </div>
-                </Form.Item>
-              ) : (
-                <Form.Item
-                  label="连接配置文本"
-                  className="import-connection-field import-connection-field-textarea"
-                  extra="选中复制 DataGrip / IDEA 中的数据源并复制粘贴到上方。"
-                >
-                  <Input.TextArea
-                    value={importConnectionRawText}
-                    autoSize={{ minRows: 10, maxRows: 18 }}
-                    placeholder="#DataSourceSettings# ..."
-                    onChange={(event) => setImportConnectionRawText(event.target.value)}
-                  />
-                </Form.Item>
-              )}
-            </Form>
-            {importConnectionCandidates.length > 0 && (
-              <Space
-                direction="vertical"
-                className="full-width import-connection-preview"
-                size={12}
-              >
-                <Flex
-                  justify="space-between"
-                  align="center"
-                  className="import-connection-preview-header"
-                >
-                  <Typography.Text strong>解析结果</Typography.Text>
-                  <Typography.Text type="secondary">
-                    共 {importConnectionCandidates.length} 个，
-                    {
-                      importConnectionCandidates.filter(
-                        (candidate) => candidate.status !== 'error' && candidate.payload
-                      ).length
-                    }{' '}
-                    个可导入
-                  </Typography.Text>
-                </Flex>
-                <Table
-                  rowKey="key"
-                  size="small"
-                  pagination={false}
-                  scroll={{ y: 280 }}
-                  columns={importConnectionPreviewColumns}
-                  dataSource={importConnectionCandidates}
-                />
-              </Space>
-            )}
-          </Space>
-        </Modal>
-        <Modal
-          title="导入结果"
+          onRawTextChange={setImportConnectionRawText}
+          onSecretChange={setImportConnectionSecret}
+          onChooseFile={() => void chooseImportConnectionTransferFile()}
+          onParse={parseImportConnections}
+          onImport={() => void importParsedConnections()}
+        />
+        <ConnectionImportResultModal
           open={importConnectionResultOpen}
-          width={880}
-          className="import-connection-result-modal"
-          onCancel={closeImportConnectionResultModal}
-          footer={
-            <Button type="primary" onClick={closeImportConnectionResultModal}>
-              关闭
-            </Button>
-          }
-          maskClosable={false}
-          {...FAST_MODAL_PROPS}
-        >
-          {importConnectionResult && (
-            <Space
-              direction="vertical"
-              className="full-width import-connection-result-layout"
-              size={14}
-            >
-              <Alert
-                type={importConnectionResult.failed.length > 0 ? 'warning' : 'success'}
-                showIcon
-                message={`成功 ${importConnectionResult.success.length} 个，失败 ${importConnectionResult.failed.length} 个`}
-              />
-              {importConnectionResult.success.length > 0 && (
-                <Space
-                  direction="vertical"
-                  className="full-width import-connection-result-section"
-                  size={8}
-                >
-                  <Typography.Text strong>导入成功</Typography.Text>
-                  <Table
-                    rowKey={(record) =>
-                      `${record.name}-${record.database_type ?? 'unknown'}-success`
-                    }
-                    size="small"
-                    pagination={false}
-                    columns={[
-                      { title: '名称', dataIndex: 'name', key: 'name', width: 220, ellipsis: true },
-                      {
-                        title: '类型',
-                        dataIndex: 'database_type',
-                        key: 'database_type',
-                        width: 100,
-                        render: (value?: DatabaseType) =>
-                          value ? DATABASE_TYPE_LABELS[value] : '-'
-                      },
-                      {
-                        title: '说明',
-                        dataIndex: 'message',
-                        key: 'message',
-                        ellipsis: true,
-                        render: (value?: string) => value || '-'
-                      }
-                    ]}
-                    dataSource={importConnectionResult.success}
-                  />
-                </Space>
-              )}
-              {importConnectionResult.failed.length > 0 && (
-                <Space
-                  direction="vertical"
-                  className="full-width import-connection-result-section import-connection-result-section-danger"
-                  size={8}
-                >
-                  <Typography.Text strong>导入失败</Typography.Text>
-                  <Table
-                    rowKey={(record) =>
-                      `${record.name}-${record.database_type ?? 'unknown'}-failed`
-                    }
-                    size="small"
-                    pagination={false}
-                    columns={[
-                      { title: '名称', dataIndex: 'name', key: 'name', width: 220, ellipsis: true },
-                      {
-                        title: '类型',
-                        dataIndex: 'database_type',
-                        key: 'database_type',
-                        width: 100,
-                        render: (value?: DatabaseType) =>
-                          value ? DATABASE_TYPE_LABELS[value] : '-'
-                      },
-                      {
-                        title: '失败原因',
-                        dataIndex: 'message',
-                        key: 'message',
-                        ellipsis: true,
-                        render: (value?: string) => value || '-'
-                      }
-                    ]}
-                    dataSource={importConnectionResult.failed}
-                  />
-                </Space>
-              )}
-            </Space>
-          )}
-        </Modal>
-        <Modal
-          title="输入连接密码"
+          result={importConnectionResult}
+          onClose={closeImportConnectionResultModal}
+        />
+        <ConnectionPasswordPromptModal
           open={connectionPasswordPromptOpen}
-          onCancel={closeConnectionPasswordPrompt}
-          onOk={() => void submitConnectionPasswordPrompt()}
-          okText="重试连接"
-          cancelText="取消"
-          maskClosable={false}
-          {...FAST_MODAL_PROPS}
-        >
-          <Space direction="vertical" className="full-width" size={12}>
-            <Typography.Text>
-              <Typography.Text strong>连接：</Typography.Text>
-              {connectionPasswordPromptConnectionName}
-            </Typography.Text>
-            <Alert
-              type="warning"
-              showIcon
-              message={connectionPasswordPromptReason || '请输入密码后重试连接'}
-            />
-            <Input.Password
-              autoFocus
-              value={connectionPasswordDraft}
-              placeholder="请输入密码"
-              onChange={(event) => setConnectionPasswordDraft(event.target.value)}
-              onPressEnter={() => void submitConnectionPasswordPrompt()}
-            />
-          </Space>
-        </Modal>
+          connectionName={connectionPasswordPromptConnectionName}
+          reason={connectionPasswordPromptReason}
+          password={connectionPasswordDraft}
+          onClose={closeConnectionPasswordPrompt}
+          onPasswordChange={setConnectionPasswordDraft}
+          onRetry={() => void submitConnectionPasswordPrompt()}
+        />
+        <ConnectionVersionManagementModal
+          open={schemaVersionModalOpen}
+          connectionName={getConnection(schemaVersionConnectionId)?.name ?? '连接'}
+          connectionId={schemaVersionConnectionId}
+          onClose={closeSchemaVersionModal}
+          gitHubAuthStatus={gitHubAuthStatus}
+          onOpenSyncSettings={() => {
+            closeSchemaVersionModal()
+            openSettings('sync')
+          }}
+          schemaVersions={schemaVersions}
+          schemaVersionsLoading={schemaVersionsLoading}
+          schemaSnapshotCreating={schemaSnapshotCreating}
+          onLoadSchemaVersions={(connectionId) => void loadSchemaVersions(connectionId)}
+          onCreateSchemaSnapshot={(connectionId) => void createSchemaSnapshot(connectionId)}
+          onViewSchemaVersion={viewSchemaVersion}
+          versioningScopeConfig={versioningScopeConfig}
+          versioningScopesLoading={versioningScopesLoading}
+          versioningScopesSaving={versioningScopesSaving}
+          versioningScopeDraft={versioningScopeDraft}
+          versioningScopeLabel={versioningScopeLabel}
+          hasConfiguredVersioningScope={hasConfiguredVersioningScope}
+          onVersioningScopeDraftChange={setVersioningScopeDraft}
+          onSaveVersioningScopes={(connectionId) => void saveVersioningScopes(connectionId)}
+          dataVersioningModuleInstalled={dataVersioningModuleInstalled}
+          installingDataVersioningModule={installingOptionalModuleId === 'data-versioning'}
+          onInstallDataVersioningModule={() => void installOptionalModule('data-versioning')}
+          dataVersionTables={dataVersionTables}
+          dataVersionTableName={dataVersionTableName}
+          dataVersions={dataVersions}
+          dataVersionsLoading={dataVersionsLoading}
+          dataSnapshotCreating={dataSnapshotCreating}
+          onDataVersionTableNameChange={setDataVersionTableName}
+          onLoadDataVersions={(connectionId, tableName) => void loadDataVersions(connectionId, tableName)}
+          onCreateDataSnapshot={(connectionId, tableName) => void createDataSnapshot(connectionId, tableName)}
+          onViewDataVersion={viewDataVersion}
+          onViewDataVersionDiff={viewDataVersionDiff}
+        />
+        <DataVersionDiffModal
+          open={dataVersionDiffModalOpen}
+          title={
+            dataVersionDiffTarget
+              ? `${getConnection(dataVersionDiffTarget.connectionId)?.name ?? '连接'} · ${dataVersionDiffTarget.tableName} 数据差异 ${dataVersionDiffTarget.version.id.slice(0, 7)}`
+              : '数据差异'
+          }
+          loading={dataVersionDiffLoading}
+          diff={dataVersionDiff}
+          tab={dataVersionDiffTab}
+          onTabChange={setDataVersionDiffTab}
+          onClose={() => setDataVersionDiffModalOpen(false)}
+        />
         <ImperativeModalHost
           ref={settingsModalRef}
           title="设置"
           footer={null}
-          width={1040}
+          width={1180}
           className="settings-window-modal"
           maskClosable={false}
           deferContentMount
@@ -10626,6 +11598,10 @@ function App(): React.JSX.Element {
                       { key: 'app', icon: <SettingOutlined />, label: '应用' },
                       { key: 'sql', icon: <PlayCircleOutlined />, label: 'SQL' },
                       { key: 'shortcuts', icon: <ThunderboltOutlined />, label: '快捷键' },
+                      { key: 'sync', icon: <GithubOutlined />, label: '同步与版本' },
+                      { key: 'extensions', icon: <AppstoreOutlined />, label: '扩展' },
+                      { key: 'ai', icon: <RobotOutlined />, label: 'AI' },
+                      { key: 'mcp', icon: <RobotOutlined />, label: 'MCP' },
                       { key: 'drivers', icon: <DatabaseOutlined />, label: '驱动管理' }
                     ]}
                   />
@@ -10676,6 +11652,448 @@ function App(): React.JSX.Element {
                           addonAfter="分钟"
                           onChange={(value) => void updateQueryTimeoutMinutes(value)}
                         />
+                      </div>
+                    </Space>
+                  ) : settingsSection === 'ai' ? (
+                    <AISettingsPanel
+                      installed={aiModuleInstalled}
+                      installing={installingOptionalModuleId === 'ai'}
+                      onInstall={() => void installOptionalModule('ai')}
+                    />
+                  ) : settingsSection === 'sync' ? (
+                    <Space
+                      direction="vertical"
+                      className="full-width settings-section-stack"
+                      size="large"
+                    >
+                      <div className="settings-section-card">
+                        <Flex justify="space-between" align="flex-start" gap="middle">
+                          <Space direction="vertical" size={4}>
+                            <Typography.Title level={5} style={{ margin: 0 }}>
+                              GitHub 授权
+                            </Typography.Title>
+                            <Typography.Text type="secondary">
+                              授权后，DataDjinn 才能为应用设置、连接信息和已启用版本管理的连接建立私有同步存储。
+                            </Typography.Text>
+                          </Space>
+                          <Tag color={gitHubAuthStatus.authorized ? 'success' : 'default'}>
+                            {gitHubAuthStatus.authorized ? '已授权' : '未授权'}
+                          </Tag>
+                        </Flex>
+                        {gitHubAuthStatus.authorized ? (
+                          <Flex justify="space-between" align="center" gap="middle">
+                            <Space size={10}>
+                              <Avatar
+                                className="git-sync-avatar"
+                                src={gitHubAuthStatus.avatar_url ?? undefined}
+                                icon={<GithubOutlined />}
+                                alt="GitHub"
+                              />
+                              <Typography.Text strong>
+                                {gitHubAuthStatus.name || gitHubAuthStatus.login}
+                              </Typography.Text>
+                              {gitHubAuthStatus.name && gitHubAuthStatus.login && (
+                                <Typography.Text type="secondary">
+                                  @{gitHubAuthStatus.login}
+                                </Typography.Text>
+                              )}
+                            </Space>
+                            <Button danger onClick={() => void signOutGitHub()}>
+                              退出授权
+                            </Button>
+                          </Flex>
+                        ) : (
+                          <Button
+                            type="primary"
+                            icon={<GithubOutlined />}
+                            loading={gitHubAuthorizationPending}
+                            onClick={() => void startGitHubAuthorization()}
+                          >
+                            {gitHubAuthorizationPending ? '等待浏览器授权' : '登录 GitHub'}
+                          </Button>
+                        )}
+                        {gitHubAuthorizationPending && gitHubDeviceAuthorization && (
+                          <Alert
+                            type="info"
+                            showIcon
+                            message="正在等待 GitHub 浏览器授权"
+                            description={
+                              <Space direction="vertical" size={4}>
+                                <Typography.Text>
+                                  请在浏览器中输入验证码：
+                                  <Typography.Text
+                                    code
+                                    copyable={{ text: gitHubDeviceAuthorization.user_code }}
+                                  >
+                                    {gitHubDeviceAuthorization.user_code}
+                                  </Typography.Text>
+                                </Typography.Text>
+                                <Typography.Text type="secondary">
+                                  授权完成后此处会自动更新；验证码有效期内可重复提交。
+                                </Typography.Text>
+                              </Space>
+                            }
+                          />
+                        )}
+                        {gitHubAuthStatus.authorized && (
+                          <Flex justify="space-between" align="center" gap="middle">
+                            <Typography.Text type="secondary">
+                              {gitHubAuthStatus.repository_full_name
+                                ? `私有同步仓库：${gitHubAuthStatus.repository_full_name}`
+                                : '尚未创建私有同步仓库'}
+                            </Typography.Text>
+                            {gitHubAuthStatus.repository_full_name ? (
+                              <Button
+                                onClick={() => {
+                                  if (gitHubAuthStatus.repository_url) {
+                                    void window.api.openExternalUrl(gitHubAuthStatus.repository_url)
+                                  }
+                                }}
+                              >
+                                查看仓库
+                              </Button>
+                            ) : (
+                              <Button type="primary" onClick={() => void initializeGitHubSyncRepository()}>
+                                初始化私有同步仓库
+                              </Button>
+                            )}
+                          </Flex>
+                        )}
+                      </div>
+                      <div className="settings-section-card">
+                        <Flex justify="space-between" align="flex-start" gap="middle">
+                          <Space direction="vertical" size={4}>
+                            <Typography.Title level={5} style={{ margin: 0 }}>
+                              加密同步
+                            </Typography.Title>
+                              <Typography.Text type="secondary">
+                                同步内容使用独立口令加密后保存到私有仓库。口令仅使用本机系统加密保存，不会上传到 GitHub。
+                              </Typography.Text>
+                          </Space>
+                          <Tag color={gitSyncLastSyncedAt ? 'success' : 'default'}>
+                            {gitSyncLastSyncedAt ? '已建立同步基线' : '尚未同步'}
+                          </Tag>
+                        </Flex>
+                        <Space direction="vertical" className="full-width" size="middle">
+                          {!gitSyncLastSyncedAt ? (
+                            <>
+                              {gitSyncRemoteExists && (
+                                <Typography.Text type="secondary">
+                                  已发现其他设备的远端同步数据，请输入原设备使用的同步口令，验证后会自动拉取并合并。
+                                </Typography.Text>
+                              )}
+                              <Input.Password
+                                value={gitSyncPassphrase}
+                                autoComplete="new-password"
+                                placeholder={
+                                  gitSyncRemoteExists
+                                    ? '已有同步口令，至少 8 个字符'
+                                    : '同步口令，至少 8 个字符'
+                                }
+                                onChange={(event) => setGitSyncPassphrase(event.target.value)}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Tab' && !event.shiftKey) {
+                                    event.preventDefault()
+                                    gitSyncPassphraseConfirmInputRef.current?.input?.focus()
+                                  }
+                                }}
+                              />
+                              {!gitSyncRemoteExists && (
+                                <Input.Password
+                                  ref={gitSyncPassphraseConfirmInputRef}
+                                  value={gitSyncPassphraseConfirm}
+                                  autoComplete="new-password"
+                                  placeholder="再次输入同步口令"
+                                  onChange={(event) => setGitSyncPassphraseConfirm(event.target.value)}
+                                />
+                              )}
+                            </>
+                          ) : changingGitSyncPassphrase ? (
+                            <>
+                              <Input.Password
+                                value={currentGitSyncPassphrase}
+                                autoComplete="current-password"
+                                placeholder="当前同步口令"
+                                onChange={(event) => setCurrentGitSyncPassphrase(event.target.value)}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Tab' && !event.shiftKey) {
+                                    event.preventDefault()
+                                    nextGitSyncPassphraseInputRef.current?.input?.focus()
+                                  }
+                                }}
+                              />
+                              <Input.Password
+                                ref={nextGitSyncPassphraseInputRef}
+                                value={nextGitSyncPassphrase}
+                                autoComplete="new-password"
+                                placeholder="新同步口令，至少 8 个字符"
+                                onChange={(event) => setNextGitSyncPassphrase(event.target.value)}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Tab' && !event.shiftKey) {
+                                    event.preventDefault()
+                                    nextGitSyncPassphraseConfirmInputRef.current?.input?.focus()
+                                  }
+                                }}
+                              />
+                              <Input.Password
+                                ref={nextGitSyncPassphraseConfirmInputRef}
+                                value={nextGitSyncPassphraseConfirm}
+                                autoComplete="new-password"
+                                placeholder="再次输入新同步口令"
+                                onChange={(event) => setNextGitSyncPassphraseConfirm(event.target.value)}
+                              />
+                              <Flex justify="end" gap={8}>
+                                <Button
+                                  disabled={gitSyncBusy}
+                                  onClick={() => {
+                                    setChangingGitSyncPassphrase(false)
+                                    setCurrentGitSyncPassphrase('')
+                                    setNextGitSyncPassphrase('')
+                                    setNextGitSyncPassphraseConfirm('')
+                                  }}
+                                >
+                                  取消
+                                </Button>
+                                <Button
+                                  type="primary"
+                                  loading={gitSyncBusy}
+                                  onClick={() => void changeGitSyncPassphrase()}
+                                >
+                                  确认修改
+                                </Button>
+                              </Flex>
+                            </>
+                          ) : (
+                            <Flex justify="space-between" align="center" gap="middle" className="sync-passphrase-ready">
+                              <Typography.Text type="secondary">
+                                同步口令已使用本机系统加密保存。修改后会使用新口令重新加密远端同步内容。
+                              </Typography.Text>
+                              <Button onClick={() => setChangingGitSyncPassphrase(true)}>修改同步口令</Button>
+                            </Flex>
+                          )}
+                          <Flex justify="space-between" align="center" gap="middle">
+                            <Typography.Text type="secondary">
+                                {gitSyncLastSyncedAt
+                                  ? `上次同步：${new Date(gitSyncLastSyncedAt).toLocaleString()}`
+                                  : gitSyncRemoteExists
+                                    ? '请输入原设备的同步口令后开始同步。'
+                                    : '首次同步将自动创建私有仓库和加密同步基线。'}
+                            </Typography.Text>
+                            <Button
+                              type="primary"
+                              icon={<CloudSyncOutlined />}
+                              loading={gitSyncBusy}
+                              disabled={!gitHubAuthStatus.authorized}
+                              onClick={() => void startGitSync()}
+                            >
+                              {gitSyncRemoteExists && !gitSyncLastSyncedAt
+                                ? '验证口令并同步'
+                                : '立即同步'}
+                            </Button>
+                          </Flex>
+                          <Flex justify="space-between" align="center" gap="middle" className="sync-auto-card">
+                            <Space direction="vertical" size={0}>
+                              <Typography.Text>自动同步</Typography.Text>
+                              <Typography.Text type="secondary">
+                                {gitHubAuthStatus.authorized && gitSyncLastSyncedAt
+                                  ? '每 15 分钟在后台同步一次；发生冲突时仍需你手动选择保留内容。'
+                                  : '完成 GitHub 授权和首次同步后可启用。'}
+                              </Typography.Text>
+                            </Space>
+                            <Switch
+                              checked={gitSyncAutoEnabled}
+                              disabled={!gitHubAuthStatus.authorized || !gitSyncLastSyncedAt}
+                              aria-label="自动同步"
+                              onChange={(enabled) => void setGitSyncAutoSyncEnabled(enabled)}
+                            />
+                          </Flex>
+                        </Space>
+                      </div>
+                    </Space>
+                  ) : settingsSection === 'extensions' ? (
+                    <Space
+                      direction="vertical"
+                      className="full-width settings-section-stack"
+                      size="large"
+                    >
+                      {optionalModules.map((module) => (
+                        <div className="settings-section-card" key={module.id}>
+                          <Flex justify="space-between" align="flex-start" gap="middle">
+                            <Space direction="vertical" size={4}>
+                              <Typography.Title level={5} style={{ margin: 0 }}>
+                                {module.name}
+                              </Typography.Title>
+                              <Typography.Text type="secondary" className="optional-module-description">
+                                {module.description}
+                              </Typography.Text>
+                              <Space className="optional-module-meta" size={10} wrap>
+                                <Typography.Text className="optional-module-property">
+                                  版本 <strong>{module.version}</strong>
+                                </Typography.Text>
+                                {module.installedAt && (
+                                  <Typography.Text className="optional-module-property">
+                                    安装时间 <strong>{new Date(module.installedAt).toLocaleString()}</strong>
+                                  </Typography.Text>
+                                )}
+                              </Space>
+                            </Space>
+                            <Space>
+                              <Tag
+                                className="optional-module-status"
+                                color={
+                                  module.installed
+                                    ? 'success'
+                                    : installingOptionalModuleId === module.id
+                                      ? 'processing'
+                                      : 'default'
+                                }
+                              >
+                                {module.installed
+                                  ? '已安装'
+                                  : installingOptionalModuleId === module.id
+                                    ? '安装中'
+                                    : '未安装'}
+                              </Tag>
+                              {module.installed ? (
+                                <Button
+                                  danger
+                                  className="optional-module-uninstall-btn"
+                                  onClick={() => void uninstallOptionalModule(module.id)}
+                                >
+                                  卸载
+                                </Button>
+                              ) : (
+                                <Button
+                                  type="primary"
+                                  className="optional-module-install-btn"
+                                  loading={installingOptionalModuleId === module.id}
+                                  disabled={installingOptionalModuleId !== null}
+                                  onClick={() => void installOptionalModule(module.id)}
+                                >
+                                  {installingOptionalModuleId === module.id ? '安装中' : '安装'}
+                                </Button>
+                              )}
+                            </Space>
+                          </Flex>
+                        </div>
+                      ))}
+                    </Space>
+                  ) : settingsSection === 'mcp' ? (
+                    <Space
+                      direction="vertical"
+                      className="full-width settings-section-stack"
+                      size="large"
+                    >
+                      <div className="settings-section-card mcp-settings-card">
+                        <Typography.Title level={5} style={{ marginTop: 0 }}>
+                          本机 MCP 服务
+                        </Typography.Title>
+                        <Typography.Text type="secondary">
+                          启用后，已配置的本机 Agent 工具才能访问 DataDjinn 保存的连接。服务不监听网络端口，关闭后会立即拒绝所有 MCP 请求。
+                        </Typography.Text>
+                        {!mcpModuleInstalled && (
+                          <Alert
+                            type="warning"
+                            showIcon
+                            message="本机 MCP 服务模块尚未安装"
+                            description="请先在“设置 -> 扩展”中安装模块，再授权 MCP 访问连接。"
+                            action={
+                              <Button
+                                type="primary"
+                                size="small"
+                                loading={installingOptionalModuleId === 'mcp'}
+                                disabled={installingOptionalModuleId !== null}
+                                onClick={() => void installOptionalModule('mcp')}
+                              >
+                                {installingOptionalModuleId === 'mcp' ? '安装中' : '安装模块'}
+                              </Button>
+                            }
+                          />
+                        )}
+                        {mcpModuleInstalled && mcpLaunchConfig && (
+                          <Space direction="vertical" className="full-width" size={8}>
+                            <Typography.Text strong>客户端配置</Typography.Text>
+                            <Typography.Text type="secondary">
+                              在 Agent 工具中新增 STDIO MCP 服务，命令无需参数，连接配置会由模块自动读取。
+                            </Typography.Text>
+                            <Flex gap={8} className="full-width">
+                              <Input
+                                className="mcp-launch-command"
+                                value={mcpLaunchConfig.command}
+                                readOnly
+                                aria-label="MCP 启动命令"
+                              />
+                              <Button
+                                icon={<CopyOutlined />}
+                                aria-label="复制 MCP 启动命令"
+                                onClick={() => {
+                                  void navigator.clipboard
+                                    .writeText(mcpLaunchConfig.command)
+                                    .then(() => messageApi.success('MCP 启动命令已复制'))
+                                    .catch((error) => showError(error instanceof Error ? error.message : '复制失败'))
+                                }}
+                              />
+                            </Flex>
+                            <Typography.Text type="secondary">命令参数：无</Typography.Text>
+                          </Space>
+                        )}
+                        <Flex justify="space-between" align="center" gap="middle">
+                          <Space direction="vertical" size={0}>
+                            <Typography.Text>启用本机 MCP 服务</Typography.Text>
+                            <Typography.Text type="secondary">
+                              默认关闭，需要在此处明确授权。
+                            </Typography.Text>
+                          </Space>
+                          <Switch
+                            checked={mcpSettings.enabled}
+                            disabled={!mcpModuleInstalled}
+                            onChange={(enabled) => void updateMcpSettings({ enabled })}
+                          />
+                        </Flex>
+                        <Flex justify="space-between" align="center" gap="middle">
+                          <Space direction="vertical" size={0}>
+                            <Typography.Text>允许 MCP 执行写操作</Typography.Text>
+                            <Typography.Text type="secondary">
+                              默认只读。开启后，Agent 仍须在单次调用中显式确认写入。
+                            </Typography.Text>
+                          </Space>
+                          <Switch
+                            checked={mcpSettings.allowWrite}
+                            disabled={!mcpModuleInstalled || !mcpSettings.enabled}
+                            onChange={(allowWrite) => void updateMcpSettings({ allowWrite })}
+                          />
+                        </Flex>
+                        <Flex justify="space-between" align="center" gap="middle">
+                          <Space direction="vertical" size={0}>
+                            <Typography.Text>限制允许访问的连接</Typography.Text>
+                            <Typography.Text type="secondary">
+                              开启后，只有下方选中的连接会向 MCP 提供。
+                            </Typography.Text>
+                          </Space>
+                          <Switch
+                            checked={mcpSettings.restrictConnections}
+                            disabled={!mcpModuleInstalled || !mcpSettings.enabled}
+                            onChange={(restrictConnections) =>
+                              void updateMcpSettings({ restrictConnections })
+                            }
+                          />
+                        </Flex>
+                        {mcpSettings.restrictConnections && (
+                          <Select
+                            mode="multiple"
+                            className="full-width"
+                            disabled={!mcpModuleInstalled || !mcpSettings.enabled}
+                            value={mcpSettings.allowedConnectionIds}
+                            placeholder="请选择允许 MCP 访问的连接"
+                            options={connections.map((connection) => ({
+                              value: connection.connection_id,
+                              label: `${connection.name} (${DATABASE_TYPE_LABELS[connection.database_type] ?? connection.database_type})`
+                            }))}
+                            onChange={(allowedConnectionIds: string[]) =>
+                              void updateMcpSettings({ allowedConnectionIds })
+                            }
+                          />
+                        )}
                       </div>
                     </Space>
                   ) : settingsSection === 'shortcuts' ? (
@@ -10851,6 +12269,14 @@ function App(): React.JSX.Element {
                         <Typography.Title level={5} style={{ margin: 0 }}>
                           全局 JDBC Java 环境
                         </Typography.Title>
+                        {!jdbcModuleInstalled && (
+                          <Alert
+                            type="warning"
+                            showIcon
+                            message="JDBC 数据库支持尚未安装"
+                            description="JDBC 驱动连接需要先在“设置 -> 扩展”安装 JDBC 数据库支持；安装时会自动检测本机 Java，缺失时自动安装 Java 17。Python 驱动不受影响。"
+                          />
+                        )}
                         {javaRestartRequired && (
                           <Alert
                             type="warning"
@@ -10861,9 +12287,9 @@ function App(): React.JSX.Element {
                         )}
                         <Flex justify="space-between" align="center">
                           <Space direction="vertical" size={0}>
-                            <Typography.Text>启用 JDBC Java 环境</Typography.Text>
+                            <Typography.Text>指定 JDBC Java 环境</Typography.Text>
                             <Typography.Text type="secondary">
-                              关闭后应用启动时不会加载 Java，使用 JDBC 驱动连接时需要先开启并配置。
+                              默认自动使用安装 JDBC 数据库支持时检测到的可用 Java；开启后可固定使用下方选择的版本。
                             </Typography.Text>
                           </Space>
                           <Switch checked={jdbcJavaEnabled} onChange={setJdbcJavaEnabled} />
@@ -11443,58 +12869,27 @@ function App(): React.JSX.Element {
           theme={theme}
           onError={(errorMessage) => showError(errorMessage)}
         />
-        <Modal
-          title={folderEditorMode === 'rename' ? '重命名分组' : '新建分组'}
+        <FolderEditorModal
           open={folderEditorOpen}
-          className="folder-editor-modal"
-          okText={folderEditorMode === 'rename' ? '保存' : '创建'}
-          cancelText="取消"
-          onOk={saveFolder}
+          mode={folderEditorMode}
+          name={folderNameDraft}
+          inputRef={folderEditorInputRef}
+          onNameChange={setFolderNameDraft}
+          onSave={saveFolder}
           onCancel={() => {
             setFolderEditorOpen(false)
             setEditingFolderId(undefined)
+            setCreatingFolderParentId(undefined)
             setFolderNameDraft('')
           }}
-          okButtonProps={{ disabled: !folderNameDraft.trim() }}
-          centered
-          maskClosable={false}
-          {...FAST_MODAL_PROPS}
-        >
-          <Form layout="vertical" className="folder-editor-form">
-            <Form.Item label="分组名称" required>
-              <Input
-                value={folderNameDraft}
-                placeholder="例如：生产环境 / 测试环境 / 客户项目"
-                onChange={(event) => setFolderNameDraft(event.target.value)}
-                onPressEnter={(event) => {
-                  event.preventDefault()
-                  saveFolder()
-                }}
-              />
-            </Form.Item>
-          </Form>
-        </Modal>
-        <Modal
-          title={
-            getConnection(createTableConnectionId)?.database_type === 'mongodb'
-              ? '新建集合'
-              : '新建表'
-          }
+        />
+        <CreateTableModal
           open={createTableModalOpen}
-          okText="创建"
-          cancelText="取消"
-          confirmLoading={createTableLoading}
-          onOk={() => void createTable()}
-          onCancel={() => setCreateTableModalOpen(false)}
-          width={980}
-          okButtonProps={{
-            disabled:
-              !newTableName.trim() ||
-              (getConnection(createTableConnectionId)?.database_type !== 'mongodb' &&
-                newTableColumns.filter((c) => c.name.trim()).length === 0)
-          }}
-          maskClosable={false}
-          {...FAST_MODAL_PROPS}
+          title={getConnection(createTableConnectionId)?.database_type === 'mongodb' ? '新建集合' : '新建表'}
+          loading={createTableLoading}
+          disabled={!newTableName.trim() || (getConnection(createTableConnectionId)?.database_type !== 'mongodb' && newTableColumns.filter((column) => column.name.trim()).length === 0)}
+          onCreate={() => void createTable()}
+          onClose={() => setCreateTableModalOpen(false)}
         >
           {renderTableDesigner(
             'create',
@@ -11508,7 +12903,7 @@ function App(): React.JSX.Element {
             newTableColumns,
             createTableLoading
           )}
-        </Modal>
+        </CreateTableModal>
         <ConnectionEditorModal
           form={form}
           open={connectionModalOpen}
@@ -11538,33 +12933,14 @@ function App(): React.JSX.Element {
           onFolderChange={setConnectionModalFolderId}
           onCreateFolder={createConnectionFolder}
         />
-        <Modal
-          title="备份"
+        <BackupModal
           open={backupRestoreModalOpen}
-          okText="选择路径并备份"
-          cancelText="取消"
-          confirmLoading={backupRestoreLoading}
-          onOk={() => void runBackup()}
-          onCancel={() => setBackupRestoreModalOpen(false)}
-          maskClosable={false}
-          {...FAST_MODAL_PROPS}
-        >
-          <Space direction="vertical" className="full-width">
-            <Typography.Text>
-              <Typography.Text strong>连接：</Typography.Text>
-              {getConnection(backupRestoreConnectionId)?.name}
-            </Typography.Text>
-            <Typography.Text>
-              <Typography.Text strong>数据库：</Typography.Text>
-              {backupRestorePgDatabase || backupRestoreDatabase || '默认'}
-            </Typography.Text>
-            <Alert
-              type="info"
-              message="备份会生成 SQL 脚本，包含建表语句和数据，可随时通过导入功能恢复。"
-              showIcon
-            />
-          </Space>
-        </Modal>
+          loading={backupRestoreLoading}
+          connectionName={getConnection(backupRestoreConnectionId)?.name}
+          databaseName={backupRestorePgDatabase || backupRestoreDatabase || undefined}
+          onRun={() => void runBackup()}
+          onClose={() => setBackupRestoreModalOpen(false)}
+        />
         <Modal
           title={exportOrigin === 'result' ? '导出查询结果' : '导出'}
           open={exportModalOpen}
@@ -11728,6 +13104,180 @@ function App(): React.JSX.Element {
               showIcon
             />
           </Space>
+        </Modal>
+        <Modal
+          title="处理同步冲突"
+          open={gitSyncConflicts.length > 0}
+          width={1180}
+          className="sync-conflict-modal"
+          style={{ maxWidth: 'calc(100vw - 48px)' }}
+          okText="确认并同步"
+          cancelText="稍后处理"
+          confirmLoading={gitSyncBusy}
+          okButtonProps={{
+            disabled: gitSyncConflicts.some((item) => !gitSyncConflictChoices[item.key])
+          }}
+          onOk={() => void resolveGitSyncConflicts()}
+          onCancel={() => {
+            setGitSyncConflicts([])
+            setGitSyncConflictChoices({})
+            setGitSyncPendingPayload(undefined)
+            setGitSyncPendingRemoteSha(undefined)
+            setGitSyncPendingPassphrase('')
+          }}
+          maskClosable={false}
+          {...FAST_MODAL_PROPS}
+        >
+          <div className="sync-conflict-list">
+            <Alert
+              type="warning"
+              showIcon
+              message={`发现 ${gitSyncConflictGroups.length} 项需要选择的配置冲突`}
+              description="未冲突的内容已自动合并。排序相关内容已合并为一个整体，不会直接展示连接内部 ID。"
+            />
+            {gitSyncConflictGroups.map((group) => {
+              const display =
+                group.key === 'connection-tree-order'
+                  ? { title: group.title, description: group.description }
+                  : describeGitSyncConflict(
+                      group.conflicts[0].path_segments,
+                      gitSyncConflictDisplayContext
+                    )
+              const groupChoice = group.conflicts
+                .map((conflict) => gitSyncConflictChoices[conflict.key])
+                .find((choice) => choice)
+              const treeOrderConflict = group.conflicts.find(
+                (conflict) =>
+                  conflict.path_segments[0] === 'preferences' &&
+                  conflict.path_segments[1] === 'tree_order'
+              )
+              const treeDiff = treeOrderConflict
+                ? buildGitSyncTreeDiff(
+                    treeOrderConflict.local_exists ? treeOrderConflict.local : undefined,
+                    treeOrderConflict.remote_exists ? treeOrderConflict.remote : undefined,
+                    gitSyncConflictDisplayContext
+                  )
+                : undefined
+              return (
+                <div className="settings-section-card sync-conflict-card" key={group.key}>
+                  <div className="sync-conflict-heading">
+                    <Typography.Text strong>{display.title}</Typography.Text>
+                    <Typography.Text type="secondary">{display.description}</Typography.Text>
+                  </div>
+                  <Segmented
+                    block
+                    value={groupChoice}
+                    options={[
+                      { label: '保留本机', value: 'local' },
+                      { label: '保留远程', value: 'remote' }
+                    ]}
+                    onChange={(value) =>
+                      setGitSyncConflictChoices((current) =>
+                        Object.fromEntries(
+                          Object.entries({
+                            ...current,
+                            ...Object.fromEntries(
+                              group.conflicts.map((conflict) => [
+                                conflict.key,
+                                value as 'local' | 'remote'
+                              ])
+                            )
+                          })
+                        ) as Record<string, 'local' | 'remote'>
+                      )
+                    }
+                  />
+                  {treeDiff ? (
+                    <div className="sync-tree-diff" aria-label="连接树差异对比">
+                      <div className="sync-tree-diff-panel">
+                        <Typography.Text strong>本机连接树</Typography.Text>
+                        <div className="sync-tree-diff-body">
+                          {treeDiff.local.length > 0 ? (
+                            treeDiff.local.map((node) => (
+                              <div
+                                className={`sync-tree-diff-row sync-tree-diff-${node.status}`}
+                                key={`local-${node.id}`}
+                                style={{ paddingInlineStart: `${12 + node.depth * 22}px` }}
+                              >
+                                <span className={`sync-tree-diff-node-icon ${node.kind}`} />
+                                <span className="sync-tree-diff-node-label">{node.label}</span>
+                                {node.status !== 'same' && (
+                                  <span className="sync-tree-diff-status">
+                                    {node.status === 'removed' ? '仅本机' : '位置不同'}
+                                  </span>
+                                )}
+                              </div>
+                            ))
+                          ) : (
+                            <Typography.Text type="secondary">本机没有连接树数据</Typography.Text>
+                          )}
+                        </div>
+                      </div>
+                      <div className="sync-tree-diff-panel">
+                        <Typography.Text strong>远程连接树</Typography.Text>
+                        <div className="sync-tree-diff-body">
+                          {treeDiff.remote.length > 0 ? (
+                            treeDiff.remote.map((node) => (
+                              <div
+                                className={`sync-tree-diff-row sync-tree-diff-${node.status}`}
+                                key={`remote-${node.id}`}
+                                style={{ paddingInlineStart: `${12 + node.depth * 22}px` }}
+                              >
+                                <span className={`sync-tree-diff-node-icon ${node.kind}`} />
+                                <span className="sync-tree-diff-node-label">{node.label}</span>
+                                {node.status !== 'same' && (
+                                  <span className="sync-tree-diff-status">
+                                    {node.status === 'added' ? '仅远程' : '位置不同'}
+                                  </span>
+                                )}
+                              </div>
+                            ))
+                          ) : (
+                            <Typography.Text type="secondary">远程没有连接树数据</Typography.Text>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="sync-conflict-values">
+                      <div className="sync-conflict-value-panel">
+                        <Typography.Text strong>本机配置</Typography.Text>
+                        <pre className="sync-conflict-value">
+                          {group.conflicts
+                            .map((conflict) =>
+                              conflict.local_exists
+                                ? formatGitSyncConflictValue(
+                                    conflict.local,
+                                    conflict.path_segments,
+                                    gitSyncConflictDisplayContext
+                                  )
+                                : '此项在本机已删除'
+                            )
+                            .join('\n\n')}
+                        </pre>
+                      </div>
+                      <div className="sync-conflict-value-panel">
+                        <Typography.Text strong>远程配置</Typography.Text>
+                        <pre className="sync-conflict-value">
+                          {group.conflicts
+                            .map((conflict) =>
+                              conflict.remote_exists
+                                ? formatGitSyncConflictValue(
+                                    conflict.remote,
+                                    conflict.path_segments,
+                                    gitSyncConflictDisplayContext
+                                  )
+                                : '此项在远程已删除'
+                            )
+                            .join('\n\n')}
+                        </pre>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
         </Modal>
       </Layout>
     </ConfigProvider>

@@ -10,7 +10,7 @@ import {
   Switch,
   Typography
 } from 'antd'
-import { CloseOutlined, PlusOutlined } from '@ant-design/icons'
+import { CloseOutlined, GithubOutlined, PlusOutlined } from '@ant-design/icons'
 import { memo, useEffect, useState } from 'react'
 import type { FormInstance } from 'antd'
 import type { DatabaseType } from './data-sources'
@@ -147,6 +147,7 @@ export const ConnectionEditorModal = memo(function ConnectionEditorModal({
       open={open}
       className="connection-editor-modal"
       width={splitLayout ? 980 : 640}
+      centered
       okText={mode === 'edit' ? '保存修改' : '保存连接'}
       cancelText="取消"
       confirmLoading={loading}
@@ -437,6 +438,20 @@ export const ConnectionEditorModal = memo(function ConnectionEditorModal({
                 )}
               </>
             )}
+            <div className="connection-editor-versioning-section">
+              <div className="connection-editor-versioning-copy">
+                <GithubOutlined aria-hidden />
+                <div>
+                  <Typography.Text strong>Git 版本管理</Typography.Text>
+                  <Typography.Text type="secondary">
+                    为此连接保留结构和表数据版本；表数据按需创建快照并共享同一 Git 历史。
+                  </Typography.Text>
+                </div>
+              </div>
+              <Form.Item name="git_versioning_enabled" valuePropName="checked" noStyle>
+                <Switch aria-label="启用 Git 版本管理" />
+              </Form.Item>
+            </div>
           </div>
           {splitLayout && (
             <div className="connection-editor-side">

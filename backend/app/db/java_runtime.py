@@ -68,6 +68,9 @@ def collect_jvm_candidates(preferred_java_home: str | Path | None = None) -> lis
     candidates: list[Path] = []
     candidates.extend(jvm_candidates_from_home(preferred_java_home))
 
+    module_java_home = os.environ.get("DATADJINN_JRE_MODULE_HOME")
+    candidates.extend(jvm_candidates_from_home(module_java_home))
+
     java_home = os.environ.get("JAVA_HOME")
     candidates.extend(jvm_candidates_from_home(java_home))
 

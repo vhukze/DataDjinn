@@ -1,4 +1,3 @@
-import json
 import os
 import sys
 import threading
@@ -7,34 +6,26 @@ import ctypes
 from pathlib import Path
 
 BACKEND_DIR = Path(__file__).resolve().parent
-VENDORED_JPYPE_PATH = BACKEND_DIR / "vendor" / "jpype15"
-VENDORED_JPYPE_MANIFEST = BACKEND_DIR / "vendor" / "jpype15.json"
 
 
-def _is_complete_vendored_jpype_path(vendor_path: Path) -> bool:
-    return (
-        (vendor_path / "jpype" / "__init__.py").exists()
-        and (vendor_path / "org.jpype.jar").exists()
-        and (any(vendor_path.glob("_jpype*.pyd")) or any(vendor_path.glob("_jpype*.so")))
-    )
+def _configure_optional_jdbc_runtime() -> None:
+    """Expose the separately installed JDBC bridge before importing the API app."""
+    configured_path = os.environ.get("DATADJINN_JDBC_RUNTIME_PATH", "").strip()
+    if not configured_path:
+        return
+
+    runtime_path = Path(configured_path).expanduser()
+    python_path = runtime_path / "python"
+    required_paths = [
+        python_path / "jpype" / "__init__.py",
+        python_path / "org.jpype.jar",
+        python_path / "jaydebeapi" / "__init__.py",
+    ]
+    if all(path.exists() for path in required_paths):
+        sys.path.insert(0, str(python_path))
 
 
-def _resolve_vendored_jpype_path() -> Path:
-    if VENDORED_JPYPE_MANIFEST.exists():
-        try:
-            manifest = json.loads(VENDORED_JPYPE_MANIFEST.read_text(encoding="utf-8"))
-            manifest_vendor_path = Path(manifest.get("vendor_dir", ""))
-            if _is_complete_vendored_jpype_path(manifest_vendor_path):
-                return manifest_vendor_path
-        except (OSError, json.JSONDecodeError, TypeError):
-            pass
-
-    return VENDORED_JPYPE_PATH
-
-
-vendored_jpype_path = _resolve_vendored_jpype_path()
-if _is_complete_vendored_jpype_path(vendored_jpype_path):
-    sys.path.insert(0, str(vendored_jpype_path))
+_configure_optional_jdbc_runtime()
 
 import uvicorn
 

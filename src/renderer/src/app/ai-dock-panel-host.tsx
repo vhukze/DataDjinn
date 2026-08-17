@@ -1,8 +1,9 @@
-import { memo, useCallback } from 'react'
-import AIPanel from '../components/AIPanel'
+import { lazy, memo, Suspense, useCallback } from 'react'
 import type { ConnectionInfo } from './connection-model'
 import type { AIContextSource, AIWorkspaceAction } from './workspace-model'
 import { useWorkspaceStore } from './workspace-store'
+
+const AIPanel = lazy(() => import('../components/AIPanel'))
 
 type FocusedResource = {
   kind: string
@@ -132,23 +133,25 @@ const AIDockPanelHost = memo(function AIDockPanelHost({
   )
 
   return (
-    <MemoAIPanel
-      requestJson={requestJson}
-      hasDatabaseContext={hasDatabaseContext}
-      getConnectionContext={getConnectionContext}
-      getWorkspaceSnapshot={getWorkspaceSnapshot}
-      contextSources={effectiveAIContextSources}
-      primaryContextSourceId={primaryAIContextSource?.id}
-      executionContextSourceId={executionAIContextSource?.id}
-      onRemoveContextSource={removeAIContextSource}
-      onWorkspaceAction={handleAiPanelWorkspaceAction}
-      onAgentDataChanged={handleAiPanelAgentDataChanged}
-      shortcuts={{
-        send: shortcutSend,
-        newline: shortcutNewline,
-        stop: shortcutStop
-      }}
-    />
+    <Suspense fallback={<div className="deferred-modal-loading">正在加载 AI 面板...</div>}>
+      <MemoAIPanel
+        requestJson={requestJson}
+        hasDatabaseContext={hasDatabaseContext}
+        getConnectionContext={getConnectionContext}
+        getWorkspaceSnapshot={getWorkspaceSnapshot}
+        contextSources={effectiveAIContextSources}
+        primaryContextSourceId={primaryAIContextSource?.id}
+        executionContextSourceId={executionAIContextSource?.id}
+        onRemoveContextSource={removeAIContextSource}
+        onWorkspaceAction={handleAiPanelWorkspaceAction}
+        onAgentDataChanged={handleAiPanelAgentDataChanged}
+        shortcuts={{
+          send: shortcutSend,
+          newline: shortcutNewline,
+          stop: shortcutStop
+        }}
+      />
+    </Suspense>
   )
 })
 

@@ -33,10 +33,73 @@ export type AppInfo = {
   projectUrl: string
 }
 
-export type SettingsSection = 'app' | 'sql' | 'shortcuts' | 'drivers'
+export type SettingsSection =
+  | 'app'
+  | 'sql'
+  | 'ai'
+  | 'sync'
+  | 'shortcuts'
+  | 'drivers'
+  | 'mcp'
+  | 'extensions'
+
+export type GitHubAuthStatus = {
+  authorized: boolean
+  login?: string | null
+  name?: string | null
+  avatar_url?: string | null
+  repository_full_name?: string | null
+  repository_url?: string | null
+}
+
+export type GitHubDeviceAuthorization = {
+  session_id: string
+  verification_uri: string
+  verification_uri_complete?: string | null
+  user_code: string
+  expires_at: number
+  interval_seconds: number
+}
+
+export type GitHubDeviceAuthorizationPoll = {
+  status: 'pending' | 'authorized' | 'expired' | 'error'
+  interval_seconds?: number | null
+  message?: string | null
+  auth?: GitHubAuthStatus | null
+}
 
 export type QuerySettings = {
   timeoutMinutes: number
+}
+
+export type McpSettings = {
+  enabled: boolean
+  allowWrite: boolean
+  restrictConnections: boolean
+  allowedConnectionIds: string[]
+}
+
+export const DEFAULT_MCP_SETTINGS: McpSettings = {
+  enabled: false,
+  allowWrite: false,
+  restrictConnections: false,
+  allowedConnectionIds: []
+}
+
+export type OptionalModuleId = 'mcp' | 'ai' | 'jdbc' | 'data-versioning'
+
+export type OptionalModuleInfo = {
+  id: OptionalModuleId
+  name: string
+  description: string
+  version: string
+  installed: boolean
+  installedAt?: number
+}
+
+export type OptionalModuleLaunchConfig = {
+  command: string
+  args: string[]
 }
 
 export type ShortcutAction =

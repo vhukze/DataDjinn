@@ -17,7 +17,7 @@ from sqlalchemy import Engine
 from app.db.backup_manager import backup_manager
 from app.db.mongo_utils import MongoClient, is_mongo_client
 from app.db.redis_utils import is_redis_client
-from app.db.metadata import list_columns, list_tables
+from app.db.metadata import list_columns, list_databases, list_schemas, list_tables
 from app.db.readonly_query import execute_query, execute_readonly_query, preview_table
 from app.schemas.query import QueryResponse
 from app.ai.product_knowledge import get_product_knowledge
@@ -290,6 +290,8 @@ DATABASE_TOOLS = [
                 "properties": {
                     "sql": {"type": "string", "description": "要校验的 SQL"},
                     "readonly": {"type": "boolean", "description": "是否按只读模式校验", "default": True},
+                    "database": {"type": "string", "description": "Target database or schema on the current connection; defaults to the current context"},
+                    "pg_database": {"type": "string", "description": "PostgreSQL or GaussDB physical database on the current connection"},
                 },
                 "required": ["sql"],
                 "additionalProperties": False,
@@ -299,9 +301,38 @@ DATABASE_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "list_databases",
+            "description": "List databases available on the current connection. The current database is the default target, but other returned databases may be inspected by explicitly passing database or pg_database to later tools.",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_schemas",
+            "description": "List schemas in a PostgreSQL or GaussDB database on the current connection. Pass pg_database only when inspecting another physical database on this same connection.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pg_database": {"type": "string", "description": "PostgreSQL or GaussDB physical database name; defaults to the current one"},
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_tables",
             "description": "列出当前数据库中的所有表名。",
-            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "database": {"type": "string", "description": "Target database or schema on the current connection; defaults to the current context"},
+                    "pg_database": {"type": "string", "description": "PostgreSQL or GaussDB physical database on the current connection"},
+                },
+                "additionalProperties": False,
+            },
         },
     },
     {
@@ -311,7 +342,11 @@ DATABASE_TOOLS = [
             "description": "返回指定表的字段结构。",
             "parameters": {
                 "type": "object",
-                "properties": {"table_name": {"type": "string", "description": "表名"}},
+                "properties": {
+                    "table_name": {"type": "string", "description": "表名"},
+                    "database": {"type": "string", "description": "Target database or schema on the current connection; defaults to the current context"},
+                    "pg_database": {"type": "string", "description": "PostgreSQL or GaussDB physical database on the current connection"},
+                },
                 "required": ["table_name"],
                 "additionalProperties": False,
             },
@@ -339,6 +374,8 @@ DATABASE_TOOLS = [
                         "default": False,
                         "description": "只有用户明确要求获取全部、所有、全量数据时才设置为 true。",
                     },
+                    "database": {"type": "string", "description": "Target database or schema on the current connection; defaults to the current context"},
+                    "pg_database": {"type": "string", "description": "PostgreSQL or GaussDB physical database on the current connection"},
                 },
                 "required": ["sql"],
                 "additionalProperties": False,
@@ -355,6 +392,8 @@ DATABASE_TOOLS = [
                 "properties": {
                     "table_name": {"type": "string", "description": "表名"},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 10},
+                    "database": {"type": "string", "description": "Target database or schema on the current connection; defaults to the current context"},
+                    "pg_database": {"type": "string", "description": "PostgreSQL or GaussDB physical database on the current connection"},
                 },
                 "required": ["table_name"],
                 "additionalProperties": False,
@@ -522,6 +561,19 @@ def _finalize_openai_tool_calls(states: dict[int, dict[str, Any]]) -> list[dict[
         }
         for index, state in sorted(states.items(), key=lambda item: item[0])
     ]
+
+
+def _parse_tool_arguments(value: Any) -> tuple[dict[str, Any], str | None]:
+    raw_arguments = str(value or "{}")
+    try:
+        arguments = json.loads(raw_arguments)
+    except json.JSONDecodeError:
+        return {}, "工具参数不是合法 JSON，未执行该操作。请使用合法 JSON 参数重新调用工具。"
+
+    if not isinstance(arguments, dict):
+        return {}, "工具参数必须是 JSON 对象，未执行该操作。请使用对象参数重新调用工具。"
+
+    return arguments, None
 
 
 def _truncate_value(value: Any) -> Any:
@@ -807,7 +859,17 @@ class DatabaseAgent:
                 return response.model_dump()
 
             for tool_call in message.tool_calls or []:
-                result = self.call_tool(tool_call.function.name, json.loads(tool_call.function.arguments or "{}"))
+                arguments, argument_error = _parse_tool_arguments(tool_call.function.arguments)
+                if argument_error:
+                    for call in assistant_message.get("tool_calls") or []:
+                        if str(call.get("id") or "") == str(tool_call.id):
+                            (call.get("function") or {})["arguments"] = "{}"
+                            break
+                result = (
+                    {"error": argument_error}
+                    if argument_error
+                    else self.call_tool(tool_call.function.name, arguments)
+                )
                 conversation.append(
                     {
                         "role": "tool",
@@ -836,11 +898,12 @@ class DatabaseAgent:
                     function_payload = tool_call.get("function") or {}
                     name = str(function_payload.get("name") or "")
                     arguments_json = str(function_payload.get("arguments") or "{}")
-                    try:
-                        args = json.loads(arguments_json)
-                    except json.JSONDecodeError as exc:
-                        args = {}
-                        result = {"error": f"工具参数 JSON 解析失败：{exc.msg}", "arguments": arguments_json}
+                    args, argument_error = _parse_tool_arguments(arguments_json)
+                    if argument_error:
+                        # Some OpenAI-compatible providers validate historical tool calls before
+                        # generating the next turn. Never feed their malformed arguments back.
+                        function_payload["arguments"] = "{}"
+                        result = {"error": argument_error}
                         yield {"type": "tool_start", "tool_call_id": tool_call_id, "name": name, "arguments": args}
                         yield {"type": "tool_result", "tool_call_id": tool_call_id, "name": name, "result": result}
                         conversation.append(
@@ -1099,11 +1162,14 @@ class DatabaseAgent:
                 return {"type": "plan", "plan": plan.model_dump()}
 
             if name == "validate_sql":
+                target_database, target_pg_database = self._resolve_target_context(arguments) if self.engine is not None else (self.database, self.pg_database)
                 sql = str(arguments["sql"])
                 readonly = bool(arguments.get("readonly", True))
                 validation = self._validate_sql(sql, readonly)
                 if validation.get("requires_confirmation") and validation.get("statement_type") in WRITE_SQL_TYPES and validation.get("sql"):
-                    return self._confirmation_required_result(str(validation["sql"]), validation)
+                    return self._confirmation_required_result(str(validation["sql"]), validation, target_database, target_pg_database)
+                validation["database"] = target_database
+                validation["pg_database"] = target_pg_database
                 return validation
 
             if name == "append_query_sql":
@@ -1113,11 +1179,33 @@ class DatabaseAgent:
             if self.engine is None:
                 return {"error": "当前未选择数据库上下文，不能执行数据库工具。可以回答通用问题、总结连接信息，或把生成的 SQL 写入查询窗口。"}
 
+            if name == "list_databases":
+                databases = [database.model_dump() for database in list_databases(self.engine)]
+                return {
+                    "databases": databases,
+                    "database_count": len(databases),
+                    "current_database": self.database,
+                    "current_pg_database": self.pg_database,
+                    "message": "当前库是默认目标；同一连接内的其他库或模式可在后续工具调用中显式指定。",
+                }
+
+            if name == "list_schemas":
+                _, target_pg_database = self._resolve_target_context(arguments)
+                schemas = [schema.model_dump() for schema in list_schemas(self.engine, target_pg_database)]
+                return {
+                    "schemas": schemas,
+                    "schema_count": len(schemas),
+                    "pg_database": target_pg_database,
+                }
+
             if name == "list_tables":
-                tables = [table.model_dump() for table in list_tables(self.engine, self.database, self.pg_database)]
+                target_database, target_pg_database = self._resolve_target_context(arguments)
+                tables = [table.model_dump() for table in list_tables(self.engine, target_database, target_pg_database)]
                 visible_tables = tables[:MAX_TABLES_IN_TOOL_RESULT]
                 large_tables = [table for table in visible_tables if (table.get("size_bytes") or table.get("storage_size_bytes") or 0) >= 1024 * 1024 * 1024]
                 return {
+                    "database": target_database,
+                    "pg_database": target_pg_database,
                     "tables": visible_tables,
                     "table_count": len(tables),
                     "returned_table_count": len(visible_tables),
@@ -1127,15 +1215,18 @@ class DatabaseAgent:
                 }
 
             if name == "describe_table":
+                target_database, target_pg_database = self._resolve_target_context(arguments)
                 table_name = str(arguments["table_name"])
-                table_info = next((table for table in list_tables(self.engine, self.database, self.pg_database) if table.name == table_name), None)
-                columns = [column.model_dump() for column in list_columns(self.engine, table_name, self.database, self.pg_database)]
+                table_info = next((table for table in list_tables(self.engine, target_database, target_pg_database) if table.name == table_name), None)
+                columns = [column.model_dump() for column in list_columns(self.engine, table_name, target_database, target_pg_database)]
                 visible_columns = columns[:MAX_COLUMNS_IN_TOOL_RESULT]
                 table_size_bytes = table_info.size_bytes if table_info else None
                 storage_size_bytes = table_info.storage_size_bytes if table_info else None
                 size_for_risk = table_size_bytes or storage_size_bytes or 0
                 return {
                     "table_name": table_name,
+                    "database": target_database,
+                    "pg_database": target_pg_database,
                     "table_size_bytes": table_size_bytes,
                     "table_size_display": table_info.size_display if table_info else None,
                     "storage_size_bytes": storage_size_bytes,
@@ -1150,6 +1241,7 @@ class DatabaseAgent:
                 }
 
             if name == "execute_query":
+                target_database, target_pg_database = self._resolve_target_context(arguments)
                 sql = str(arguments["sql"])
                 readonly = bool(arguments.get("readonly", True))
                 fetch_all = bool(arguments.get("fetch_all", False))
@@ -1159,19 +1251,22 @@ class DatabaseAgent:
                 if validation["risk_level"] == "dangerous" and validation["statement_type"] not in WRITE_SQL_TYPES:
                     return validation
                 if validation["risk_level"] == "dangerous":
-                    return self._confirmation_required_result(sql, validation)
-                result = self._execute_query(sql, readonly, effective_limit)
+                    return self._confirmation_required_result(sql, validation, target_database, target_pg_database)
+                result = self._execute_query(sql, readonly, effective_limit, target_database, target_pg_database)
                 summarized = _summarize_query_response(result, effective_limit)
                 summarized["executed"] = True
                 summarized["fetch_all_requested"] = fetch_all
                 summarized["query_limit_applied"] = effective_limit
+                summarized["database"] = target_database
+                summarized["pg_database"] = target_pg_database
                 return summarized
 
             if name == "get_sample_data":
+                target_database, target_pg_database = self._resolve_target_context(arguments)
                 table_name = str(arguments["table_name"])
                 limit = max(1, min(int(arguments.get("limit", 10)), MAX_SAMPLE_ROWS_FOR_AGENT))
-                result = preview_table(self.engine, table_name, limit, 0, self.database, self.pg_database)
-                return {"table_name": table_name, **_summarize_query_response(result, limit)}
+                result = preview_table(self.engine, table_name, limit, 0, target_database, target_pg_database)
+                return {"table_name": table_name, "database": target_database, "pg_database": target_pg_database, **_summarize_query_response(result, limit)}
 
             if name == "create_database_backup":
                 database = str(arguments["database"]) if arguments.get("database") else self.pg_database or self.database
@@ -1189,13 +1284,35 @@ class DatabaseAgent:
         except Exception as exc:
             return {"error": str(exc)}
 
-    def _confirmation_required_result(self, sql: str, validation: dict[str, Any]) -> dict[str, Any]:
+    def _resolve_target_context(self, arguments: dict[str, Any]) -> tuple[str | None, str | None]:
+        target_database = str(arguments["database"]) if arguments.get("database") else self.database
+        target_pg_database = str(arguments["pg_database"]) if arguments.get("pg_database") else self.pg_database
+        dialect_name = str(getattr(getattr(self.engine, "dialect", None), "name", "")).lower()
+
+        if dialect_name == "sqlite":
+            sqlite_database = self.database or "main"
+            if target_database and target_database != sqlite_database:
+                raise ValueError("SQLite 连接只支持当前数据库上下文，不能指定其他数据库")
+            target_database = sqlite_database
+            target_pg_database = None
+        elif dialect_name not in {"postgresql", "gaussdb"}:
+            target_pg_database = None
+
+        return target_database, target_pg_database
+
+    def _confirmation_required_result(
+        self,
+        sql: str,
+        validation: dict[str, Any],
+        database: str | None = None,
+        pg_database: str | None = None,
+    ) -> dict[str, Any]:
         confirmation_id = f"confirm_{uuid4().hex}"
         PENDING_CONFIRMATIONS[confirmation_id] = PendingConfirmation(
             id=confirmation_id,
             connection_id=self.connection_id,
-            database=self.database,
-            pg_database=self.pg_database,
+            database=database if database is not None else self.database,
+            pg_database=pg_database if pg_database is not None else self.pg_database,
             sql=sql,
             sql_hash=sql_hash(sql),
             statement_type=validation["statement_type"],
@@ -1346,14 +1463,23 @@ class DatabaseAgent:
             "has_limit": has_limit,
         }
 
-    def _execute_query(self, sql: str, readonly: bool, limit: int | None = DEFAULT_QUERY_ROWS_FOR_AGENT) -> QueryResponse:
+    def _execute_query(
+        self,
+        sql: str,
+        readonly: bool,
+        limit: int | None = DEFAULT_QUERY_ROWS_FOR_AGENT,
+        database: str | None = None,
+        pg_database: str | None = None,
+    ) -> QueryResponse:
+        target_database = database if database is not None else self.database
+        target_pg_database = pg_database if pg_database is not None else self.pg_database
         if readonly:
-            return execute_readonly_query(self.engine, sql, limit, 0, self.database, self.pg_database)
+            return execute_readonly_query(self.engine, sql, limit, 0, target_database, target_pg_database)
 
         if is_mongo_client(self.engine) or is_redis_client(self.engine):
-            return execute_readonly_query(self.engine, sql, limit, 0, self.database, self.pg_database)
+            return execute_readonly_query(self.engine, sql, limit, 0, target_database, target_pg_database)
 
-        return execute_query(self.engine, sql, limit, 0, self.database, self.pg_database)
+        return execute_query(self.engine, sql, limit, 0, target_database, target_pg_database)
 
 
 def build_system_prompt(db_type: str, db_name: str, workspace: AgentWorkspaceContext | None = None) -> str:
@@ -1414,8 +1540,8 @@ def build_system_prompt(db_type: str, db_name: str, workspace: AgentWorkspaceCon
         "12. 多个建表、DDL 或写操作必须拆成多条单 SQL，逐条触发 confirmation_required、逐条等待用户点击确认按钮，不允许一次声明全部完成。\n"
         "13. 如果工具结果没有 executed=true，必须明确说明尚未执行，不能说创建、修改、删除、备份或恢复成功。\n"
         "14. 用户要求备份数据库时调用 create_database_backup；用户要求恢复备份时先调用 list_database_backups 找到备份记录，再调用 restore_database_backup 触发确认，确认返回 executed=true 后才能说恢复完成。\n"
-        "15. AI 上下文数据源列表的第一个是当前执行上下文，后续是用户添加的其他库或模式；跨数据源任务应先说明分析范围。\n"
-        "16. PostgreSQL 和高斯数据库的 SQL 必须在当前 pg_database 内执行；当前 schema 已作为 search_path 设置，生成 SQL 时优先使用 schema.table，或只使用当前 schema 下的表名，不要生成 database.table 形式。\n"
+        "15. 当前连接是数据库工具的访问边界；当前库或模式只是默认和优先目标。如需同一连接内的其他库或模式，先调用 list_databases（PostgreSQL/高斯再调用 list_schemas），然后在后续工具调用中显式指定 database 或 pg_database；不能猜测目标，也不能跨连接。\n"
+        "16. PostgreSQL 和高斯数据库可在同一连接内切换 pg_database；每次切换后先确认 schema，再生成 SQL。SQL 必须在指定 pg_database 内执行，生成 SQL 时优先使用 schema.table，或只使用当前 schema 下的表名，不要生成 database.table 形式。\n"
         "17. 生成 SQL 必须优先匹配当前执行上下文里的 dbType 和 serverVersion；不确定版本是否支持某个语法时，使用该数据库更保守、更通用的写法。\n"
         "18. 用户说“当前连接/当前库/当前模式/当前表”时，优先使用工作区里的当前焦点资源；如果没有焦点资源，再使用 AI 上下文数据源列表的第一个。\n"
         "19. 用户只要说生成 SQL、给出 SQL、帮我写 SQL、生成插入语句、生成建表语句，默认都应调用 append_query_sql 把 SQL 写入查询窗口，不执行；只有用户明确说执行、创建、插入、初始化、运行、落库时，才调用 execute_query。用户后续补充“不要执行，只生成”时，也必须改为 append_query_sql。\n"

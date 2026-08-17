@@ -17,6 +17,7 @@ export type ConnectionInfo = {
   has_password: boolean
   is_open: boolean
   server_version?: string | null
+  git_versioning_enabled: boolean
 }
 
 export type ConnectionTestResponse = {

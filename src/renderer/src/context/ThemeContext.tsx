@@ -4,11 +4,13 @@ type Theme = 'dark' | 'light'
 
 interface ThemeContextValue {
   theme: Theme
+  setTheme: (theme: Theme) => void
   toggleTheme: () => void
 }
 
 const ThemeContext = createContext<ThemeContextValue>({
   theme: 'dark',
+  setTheme: () => undefined,
   toggleTheme: () => undefined
 })
 
@@ -28,28 +30,27 @@ function readStoredTheme(): Theme {
 }
 
 export function ThemeProvider({ children }: { children: React.ReactNode }): React.JSX.Element {
-  const [theme, setTheme] = useState<Theme>(readStoredTheme)
+  const [theme, setThemeState] = useState<Theme>(readStoredTheme)
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     document.body.dataset.theme = theme
   }, [theme])
 
-  const toggleTheme = useCallback(() => {
-    setTheme((current) => {
-      const next: Theme = current === 'dark' ? 'light' : 'dark'
-
-      try {
-        localStorage.setItem(STORAGE_KEY, next)
-      } catch {
-        // localStorage unavailable
-      }
-
-      return next
-    })
+  const setTheme = useCallback((next: Theme) => {
+    try {
+      localStorage.setItem(STORAGE_KEY, next)
+    } catch {
+      // localStorage unavailable
+    }
+    setThemeState(next)
   }, [])
 
-  return <ThemeContext.Provider value={{ theme, toggleTheme }}>{children}</ThemeContext.Provider>
+  const toggleTheme = useCallback(() => {
+    setTheme(theme === 'dark' ? 'light' : 'dark')
+  }, [setTheme, theme])
+
+  return <ThemeContext.Provider value={{ theme, setTheme, toggleTheme }}>{children}</ThemeContext.Provider>
 }
 
 export function useTheme(): ThemeContextValue {

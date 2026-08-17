@@ -140,7 +140,7 @@ def confirm_agent_action(request: AgentConfirmRequest) -> dict[str, Any]:
 
         if not pending.sql or not pending.sql_hash:
             raise ValueError("确认内容缺少 SQL")
-        agent = DatabaseAgent(engine, AIConfig(base_url="http://localhost", api_key="confirm", model="confirm"), request.connection_id, request.database or pending.database, request.pg_database or pending.pg_database)
+        agent = DatabaseAgent(engine, AIConfig(base_url="http://localhost", api_key="confirm", model="confirm"), request.connection_id, pending.database, pending.pg_database)
         validation = agent._validate_sql(pending.sql, readonly=False)
         if validation["risk_level"] != pending.risk_level or sql_hash(pending.sql) != pending.sql_hash:
             raise ValueError("确认内容与待执行 SQL 不一致")

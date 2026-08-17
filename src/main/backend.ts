@@ -54,6 +54,11 @@ export class BackendManager {
   private startPromise: Promise<BackendStatus> | null = null
   private launchId = 0
   private readonly apiToken = randomBytes(32).toString('base64url')
+  private runtimeEnvironment: Record<string, string | undefined> = {}
+
+  setRuntimeEnvironment(values: Record<string, string | undefined>): void {
+    this.runtimeEnvironment = { ...values }
+  }
 
   getRequestHeaders(): Record<string, string> {
     return { 'X-DataDjinn-Api-Token': this.apiToken }
@@ -285,7 +290,8 @@ export class BackendManager {
         DATADJINN_DATA_DIR: app.getPath('userData'),
         DATADJINN_PARENT_PID: String(process.pid),
         DATADJINN_API_TOKEN: this.apiToken,
-        PYTHONIOENCODING: 'utf-8'
+        PYTHONIOENCODING: 'utf-8',
+        ...this.runtimeEnvironment
       }
     })
     this.process = child

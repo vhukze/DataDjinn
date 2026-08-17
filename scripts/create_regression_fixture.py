@@ -43,6 +43,16 @@ def build_fixture_db(db_path: Path) -> None:
               description TEXT NOT NULL
             );
 
+            CREATE TABLE three_column_items (
+              id INTEGER PRIMARY KEY,
+              datasource_id INTEGER NOT NULL,
+              time TEXT NOT NULL
+            );
+
+            CREATE TABLE single_column_items (
+              f1 TEXT NOT NULL
+            );
+
             CREATE VIEW active_large_items AS
             SELECT id, category, title, created_at
             FROM large_items
@@ -69,6 +79,20 @@ def build_fixture_db(db_path: Path) -> None:
             medium_rows,
         )
 
+        three_column_rows = [
+            (index, index % 17, f"2026-08-13 10:{index % 60:02d}:{index % 60:02d}")
+            for index in range(1, 10001)
+        ]
+        cursor.executemany(
+            "INSERT INTO three_column_items(id, datasource_id, time) VALUES (?, ?, ?)",
+            three_column_rows,
+        )
+        single_column_rows = [
+            (f"AYZ505={index} 3303291972121523 deliberately long value {index}",)
+            for index in range(1, 10001)
+        ]
+        cursor.executemany("INSERT INTO single_column_items(f1) VALUES (?)", single_column_rows)
+
         extra_table_statements = []
         for index in range(1, 41):
             extra_table_statements.append(
@@ -90,7 +114,7 @@ def build_fixture_db(db_path: Path) -> None:
                 f"{payload}_{index}",
                 f"2026-01-{(index % 28) + 1:02d} 10:{index % 60:02d}:00",
             )
-            for index in range(1, 801)
+            for index in range(1, 10001)
         ]
         cursor.executemany(
             "INSERT INTO large_items(id, category, title, payload, created_at) VALUES (?, ?, ?, ?, ?)",

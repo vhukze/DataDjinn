@@ -14,7 +14,14 @@ import {
   useRef,
   useState
 } from 'react'
-import type { ComponentProps, Key, MutableRefObject, ReactNode, TdHTMLAttributes } from 'react'
+import type {
+  ComponentProps,
+  CSSProperties,
+  Key,
+  MutableRefObject,
+  ReactNode,
+  TdHTMLAttributes
+} from 'react'
 import type { ConnectionInfo } from './connection-model'
 import {
   countRedisPendingChanges,
@@ -24,7 +31,6 @@ import {
   normalizeShortcutText,
   PREVIEW_DEFAULT_LIMIT,
   QUERY_DEFAULT_LIMIT,
-  RESULT_TABLE_VIRTUAL_THRESHOLD,
   redisTtlDisplay,
   cellDisplayText,
   isCellValueEqual
@@ -40,6 +46,7 @@ import type { DbObjectType } from './tree-model'
 import { buildResultTableDerivedState } from './result-table-state'
 import {
   QueryExecutionStatusCard,
+  MultiStatementExecutionCard,
   ResultEditableCell,
   RedisBrowserPanel,
   ResultPager,
@@ -108,6 +115,8 @@ export type ResultTablePanelRefs = {
   tableHeaderRefs: MutableRefObject<Record<string, HTMLDivElement | null>>
   pendingPreviewRowScrollRefs: MutableRefObject<Record<string, string | undefined>>
   tableScrollTopRefs: MutableRefObject<Record<string, number | undefined>>
+  tableScrollLeftRefs: MutableRefObject<Record<string, number | undefined>>
+  tableScrollRestoreLocks: MutableRefObject<Record<string, number | undefined>>
   selectedColumnRefs: MutableRefObject<Record<string, string | undefined>>
   selectedCellRefs: MutableRefObject<Record<string, string[] | undefined>>
   selectedRowRefs: MutableRefObject<Record<string, string[] | undefined>>
@@ -200,7 +209,7 @@ type ResultTablePanelProps = {
   syncRenderedCellSelection: (tabKey: string) => void
   clearInlineCellEditor: (tabKey: string) => void
   discardInlineCellEditor: (tabKey: string) => void
-  commitInlineCellEditor: (tabKey: string) => void
+  commitInlineCellEditor: (tabKey: string, options?: { restoreFocus?: boolean }) => void
   openInlineCellEditor: (
     tabKey: string,
     rowKey: string,
@@ -233,8 +242,8 @@ type ResultTablePanelProps = {
   tableSearchShortcut: string
 }
 
-const shouldUseVirtualTable = (tab: WorkspaceTab, rowCount: number): boolean =>
-  (tab.kind === 'query' || tab.kind === 'preview') && rowCount >= RESULT_TABLE_VIRTUAL_THRESHOLD
+const shouldUseVirtualTable = (tab: WorkspaceTab): boolean =>
+  tab.kind === 'query' || tab.kind === 'preview'
 
 const ResultTablePanel = memo(
   function ResultTablePanel({
@@ -284,6 +293,7 @@ const ResultTablePanel = memo(
     tableSearchShortcut
   }: ResultTablePanelProps): ReactNode {
     const active = useWorkspaceStore((state) => state.activeTabKey === tab.key)
+    const hasMultiStatementResults = tab.multiStatementResults !== undefined
     const tableBodyHostRef = useRef<HTMLDivElement | null>(null)
     const [tableScrollY, setTableScrollY] = useState(320)
     const [tableViewportWidth, setTableViewportWidth] = useState(0)
@@ -385,6 +395,77 @@ const ResultTablePanel = memo(
     }, [refs, tab.key, tab.tableRenderVersion])
 
     useEffect(() => {
+      const savedScrollLeft = refs.tableScrollLeftRefs.current[tab.key]
+      if (savedScrollLeft === undefined) {
+        return
+      }
+      const restoreLockVersion = (refs.tableScrollRestoreLocks.current[tab.key] ?? 0) + 1
+      refs.tableScrollRestoreLocks.current[tab.key] = restoreLockVersion
+
+      const restoreScrollLeft = (): void => {
+        if (refs.tableScrollRestoreLocks.current[tab.key] !== restoreLockVersion) {
+          return
+        }
+        const container = tableBodyHostRef.current
+        const virtualHolder = container?.querySelector<HTMLElement>('.ant-table-tbody-virtual-holder')
+        const header = container?.querySelector<HTMLElement>('.ant-table-header')
+        if (virtualHolder && header) {
+          const horizontalDelta = savedScrollLeft - header.scrollLeft
+          if (Math.abs(horizontalDelta) > 1) {
+            virtualHolder.dispatchEvent(
+              new WheelEvent('wheel', {
+                bubbles: true,
+                cancelable: true,
+                deltaX: horizontalDelta
+              })
+            )
+          }
+          return
+        }
+        const scrollElements = Array.from(
+          container?.querySelectorAll<HTMLElement>(
+            '.ant-table-tbody-virtual-holder, .ant-table-body, .ant-table-tbody-virtual-scrollbar-horizontal'
+          ) ?? []
+        )
+        scrollElements.forEach((element) => {
+          if (element.scrollWidth <= element.clientWidth || Math.abs(element.scrollLeft - savedScrollLeft) <= 1) {
+            return
+          }
+          element.scrollLeft = savedScrollLeft
+          element.dispatchEvent(new Event('scroll', { bubbles: true }))
+        })
+      }
+
+      const frameIds: number[] = []
+      frameIds.push(window.requestAnimationFrame(restoreScrollLeft))
+      frameIds.push(
+        window.requestAnimationFrame(() => {
+          restoreScrollLeft()
+          frameIds.push(window.requestAnimationFrame(restoreScrollLeft))
+        })
+      )
+      // Ant virtual table can mount its horizontal scrollbar after the result rows render.
+      // Keep the captured position authoritative until that asynchronous mount has settled.
+      const timeoutIds = [80, 180, 360, 640, 900].map((delay) =>
+        window.setTimeout(restoreScrollLeft, delay)
+      )
+      const releaseLockTimeoutId = window.setTimeout(() => {
+        if (refs.tableScrollRestoreLocks.current[tab.key] === restoreLockVersion) {
+          delete refs.tableScrollRestoreLocks.current[tab.key]
+        }
+      }, 1100)
+
+      return () => {
+        frameIds.forEach((frameId) => window.cancelAnimationFrame(frameId))
+        timeoutIds.forEach((timeoutId) => window.clearTimeout(timeoutId))
+        window.clearTimeout(releaseLockTimeoutId)
+        if (refs.tableScrollRestoreLocks.current[tab.key] === restoreLockVersion) {
+          delete refs.tableScrollRestoreLocks.current[tab.key]
+        }
+      }
+    }, [refs, tab.key, tab.tableRenderVersion])
+
+    useEffect(() => {
       const container = tableBodyHostRef.current
       if (!container) {
         return
@@ -432,16 +513,27 @@ const ResultTablePanel = memo(
         if (nextHeight > 0) {
           setTableScrollY((current) => (current === nextHeight ? current : nextHeight))
         }
-        const nextWidth = element.clientWidth
+        const nextWidth = Math.round(element.getBoundingClientRect().width)
         if (nextWidth > 0) {
           setTableViewportWidth((current) => (current === nextWidth ? current : nextWidth))
         }
       }
 
+      let measureFrame: number | undefined
+      const scheduleMeasure = (): void => {
+        if (measureFrame !== undefined) {
+          return
+        }
+        measureFrame = window.requestAnimationFrame(() => {
+          measureFrame = undefined
+          measure()
+        })
+      }
+
       measure()
 
       const observer = new ResizeObserver(() => {
-        measure()
+        scheduleMeasure()
       })
       observer.observe(element)
       const shell = element.closest<HTMLElement>('.result-table-content')
@@ -451,6 +543,9 @@ const ResultTablePanel = memo(
 
       return () => {
         observer.disconnect()
+        if (measureFrame !== undefined) {
+          window.cancelAnimationFrame(measureFrame)
+        }
       }
     }, [
       active,
@@ -630,6 +725,26 @@ const ResultTablePanel = memo(
       }
     ): ReactNode => {
       const effectiveSearchState = { ...searchState, visible: searchVisibleLocal }
+      const captureTableScrollPosition = (): void => {
+        const container = refs.tableBodyRefs.current[currentTab.key]
+        const scrollElements = Array.from(
+          container?.querySelectorAll<HTMLElement>(
+            '.ant-table-tbody-virtual-holder, .ant-table-body, .ant-table-tbody-virtual-scrollbar-horizontal'
+          ) ?? []
+        )
+        const scrollElement = scrollElements.find(
+          (element) => element.scrollWidth > element.clientWidth + 1
+        )
+        if (!scrollElement) {
+          return
+        }
+        refs.tableScrollTopRefs.current[currentTab.key] = scrollElement.scrollTop
+        const headerScrollLeft =
+          container?.querySelector<HTMLElement>('.ant-table-header')?.scrollLeft ?? 0
+        refs.tableScrollLeftRefs.current[currentTab.key] = headerScrollLeft || scrollElement.scrollLeft
+        refs.tableScrollRestoreLocks.current[currentTab.key] =
+          (refs.tableScrollRestoreLocks.current[currentTab.key] ?? 0) + 1
+      }
 
       return (
         <ResultTableToolbar
@@ -684,7 +799,8 @@ const ResultTablePanel = memo(
             )
           }
           onExportData={openResultExportModal}
-          onPreviewTableRefresh={(nextTab) =>
+          onPreviewTableRefresh={(nextTab) => {
+            captureTableScrollPosition()
             void previewTable(
               nextTab.connectionId!,
               nextTab.tableName!,
@@ -694,8 +810,9 @@ const ResultTablePanel = memo(
               nextTab.page,
               nextTab.where
             )
-          }
-          onPreviewRedisRefresh={(nextTab) =>
+          }}
+          onPreviewRedisRefresh={(nextTab) => {
+            captureTableScrollPosition()
             void previewRedisDatabase(
               nextTab.connectionId!,
               nextTab.databaseName!,
@@ -704,13 +821,16 @@ const ResultTablePanel = memo(
               nextTab.key,
               nextTab.where
             )
-          }
+          }}
           onAddPreviewRow={addPreviewRow}
           onMarkSelectedRowsDeleted={(nextTab) =>
             markSelectedRowsDeleted(
               nextTab,
-              refs.selectedRowRefs.current[nextTab.key] ??
-                (nextTab.selectedRowKeys ?? []).map(String)
+              (refs.rowSelectionDraftRefs.current[nextTab.key] ??
+                nextTab.selectedRowKeys ??
+                refs.selectedRowRefs.current[nextTab.key] ??
+                [])
+                .map(String)
             )
           }
           onSubmitPreviewChanges={(nextTab) => void submitPreviewChanges(nextTab)}
@@ -864,7 +984,10 @@ const ResultTablePanel = memo(
         return persistedWidth
       }
       if (orderedColumns.length === 1 && tableViewportWidth > 0) {
-        return Math.max(DEFAULT_RESULT_COLUMN_WIDTH, tableViewportWidth - (supportsCellSelection ? 34 : 0))
+        return Math.max(
+          DEFAULT_RESULT_COLUMN_WIDTH,
+          tableViewportWidth - (supportsCellSelection ? 34 : 0)
+        )
       }
       return DEFAULT_RESULT_COLUMN_WIDTH
     }
@@ -1984,12 +2107,10 @@ const ResultTablePanel = memo(
         }
         const scrollAmount = (direction: number, position: number, edgePosition: number): number =>
           direction * Math.max(8, Math.round((edge - Math.abs(position - edgePosition)) * 0.7))
-        const horizontalScrollbar = container?.querySelector<HTMLElement>(
-          '.ant-table-tbody-virtual-scrollbar-horizontal'
-        )
         const previousScrollTop = holder.scrollTop
-        const previousScrollLeft = holder.scrollLeft
-        const previousHorizontalScrollbarScrollLeft = horizontalScrollbar?.scrollLeft ?? 0
+        const header = container?.querySelector<HTMLElement>('.ant-table-header')
+        const previousScrollLeft = header?.scrollLeft ?? 0
+        let horizontalScrollChanged = false
         if (verticalDirection) {
           holder.scrollTop += scrollAmount(
             verticalDirection,
@@ -2003,18 +2124,26 @@ const ResultTablePanel = memo(
             pointer.x,
             horizontalDirection < 0 ? rect.left : rect.right
           )
-          holder.scrollLeft += amount
-          if (horizontalScrollbar) {
-            horizontalScrollbar.scrollLeft += amount
+          const nextScrollLeft = Math.max(
+            0,
+            Math.min(holder.scrollWidth - holder.clientWidth, previousScrollLeft + amount)
+          )
+          horizontalScrollChanged = nextScrollLeft !== previousScrollLeft
+          if (horizontalScrollChanged) {
+            holder.dispatchEvent(
+              new WheelEvent('wheel', {
+                bubbles: true,
+                cancelable: true,
+                deltaX: nextScrollLeft - previousScrollLeft
+              })
+            )
           }
-          const table = refs.tableComponentRefs.current[tab.key] as HorizontalScrollTableRef | null
-          table?.scrollTo?.({ left: Math.max(0, previousScrollLeft + amount) })
         }
         updateCellDragTargetFromPointer()
         if (
           holder.scrollTop !== previousScrollTop ||
-          holder.scrollLeft !== previousScrollLeft ||
-          (horizontalScrollbar?.scrollLeft ?? 0) !== previousHorizontalScrollbarScrollLeft
+          (header?.scrollLeft ?? 0) !== previousScrollLeft ||
+          horizontalScrollChanged
         ) {
           cellDragAutoScrollFrameRef.current = window.requestAnimationFrame(tick)
         }
@@ -2321,7 +2450,7 @@ const ResultTablePanel = memo(
                       )
                     )
                   : []
-                const enableVirtualTable = shouldUseVirtualTable(tab, tableRows.length)
+                const enableVirtualTable = shouldUseVirtualTable(tab)
                 const virtualCells =
                   enableVirtualTable && body
                     ? Array.from(
@@ -2382,10 +2511,20 @@ const ResultTablePanel = memo(
       key: '__rowNumber',
       width: 34,
       fixed: 'left',
-      className: 'row-number-cell',
+      className: 'row-number-cell result-column-width',
       onCell: (row: EditableRow) =>
         ({
-          'data-row-key': row.__rowKey
+          'data-row-key': row.__rowKey,
+          style: {
+            '--result-column-width': '34px'
+          } as CSSProperties
+        }) as TdHTMLAttributes<HTMLElement>,
+      onHeaderCell: () =>
+        ({
+          className: 'result-column-width',
+          style: {
+            '--result-column-width': '34px'
+          } as CSSProperties
         }) as TdHTMLAttributes<HTMLElement>,
       render: (_value: unknown, row: EditableRow, index: number) => {
         return (
@@ -2448,12 +2587,19 @@ const ResultTablePanel = memo(
       [searchSignature, tableRows]
     )
 
-    const dataColumns: ColumnsType<EditableRow> = orderedColumns.map((column) => ({
+    const dataColumns: ColumnsType<EditableRow> = orderedColumns.map((column) => {
+      const columnWidth = getResultColumnWidth(column)
+      const columnCellStyle = {
+        '--result-column-width': `${columnWidth}px`
+      } as CSSProperties
+
+      return {
       title: renderColumnTitle(column),
       dataIndex: column,
       key: column,
-      width: getResultColumnWidth(column),
+      width: columnWidth,
       ellipsis: true,
+      className: 'result-column-width',
       shouldCellUpdate: (record, previousRecord) =>
         record[column] !== previousRecord[column] ||
         record.__state !== previousRecord.__state ||
@@ -2463,9 +2609,18 @@ const ResultTablePanel = memo(
           'data-column-key': column,
           'data-row-key': row.__rowKey,
           'data-cell-key': `${row.__rowKey}:${column}`,
-          className: (tab.selectedColumns ?? []).includes(column)
-            ? 'column-selected-runtime'
-            : undefined
+          className: [
+            'result-column-width',
+            (tab.selectedColumns ?? []).includes(column) ? 'column-selected-runtime' : ''
+          ]
+            .filter(Boolean)
+            .join(' '),
+          style: columnCellStyle
+        }) as TdHTMLAttributes<HTMLElement>,
+      onHeaderCell: () =>
+        ({
+          className: 'result-column-width',
+          style: columnCellStyle
         }) as TdHTMLAttributes<HTMLElement>,
       render: (value: unknown, row: EditableRow) =>
         supportsCellSelection
@@ -2491,7 +2646,8 @@ const ResultTablePanel = memo(
               cellDisplayText(value),
               'table-cell-text'
             )
-    }))
+      }
+    })
 
     const tableColumns: ColumnsType<EditableRow> = supportsCellSelection
       ? [rowNumberColumn, ...dataColumns]
@@ -2503,7 +2659,7 @@ const ResultTablePanel = memo(
       ),
       1
     )
-    const enableVirtualTable = shouldUseVirtualTable(tab, tableRows.length)
+    const enableVirtualTable = shouldUseVirtualTable(tab)
 
     const showQueryEmptyState = tab.kind === 'query' && !tab.resultVisible
 
@@ -2528,6 +2684,9 @@ const ResultTablePanel = memo(
           }
           const target = event.target as HTMLElement | null
           if (!target) {
+            return
+          }
+          if (target.closest('.table-data-toolbar, .result-table-search-overlay')) {
             return
           }
           if (target.closest('[data-result-status="true"]')) {
@@ -2567,6 +2726,9 @@ const ResultTablePanel = memo(
           if (!target) {
             return
           }
+          if (target.closest('.table-data-toolbar, .result-table-search-overlay')) {
+            return
+          }
           if (
             target.closest(
               `[data-cell-key], .row-number-button, .row-number-select-all, .column-header-content, .column-select-button, .column-sort-button, .column-resize-handle, .editable-cell-dom-input, .cell-inspector, ${RESULT_CELL_CONTEXT_MENU_SELECTOR}`
@@ -2577,14 +2739,16 @@ const ResultTablePanel = memo(
           clearAllCellSelection(tab.key)
         }}
       >
-        {renderResultStatus(tab)}
-        {renderTableToolbar(tab, {
-          matchCount: searchMatches.length,
-          resetKey: `${searchState.query}\u0000${searchState.caseSensitive ? 1 : 0}\u0000${searchState.regex ? 1 : 0}\u0000${searchState.wholeWord ? 1 : 0}\u0000${searchState.filterRows ? 1 : 0}\u0000${searchMatches.length}`,
-          focusSearchMatch
-        })}
+        {!hasMultiStatementResults && renderResultStatus(tab)}
+        {!hasMultiStatementResults &&
+          renderTableToolbar(tab, {
+            matchCount: searchMatches.length,
+            resetKey: `${searchState.query}\u0000${searchState.caseSensitive ? 1 : 0}\u0000${searchState.regex ? 1 : 0}\u0000${searchState.wholeWord ? 1 : 0}\u0000${searchState.filterRows ? 1 : 0}\u0000${searchMatches.length}`,
+            focusSearchMatch
+          })}
         {(tab.resultKind === 'command' || tab.resultKind === 'error') &&
           renderQueryExecutionStatus(tab)}
+        {tab.multiStatementResults && <MultiStatementExecutionCard results={tab.multiStatementResults} />}
         {tab.error && tab.resultKind !== 'error' && (
           <Alert
             className="result-inline-alert"
@@ -2595,7 +2759,7 @@ const ResultTablePanel = memo(
             onClose={() => updateWorkspaceTab(tab.key, { error: undefined })}
           />
         )}
-        {tab.resultKind === 'command' || tab.resultKind === 'error' ? null : (
+        {hasMultiStatementResults || tab.resultKind === 'command' || tab.resultKind === 'error' ? null : (
           <div
             className={`result-table-content${tab.kind === 'query' ? ' query-result-table-content' : ''}`}
           >
@@ -2626,6 +2790,10 @@ const ResultTablePanel = memo(
                 )
                 if (holder) {
                   refs.tableScrollTopRefs.current[tab.key] = holder.scrollTop
+                  if (!refs.tableScrollRestoreLocks.current[tab.key]) {
+                    const headerScrollLeft = refs.tableHeaderRefs.current[tab.key]?.scrollLeft ?? 0
+                    refs.tableScrollLeftRefs.current[tab.key] = headerScrollLeft || holder.scrollLeft
+                  }
                 }
                 const selectedRows = getCurrentSelectedRowKeys()
                 if (selectedRows.length > 0) {

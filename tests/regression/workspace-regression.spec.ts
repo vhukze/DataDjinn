@@ -10,6 +10,8 @@ const fixtureConnectionId = 'regression-sqlite-fixture'
 const smallTableName = 'small_items'
 const mediumTableName = 'medium_items'
 const largeTableName = 'large_items'
+const threeColumnTableName = 'three_column_items'
+const singleColumnTableName = 'single_column_items'
 const MAX_STABLE_CHROME_HASHES = 2
 
 function readFixtureUserDataDir() {
@@ -33,6 +35,8 @@ async function launchRegressionApp(options = {}) {
   const userDataDir = readFixtureUserDataDir()
   const testWindowHeight = options.windowHeight
   const aiStreamEvents = options.aiStreamEvents
+  const testRoutineNames = options.testRoutineNames
+  const aiModuleEnabled = options.aiModuleEnabled ?? true
   const packagedExecutable = process.env.DATADJINN_REGRESSION_EXECUTABLE
   return electron.launch({
     ...(packagedExecutable ? { executablePath: packagedExecutable } : { args: [electronEntry] }),
@@ -41,8 +45,10 @@ async function launchRegressionApp(options = {}) {
       DATADJINN_TEST_RUN_ROOT: regressionRootDir,
       DATADJINN_TEST_USER_DATA_DIR: userDataDir,
       DATADJINN_SKIP_SPLASH: '1',
+      DATADJINN_TEST_ENABLE_AI_MODULE: aiModuleEnabled ? '1' : '0',
       ...(testWindowHeight ? { DATADJINN_TEST_WINDOW_HEIGHT: String(testWindowHeight) } : {}),
-      ...(aiStreamEvents ? { DATADJINN_TEST_AI_STREAM_EVENTS: JSON.stringify(aiStreamEvents) } : {})
+      ...(aiStreamEvents ? { DATADJINN_TEST_AI_STREAM_EVENTS: JSON.stringify(aiStreamEvents) } : {}),
+      ...(testRoutineNames ? { DATADJINN_TEST_ROUTINE_NAMES: testRoutineNames.join(',') } : {})
     }
   })
 }
@@ -1008,7 +1014,16 @@ async function moveCaretToLineEnd(page, lineNumber) {
   await expect(line).toBeVisible({ timeout: 30000 })
   const box = await line.boundingBox()
   if (!box) {
-    throw new Error(`Monaco line not measurable: ${lineNumber}`)
+    // Monaco may keep a visible line node without a measurable box while its view is reflowing.
+    // Keyboard navigation exercises the same caret behavior without depending on that transient DOM state.
+    await focusMonacoEditor(page)
+    await page.keyboard.press('Control+Home')
+    for (let index = 1; index < lineNumber; index += 1) {
+      await page.keyboard.press('ArrowDown')
+    }
+    await page.keyboard.press('End')
+    await page.waitForTimeout(80)
+    return
   }
   await page.mouse.click(box.x + 18, box.y + box.height / 2)
   await page.keyboard.press('End')
@@ -1024,13 +1039,14 @@ async function toggleTreeNode(page, key) {
   return Date.now() - startedAt
 }
 
-async function measureModalOpenClose(page, { label, open, close, modalSelector }) {
+async function measureModalOpenClose(page, { label, open, close, modalSelector, assertOpen }) {
   const modal = page.locator(modalSelector)
 
   await waitForBrowserIdle(page)
   const openStartedAt = Date.now()
   await open()
   await expect(modal).toBeVisible({ timeout: 10000 })
+  await assertOpen?.(modal)
   const openMs = Date.now() - openStartedAt
 
   const closeStartedAt = Date.now()
@@ -1043,6 +1059,28 @@ async function measureModalOpenClose(page, { label, open, close, modalSelector }
   await expect(page.locator('.app-error-boundary')).toHaveCount(0)
 
   return { openMs, closeMs }
+}
+
+async function assertModalCentered(page, modal, expectedMinimumWidth) {
+  const metrics = await modal.evaluate((node) => {
+    const rect = node.getBoundingClientRect()
+    return {
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+      centerX: rect.left + rect.width / 2,
+      centerY: rect.top + rect.height / 2,
+      width: rect.width,
+      height: rect.height
+    }
+  })
+
+  expect(Math.abs(metrics.centerX - metrics.viewportWidth / 2), 'modal must be horizontally centered').toBeLessThanOrEqual(4)
+  expect(Math.abs(metrics.centerY - metrics.viewportHeight / 2), 'modal must be vertically centered').toBeLessThanOrEqual(4)
+  if (expectedMinimumWidth) {
+    expect(metrics.width, 'modal width is smaller than its desktop design width').toBeGreaterThanOrEqual(
+      expectedMinimumWidth
+    )
+  }
 }
 
 async function measureConnectionCreateFlow(page, itemLabel) {
@@ -1969,6 +2007,207 @@ test.describe('workspace regression', () => {
     }
   })
 
+  test('executing selected multiple sql statements should report each result in order @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openQueryWorkspace(page)
+
+      await focusMonacoEditor(page)
+      await page.keyboard.press('Control+A')
+      await page.keyboard.type("select 'first' as value;\nselect 'second' as value;")
+      await page.keyboard.press('Control+A')
+      await page.locator('.query-execute-button').click()
+
+      const results = page.locator('[data-testid="multi-statement-results"]')
+      await expect(results).toBeVisible({ timeout: 30000 })
+      await expect(results).toContainText('SQL 1')
+      await expect(results).toContainText('SQL 2')
+      await expect(results).toContainText('first')
+      await expect(results).toContainText('second')
+      await expect(results.locator('.query-execution-card')).toHaveCount(2)
+      await expect(results.locator('.query-execution-sql')).toHaveCount(2)
+
+      const itemOrder = await results.locator('.query-multi-execution-item').evaluateAll((nodes) =>
+        nodes.map((node) => node.textContent ?? '')
+      )
+      expect(itemOrder).toHaveLength(2)
+      expect(itemOrder[0]).toContain('first')
+      expect(itemOrder[1]).toContain('second')
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('multiple command statements should show compact status without an empty result table @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openQueryWorkspace(page)
+
+      await focusMonacoEditor(page)
+      await page.keyboard.press('Control+A')
+      await page.keyboard.type(
+        'CREATE TABLE multi_statement_probe (id INTEGER);\nINSERT INTO multi_statement_probe VALUES (1);\nDROP TABLE multi_statement_probe;'
+      )
+      await page.keyboard.press('Control+A')
+      await page.locator('.query-execute-button').click()
+
+      const results = page.locator('[data-testid="multi-statement-results"]')
+      await expect(results).toBeVisible({ timeout: 30000 })
+      await expect(results.locator('.query-multi-execution-item')).toHaveCount(3)
+      await expect(results.locator('.query-execution-card')).toHaveCount(3)
+      await expect(results.locator('.query-execution-sql')).toHaveCount(3)
+      await expect(results).toContainText('影响数据')
+      await expect(results.locator('.query-multi-execution-grid')).toHaveCount(0)
+      await expect(page.locator('.result-table-content')).toHaveCount(0)
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('executing from a closed connection should show the opening phase immediately @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openQueryWorkspace(page)
+
+      const connectionNode = treeNode(page, `connection:${fixtureConnectionId}`)
+      const connectionNodeBox = await connectionNode.boundingBox()
+      expect(connectionNodeBox).not.toBeNull()
+      await page.mouse.click(
+        connectionNodeBox.x + Math.min(connectionNodeBox.width - 12, 120),
+        connectionNodeBox.y + connectionNodeBox.height / 2,
+        { button: 'right' }
+      )
+      await page
+        .locator('.tree-context-menu-panel .ant-menu-item')
+        .filter({ hasText: '关闭连接' })
+        .first()
+        .click()
+      await expect(connectionNode).toHaveClass(/is-closed/, { timeout: 15000 })
+
+      await focusMonacoEditor(page)
+      await page.keyboard.press('Control+A')
+      await page.keyboard.insertText("select 'opening_phase' as value;")
+
+      await page.evaluate(() => {
+        const button = document.querySelector('.query-execute-button')
+        if (!(button instanceof HTMLElement)) {
+          throw new Error('query execute button not found')
+        }
+        const phases: string[] = []
+        const record = () => {
+          const phase = button.getAttribute('data-query-execution-phase')
+          if (phase) {
+            phases.push(phase)
+          }
+        }
+        record()
+        const observer = new MutationObserver(record)
+        observer.observe(button, { attributes: true, childList: true, subtree: true })
+        ;(window as typeof window & { __queryExecutionPhases?: string[] }).__queryExecutionPhases = phases
+        window.setTimeout(() => observer.disconnect(), 10000)
+      })
+
+      await page.locator('.query-execute-button').click()
+      await expect
+        .poll(
+          () =>
+            page.evaluate(
+              () =>
+                (window as typeof window & { __queryExecutionPhases?: string[] })
+                  .__queryExecutionPhases ?? []
+            ),
+          { timeout: 10000 }
+        )
+        .toContain('opening-connection')
+      await expect
+        .poll(
+          () =>
+            page.evaluate(
+              () =>
+                (window as typeof window & { __queryExecutionPhases?: string[] })
+                  .__queryExecutionPhases ?? []
+            ),
+          { timeout: 30000 }
+        )
+        .toContain('executing')
+      await expect(page.locator('.result-table .ant-table-tbody')).toContainText('opening_phase', {
+        timeout: 30000
+      })
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('executed query history should restore sql after app restart @bug', async () => {
+    let electronApp
+    let reopenedApp
+
+    try {
+      electronApp = await launchRegressionApp()
+      let page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await page.evaluate(() => localStorage.setItem('datadjinn-query-workspaces', '[]'))
+      await page.reload()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+
+      await openFixtureConnection(page)
+      await openQueryWorkspace(page)
+      await focusMonacoEditor(page)
+      await page.keyboard.press('Control+A')
+      await page.keyboard.insertText('select 123 as persisted_value;')
+      await page.locator('.query-execute-button').click()
+
+      const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      await expect(activeResult.locator('.result-table .ant-table-tbody')).toContainText(
+        '123',
+        { timeout: 30000 }
+      )
+
+      await electronApp.close()
+      electronApp = undefined
+
+      reopenedApp = await launchRegressionApp()
+      page = await reopenedApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await page.locator('.app-header .toolbar-icon-btn[aria-label="历史查询窗口"]').click()
+
+      const historyItem = page.locator('.query-history-item').filter({ hasText: 'persisted_value' })
+      await expect(historyItem).toBeVisible({ timeout: 30000 })
+      await historyItem.dblclick()
+
+      const editor = page.locator('.sql-editor-container .view-lines').first()
+      await expect(editor).toContainText('select 123 as persisted_value;', { timeout: 30000 })
+    } finally {
+      if (electronApp) {
+        await electronApp.close()
+      }
+      if (reopenedApp) {
+        await reopenedApp.close()
+      }
+    }
+  })
+
   test('table search button and shortcut should open search row @smoke', async () => {
     const electronApp = await launchRegressionApp()
 
@@ -2090,6 +2329,52 @@ test.describe('workspace regression', () => {
         timeout: 30000
       })
       await expect(activeResult.locator('.result-table .ant-table-tbody')).not.toContainText('beta')
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('filtered preview row deletion should create a pending deletion draft @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openFixtureTable(page, smallTableName)
+
+      const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      const rowNumbers = activeResult.locator('.result-table .row-number-button')
+      await expect(rowNumbers.nth(1)).toBeVisible({ timeout: 30000 })
+      await rowNumbers.nth(1).click()
+
+      const whereField = activeResult.locator('.preview-where-field input')
+      await whereField.fill("name = 'alpha'")
+      await whereField.press('Enter')
+      await expect(activeResult.locator('.result-table .ant-table-tbody')).toContainText('alpha', {
+        timeout: 30000
+      })
+      await expect(activeResult.locator('.result-table .ant-table-tbody')).not.toContainText('beta')
+
+      const filteredRowNumber = activeResult.locator('.result-table .row-number-button').first()
+      await filteredRowNumber.click()
+      const deleteButton = activeResult.locator(
+        '.table-toolbar-inline-actions [aria-label="删除选中行"]'
+      )
+      const saveButton = activeResult.locator('.table-toolbar-inline-actions [aria-label="提交"]')
+      await expect(deleteButton).toBeEnabled()
+      await deleteButton.click()
+
+      await expect(activeResult.locator('.result-table .row-deleted')).toHaveCount(1, {
+        timeout: 10000
+      })
+      await expect(saveButton).toBeEnabled()
+      await expect(saveButton).toHaveClass(/is-pending-save/)
+      await expect(
+        activeResult.locator('.result-status-warning-pill').filter({ hasText: '未提交' })
+      ).toContainText('未提交')
       await expect(page.locator('.app-error-boundary')).toHaveCount(0)
     } finally {
       await electronApp.close()
@@ -2354,6 +2639,84 @@ test.describe('workspace regression', () => {
         timeout: 30000
       })
       await expect(activeResult.locator('.result-table .ant-table-tbody')).not.toContainText('beta')
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('CALL should highlight and complete stored procedures @bug', async () => {
+    const electronApp = await launchRegressionApp({
+      testRoutineNames: ['refresh_reporting_cache']
+    })
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await page.locator(`.connection-tree-title[data-connection-id="${fixtureConnectionId}"]`).click()
+      await page.waitForTimeout(250)
+      await openQueryWorkspace(page)
+      await expect(page.locator('.query-toolbar .connection-select')).toContainText('回归测试 SQLite')
+
+      await focusMonacoEditor(page)
+      await page.keyboard.press('Control+A')
+      await page.keyboard.type('call ')
+      await page.keyboard.type('refresh')
+      const suggestWidget = page.locator('.suggest-widget.visible')
+      await expect(suggestWidget).toContainText('refresh_reporting_cache', { timeout: 10000 })
+      await expect(suggestWidget.locator('.monaco-list-row').first()).toContainText(
+        'refresh_reporting_cache'
+      )
+      const callKeyword = page.locator('.sql-editor-container .sql-editor-call-keyword')
+      await expect(callKeyword).toHaveText('call')
+      await expect(callKeyword).toHaveCSS('color', 'rgb(197, 134, 192)')
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('long query error should scroll inside the result region @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openQueryWorkspace(page)
+
+      await focusMonacoEditor(page)
+      await page.keyboard.press('Control+A')
+      await page.keyboard.type(`SELECT * FROM missing_${'table_name_'.repeat(180)}`)
+      await page.locator('.query-execute-button').first().click()
+
+      const errorScroll = page.locator('.query-execution-error-scroll')
+      await expect(errorScroll).toBeVisible({ timeout: 30000 })
+      await expect
+        .poll(
+          () =>
+            errorScroll.evaluate((element) => ({
+              clientHeight: element.clientHeight,
+              scrollHeight: element.scrollHeight,
+              overflowY: getComputedStyle(element).overflowY
+            })),
+          { timeout: 30000 }
+        )
+        .toMatchObject({ overflowY: 'auto' })
+      const scrollMetrics = await errorScroll.evaluate((element) => ({
+        clientHeight: element.clientHeight,
+        scrollHeight: element.scrollHeight
+      }))
+      expect(scrollMetrics.scrollHeight, 'long error text should overflow its result area').toBeGreaterThan(
+        scrollMetrics.clientHeight
+      )
+      await errorScroll.evaluate((element) => element.scrollTo({ top: element.scrollHeight }))
+      await expect
+        .poll(() => errorScroll.evaluate((element) => element.scrollTop), { timeout: 10000 })
+        .toBeGreaterThan(0)
       await expect(page.locator('.app-error-boundary')).toHaveCount(0)
     } finally {
       await electronApp.close()
@@ -2734,7 +3097,9 @@ test.describe('workspace regression', () => {
         .poll(
           async () => {
             return page
-              .locator('.workspace-tab-panels .workspace-active-content .result-table tbody tr')
+              .locator(
+                '.workspace-tab-panels .workspace-active-content .result-table tbody tr, .workspace-tab-panels .workspace-active-content .result-table .ant-table-tbody-virtual-holder .ant-table-row'
+              )
               .count()
           },
           { timeout: 30000 }
@@ -3583,7 +3948,7 @@ test.describe('workspace regression', () => {
         .locator('.editable-cell[data-cell-column-key="name"]:visible')
         .first()
       await expect(target).toBeVisible()
-      const targetRow = target.locator('xpath=ancestor::tr[1]')
+      const targetRow = target.locator('xpath=ancestor::*[contains(@class, "ant-table-row")][1]')
       const rowNumberCell = targetRow.locator('.row-number-cell')
       const originalRowNumberBackground = await rowNumberCell.evaluate(
         (node) => window.getComputedStyle(node).backgroundColor
@@ -3601,7 +3966,9 @@ test.describe('workspace regression', () => {
       await expect(rowNumberCell).toHaveCSS('border-left-width', '3px')
       await expect(rowNumberCell).toHaveCSS('background-color', originalRowNumberBackground)
       await expect(target).toHaveClass(/editable-cell-draft/)
-      const draftHost = target.locator('xpath=ancestor::td[1]')
+      const draftHost = target.locator(
+        'xpath=ancestor::*[contains(@class, "ant-table-cell")][1]'
+      )
       await expect(draftHost).toHaveClass(/editable-cell-draft-host/)
       const draftColors = await target.evaluate((node) => {
         const host = node.closest<HTMLElement>('td, .ant-table-cell')
@@ -4008,7 +4375,7 @@ test.describe('workspace regression', () => {
     }
   })
 
-  test('single-column result should keep the row number narrow and match header/body widths @bug', async () => {
+  test('one to five column results should keep fixed row-number and default data widths @bug', async () => {
     const electronApp = await launchRegressionApp()
 
     try {
@@ -4018,55 +4385,302 @@ test.describe('workspace regression', () => {
       await openFixtureConnection(page)
       await openQueryWorkspace(page)
 
+      const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      const editorTextbox = await focusMonacoEditor(page)
+      const cases = [
+        { count: 1, sql: "select 'one-column-value' as c1 from small_items order by id;", last: 'c1' },
+        { count: 2, sql: 'select id, name from small_items order by id;', last: 'name' },
+        { count: 3, sql: 'select id, name, note from small_items order by id;', last: 'note' },
+        {
+          count: 4,
+          sql: 'select id, category, title, created_at from large_items order by id;',
+          last: 'created_at'
+        },
+        {
+          count: 5,
+          sql: 'select id, category, title, payload, created_at from large_items order by id;',
+          last: 'created_at'
+        }
+      ]
+
+      for (const resultCase of cases) {
+        await editorTextbox.focus()
+        await page.keyboard.press('Control+A')
+        await page.keyboard.type(resultCase.sql)
+        await page.locator('.query-execute-button').first().click()
+        await expect(activeResult.locator('.result-table .ant-table-thead')).toBeVisible({
+          timeout: 30000
+        })
+        await expect(
+          activeResult.locator(
+            `.editable-cell[data-cell-column-key="${resultCase.last}"]:visible`
+          ).first()
+        ).toBeVisible({ timeout: 30000 })
+
+        const layout = await activeResult.evaluate((node, expected) => {
+          const headerCells = Array.from(
+            node.querySelectorAll<HTMLElement>('.result-table .ant-table-thead > tr > th')
+          ).filter((cell) => !cell.classList.contains('ant-table-cell-scrollbar'))
+          const firstRow = node.querySelector<HTMLElement>(
+            '.result-table .ant-table-tbody > tr, .result-table .ant-table-tbody-virtual-holder .ant-table-row'
+          )
+          const bodyCells = firstRow
+            ? Array.from(firstRow.querySelectorAll<HTMLElement>(':scope > td, :scope > .ant-table-cell'))
+            : []
+          const lastCell = node.querySelector<HTMLElement>(
+            `.result-table .editable-cell[data-cell-column-key="${expected.last}"]`
+          )
+          return {
+            headerWidths: headerCells.map((cell) => cell.getBoundingClientRect().width),
+            bodyWidths: bodyCells.map((cell) => cell.getBoundingClientRect().width),
+            lastCellText: lastCell?.textContent?.trim() ?? '',
+            lastCellWidth: lastCell?.getBoundingClientRect().width ?? 0
+          }
+        }, resultCase)
+        console.log(`[layout][${resultCase.count}-column-result] ${JSON.stringify(layout)}`)
+        expect(layout.headerWidths).toHaveLength(resultCase.count + 1)
+        expect(layout.bodyWidths).toHaveLength(resultCase.count + 1)
+        expect(layout.headerWidths[0]).toBeCloseTo(34, 0)
+        expect(layout.bodyWidths[0]).toBeCloseTo(34, 0)
+        for (let index = 1; index <= resultCase.count; index += 1) {
+          expect(layout.headerWidths[index]).toBeCloseTo(180, 0)
+          expect(layout.bodyWidths[index]).toBeCloseTo(180, 0)
+        }
+        expect(layout.lastCellText).not.toBe('')
+        expect(layout.lastCellWidth).toBeGreaterThanOrEqual(170)
+        const lastColumnVisibility = await activeResult.evaluate((node, expected) => {
+          const holder = node.querySelector<HTMLElement>(
+            '.result-table .ant-table-tbody-virtual-holder, .result-table .ant-table-body'
+          )
+          const lastCell = node.querySelector<HTMLElement>(
+            `.editable-cell[data-cell-column-key="${expected.last}"]`
+          )
+          const lastHeaderCell = Array.from(
+            node.querySelectorAll<HTMLElement>('.result-table .ant-table-thead > tr > th')
+          )
+            .filter((cell) => !cell.classList.contains('ant-table-cell-scrollbar'))
+            .at(-1)
+          if (!holder || !lastCell || !lastHeaderCell) {
+            return null
+          }
+          holder.scrollLeft = Math.max(0, holder.scrollWidth - holder.clientWidth)
+          holder.dispatchEvent(new Event('scroll', { bubbles: true }))
+          const holderRect = holder.getBoundingClientRect()
+          const cellRect = lastCell.getBoundingClientRect()
+          const headerRect = lastHeaderCell.getBoundingClientRect()
+          return {
+            scrollLeft: holder.scrollLeft,
+            scrollWidth: holder.scrollWidth,
+            clientWidth: holder.clientWidth,
+            cellLeft: cellRect.left,
+            cellRight: cellRect.right,
+            headerText: lastHeaderCell.textContent?.trim() ?? '',
+            headerLeft: headerRect.left,
+            headerRight: headerRect.right,
+            holderLeft: holderRect.left,
+            holderRight: holderRect.right
+          }
+        }, resultCase)
+        expect(lastColumnVisibility).not.toBeNull()
+        if ((lastColumnVisibility?.scrollWidth ?? 0) > (lastColumnVisibility?.clientWidth ?? 0)) {
+          expect(lastColumnVisibility?.scrollLeft).toBeGreaterThan(0)
+        }
+        expect(lastColumnVisibility?.cellLeft ?? 0).toBeGreaterThanOrEqual(
+          (lastColumnVisibility?.holderLeft ?? 0) - 1
+        )
+        expect(lastColumnVisibility?.cellRight ?? 0).toBeLessThanOrEqual(
+          (lastColumnVisibility?.holderRight ?? 0) + 1
+        )
+        expect(lastColumnVisibility?.headerText).toContain(resultCase.last)
+        expect(lastColumnVisibility?.headerLeft ?? 0).toBeGreaterThanOrEqual(
+          (lastColumnVisibility?.holderLeft ?? 0) - 1
+        )
+        expect(lastColumnVisibility?.headerRight ?? 0).toBeLessThanOrEqual(
+          (lastColumnVisibility?.holderRight ?? 0) + 1
+        )
+        await activeResult.screenshot({
+          path: `test-results/ten-thousand-${resultCase.count}-columns.png`
+        })
+      }
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('table previews should keep every default column visible and truncate long cells with an ellipsis @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openFixtureTable(page, smallTableName)
+
+      const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      await expect(activeResult.locator('.editable-cell[data-cell-column-key="note"]').first()).toBeVisible({
+        timeout: 30000
+      })
+      const previewLayout = await activeResult.evaluate((node) => {
+        const holder = node.querySelector<HTMLElement>(
+          '.result-table .ant-table-tbody-virtual-holder, .result-table .ant-table-body'
+        )
+        const headerCells = Array.from(
+          node.querySelectorAll<HTMLElement>('.result-table .ant-table-thead > tr > th')
+        ).filter((cell) => !cell.classList.contains('ant-table-cell-scrollbar'))
+        const firstRow = node.querySelector<HTMLElement>(
+          '.result-table .ant-table-tbody > tr, .result-table .ant-table-tbody-virtual-holder .ant-table-row'
+        )
+        const bodyCells = firstRow
+          ? Array.from(firstRow.querySelectorAll<HTMLElement>(':scope > td, :scope > .ant-table-cell'))
+          : []
+        return {
+          holderWidth: holder?.clientWidth ?? 0,
+          holderScrollWidth: holder?.scrollWidth ?? 0,
+          headerWidths: headerCells.map((cell) => cell.getBoundingClientRect().width),
+          bodyWidths: bodyCells.map((cell) => cell.getBoundingClientRect().width),
+          noteText: node.querySelector<HTMLElement>('.editable-cell[data-cell-column-key="note"]')?.textContent?.trim() ?? ''
+        }
+      })
+      console.log(`[layout][three-column-preview] ${JSON.stringify(previewLayout)}`)
+      expect(previewLayout.headerWidths).toEqual([34, 180, 180, 180])
+      expect(previewLayout.bodyWidths).toEqual([34, 180, 180, 180])
+      expect(previewLayout.holderScrollWidth).toBe(previewLayout.holderWidth)
+      expect(previewLayout.noteText).not.toBe('')
+      await activeResult.screenshot({ path: 'test-results/table-preview-three-columns.png' })
+
+      await openQueryWorkspace(page)
       const editorTextbox = await focusMonacoEditor(page)
       await page.keyboard.press('Control+A')
       await page.keyboard.type(
-        "select 'This is a deliberately long single-column result value for layout regression' as value from small_items order by id;"
+        "select 'this is a deliberately long one-column value that must be visibly truncated with an ellipsis' as value from small_items order by id;"
       )
       await page.locator('.query-execute-button').first().click()
+      const queryResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      const longCell = queryResult.locator('.editable-cell[data-cell-column-key="value"]').first()
+      await expect(longCell).toBeVisible({ timeout: 30000 })
+      await queryResult.screenshot({ path: 'test-results/table-layout-visual-regression.png' })
+      const longCellLayout = await longCell.evaluate((cell) => {
+        const text = cell.querySelector<HTMLElement>('.table-cell-text') ?? cell
+        const style = window.getComputedStyle(text)
+        return {
+          hostWidth: cell.getBoundingClientRect().width,
+          width: text.getBoundingClientRect().width,
+          scrollWidth: text.scrollWidth,
+          overflow: style.overflow,
+          whiteSpace: style.whiteSpace,
+          textOverflow: style.textOverflow
+        }
+      })
+      console.log(`[layout][long-single-column] ${JSON.stringify(longCellLayout)}`)
+      expect(longCellLayout.hostWidth).toBeCloseTo(180, 0)
+      expect(longCellLayout.width).toBeLessThan(longCellLayout.hostWidth)
+      expect(longCellLayout.scrollWidth).toBeGreaterThan(longCellLayout.width)
+      expect(longCellLayout.overflow).toBe('hidden')
+      expect(longCellLayout.whiteSpace).toBe('nowrap')
+      expect(longCellLayout.textOverflow).toBe('ellipsis')
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('ten-thousand-row previews should keep fixed columns and restore virtual horizontal scroll after refresh @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await page.evaluate(() => localStorage.setItem('datadjinn-theme', 'light'))
+      await page.reload()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openFixtureTable(page, threeColumnTableName)
 
       const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
-      await expect(activeResult.locator('.result-table .ant-table-thead')).toBeVisible({
-        timeout: 30000
+      const threeColumnLayout = await activeResult.evaluate((node) => {
+        const headerCells = Array.from(
+          node.querySelectorAll<HTMLElement>('.result-table .ant-table-thead > tr > th')
+        ).filter((cell) => !cell.classList.contains('ant-table-cell-scrollbar'))
+        const firstRow = node.querySelector<HTMLElement>(
+          '.result-table .ant-table-tbody-virtual-holder .ant-table-row'
+        )
+        const bodyCells = firstRow
+          ? Array.from(firstRow.querySelectorAll<HTMLElement>(':scope > .ant-table-cell'))
+          : []
+        const lastCell = bodyCells.at(-1)
+        return {
+          headerWidths: headerCells.map((cell) => Math.round(cell.getBoundingClientRect().width)),
+          bodyWidths: bodyCells.map((cell) => Math.round(cell.getBoundingClientRect().width)),
+          lastCellText: lastCell?.textContent?.trim() ?? '',
+          virtualRowCount: node.querySelectorAll('.result-table .ant-table-tbody-virtual-holder .ant-table-row').length,
+          totalRowLabel: node.querySelector<HTMLElement>('.result-status')?.textContent ?? '',
+          virtualTable: Boolean(node.querySelector('.result-table .ant-table-tbody-virtual-holder'))
+        }
       })
-      await expect(activeResult.locator('.editable-cell[data-cell-column-key="value"]')).toHaveCount(4, {
-        timeout: 30000
-      })
+      expect(threeColumnLayout.virtualTable).toBe(true)
+      expect(threeColumnLayout.virtualRowCount).toBeGreaterThan(0)
+      expect(threeColumnLayout.totalRowLabel).toContain('10000')
+      expect(threeColumnLayout.headerWidths).toEqual([34, 180, 180, 180])
+      expect(threeColumnLayout.bodyWidths).toEqual([34, 180, 180, 180])
+      expect(threeColumnLayout.lastCellText).toMatch(/^2026-08-13 /)
+      await activeResult.screenshot({ path: 'test-results/ten-thousand-three-columns.png' })
 
-      const layout = await activeResult.evaluate((node) => {
-        const rowNumberHeader = node.querySelector<HTMLElement>(
-          '.result-table .ant-table-thead > tr > th.row-number-cell'
+      await openFixtureTable(page, singleColumnTableName)
+      const singleColumnLayout = await activeResult.evaluate((node) => {
+        const cell = node.querySelector<HTMLElement>(
+          '.result-table .editable-cell[data-cell-column-key="f1"]'
         )
-        const dataHeader = node.querySelector<HTMLElement>(
-          '.result-table .ant-table-thead > tr > th:not(.row-number-cell)'
+        const text = cell?.querySelector<HTMLElement>('.table-cell-text')
+        const hostCell = cell?.closest<HTMLElement>('[data-column-key="f1"]')
+        return {
+          hostWidth: hostCell ? Math.round(hostCell.getBoundingClientRect().width) : 0,
+          textWidth: text ? Math.round(text.getBoundingClientRect().width) : 0,
+          textScrollWidth: text?.scrollWidth ?? 0,
+          textOverflow: text ? window.getComputedStyle(text).textOverflow : '',
+          virtualTable: Boolean(node.querySelector('.result-table .ant-table-tbody-virtual-holder'))
+        }
+      })
+      expect(singleColumnLayout.virtualTable).toBe(true)
+      expect(singleColumnLayout.hostWidth).toBe(180)
+      expect(singleColumnLayout.textWidth).toBeLessThan(singleColumnLayout.hostWidth)
+      expect(singleColumnLayout.textScrollWidth).toBeGreaterThan(singleColumnLayout.textWidth)
+      expect(singleColumnLayout.textOverflow).toBe('ellipsis')
+      await activeResult.screenshot({ path: 'test-results/ten-thousand-single-column.png' })
+
+      await openFixtureTable(page, largeTableName)
+      await expect(activeResult.locator('.result-status')).toContainText('10000')
+      const beforeRefresh = await activeResult.evaluate((node) => {
+        const holder = node.querySelector<HTMLElement>(
+          '.result-table .ant-table-tbody-virtual-holder'
         )
-        const dataCell = node.querySelector<HTMLElement>(
-          '.result-table .ant-table-tbody td[data-column-key="value"], .result-table .ant-table-tbody-virtual-holder td[data-column-key="value"]'
-        )
-        const text = node.querySelector<HTMLElement>('.editable-cell[data-cell-column-key="value"]')
-        if (!rowNumberHeader || !dataHeader || !dataCell || !text) {
+        if (!holder) {
           return null
         }
-        const rowHeaderRect = rowNumberHeader.getBoundingClientRect()
-        const dataHeaderRect = dataHeader.getBoundingClientRect()
-        const dataCellRect = dataCell.getBoundingClientRect()
+        holder.scrollLeft = Math.max(80, Math.round((holder.scrollWidth - holder.clientWidth) * 0.65))
+        holder.dispatchEvent(new Event('scroll', { bubbles: true }))
         return {
-          rowNumberWidth: rowHeaderRect.width,
-          dataHeaderWidth: dataHeaderRect.width,
-          dataCellWidth: dataCellRect.width,
-          textWidth: text.getBoundingClientRect().width,
-          textClientWidth: text.clientWidth,
-          textScrollWidth: text.scrollWidth,
-          tableWidth: node.querySelector<HTMLElement>('.result-table .ant-table')?.getBoundingClientRect().width
+          scrollLeft: holder.scrollLeft,
+          clientWidth: holder.clientWidth,
+          scrollWidth: holder.scrollWidth
         }
       })
-      console.log(`[layout][single-column-result] ${JSON.stringify(layout)}`)
-      expect(layout).not.toBeNull()
-      expect(layout.rowNumberWidth).toBeLessThanOrEqual(60)
-      expect(Math.abs(layout.dataHeaderWidth - layout.dataCellWidth)).toBeLessThanOrEqual(2)
-      expect(layout.textWidth).toBeGreaterThan(100)
-      expect(layout.textScrollWidth).toBeLessThanOrEqual(layout.textClientWidth + 1)
-      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+      expect(beforeRefresh).not.toBeNull()
+      expect(beforeRefresh?.scrollWidth).toBeGreaterThan(beforeRefresh?.clientWidth ?? 0)
+      expect(beforeRefresh?.scrollLeft).toBeGreaterThan(0)
+      await activeResult.screenshot({ path: 'test-results/ten-thousand-scroll-before-refresh.png' })
+      await activeResult.getByRole('button', { name: '刷新' }).click()
+      await expect(activeResult.locator('.result-table-loading-overlay')).toHaveCount(0, {
+        timeout: 30000
+      })
+      await expect.poll(() => activeResult.evaluate((node) => {
+        const holder = node.querySelector<HTMLElement>(
+          '.result-table .ant-table-tbody-virtual-holder'
+        )
+        return holder?.scrollLeft ?? null
+      }), { timeout: 10000 }).toBeCloseTo(beforeRefresh?.scrollLeft ?? 0, 0)
+      await activeResult.screenshot({ path: 'test-results/ten-thousand-scroll-after-refresh.png' })
     } finally {
       await electronApp.close()
     }
@@ -4480,7 +5094,8 @@ test.describe('workspace regression', () => {
         open: async () =>
           page.locator('.app-header .toolbar-icon-btn[aria-label="历史查询窗口"]').click(),
         close: async () => page.locator('.query-history-window-modal .ant-modal-close').click(),
-        modalSelector: '.query-history-window-modal'
+        modalSelector: '.query-history-window-modal',
+        assertOpen: async (modal) => assertModalCentered(page, modal, 920)
       })
       expect(historyMetrics.openMs, 'history modal opens too slowly').toBeLessThan(1000)
       expect(historyMetrics.closeMs, 'history modal closes too slowly').toBeLessThan(850)
@@ -4489,7 +5104,24 @@ test.describe('workspace regression', () => {
         label: 'settings',
         open: async () => page.locator('.app-header .toolbar-icon-btn[aria-label="设置"]').click(),
         close: async () => page.locator('.settings-window-modal .ant-modal-close').click(),
-        modalSelector: '.settings-window-modal'
+        modalSelector: '.settings-window-modal',
+        assertOpen: async (modal) => {
+          await assertModalCentered(page, modal, 1160)
+          const syncMenuItem = modal
+            .locator('.settings-sidebar .ant-menu-item')
+            .filter({ hasText: '同步与版本' })
+          await expect(syncMenuItem).toBeVisible()
+          await expect
+            .poll(
+              () =>
+                syncMenuItem.locator('.ant-menu-title-content').evaluate((node) => {
+                  const content = node as HTMLElement
+                  return content.scrollWidth <= content.clientWidth
+                }),
+              { message: '同步与版本菜单项不能显示省略号' }
+            )
+            .toBe(true)
+        }
       })
       expect(settingsMetrics.openMs, 'settings modal opens too slowly').toBeLessThan(900)
       expect(settingsMetrics.closeMs, 'settings modal closes too slowly').toBeLessThan(700)
@@ -4499,7 +5131,8 @@ test.describe('workspace regression', () => {
         open: async () =>
           page.locator('.app-header .toolbar-icon-btn[aria-label="检查更新"]').click(),
         close: async () => page.locator('.update-window-modal .ant-modal-close').click(),
-        modalSelector: '.update-window-modal'
+        modalSelector: '.update-window-modal',
+        assertOpen: async (modal) => assertModalCentered(page, modal, 740)
       })
       expect(updateMetrics.openMs, 'update modal opens too slowly').toBeLessThan(900)
       expect(updateMetrics.closeMs, 'update modal closes too slowly').toBeLessThan(700)
@@ -4508,7 +5141,8 @@ test.describe('workspace regression', () => {
         label: 'import-connection',
         open: async () => page.locator('.resource-header .resource-import').click(),
         close: async () => page.locator('.import-connection-modal .ant-modal-close').click(),
-        modalSelector: '.import-connection-modal'
+        modalSelector: '.import-connection-modal',
+        assertOpen: async (modal) => assertModalCentered(page, modal, 960)
       })
       expect(importMetrics.openMs, 'import connection modal opens too slowly').toBeLessThan(900)
       expect(importMetrics.closeMs, 'import connection modal closes too slowly').toBeLessThan(900)
@@ -4521,7 +5155,8 @@ test.describe('workspace regression', () => {
           await clickVisibleDropdownMenuItem(page, 'SQLite')
         },
         close: async () => page.locator('.connection-editor-modal .ant-modal-close').click(),
-        modalSelector: '.connection-editor-modal'
+        modalSelector: '.connection-editor-modal',
+        assertOpen: async (modal) => assertModalCentered(page, modal, 620)
       })
       expect(connectionMetrics.openMs, 'connection editor opens too slowly').toBeLessThan(1100)
       expect(connectionMetrics.closeMs, 'connection editor closes too slowly').toBeLessThan(700)
@@ -4629,6 +5264,93 @@ test.describe('workspace regression', () => {
     }
   })
 
+  test('AI module should stay unavailable until installed while retaining saved settings and sessions @bug', async () => {
+    const userDataDir = readFixtureUserDataDir()
+    const electronApp = await launchRegressionApp({ aiModuleEnabled: false })
+    let page
+    let originalConfigs
+    let originalSessions
+
+    try {
+      page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      originalConfigs = await page.evaluate(() => window.api.getAIConfigs())
+      originalSessions = await page.evaluate(() => window.api.getAISessions())
+
+      await expect(page.locator('.ai-dock-panel')).toHaveCount(0)
+      await page.locator('.app-header .toolbar-icon-btn[aria-label="安装 AI 助手模块"]').click()
+      const modal = page.locator('.settings-window-modal')
+      await expect(modal).toBeVisible({ timeout: 10000 })
+      await expect(modal.getByText('AI 助手模块尚未安装')).toBeVisible()
+      await expect(modal.getByRole('button', { name: '安装 AI 助手' })).toBeVisible()
+
+      const message = await page.evaluate(async () => {
+        try {
+          await window.api.requestJson('/ai/ping', { method: 'POST', body: '{}' })
+          return ''
+        } catch (error) {
+          return error instanceof Error ? error.message : String(error)
+        }
+      })
+      expect(message).toContain('AI 助手模块未安装')
+
+      const saved = await page.evaluate(async () => {
+        const configs = [
+          {
+            id: 'legacy-ai-config',
+            name: '旧配置',
+            enabled: true,
+            provider: 'openai-compatible',
+            base_url: 'https://example.com/v1',
+            api_key: 'legacy-key',
+            model: 'legacy-model',
+            max_context_tokens: 4096
+          }
+        ]
+        const sessions = [
+          { id: 'legacy-ai-session', title: '旧会话', createdAt: 1, updatedAt: 1, messages: [] }
+        ]
+        await window.api.setAIConfigs(configs)
+        await window.api.setAISessions(sessions)
+        return {
+          configs: await window.api.getAIConfigs(),
+          sessions: await window.api.getAISessions()
+        }
+      })
+      expect(saved.configs).toHaveLength(1)
+      expect(saved.configs[0].api_key).toBe('legacy-key')
+      expect(saved.sessions).toHaveLength(1)
+      expect(saved.sessions[0].title).toBe('旧会话')
+
+      const staleInstallPath = path.join(userDataDir, 'modules', 'ai', '1.0.0')
+      fs.mkdirSync(staleInstallPath, { recursive: true })
+      fs.writeFileSync(path.join(staleInstallPath, 'stale-install.txt'), 'stale', 'utf8')
+
+      await modal.getByRole('button', { name: '安装 AI 助手' }).click()
+      await expect(modal.locator('.ai-settings-add-btn')).toBeVisible({ timeout: 90000 })
+      await expect(modal).toContainText('旧配置')
+
+      const routeProbe = await page.evaluate(() =>
+        window.api.requestJson('/ai/ping', { method: 'POST', body: '{}' })
+      )
+      expect(routeProbe.__datadjinnApiError).toEqual(expect.any(Array))
+
+      await page.evaluate(() => window.api.uninstallOptionalModule('ai'))
+    } finally {
+      if (page && originalConfigs && originalSessions) {
+        await page.evaluate(
+          async ({ configs, sessions }) => {
+            await window.api.setAIConfigs(configs)
+            await window.api.setAISessions(sessions)
+          },
+          { configs: originalConfigs, sessions: originalSessions }
+        )
+      }
+      await electronApp.close()
+    }
+  })
+
   test('AI settings API key field should keep a single border @bug', async () => {
     const electronApp = await launchRegressionApp()
 
@@ -4638,9 +5360,10 @@ test.describe('workspace regression', () => {
       await waitForAppReady(page)
       await ensureWindowSize(page)
 
-      await page.locator('.ai-panel-action-buttons .ai-panel-ghost-btn').last().click()
-      const modal = page.locator('.ai-settings-modal')
+      await page.locator('.app-header .toolbar-icon-btn[aria-label="设置"]').click()
+      const modal = page.locator('.settings-window-modal')
       await expect(modal).toBeVisible({ timeout: 10000 })
+      await modal.getByRole('menuitem', { name: 'AI' }).click()
       await modal.locator('.ai-settings-add-btn').click()
       await modal.locator('.ai-config-collapse .ant-collapse-header').first().click()
 
@@ -4671,6 +5394,150 @@ test.describe('workspace regression', () => {
         'API key wrapper should keep the single visible border'
       ).toBe('1px')
     } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('MCP settings should default to disabled and persist connection restrictions @bug', async () => {
+    const electronApp = await launchRegressionApp({ aiModuleEnabled: false })
+
+    try {
+      const page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+
+      const originalSettings = await page.evaluate(() => window.api.getMcpSettings())
+      const originalModules = await page.evaluate(() => window.api.getOptionalModules())
+      try {
+        await page.evaluate(async () => {
+          await window.api.uninstallOptionalModule('mcp')
+          await window.api.setMcpSettings({
+            enabled: false,
+            allowWrite: false,
+            restrictConnections: false,
+            allowedConnectionIds: []
+          })
+        })
+        await page.locator('.app-header .toolbar-icon-btn[aria-label="设置"]').click()
+        const modal = page.locator('.settings-window-modal')
+        await modal.getByRole('menuitem', { name: '扩展' }).click()
+        const aiModuleCard = modal.locator('.settings-section-card').filter({ hasText: 'AI 助手' })
+        await expect(aiModuleCard.getByText('未安装')).toBeVisible()
+        const moduleCard = modal.locator('.settings-section-card').filter({ hasText: '本机 MCP 服务' })
+        await expect(moduleCard.getByText('未安装')).toBeVisible()
+        await moduleCard.locator('.optional-module-install-btn').click()
+        await expect(moduleCard.locator('.optional-module-status')).toHaveText('安装中')
+        await expect(moduleCard.locator('.optional-module-install-btn')).toBeDisabled()
+        await expect(moduleCard.getByText('已安装')).toBeVisible({ timeout: 90000 })
+
+        await modal.getByRole('menuitem', { name: 'MCP' }).click()
+        const card = modal.locator('.mcp-settings-card')
+        await expect(card.locator('.mcp-launch-command')).toHaveValue(/datadjinn-mcp\.exe$/i)
+        await expect(card).toContainText('命令参数：无')
+        const switches = card.locator('.ant-switch')
+        await expect(switches.nth(0)).toHaveAttribute('aria-checked', 'false')
+        await expect(switches.nth(1)).toBeDisabled()
+        await switches.nth(0).click()
+        await switches.nth(2).click()
+        await expect(card.locator('.ant-select')).toBeVisible()
+        await card.locator('.ant-select').click()
+        await page.locator('.ant-select-dropdown:visible .ant-select-item').first().click()
+        await expect.poll(() => page.evaluate(() => window.api.getMcpSettings())).toMatchObject({
+          enabled: true,
+          allowWrite: false,
+          restrictConnections: true,
+          allowedConnectionIds: [fixtureConnectionId]
+        })
+      } finally {
+        await page.evaluate(
+          async ({ settings, modules }) => {
+            const mcpWasInstalled = modules.some((module) => module.id === 'mcp' && module.installed)
+            if (mcpWasInstalled) {
+              await window.api.installOptionalModule('mcp')
+            } else {
+              await window.api.uninstallOptionalModule('mcp')
+            }
+            await window.api.setMcpSettings(settings)
+          },
+          { settings: originalSettings, modules: originalModules }
+        )
+      }
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('JDBC database support should be discoverable as one extension before installation @bug', async () => {
+    const electronApp = await launchRegressionApp({ aiModuleEnabled: false })
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+
+      await page.locator('.app-header .toolbar-icon-btn[aria-label="设置"]').click()
+      const modal = page.locator('.settings-window-modal')
+      await modal.getByRole('menuitem', { name: '扩展' }).click()
+
+      const jdbcCard = modal.locator('.settings-section-card').filter({ hasText: 'JDBC 数据库支持' })
+      await expect(jdbcCard.getByText('未安装')).toBeVisible()
+      await expect(modal.getByText('Java 17 运行时')).toHaveCount(0)
+
+      await modal.getByRole('menuitem', { name: '驱动管理' }).click()
+      await expect(modal.locator('.settings-jdbc-card')).toContainText('JDBC 数据库支持尚未安装')
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('JDBC database support should install as one extension and provide a usable Java runtime @bug', async () => {
+    const electronApp = await launchRegressionApp({ aiModuleEnabled: false })
+    let page
+    let installedJdbc = false
+
+    try {
+      page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+
+      await page.evaluate(async () => {
+        await window.api.uninstallOptionalModule('jdbc')
+        await window.api.installOptionalModule('jdbc')
+      })
+      installedJdbc = true
+
+      await expect
+        .poll(() => page.evaluate(() => window.api.getBackendStatus().then((status) => status.state)), {
+          timeout: 60000
+        })
+        .toBe('online')
+      const runtimeState = await page.evaluate(async () => ({
+        modules: await window.api.getOptionalModules(),
+        java: await window.api.requestJson('/drivers/java')
+      }))
+      expect(runtimeState.modules).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: 'jdbc', installed: true })
+        ])
+      )
+      expect(runtimeState.modules).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: 'jdbc-runtime' }),
+          expect.objectContaining({ id: 'jre-17' })
+        ])
+      )
+      expect(runtimeState.java.runtimes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            major: expect.any(Number),
+            jvm_path: expect.stringMatching(/jvm\.dll$/i)
+          })
+        ])
+      )
+    } finally {
+      if (page && installedJdbc) {
+        await page.evaluate(() => window.api.uninstallOptionalModule('jdbc'))
+      }
       await electronApp.close()
     }
   })
@@ -8163,7 +9030,7 @@ test.describe('workspace regression', () => {
       await expect
         .poll(async () =>
           activeResult
-            .locator('.editable-cell.cell-selected-runtime, .cell-selected-runtime-host')
+            .locator('.editable-cell.cell-selected-runtime')
             .count()
         )
         .toBeGreaterThan(1)
@@ -8172,7 +9039,7 @@ test.describe('workspace regression', () => {
       await expect
         .poll(async () =>
           activeResult
-            .locator('.editable-cell.cell-selected-runtime, .cell-selected-runtime-host')
+            .locator('.editable-cell.cell-selected-runtime')
             .count()
         )
         .toBe(1)
@@ -8182,7 +9049,7 @@ test.describe('workspace regression', () => {
       })
       await expect(page.locator('.result-cell-context-menu-panel')).toBeVisible({ timeout: 10000 })
       await expect(
-        activeResult.locator('.editable-cell.cell-selected-runtime, .cell-selected-runtime-host')
+        activeResult.locator('.editable-cell.cell-selected-runtime')
       ).toHaveCount(1)
     } finally {
       await electronApp.close()
@@ -8480,6 +9347,7 @@ test.describe('workspace regression', () => {
 
       const confirmModal = page.locator('.connection-delete-confirm-modal.ant-modal')
       await expect(confirmModal).toBeVisible({ timeout: 10000 })
+      await assertModalCentered(page, confirmModal)
       const colors = await confirmModal.evaluate((node) => {
         const parseRgb = (value) => value.match(/\d+/g)?.slice(0, 3).map(Number) ?? null
         const container = node.querySelector('.ant-modal-container')
@@ -8633,6 +9501,7 @@ test.describe('workspace regression', () => {
       await page.getByText('新建分组', { exact: true }).click()
       const folderModal = page.locator('.folder-editor-modal')
       await expect(folderModal).toBeVisible({ timeout: 10000 })
+      await expect(folderModal.locator('input')).toBeFocused()
       await folderModal.locator('input').fill(folderName)
       await page.locator('.ant-modal-footer .ant-btn-primary').last().click()
       await expect(folderModal).toBeHidden()
@@ -8657,6 +9526,44 @@ test.describe('workspace regression', () => {
         })
 
       await expect(treeNode(page, folderKey)).toBeVisible({ timeout: 10000 })
+      const folderNode = treeNode(page, folderKey)
+      const folderBox = await folderNode.boundingBox()
+      expect(folderBox).not.toBeNull()
+      await page.mouse.click(folderBox.x + 48, folderBox.y + folderBox.height / 2, {
+        button: 'right'
+      })
+      const menu = page.locator('.tree-context-menu-panel')
+      await menu.getByText('添加子分组', { exact: true }).click()
+      await expect(folderModal).toBeVisible({ timeout: 10000 })
+      const childFolderName = `Regression child group ${crypto.randomUUID().slice(0, 8)}`
+      await folderModal.locator('input').fill(childFolderName)
+      await page.locator('.ant-modal-footer .ant-btn-primary').last().click()
+      const readChildFolderId = () =>
+        page.evaluate((name) => {
+          const folders = JSON.parse(localStorage.getItem('datadjinn-connection-folders') ?? '[]')
+          return folders.find((folder) => folder?.name === name)?.id ?? null
+        }, childFolderName)
+      await expect.poll(readChildFolderId, { timeout: 10000 }).not.toBeNull()
+      const childFolderId = await readChildFolderId()
+      const childFolderKey = `folder:${childFolderId}`
+      const childFolderNode = treeNode(page, childFolderKey)
+      await expect(childFolderNode).toBeVisible({ timeout: 10000 })
+      expect(await childFolderNode.evaluate((node) => node.closest('.tree-folder-row') !== null)).toBe(true)
+      const childFolderMetrics = await childFolderNode.evaluate((node) => {
+        const treeNode = node.closest('.ant-tree-treenode')
+        const contentWrapper = treeNode?.querySelector(':scope > .ant-tree-node-content-wrapper')
+        return {
+          className: treeNode?.className ?? '',
+          contentLeft: contentWrapper?.getBoundingClientRect().left ?? null
+        }
+      })
+      expect(childFolderMetrics.className).toContain('tree-folder-child-row')
+      expect(childFolderMetrics.contentLeft).not.toBeNull()
+      await expect(folderNode.locator('.folder-title-icon.is-expanded')).toBeVisible()
+      await folderNode.dblclick()
+      await expect(folderNode.locator('.folder-title-icon.is-expanded')).toHaveCount(0)
+      await folderNode.dblclick()
+      await expect(folderNode.locator('.folder-title-icon.is-expanded')).toBeVisible()
       await expect.poll(rootNodeKeys).toEqual(expect.arrayContaining([connectionKey, folderKey]))
       expect((await rootNodeKeys()).indexOf(folderKey)).toBeLessThan(
         (await rootNodeKeys()).indexOf(connectionKey)
@@ -8678,16 +9585,17 @@ test.describe('workspace regression', () => {
         'a legacy mixed root order must still render every folder before root connections'
       ).toBeLessThan((await rootNodeKeys()).indexOf(connectionKey))
 
-      const folderNode = treeNode(page, folderKey)
-      const folderBox = await folderNode.boundingBox()
-      expect(folderBox).not.toBeNull()
-      await page.mouse.click(folderBox.x + 48, folderBox.y + folderBox.height / 2, {
-        button: 'right'
-      })
-      const menu = page.locator('.tree-context-menu-panel')
+      const pinnedFolderBoxAfterReload = await folderNode.boundingBox()
+      expect(pinnedFolderBoxAfterReload).not.toBeNull()
+      await page.mouse.click(
+        pinnedFolderBoxAfterReload.x + 48,
+        pinnedFolderBoxAfterReload.y + pinnedFolderBoxAfterReload.height / 2,
+        { button: 'right' }
+      )
       await expect(menu.getByText('置顶', { exact: true })).toBeVisible({ timeout: 10000 })
       await menu.getByText('置顶', { exact: true }).click()
       await expect.poll(rootNodeKeys).toEqual(expect.arrayContaining([folderKey, connectionKey]))
+      await expect(folderNode.locator('.tree-root-pin-icon')).toBeVisible()
       expect((await rootNodeKeys()).indexOf(folderKey)).toBeLessThan(
         (await rootNodeKeys()).indexOf(connectionKey)
       )
@@ -8709,6 +9617,7 @@ test.describe('workspace regression', () => {
       await expect(menu.getByText('置顶', { exact: true })).toBeVisible({ timeout: 10000 })
       await menu.getByText('置顶', { exact: true }).click()
       await expect.poll(rootNodeKeys).toEqual(expect.arrayContaining([folderKey, connectionKey]))
+      await expect(connectionNode.locator('.tree-root-pin-icon')).toBeVisible()
       expect(
         (await rootNodeKeys()).indexOf(folderKey),
         'pinning a root connection must not move it before the folder section'
@@ -8750,6 +9659,24 @@ test.describe('workspace regression', () => {
           ?.getBoundingClientRect().left ?? null
       )
       expect(folderMetrics.contentLeft).toBe(connectionContentLeft)
+      expect(childFolderMetrics.contentLeft - folderMetrics.contentLeft).toBeGreaterThanOrEqual(8)
+      expect(childFolderMetrics.contentLeft - folderMetrics.contentLeft).toBeLessThanOrEqual(14)
+
+      const connectionBoxBeforeMoveMenu = await connectionNode.boundingBox()
+      expect(connectionBoxBeforeMoveMenu).not.toBeNull()
+      await page.mouse.click(
+        connectionBoxBeforeMoveMenu.x + 80,
+        connectionBoxBeforeMoveMenu.y + connectionBoxBeforeMoveMenu.height / 2,
+        { button: 'right' }
+      )
+      const moveToFolderMenu = page.locator('.tree-context-menu-panel')
+      await moveToFolderMenu.locator('.ant-menu-submenu').filter({ hasText: '添加到分组' }).hover()
+      const folderPopup = page.locator('.ant-menu-submenu-popup:visible').last()
+      await expect(folderPopup.getByText(folderName, { exact: true })).toBeVisible({ timeout: 10000 })
+      await folderPopup.locator('.ant-menu-submenu').filter({ hasText: folderName }).hover()
+      const childFolderPopup = page.locator('.ant-menu-submenu-popup:visible').last()
+      await expect(childFolderPopup.getByText(childFolderName, { exact: true })).toBeVisible({ timeout: 10000 })
+      await page.keyboard.press('Escape')
       await folderNode.dblclick()
       await expect
         .poll(
@@ -8863,6 +9790,487 @@ test.describe('workspace regression', () => {
           })
         }, { snapshot: storageSnapshot })
       }
+      await electronApp.close()
+    }
+  })
+
+  test('dragging a connection within a folder should update its visible and persisted order @bug', async () => {
+    const fixtureUserDataDir = readFixtureUserDataDir()
+    const connectionsPath = path.join(fixtureUserDataDir, 'connections.json')
+    const originalConnectionsRaw = fs.readFileSync(connectionsPath, 'utf-8')
+    const connectionStore = JSON.parse(originalConnectionsRaw)
+    const sourceConnection = connectionStore.connections.find(
+      (item) => item.connection_id === fixtureConnectionId
+    )
+    if (!sourceConnection) {
+      throw new Error(`Fixture connection not found: ${fixtureConnectionId}`)
+    }
+
+    const folderId = `regression-folder-drag-${crypto.randomUUID()}`
+    const firstConnectionId = fixtureConnectionId
+    const secondConnectionId = `regression-folder-drag-connection-${crypto.randomUUID()}`
+    const thirdConnectionId = `regression-folder-drag-connection-${crypto.randomUUID()}`
+    connectionStore.connections = connectionStore.connections.filter(
+      (item) => item.connection_id !== secondConnectionId && item.connection_id !== thirdConnectionId
+    )
+    connectionStore.connections.push({
+      ...sourceConnection,
+      connection_id: secondConnectionId,
+      name: 'Regression folder drag target'
+    })
+    connectionStore.connections.push({
+      ...sourceConnection,
+      connection_id: thirdConnectionId,
+      name: 'Regression folder drag third target'
+    })
+    fs.writeFileSync(connectionsPath, JSON.stringify(connectionStore, null, 2), 'utf-8')
+
+    const electronApp = await launchRegressionApp()
+    let page
+    let storageSnapshot
+    const storageKeys = [
+      'datadjinn-connection-folders',
+      'datadjinn-connection-folder-assignments',
+      'datadjinn-connection-folder-order',
+      'datadjinn-folder-connection-order',
+      'datadjinn-root-item-order',
+      'datadjinn-root-item-order-customized',
+      'datadjinn-pinned-root-item-ids'
+    ]
+
+    try {
+      page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      storageSnapshot = await page.evaluate((keys) =>
+        Object.fromEntries(keys.map((key) => [key, localStorage.getItem(key)])), storageKeys)
+      await page.evaluate(
+        ({ nextFolderId, firstId, secondId, thirdId }) => {
+          localStorage.setItem(
+            'datadjinn-connection-folders',
+            JSON.stringify([{ id: nextFolderId, name: 'Regression folder drag' }])
+          )
+          localStorage.setItem(
+            'datadjinn-connection-folder-assignments',
+            JSON.stringify({
+              [firstId]: nextFolderId,
+              [secondId]: nextFolderId,
+              [thirdId]: nextFolderId
+            })
+          )
+          localStorage.setItem('datadjinn-connection-folder-order', JSON.stringify([nextFolderId]))
+          localStorage.setItem(
+            'datadjinn-folder-connection-order',
+            JSON.stringify({ [nextFolderId]: [firstId, secondId, thirdId] })
+          )
+          localStorage.setItem('datadjinn-root-item-order', JSON.stringify([`folder:${nextFolderId}`]))
+          localStorage.setItem('datadjinn-root-item-order-customized', 'true')
+          localStorage.setItem('datadjinn-pinned-root-item-ids', JSON.stringify([]))
+        },
+        {
+          nextFolderId: folderId,
+          firstId: firstConnectionId,
+          secondId: secondConnectionId,
+          thirdId: thirdConnectionId
+        }
+      )
+      await page.reload()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+
+      const folderKey = `folder:${folderId}`
+      const firstKey = `connection:${firstConnectionId}`
+      const secondKey = `connection:${secondConnectionId}`
+      const thirdKey = `connection:${thirdConnectionId}`
+      await doubleClickTreeNode(page, folderKey)
+      const firstNode = treeNode(page, firstKey)
+      const secondNode = treeNode(page, secondKey)
+      const thirdNode = treeNode(page, thirdKey)
+      await expect(firstNode).toBeVisible({ timeout: 10000 })
+      await expect(secondNode).toBeVisible({ timeout: 10000 })
+      await expect(thirdNode).toBeVisible({ timeout: 10000 })
+
+      const readFolderOrder = () =>
+        page.evaluate((nextFolderId) => {
+          const order = JSON.parse(localStorage.getItem('datadjinn-folder-connection-order') ?? '{}')
+          return order[nextFolderId] ?? []
+        }, folderId)
+      const moveBefore = async (movingNode, targetNode, expectedOrder) => {
+        await movingNode.dragTo(targetNode, { targetPosition: { x: 24, y: 3 } })
+        await expect.poll(readFolderOrder, { timeout: 10000 }).toEqual(expectedOrder)
+      }
+      const moveAfter = async (movingNode, targetNode, expectedOrder) => {
+        const targetBox = await targetNode.boundingBox()
+        expect(targetBox).not.toBeNull()
+        await movingNode.dragTo(targetNode, {
+          targetPosition: { x: 24, y: Math.max(3, Math.floor(targetBox.height - 3)) }
+        })
+        await expect.poll(readFolderOrder, { timeout: 10000 }).toEqual(expectedOrder)
+      }
+
+      await moveBefore(thirdNode, firstNode, [thirdConnectionId, firstConnectionId, secondConnectionId])
+      await moveBefore(secondNode, thirdNode, [secondConnectionId, thirdConnectionId, firstConnectionId])
+      await moveBefore(firstNode, secondNode, [firstConnectionId, secondConnectionId, thirdConnectionId])
+      await moveAfter(firstNode, thirdNode, [secondConnectionId, thirdConnectionId, firstConnectionId])
+      await moveBefore(firstNode, secondNode, [firstConnectionId, secondConnectionId, thirdConnectionId])
+
+      const visibleFolderOrder = () =>
+        page.evaluate((nextFolderId) =>
+          Array.from(document.querySelectorAll('.connection-tree-title[data-connection-id]'))
+            .filter(
+              (node) =>
+                node.getAttribute('data-connection-id') &&
+                node.closest('.tree-folder-connection-row')
+            )
+            .map((node) => node.getAttribute('data-connection-id'))
+            .filter(Boolean))
+      await expect.poll(visibleFolderOrder, { timeout: 10000 }).toEqual([
+        firstConnectionId,
+        secondConnectionId,
+        thirdConnectionId
+      ])
+    } finally {
+      if (page && storageSnapshot) {
+        await page.evaluate(({ snapshot }) => {
+          Object.entries(snapshot).forEach(([key, value]) => {
+            if (value === null) {
+              localStorage.removeItem(key)
+            } else {
+              localStorage.setItem(key, value)
+            }
+          })
+        }, { snapshot: storageSnapshot })
+      }
+      await electronApp.close()
+      fs.writeFileSync(connectionsPath, originalConnectionsRaw, 'utf-8')
+    }
+  })
+
+  test('moving a connection to a group should retain the resource tree scroll position @bug', async () => {
+    const fixtureUserDataDir = readFixtureUserDataDir()
+    const connectionsPath = path.join(fixtureUserDataDir, 'connections.json')
+    const originalConnectionsRaw = fs.readFileSync(connectionsPath, 'utf-8')
+    const connectionStore = JSON.parse(originalConnectionsRaw)
+    const sourceConnection = connectionStore.connections.find(
+      (item) => item.connection_id === fixtureConnectionId
+    )
+    if (!sourceConnection) {
+      throw new Error(`Fixture connection not found: ${fixtureConnectionId}`)
+    }
+    const extraConnections = Array.from({ length: 180 }, (_, index) => ({
+      ...sourceConnection,
+      connection_id: `regression-tree-scroll-${String(index + 1).padStart(2, '0')}`,
+      name: `Regression tree scroll ${String(index + 1).padStart(2, '0')}`
+    }))
+    connectionStore.connections = connectionStore.connections.filter(
+      (item) => !item.connection_id.startsWith('regression-tree-scroll-')
+    )
+    connectionStore.connections.push(...extraConnections)
+    fs.writeFileSync(connectionsPath, JSON.stringify(connectionStore, null, 2), 'utf-8')
+
+    const electronApp = await launchRegressionApp()
+    let page
+    let storageSnapshot
+    const storageKeys = [
+      'datadjinn-connection-folders',
+      'datadjinn-connection-folder-assignments',
+      'datadjinn-connection-folder-order',
+      'datadjinn-folder-connection-order',
+      'datadjinn-root-item-order',
+      'datadjinn-root-item-order-customized',
+      'datadjinn-pinned-root-item-ids'
+    ]
+    const folderId = `regression-tree-scroll-folder-${crypto.randomUUID()}`
+
+    try {
+      page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      storageSnapshot = await page.evaluate((keys) =>
+        Object.fromEntries(keys.map((key) => [key, localStorage.getItem(key)])), storageKeys)
+      await page.evaluate((nextFolderId) => {
+        localStorage.setItem(
+          'datadjinn-connection-folders',
+          JSON.stringify([{ id: nextFolderId, name: 'Regression tree scroll folder' }])
+        )
+        localStorage.setItem('datadjinn-connection-folder-assignments', JSON.stringify({}))
+        localStorage.setItem('datadjinn-connection-folder-order', JSON.stringify([nextFolderId]))
+        localStorage.setItem('datadjinn-folder-connection-order', JSON.stringify({ [nextFolderId]: [] }))
+      }, folderId)
+      await page.reload()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+
+      const targetConnectionId = extraConnections.at(-1).connection_id
+      const targetKey = `connection:${targetConnectionId}`
+      await expect.poll(async () => revealTreeNode(page, targetKey), { timeout: 15000 }).toBe(true)
+      const viewport = page.locator('.resource-tree-viewport')
+      const scrollBefore = await viewport.evaluate((node) => {
+        const holder = node.querySelector('.ant-tree-list-holder')
+        if (!(holder instanceof HTMLElement)) {
+          return null
+        }
+        holder.scrollTop = Math.max(30, holder.scrollHeight - holder.clientHeight - 12)
+        return holder.scrollTop
+      })
+      expect(scrollBefore).toBeGreaterThan(0)
+      const targetNode = treeNode(page, targetKey)
+      await expect(targetNode).toBeVisible({ timeout: 10000 })
+      const targetBox = await targetNode.boundingBox()
+      expect(targetBox).not.toBeNull()
+      await page.mouse.click(targetBox.x + 80, targetBox.y + targetBox.height / 2, {
+        button: 'right'
+      })
+      const submenu = page.locator('.tree-context-menu-panel')
+      await submenu.getByText('添加到分组', { exact: true }).hover()
+      await page.getByText('Regression tree scroll folder', { exact: true }).last().click()
+      await expect.poll(() => viewport.evaluate((node) => {
+        const holder = node.querySelector('.ant-tree-list-holder')
+        return holder instanceof HTMLElement ? holder.scrollTop : null
+      })).toBeGreaterThanOrEqual(scrollBefore - 2)
+    } finally {
+      if (page && storageSnapshot) {
+        await page.evaluate(({ snapshot }) => {
+          Object.entries(snapshot).forEach(([key, value]) => {
+            if (value === null) {
+              localStorage.removeItem(key)
+            } else {
+              localStorage.setItem(key, value)
+            }
+          })
+        }, { snapshot: storageSnapshot })
+      }
+      await electronApp.close()
+      fs.writeFileSync(connectionsPath, originalConnectionsRaw, 'utf-8')
+    }
+  })
+
+  test('refreshing a preview should preserve its horizontal table position @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openFixtureTable(page, largeTableName)
+
+      const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      const initialScrollPosition = await activeResult.evaluate((node) => {
+        const scrollElements = Array.from(
+          node.querySelectorAll<HTMLElement>(
+            '.result-table .ant-table-tbody-virtual-holder, .result-table .ant-table-body, .result-table .ant-table-tbody-virtual-scrollbar-horizontal'
+          )
+        )
+        const holder = scrollElements.find((element) => element.scrollWidth > element.clientWidth + 1)
+        if (!holder) {
+          return {
+            holder: null,
+            scrollbarTransform: null,
+            elements: scrollElements.map((element) => ({
+              className: element.className,
+              clientWidth: element.clientWidth,
+              scrollWidth: element.scrollWidth,
+              scrollLeft: element.scrollLeft
+            }))
+          }
+        }
+        holder.scrollLeft = Math.max(80, (holder.scrollWidth - holder.clientWidth) * 0.65)
+        const horizontalScrollbarThumb = node.querySelector<HTMLElement>(
+          '.result-table .ant-table-tbody-virtual-scrollbar-horizontal'
+            + ' .ant-table-tbody-virtual-scrollbar-thumb'
+        )
+        const header = node.querySelector<HTMLElement>('.result-table .ant-table-thead')
+        const headerScroller = node.querySelector<HTMLElement>('.result-table .ant-table-header')
+        return {
+          horizontalOffset: headerScroller?.scrollLeft || holder.scrollLeft,
+          scrollbarTransform: horizontalScrollbarThumb
+            ? window.getComputedStyle(horizontalScrollbarThumb).transform
+            : null,
+          headerTransform: header ? window.getComputedStyle(header).transform : null,
+          elements: scrollElements.map((element) => ({
+            className: element.className,
+            clientWidth: element.clientWidth,
+            scrollWidth: element.scrollWidth,
+            scrollLeft: element.scrollLeft
+          }))
+        }
+      })
+      console.log(`[scroll][preview-before-refresh] ${JSON.stringify(initialScrollPosition)}`)
+      expect(initialScrollPosition?.horizontalOffset).toBeGreaterThan(0)
+      expect(initialScrollPosition?.scrollbarTransform).not.toBe('')
+      await activeResult.screenshot({ path: 'test-results/preview-scroll-before-refresh.png' })
+      await activeResult.getByRole('button', { name: '刷新' }).click()
+      await expect(activeResult.locator('.result-table-loading-overlay')).toHaveCount(0, {
+        timeout: 30000
+      })
+      await page.waitForTimeout(160)
+      await expect.poll(() => activeResult.evaluate((node) => {
+        const holder = Array.from(
+          node.querySelectorAll<HTMLElement>(
+            '.result-table .ant-table-tbody-virtual-holder, .result-table .ant-table-body, .result-table .ant-table-tbody-virtual-scrollbar-horizontal'
+          )
+        ).find((element) => element.scrollWidth > element.clientWidth + 1)
+        const horizontalScrollbarThumb = node.querySelector<HTMLElement>(
+          '.result-table .ant-table-tbody-virtual-scrollbar-horizontal'
+            + ' .ant-table-tbody-virtual-scrollbar-thumb'
+        )
+        const header = node.querySelector<HTMLElement>('.result-table .ant-table-thead')
+        const headerScroller = node.querySelector<HTMLElement>('.result-table .ant-table-header')
+        const headerTransform = header ? window.getComputedStyle(header).transform : null
+        return {
+          horizontalOffset: headerScroller?.scrollLeft || holder?.scrollLeft || null,
+          scrollbarTransform: horizontalScrollbarThumb
+            ? window.getComputedStyle(horizontalScrollbarThumb).transform
+            : null,
+          headerTransform
+        }
+      }), { timeout: 10000 }).toEqual({
+        horizontalOffset: expect.closeTo(initialScrollPosition.horizontalOffset, 2),
+        scrollbarTransform: initialScrollPosition.scrollbarTransform,
+        headerTransform: initialScrollPosition.headerTransform
+      })
+      await activeResult.screenshot({ path: 'test-results/preview-scroll-after-refresh.png' })
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('refreshing a preview should preserve the horizontal position reached with Shift plus mouse wheel @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openFixtureTable(page, largeTableName)
+
+      const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      const holder = activeResult.locator('.result-table .ant-table-tbody-virtual-holder')
+      await expect(holder).toBeVisible({ timeout: 30000 })
+      const holderBox = await holder.boundingBox()
+      expect(holderBox).not.toBeNull()
+
+      await page.keyboard.down('Shift')
+      await page.mouse.move(holderBox.x + holderBox.width / 2, holderBox.y + holderBox.height / 2)
+      await page.mouse.wheel(0, 1200)
+      await page.keyboard.up('Shift')
+
+      const readHorizontalOffset = () =>
+        activeResult.evaluate((node) => {
+          const currentHolder = node.querySelector<HTMLElement>('.ant-table-tbody-virtual-holder')
+          const header = node.querySelector<HTMLElement>('.ant-table-header')
+          return {
+            headerScrollLeft: header?.scrollLeft ?? 0,
+            scrollWidth: currentHolder?.scrollWidth ?? 0,
+            clientWidth: currentHolder?.clientWidth ?? 0
+          }
+        })
+      const afterShiftWheel = await readHorizontalOffset()
+      expect(afterShiftWheel.scrollWidth).toBeGreaterThan(afterShiftWheel.clientWidth)
+      expect(afterShiftWheel.headerScrollLeft).toBeGreaterThan(0)
+
+      await activeResult.screenshot({ path: 'test-results/shift-wheel-before-refresh.png' })
+      await activeResult.getByRole('button', { name: '刷新' }).click()
+      await expect(activeResult.locator('.result-table-loading-overlay')).toHaveCount(0, {
+        timeout: 30000
+      })
+      await expect
+        .poll(
+          async () => (await readHorizontalOffset()).headerScrollLeft,
+          { timeout: 10000 }
+        )
+        .toBeCloseTo(afterShiftWheel.headerScrollLeft, 0)
+      await activeResult.screenshot({ path: 'test-results/shift-wheel-after-refresh.png' })
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('virtual table headers should stay aligned after Shift wheel and drag auto-scroll @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openFixtureTable(page, largeTableName)
+
+      const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      const readColumnAlignment = () =>
+        activeResult.evaluate((node) => {
+          const holder = node.querySelector<HTMLElement>('.ant-table-tbody-virtual-holder')
+          const header = node.querySelector<HTMLElement>('.ant-table-header')
+          const headerButton = Array.from(
+            node.querySelectorAll<HTMLElement>('.ant-table-header [data-column-button]')
+          ).at(-1)
+          const column = headerButton?.dataset.columnButton
+          const headerCell = headerButton?.closest<HTMLElement>('th')
+          const bodyCell = column
+            ? node.querySelector<HTMLElement>(
+                `.ant-table-tbody-virtual .editable-cell[data-cell-column-key="${CSS.escape(column)}"]`
+              )
+            : null
+          if (!holder || !header || !headerCell || !bodyCell) {
+            return null
+          }
+          return {
+            holderScrollLeft: holder.scrollLeft,
+            headerScrollLeft: header.scrollLeft,
+            headerLeft: headerCell.getBoundingClientRect().left,
+            bodyLeft: bodyCell.getBoundingClientRect().left
+          }
+        })
+
+      const holder = activeResult.locator('.result-table .ant-table-tbody-virtual-holder')
+      await expect(holder).toBeVisible({ timeout: 30000 })
+      const holderBox = await holder.boundingBox()
+      expect(holderBox).not.toBeNull()
+
+      await page.keyboard.down('Shift')
+      await page.mouse.move(holderBox.x + holderBox.width / 2, holderBox.y + holderBox.height / 2)
+      await page.mouse.wheel(0, 1200)
+      await page.keyboard.up('Shift')
+      await expect.poll(readColumnAlignment, { timeout: 10000 }).toEqual({
+        holderScrollLeft: expect.any(Number),
+        headerScrollLeft: expect.any(Number),
+        headerLeft: expect.any(Number),
+        bodyLeft: expect.any(Number)
+      })
+      const shiftWheelAlignment = await readColumnAlignment()
+      expect(shiftWheelAlignment.headerScrollLeft).toBeGreaterThan(0)
+      expect(Math.abs(shiftWheelAlignment.headerLeft - shiftWheelAlignment.bodyLeft)).toBeLessThanOrEqual(2)
+
+      await holder.evaluate((element) => {
+        element.dispatchEvent(
+          new WheelEvent('wheel', {
+            bubbles: true,
+            cancelable: true,
+            deltaX: -10000
+          })
+        )
+      })
+      const firstCell = activeResult.locator('.result-table .editable-cell[data-cell-key]').first()
+      const firstCellBox = await firstCell.boundingBox()
+      expect(firstCellBox).not.toBeNull()
+      await page.mouse.move(firstCellBox.x + firstCellBox.width / 2, firstCellBox.y + firstCellBox.height / 2)
+      await page.mouse.down()
+      await page.mouse.move(holderBox.x + holderBox.width + 100, firstCellBox.y + firstCellBox.height / 2, {
+        steps: 8
+      })
+      await page.waitForTimeout(450)
+      await page.mouse.up()
+
+      const dragAlignment = await readColumnAlignment()
+      expect(dragAlignment.headerScrollLeft).toBeGreaterThan(0)
+      expect(Math.abs(dragAlignment.headerLeft - dragAlignment.bodyLeft)).toBeLessThanOrEqual(2)
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+    } finally {
       await electronApp.close()
     }
   })
@@ -9578,7 +10986,7 @@ test.describe('workspace regression', () => {
     expect(panelSource).toContain("const canRename = isCreateMode || connection?.database_type === 'dm'")
     expect(panelSource).toContain('disabled={!canRename}')
     expect(appSource).toContain('encodeURIComponent(editingOriginalTableName)')
-    expect(appSource).toContain('table_name: editingTableName.trim()')
+    expect(appSource).toContain('table_name: updatedTableName')
     expect(appSource).toContain('source_name: column.key')
   })
 

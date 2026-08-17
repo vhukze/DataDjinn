@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import ctypes
+import importlib
 import json
 import os
 import re
@@ -17,7 +18,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import Engine, URL, create_engine, text
 from sqlalchemy.dialects import registry
 from sqlalchemy.engine import default
@@ -25,6 +26,7 @@ from sqlalchemy.engine.interfaces import BindTyping
 from sqlalchemy.pool import QueuePool
 
 from app.db.driver_manager import driver_manager
+from app.db.jdbc_bridge import load_jdbc_bridge
 from app.db import java_runtime
 from app.db.mongo_utils import MongoClient, is_mongo_client
 from app.db.redis_utils import Redis, is_redis_client
@@ -211,7 +213,7 @@ def _prepare_jdbc_runtime(required_java_major: int | None = None) -> str | None:
 
 
 def _ensure_jpype_support_library(jpype_module: Any) -> Path:
-    import jpype._core as jpype_core
+    jpype_core = importlib.import_module("jpype._core")
 
     expected = Path(jpype_core.__file__).resolve().parent.parent / "org.jpype.jar"
     if expected.exists():
@@ -521,6 +523,8 @@ class StoredConnection(BaseModel):
     encrypted_ssh_password: str | None = None
     ssh_private_key_path: str | None = None
     encrypted_ssh_passphrase: str | None = None
+    git_versioning_enabled: bool = False
+    git_versioning_scopes: list[str] = Field(default_factory=list)
 
 
 @dataclass
@@ -656,6 +660,97 @@ class ConnectionManager:
     def list_connections(self) -> list[ConnectionInfo]:
         return list(self._connections.values())
 
+    def export_sync_connections(self) -> dict[str, dict[str, Any]]:
+        return {
+            connection_id: self._request_from_stored(stored).model_dump(
+                exclude={
+                    "driver_id",
+                    "driver_path",
+                    "dm_driver_id",
+                    "dm_driver_path",
+                    "ssh_private_key_path",
+                }
+            )
+            for connection_id, stored in self._stored_connections.items()
+        }
+
+    def replace_sync_connections(
+        self, connections: dict[str, dict[str, Any]]
+    ) -> list[ConnectionInfo]:
+        validated: dict[str, ConnectionRequest] = {}
+        for connection_id, payload in connections.items():
+            normalized_id = connection_id.strip()
+            if not normalized_id or normalized_id != connection_id:
+                raise ValueError("同步连接标识无效")
+            request = ConnectionRequest.model_validate(payload)
+            existing = self._stored_connections.get(connection_id)
+            if existing is not None:
+                request = request.model_copy(
+                    update={
+                        "driver_id": _manual_driver_id(existing),
+                        "driver_path": _manual_driver_path(existing),
+                        "dm_driver_id": existing.dm_driver_id,
+                        "dm_driver_path": existing.dm_driver_path,
+                        "ssh_private_key_path": existing.ssh_private_key_path,
+                    }
+                )
+            else:
+                request = request.model_copy(
+                    update={
+                        "driver_id": None,
+                        "driver_path": None,
+                        "dm_driver_id": None,
+                        "dm_driver_path": None,
+                        "ssh_private_key_path": None,
+                    }
+                )
+            validated[connection_id] = request
+
+        removed_ids = set(self._stored_connections) - set(validated)
+        current_snapshot = self.export_sync_connections()
+        changed_ids = {
+            connection_id
+            for connection_id, request in validated.items()
+            if connection_id not in self._stored_connections
+            or current_snapshot.get(connection_id)
+            != request.model_dump(
+                exclude={
+                    "driver_id",
+                    "driver_path",
+                    "dm_driver_id",
+                    "dm_driver_path",
+                    "ssh_private_key_path",
+                }
+            )
+        }
+        for connection_id in removed_ids | changed_ids:
+            engine = self._engines.pop(connection_id, None)
+            tunnel = self._ssh_tunnels.pop(connection_id, None)
+            self._connection_health_checked_at.pop(connection_id, None)
+            self._dispose_connection_resources(engine, tunnel)
+
+        next_stored_connections = {
+            connection_id: self._stored_connection(connection_id, request)
+            for connection_id, request in validated.items()
+        }
+        self._stored_connections = next_stored_connections
+        self._connections = {
+            connection_id: self._connection_info(
+                connection_id,
+                request,
+                self._stored_connections[connection_id],
+                is_open=connection_id in self._engines,
+            )
+            for connection_id, request in validated.items()
+        }
+        self._unavailable_secret_fields = {
+            connection_id: fields
+            for connection_id, fields in self._unavailable_secret_fields.items()
+            if connection_id in validated
+        }
+        self._save_stored_connections()
+        return self.list_connections()
+
     def get_connection_request(self, connection_id: str) -> ConnectionRequest:
         stored = self._stored_connections.get(connection_id)
 
@@ -683,6 +778,8 @@ class ConnectionManager:
             ssh_password=self._decrypt_stored_secret(stored, "ssh_password", stored.encrypted_ssh_password),
             ssh_private_key_path=stored.ssh_private_key_path,
             ssh_passphrase=self._decrypt_stored_secret(stored, "ssh_passphrase", stored.encrypted_ssh_passphrase),
+            git_versioning_enabled=stored.git_versioning_enabled,
+            git_versioning_scopes=stored.git_versioning_scopes,
         )
 
     def get_password(self, connection_id: str) -> str:
@@ -793,7 +890,32 @@ class ConnectionManager:
             ssh_password=self._decrypt_stored_secret(stored, "ssh_password", stored.encrypted_ssh_password),
             ssh_private_key_path=stored.ssh_private_key_path,
             ssh_passphrase=self._decrypt_stored_secret(stored, "ssh_passphrase", stored.encrypted_ssh_passphrase),
+            git_versioning_enabled=stored.git_versioning_enabled,
+            git_versioning_scopes=stored.git_versioning_scopes,
         )
+
+    def update_git_versioning_scopes(
+        self, connection_id: str, scopes: list[str]
+    ) -> ConnectionRequest:
+        stored = self._stored_connections.get(connection_id)
+        if stored is None:
+            raise ValueError("连接不存在")
+
+        normalized_scopes = list(
+            dict.fromkeys(scope.strip() for scope in scopes if isinstance(scope, str) and scope.strip())
+        )
+        updated = stored.model_copy(update={"git_versioning_scopes": normalized_scopes})
+        self._stored_connections[connection_id] = updated
+        previous_info = self._connections.get(connection_id)
+        self._connections[connection_id] = self._connection_info(
+            connection_id,
+            self._request_from_stored(updated),
+            updated,
+            is_open=connection_id in self._engines,
+            server_version=previous_info.server_version if previous_info else None,
+        )
+        self._save_stored_connections()
+        return self._request_from_stored(updated)
 
     def _decrypt_stored_secret(
         self, stored: StoredConnection, field: str, encrypted_value: str | None
@@ -1293,16 +1415,15 @@ class ConnectionManager:
             jdbc_url = f"jdbc:dm://{request.host}:{request.port}"
 
             try:
-                import jpype
+                jpype, jaydebeapi = load_jdbc_bridge()
                 jpype_support_library = _ensure_jpype_support_library(jpype)
                 if jpype.isJVMStarted():
                     jpype.addClassPath(str(jpype_support_library))
                     jpype.addClassPath(str(jdbc_path))
                 else:
                     jpype.startJVM(jvm_path, classpath=[str(jpype_support_library), str(jdbc_path)])
-                import jaydebeapi
             except ImportError as exc:
-                raise RuntimeError("缺少 JDBC 桥接依赖 jaydebeapi/JPype1，请安装后重试") from exc
+                raise RuntimeError("JDBC 桥接模块无法加载，请在“设置 -> 扩展”中重新安装 JDBC 桥接模块。") from exc
 
             def connect_jdbc():
                 connection = jaydebeapi.connect("dm.jdbc.driver.DmDriver", jdbc_url, [request.username, request.password or ""], str(jdbc_path))
@@ -1359,16 +1480,15 @@ class ConnectionManager:
         jdbc_url = f"{jdbc_scheme}://{request.host}:{request.port}/{request.database}"
 
         try:
-            import jpype
+            jpype, jaydebeapi = load_jdbc_bridge()
             jpype_support_library = _ensure_jpype_support_library(jpype)
             if jpype.isJVMStarted():
                 jpype.addClassPath(str(jpype_support_library))
                 jpype.addClassPath(str(jdbc_path))
             else:
                 jpype.startJVM(jvm_path, classpath=[str(jpype_support_library), str(jdbc_path)])
-            import jaydebeapi
         except ImportError as exc:
-            raise RuntimeError("缺少 JDBC 桥接依赖 jaydebeapi/JPype1，请安装后重试") from exc
+            raise RuntimeError("JDBC 桥接模块无法加载，请在“设置 -> 扩展”中重新安装 JDBC 桥接模块。") from exc
 
         def connect_jdbc():
             connection = jaydebeapi.connect(driver_class, jdbc_url, [request.username, request.password or ""], str(jdbc_path))
@@ -1494,6 +1614,7 @@ class ConnectionManager:
             ),
             is_open=is_open,
             server_version=server_version,
+            git_versioning_enabled=request.git_versioning_enabled,
         )
 
     def _stored_connection(self, connection_id: str, request: ConnectionRequest) -> StoredConnection:
@@ -1523,6 +1644,8 @@ class ConnectionManager:
             encrypted_ssh_password=_encrypt_password(request.ssh_password) if request.ssh_enabled else None,
             ssh_private_key_path=normalized_private_key_path if request.ssh_enabled else None,
             encrypted_ssh_passphrase=_encrypt_password(request.ssh_passphrase) if request.ssh_enabled else None,
+            git_versioning_enabled=bool(request.git_versioning_enabled),
+            git_versioning_scopes=list(dict.fromkeys(request.git_versioning_scopes)),
         )
 
     def _display_database(self, request: ConnectionRequest) -> str:

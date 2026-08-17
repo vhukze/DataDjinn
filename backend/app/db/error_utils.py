@@ -112,7 +112,10 @@ def friendly_error(exc: Exception) -> str:
         msg = str(cause)
         return f'SQL 语句错误：{msg}'
 
-    return str(exc)
+    message = str(exc).strip()
+    if message in {"", "0", "None", "null"}:
+        return "数据库操作失败，驱动未返回有效错误信息，请查看后端日志"
+    return message
 
 
 def _collect_causes(exc: Exception) -> list[Exception]:

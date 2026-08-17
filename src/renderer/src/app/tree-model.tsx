@@ -33,6 +33,7 @@ export type TreeNodeKind =
 export type ConnectionFolder = {
   id: string
   name: string
+  parentId?: string
 }
 
 export type DbObjectGroupMeta = {

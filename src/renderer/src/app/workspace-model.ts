@@ -67,6 +67,8 @@ export type WorkspaceTab = {
   resultVisible?: boolean
   resultCollapsed?: boolean
   resultKind?: 'query' | 'command' | 'error'
+  queryExecutionPhase?: 'opening-connection' | 'executing'
+  multiStatementResults?: MultiStatementResult[]
   commandMessage?: string
   commandAffectedRows?: number | null
   queryEditorHeight?: number
@@ -85,6 +87,15 @@ export type WorkspaceTab = {
   tableRenderVersion?: number
   columnWidths?: Record<string, number>
   persistedAt?: number
+}
+
+export type MultiStatementResult = {
+  index: number
+  sql: string
+  status: 'running' | 'success' | 'error'
+  result?: QueryResponse
+  error?: string
+  affectedRows?: number | null
 }
 
 export type PersistedQueryWorkspace = {

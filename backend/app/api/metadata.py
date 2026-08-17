@@ -1,7 +1,9 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 
 from app.db.connection_manager import connection_manager
 from app.db.error_utils import friendly_error
+from app.data_versioning_runtime import schedule_data_snapshot
+from app.git_versioning.schema_history import contains_schema_mutation, schema_versioning_service
 from app.db.mongo_utils import is_mongo_client
 from app.db.redis_utils import is_redis_client
 from app.db.metadata import apply_redis_data_changes, apply_table_data_changes, create_database, create_oracle_user, create_schema, create_table, drop_database, drop_db_object, ensure_ddl_terminator, get_object_ddl, get_sequence_detail, get_table_comment, list_columns, list_databases, list_db_objects, list_schemas, list_tables, update_table_columns
@@ -25,7 +27,9 @@ def get_databases(connection_id: str) -> DatabasesResponse:
 
 
 @router.post("/{connection_id}/databases", response_model=DatabaseCreateResponse)
-def create_database_endpoint(connection_id: str, request: DatabaseCreateRequest) -> DatabaseCreateResponse:
+def create_database_endpoint(
+    connection_id: str, request: DatabaseCreateRequest, background_tasks: BackgroundTasks
+) -> DatabaseCreateResponse:
     engine = connection_manager.get_engine(connection_id)
 
     if engine is None:
@@ -43,11 +47,14 @@ def create_database_endpoint(connection_id: str, request: DatabaseCreateRequest)
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=friendly_error(exc)) from exc
 
+    schema_versioning_service.schedule_snapshot(background_tasks, connection_id, f"创建数据库 {created.name}")
     return DatabaseCreateResponse(name=created.name, message="创建成功")
 
 
 @router.delete("/{connection_id}/databases/{database_name}")
-def delete_database_endpoint(connection_id: str, database_name: str) -> dict[str, str]:
+def delete_database_endpoint(
+    connection_id: str, database_name: str, background_tasks: BackgroundTasks
+) -> dict[str, str]:
     engine = connection_manager.get_engine(connection_id)
 
     if engine is None:
@@ -60,6 +67,7 @@ def delete_database_endpoint(connection_id: str, database_name: str) -> dict[str
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=friendly_error(exc)) from exc
 
+    schema_versioning_service.schedule_snapshot(background_tasks, connection_id, f"删除数据库 {database_name}")
     return {"message": "数据库删除成功"}
 
 
@@ -106,7 +114,9 @@ def get_tables(connection_id: str, database: str | None = None, pg_database: str
 
 
 @router.post("/{connection_id}/tables", response_model=TableCreateResponse)
-def create_table_endpoint(connection_id: str, request: TableCreateRequest) -> TableCreateResponse:
+def create_table_endpoint(
+    connection_id: str, request: TableCreateRequest, background_tasks: BackgroundTasks
+) -> TableCreateResponse:
     engine = connection_manager.get_engine(connection_id)
 
     if engine is None:
@@ -119,6 +129,7 @@ def create_table_endpoint(connection_id: str, request: TableCreateRequest) -> Ta
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=friendly_error(exc)) from exc
 
+    schema_versioning_service.schedule_snapshot(background_tasks, connection_id, f"创建表 {request.name}")
     return TableCreateResponse(name=request.name, message="创建成功")
 
 
@@ -242,7 +253,14 @@ def get_sequence_detail_endpoint(connection_id: str, object_name: str, database:
 
 
 @router.delete("/{connection_id}/objects/{object_name}")
-def delete_object_endpoint(connection_id: str, object_name: str, type: str, database: str | None = None, pg_database: str | None = None) -> dict[str, str]:
+def delete_object_endpoint(
+    connection_id: str,
+    object_name: str,
+    type: str,
+    background_tasks: BackgroundTasks,
+    database: str | None = None,
+    pg_database: str | None = None,
+) -> dict[str, str]:
     engine = connection_manager.get_engine(connection_id)
 
     if engine is None:
@@ -255,6 +273,7 @@ def delete_object_endpoint(connection_id: str, object_name: str, type: str, data
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=friendly_error(exc)) from exc
 
+    schema_versioning_service.schedule_snapshot(background_tasks, connection_id, f"删除{type} {object_name}")
     return {"message": "对象删除成功"}
 
 
@@ -301,6 +320,7 @@ def update_table_data(
     connection_id: str,
     table_name: str,
     request: TableDataChangeRequest,
+    background_tasks: BackgroundTasks,
     limit: int = 1000,
     offset: int = 0,
     database: str | None = None,
@@ -321,6 +341,14 @@ def update_table_data(
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=friendly_error(exc)) from exc
 
+    schedule_data_snapshot(
+        background_tasks,
+        connection_id,
+        table_name,
+        database,
+        pg_database,
+        "保存表格数据",
+    )
     return preview_table(engine, table_name, limit, offset, database, pg_database, where, sort_column, sort_direction)
 
 
@@ -345,7 +373,14 @@ def update_redis_data(connection_id: str, request: RedisDataChangeRequest, limit
 
 
 @router.put("/{connection_id}/tables/{table_name}/columns", response_model=ColumnsResponse)
-def update_columns(connection_id: str, table_name: str, request: TableUpdateRequest, database: str | None = None, pg_database: str | None = None) -> ColumnsResponse:
+def update_columns(
+    connection_id: str,
+    table_name: str,
+    request: TableUpdateRequest,
+    background_tasks: BackgroundTasks,
+    database: str | None = None,
+    pg_database: str | None = None,
+) -> ColumnsResponse:
     engine = connection_manager.get_engine(connection_id)
 
     if engine is None:
@@ -366,6 +401,9 @@ def update_columns(connection_id: str, table_name: str, request: TableUpdateRequ
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=friendly_error(exc)) from exc
 
+    schema_versioning_service.schedule_snapshot(
+        background_tasks, connection_id, f"修改表结构 {updated_table_name}"
+    )
     return ColumnsResponse(
         columns=list_columns(engine, updated_table_name, database, pg_database),
         table_comment=get_table_comment(engine, updated_table_name, database, pg_database),
@@ -373,7 +411,9 @@ def update_columns(connection_id: str, table_name: str, request: TableUpdateRequ
 
 
 @router.post("/{connection_id}/sql-file", response_model=SqlFileRunResponse)
-def run_sql_file(connection_id: str, request: SqlFileRunRequest) -> SqlFileRunResponse:
+def run_sql_file(
+    connection_id: str, request: SqlFileRunRequest, background_tasks: BackgroundTasks
+) -> SqlFileRunResponse:
     engine = connection_manager.get_engine(connection_id)
 
     if engine is None:
@@ -388,7 +428,12 @@ def run_sql_file(connection_id: str, request: SqlFileRunRequest) -> SqlFileRunRe
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="MySQL 连接未指定默认数据库时，请选择目标数据库")
 
     try:
-        return execute_sql_file(engine, request.sql, request.database, request.pg_database)
+        response = execute_sql_file(engine, request.sql, request.database, request.pg_database)
+        if response.success_count > 0 and contains_schema_mutation(request.sql):
+            schema_versioning_service.schedule_snapshot(
+                background_tasks, connection_id, "运行 SQL 文件执行结构变更"
+            )
+        return response
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
     except Exception as exc:

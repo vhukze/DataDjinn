@@ -90,7 +90,7 @@ type ResourceTreePanelProps = {
     dragNode: unknown
     dropToGap?: boolean
     dropPosition?: number
-    event?: React.MouseEvent<HTMLElement>
+    event?: { clientY: number; target: EventTarget | null }
   }) => void
   toggleOrLoadTreeNode: (node: DatabaseTreeNode) => void
   openConnectionById: (
@@ -384,6 +384,23 @@ const ResourceTreePanel = memo(
                   }
                 }}
                 allowDrop={allowTreeDrop}
+                onDragStart={({ node }) => {
+                  const draggedNode = node as unknown as Partial<DatabaseTreeNode>
+                  const draggedConnectionId = draggedNode.connectionId
+                  if (!draggedConnectionId) {
+                    return
+                  }
+                  const folderId = connectionFolderAssignments[draggedConnectionId]
+                  draggingConnectionIdsRef.current = (selectedConnectionIds.includes(
+                    draggedConnectionId
+                  )
+                    ? selectedConnectionIds
+                    : [draggedConnectionId]
+                  ).filter(
+                    (connectionId) => connectionFolderAssignments[connectionId] === folderId
+                  )
+                  draggingConnectionFolderIdRef.current = folderId
+                }}
                 onDragOver={({ event }) => {
                   if (draggingConnectionIdsRef.current.length === 0) {
                     const target = event.target as HTMLElement | null
@@ -391,13 +408,16 @@ const ResourceTreePanel = memo(
                       target?.closest<HTMLElement>('[data-connection-id]')
                     const draggedConnectionId = draggedConnectionElement?.dataset.connectionId
                     if (draggedConnectionId) {
-                      draggingConnectionIdsRef.current = selectedConnectionIds.includes(
+                      const folderId = connectionFolderAssignments[draggedConnectionId]
+                      draggingConnectionIdsRef.current = (selectedConnectionIds.includes(
                         draggedConnectionId
                       )
                         ? selectedConnectionIds
                         : [draggedConnectionId]
-                      draggingConnectionFolderIdRef.current =
-                        connectionFolderAssignments[draggedConnectionId]
+                      ).filter(
+                        (connectionId) => connectionFolderAssignments[connectionId] === folderId
+                      )
+                      draggingConnectionFolderIdRef.current = folderId
                     }
                   }
 

@@ -9,6 +9,7 @@ export type WorkspaceTabSummary = {
 type WorkspaceState = {
   tabs: WorkspaceTab[]
   tabSummaries: WorkspaceTabSummary[]
+  queryPersistenceRevision: number
   activeTabKey?: string
   getTabByKey: (key?: string) => WorkspaceTab | undefined
   getRecentQuerySql: () => string[]
@@ -40,9 +41,27 @@ const buildTabSummaries = (
   return next
 }
 
+const buildQueryPersistenceSignature = (tabs: WorkspaceTab[]): string =>
+  JSON.stringify(
+    tabs
+      .filter((tab) => tab.kind === 'query')
+      .map((tab) => [
+        tab.key,
+        tab.title,
+        tab.connectionId,
+        tab.databaseName,
+        tab.pgDatabaseName,
+        tab.sql,
+        tab.limit,
+        tab.queryEditorHeight,
+        tab.persistedAt
+      ])
+  )
+
 export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   tabs: [],
   tabSummaries: [],
+  queryPersistenceRevision: 0,
   activeTabKey: undefined,
   getTabByKey: (key) => {
     if (!key) {
@@ -61,7 +80,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       const nextTabs = resolveUpdater(tabs, state.tabs)
       return {
         tabs: nextTabs,
-        tabSummaries: buildTabSummaries(nextTabs, state.tabSummaries)
+        tabSummaries: buildTabSummaries(nextTabs, state.tabSummaries),
+        queryPersistenceRevision:
+          buildQueryPersistenceSignature(nextTabs) === buildQueryPersistenceSignature(state.tabs)
+            ? state.queryPersistenceRevision
+            : state.queryPersistenceRevision + 1
       }
     }),
   setActiveTabKey: (key) =>
@@ -76,8 +99,18 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       return {
         tabs: nextTabs,
         tabSummaries: buildTabSummaries(nextTabs, state.tabSummaries),
+        queryPersistenceRevision:
+          buildQueryPersistenceSignature(nextTabs) === buildQueryPersistenceSignature(state.tabs)
+            ? state.queryPersistenceRevision
+            : state.queryPersistenceRevision + 1,
         activeTabKey: nextActiveTabKey
       }
     }),
-  resetWorkspace: () => set({ tabs: [], tabSummaries: [], activeTabKey: undefined })
+  resetWorkspace: () =>
+    set((state) => ({
+      tabs: [],
+      tabSummaries: [],
+      queryPersistenceRevision: state.queryPersistenceRevision + 1,
+      activeTabKey: undefined
+    }))
 }))

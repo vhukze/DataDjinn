@@ -137,6 +137,8 @@ export type ConnectionFormValues = {
   ssh_password?: string
   ssh_private_key_path?: string
   ssh_passphrase?: string
+  git_versioning_enabled?: boolean
+  git_versioning_scopes?: string[]
 }
 
 export type ImportConnectionCandidate = {

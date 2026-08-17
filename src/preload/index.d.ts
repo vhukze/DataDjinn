@@ -66,6 +66,44 @@ type QuerySettings = {
   timeoutMinutes: number
 }
 
+type McpSettings = {
+  enabled: boolean
+  allowWrite: boolean
+  restrictConnections: boolean
+  allowedConnectionIds: string[]
+}
+
+type AppSyncSettings = {
+  autoCheckUpdates: boolean
+  queryTimeoutMinutes: number
+  mcpSettings: McpSettings
+  aiConfigs: AIConfigItem[]
+}
+
+type SyncLocalState = {
+  passphrase?: string
+  basePayload?: unknown
+  remoteSha?: string
+  lastSyncedAt?: number
+  autoSyncEnabled?: boolean
+}
+
+type OptionalModuleId = 'mcp' | 'ai' | 'jdbc' | 'data-versioning'
+
+type OptionalModuleInfo = {
+  id: OptionalModuleId
+  name: string
+  description: string
+  version: string
+  installed: boolean
+  installedAt?: number
+}
+
+type OptionalModuleLaunchConfig = {
+  command: string
+  args: string[]
+}
+
 type AppInfo = {
   name: string
   version: string
@@ -108,6 +146,7 @@ interface DataDjinnAPI {
   openReleasePage: (url?: string) => Promise<void>
   getAppInfo: () => Promise<AppInfo>
   openProjectHome: () => Promise<void>
+  openExternalUrl: (url: string) => Promise<void>
   notifyRendererReady: () => void
   onUpdateAvailable: (callback: (info: UpdateInfo) => void) => () => void
   onUpdateNotAvailable: (callback: (info: UpdateInfo) => void) => () => void
@@ -124,6 +163,17 @@ interface DataDjinnAPI {
   restartBackend: () => Promise<BackendStatus>
   getQuerySettings: () => Promise<QuerySettings>
   setQueryTimeoutMinutes: (timeoutMinutes: number) => Promise<QuerySettings>
+  getMcpSettings: () => Promise<McpSettings>
+  setMcpSettings: (settings: McpSettings) => Promise<McpSettings>
+  getSyncLocalState: () => Promise<SyncLocalState>
+  setSyncLocalState: (state: SyncLocalState) => Promise<SyncLocalState>
+  clearSyncLocalState: () => Promise<void>
+  getAppSyncSettings: () => Promise<AppSyncSettings>
+  applyAppSyncSettings: (settings: Partial<AppSyncSettings>) => Promise<AppSyncSettings>
+  getOptionalModules: () => Promise<OptionalModuleInfo[]>
+  installOptionalModule: (moduleId: OptionalModuleId) => Promise<OptionalModuleInfo[]>
+  uninstallOptionalModule: (moduleId: OptionalModuleId) => Promise<OptionalModuleInfo[]>
+  getOptionalModuleLaunchConfig: (moduleId: OptionalModuleId) => Promise<OptionalModuleLaunchConfig | null>
   minimizeWindow: () => Promise<void>
   toggleMaximizeWindow: () => Promise<boolean>
   closeWindow: () => Promise<void>
