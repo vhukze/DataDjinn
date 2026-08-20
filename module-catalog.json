@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "id": "mcp",
+      "version": "1.0.2",
+      "url": "https://github.com/vhukze/DataDjinn/releases/download/modules-v1.0.2/datadjinn-mcp-1.0.2-win-x64.zip",
+      "sha256": "3f49be5946b85da15a5c6d1fc11a3ebe683b9ce577a0499fae6b4b410f68035b"
+    },
+    {
+      "id": "ai",
+      "version": "1.0.0",
+      "url": "https://github.com/vhukze/DataDjinn/releases/download/modules-v1.0.0/datadjinn-ai-1.0.0-win-x64.zip",
+      "sha256": "c63b06242ecfabb48dd56c71018097d2e786f9243dfd178652475702702489a3"
+    },
+    {
+      "id": "jdbc-runtime",
+      "version": "1.0.0",
+      "url": "https://github.com/vhukze/DataDjinn/releases/download/modules-v1.1.0/datadjinn-jdbc-runtime-1.0.0-win-x64.zip",
+      "sha256": "0291c7dffb75ac3be5149d6dcc5db114a962c9d0cdbd5a3ddb3a54d8ead789ed"
+    },
+    {
+      "id": "jre-17",
+      "version": "17.0.20+8",
+      "url": "https://github.com/vhukze/DataDjinn/releases/download/modules-v1.1.0/datadjinn-jre-17.0.20%2B8-win-x64.zip",
+      "sha256": "fb7ce5543383a1ecb2974b04186c40a687c752bd438f815e3d81fee59fa48f59"
+    },
+    {
+      "id": "data-versioning",
+      "version": "1.0.0",
+      "url": "https://github.com/vhukze/DataDjinn/releases/download/modules-v1.2.0/datadjinn-data-versioning-1.0.0-win-x64.zip",
+      "sha256": "9b656af0bffba9deed4cf6dcd5edd906193cba83d96eeb5d77e272a652124feb"
+    }
+  ]
+}
