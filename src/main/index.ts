@@ -81,6 +81,13 @@ type OptionalModuleState = {
   entryPoint?: string
 }
 
+type PendingOptionalModuleState = {
+  id: OptionalModuleArtifactId
+  version: string
+  temporaryPath: string
+  entryPoint: string
+}
+
 type OptionalModuleInfo = {
   id: OptionalModuleId
   name: string
@@ -88,12 +95,37 @@ type OptionalModuleInfo = {
   version: string
   installed: boolean
   installedAt?: number
+  installedVersion?: string
+  pendingVersion?: string
+  pendingRestartRequired?: boolean
+  updateAvailable?: boolean
+}
+
+type OptionalModuleArtifact = {
+  id: OptionalModuleArtifactId
+  version: string
+  name?: string
+  description?: string
+  artifact: {
+    url: string
+    sha256: string
+  }
+}
+
+type RemoteOptionalModuleCatalog = {
+  version?: number
+  modules?: Array<{
+    id?: unknown
+    version?: unknown
+    url?: unknown
+    sha256?: unknown
+  }>
 }
 
 const OPTIONAL_MODULE_CATALOG = [
   {
     id: 'mcp',
-    version: '1.0.0',
+    version: '1.0.2',
     name: '本机 MCP 服务',
     description: '供本机 Agent 通过 STDIO 安全访问已授权的 DataDjinn 连接。',
   },
@@ -117,13 +149,13 @@ const OPTIONAL_MODULE_CATALOG = [
   }
 ] as const
 
-const OPTIONAL_MODULE_ARTIFACT_CATALOG = [
+const OPTIONAL_MODULE_ARTIFACT_CATALOG: readonly OptionalModuleArtifact[] = [
   {
     id: 'mcp',
-    version: '1.0.0',
+    version: '1.0.2',
     artifact: {
-      url: 'https://github.com/vhukze/DataDjinn/releases/download/modules-v1.0.0/datadjinn-mcp-1.0.0-win-x64.zip',
-      sha256: '4e7c42bcc18c34ee85ed44d1d741b7938c8d47389645d8883b1397ca2cbeeb15'
+      url: 'https://github.com/vhukze/DataDjinn/releases/download/modules-v1.0.2/datadjinn-mcp-1.0.2-win-x64.zip',
+      sha256: '3f49be5946b85da15a5c6d1fc11a3ebe683b9ce577a0499fae6b4b410f68035b'
     }
   },
   {
@@ -166,6 +198,7 @@ type UpdateAsset = {
   name: string
   browser_download_url: string
   size?: number
+  digest?: string
 }
 
 type GitHubRelease = {
@@ -173,6 +206,7 @@ type GitHubRelease = {
   name?: string
   body?: string
   html_url?: string
+  published_at?: string
   assets?: UpdateAsset[]
 }
 
@@ -205,7 +239,10 @@ type AppStore = {
   queryTimeoutMinutes?: number
   mcpSettings?: McpSettings
   optionalModules?: OptionalModuleState[]
+  pendingOptionalModules?: PendingOptionalModuleState[]
   syncState?: StoredSyncState
+  connectionTreePreferences?: Record<string, unknown>
+  connectionTreePreferencesUpdatedAt?: number
 }
 
 const testUserDataDir = process.env.DATADJINN_TEST_USER_DATA_DIR
@@ -219,21 +256,23 @@ const streamControllers = new Map<string, AbortController>()
 const aiModuleManager = new AiModuleManager()
 const MAX_OPTIONAL_MODULE_DOWNLOAD_ATTEMPTS = 3
 const MAX_OPTIONAL_MODULE_REPLACE_ATTEMPTS = 8
+const OPTIONAL_MODULE_CATALOG_CACHE_MS = 5 * 60 * 1000
 const approvedTextFilePaths = new Set<string>()
 const DEFAULT_QUERY_TIMEOUT_MINUTES = 15
 const MIN_QUERY_TIMEOUT_MINUTES = 1
 const MAX_QUERY_TIMEOUT_MINUTES = 120
 const GITHUB_PROJECT_URL = 'https://github.com/vhukze/DataDjinn'
-const GITHUB_RELEASES_API = `${GITHUB_PROJECT_URL}/releases/latest`.replace(
-  'github.com',
-  'api.github.com/repos'
-)
+const OPTIONAL_MODULE_CATALOG_URL =
+  'https://raw.githubusercontent.com/vhukze/DataDjinn/main/module-catalog.json'
+const GITHUB_RELEASES_ATOM_URL = `${GITHUB_PROJECT_URL}/releases.atom`
+const GITHUB_RELEASE_DOWNLOAD_URL = 'https://github.com/vhukze/DataDjinn/releases/download'
 const appUpdateMode = process.env.PORTABLE_EXECUTABLE_DIR ? 'portable' : 'installer'
 let latestPortableUpdate: UpdateInfo | null = null
 let installerUpdateDownloaded = false
 let isQuittingForUpdate = false
 let lastInstallerUpdateInfo: UpdateInfo | null = null
 let backgroundUpdateCheckRunning = false
+let optionalModuleCatalogCache: { expiresAt: number; artifacts: OptionalModuleArtifact[] } | undefined
 let mainWindowRef: BrowserWindow | null = null
 let splashWindowRef: BrowserWindow | null = null
 let splashDismissed = false
@@ -452,6 +491,17 @@ const getOptionalModuleInstallPath = (moduleId: OptionalModuleArtifactId): strin
   getInstalledOptionalModules().find((module) => module.id === moduleId && moduleEntryExists(module))
     ?.installPath
 
+const getStableOptionalModuleInstallPath = (moduleId: OptionalModuleArtifactId): string =>
+  join(app.getPath('userData'), 'modules', moduleId, 'current')
+
+const migrateInstalledOptionalModulePaths = async (): Promise<void> => {
+  const installedModules = getInstalledOptionalModules()
+  const currentModules = installedModules.filter((module) => moduleEntryExists(module))
+  if (currentModules.length !== installedModules.length) {
+    store.set('optionalModules', currentModules)
+  }
+}
+
 const configureBackendOptionalRuntimeModules = (): void => {
   const jdbcRuntimePath = getOptionalModuleInstallPath('jdbc-runtime')
   const jreRuntimePath = getOptionalModuleInstallPath('jre-17')
@@ -476,12 +526,17 @@ const restartBackendForRuntimeModule = async (moduleId: OptionalModuleArtifactId
   }
 }
 
-const getOptionalModules = (): OptionalModuleInfo[] => {
+const getOptionalModules = async (): Promise<OptionalModuleInfo[]> => {
+  const pendingById = new Map(getPendingOptionalModules().map((item) => [item.id, item] as const))
   const installedById = new Map(
     getInstalledOptionalModules().map((module) => [module.id, module] as const)
   )
+  const artifactById = new Map((await getOptionalModuleArtifacts()).map((module) => [module.id, module] as const))
   return OPTIONAL_MODULE_CATALOG.map((module) => {
-    const stored = installedById.get(module.id === 'jdbc' ? 'jdbc-runtime' : module.id)
+    const artifactId = module.id === 'jdbc' ? 'jdbc-runtime' : module.id
+    const stored = installedById.get(artifactId)
+    const artifact = artifactById.get(artifactId)
+    const pending = pendingById.get(artifactId)
     const isTestAiModule =
       module.id === 'ai' &&
       Boolean(testUserDataDir) &&
@@ -490,7 +545,14 @@ const getOptionalModules = (): OptionalModuleInfo[] => {
     return {
       ...module,
       installed: Boolean(installed) || isTestAiModule,
-      installedAt: installed?.installedAt
+      installedAt: installed?.installedAt,
+      installedVersion: installed?.version,
+      pendingVersion: pending?.version,
+      pendingRestartRequired: Boolean(pending),
+      version: artifact?.version ?? module.version,
+      updateAvailable: Boolean(
+        installed && artifact && !pending && compareVersion(artifact.version, installed.version) > 0
+      )
     }
   })
 }
@@ -511,25 +573,24 @@ const getOptionalModuleLaunchConfig = (
 }
 
 const expandModuleArchive = async (archivePath: string, targetPath: string): Promise<void> => {
-  const quote = (value: string): string => `'${value.replace(/'/g, "''")}'`
-  const command = `Expand-Archive -LiteralPath ${quote(archivePath)} -DestinationPath ${quote(targetPath)} -Force`
+  const command = process.platform === 'win32' ? 'tar.exe' : 'tar'
   await new Promise<void>((resolvePromise, reject) => {
-    const process = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
+    const child = spawn(command, ['-xf', archivePath, '-C', targetPath], {
       windowsHide: true
     })
     let error = ''
-    process.stderr.on('data', (chunk) => {
+    child.stderr.on('data', (chunk) => {
       error += String(chunk)
     })
-    process.once('error', reject)
-    process.once('exit', (code) =>
+    child.once('error', reject)
+    child.once('exit', (code) =>
       code === 0 ? resolvePromise() : reject(new Error(error.trim() || '解压扩展模块失败'))
     )
   })
 }
 
 const downloadOptionalModuleArchive = async (
-  module: (typeof OPTIONAL_MODULE_ARTIFACT_CATALOG)[number]
+  module: OptionalModuleArtifact
 ): Promise<Buffer> => {
   let lastError: unknown
   for (let attempt = 1; attempt <= MAX_OPTIONAL_MODULE_DOWNLOAD_ATTEMPTS; attempt += 1) {
@@ -556,8 +617,14 @@ const replaceOptionalModuleInstall = async (
   let lastError: unknown
   for (let attempt = 1; attempt <= MAX_OPTIONAL_MODULE_REPLACE_ATTEMPTS; attempt += 1) {
     try {
-      await rm(installPath, { recursive: true, force: true })
+      const backupPath = `${installPath}.old-${randomBytes(6).toString('hex')}`
+      if (existsSync(installPath)) {
+        // Rename the complete directory first. This keeps the stable current
+        // path and never deletes a locked executable before replacement.
+        await rename(installPath, backupPath)
+      }
       await rename(temporaryPath, installPath)
+      await rm(backupPath, { recursive: true, force: true }).catch(() => undefined)
       return
     } catch (error) {
       lastError = error
@@ -570,16 +637,76 @@ const replaceOptionalModuleInstall = async (
   throw new Error(`替换扩展模块文件失败，请关闭占用该模块的程序后重试：${detail}`)
 }
 
+const getPendingOptionalModules = (): PendingOptionalModuleState[] => {
+  const value = store.get('pendingOptionalModules')
+  return Array.isArray(value)
+    ? value.filter(
+        (item): item is PendingOptionalModuleState =>
+          item &&
+          (item.id === 'mcp' ||
+            item.id === 'ai' ||
+            item.id === 'jdbc-runtime' ||
+            item.id === 'jre-17' ||
+            item.id === 'data-versioning') &&
+          typeof item.version === 'string' &&
+          typeof item.temporaryPath === 'string' &&
+          typeof item.entryPoint === 'string'
+      )
+    : []
+}
+
+const setPendingOptionalModules = (pending: PendingOptionalModuleState[]): void => {
+  if (pending.length > 0) {
+    store.set('pendingOptionalModules', pending)
+  } else {
+    store.delete('pendingOptionalModules')
+  }
+}
+
+const retryPendingOptionalModuleInstall = async (pending: PendingOptionalModuleState): Promise<void> => {
+  if (!existsSync(pending.temporaryPath)) {
+    setPendingOptionalModules(getPendingOptionalModules().filter((item) => item.id !== pending.id))
+    return
+  }
+  try {
+    await replaceOptionalModuleInstall(pending.temporaryPath, getStableOptionalModuleInstallPath(pending.id))
+    const installedModules = getInstalledOptionalModules().filter((item) => item.id !== pending.id)
+    installedModules.push({
+      id: pending.id,
+      version: pending.version,
+      installedAt: Date.now(),
+      installPath: getStableOptionalModuleInstallPath(pending.id),
+      entryPoint: pending.entryPoint
+    })
+    store.set('optionalModules', installedModules)
+    setPendingOptionalModules(getPendingOptionalModules().filter((item) => item.id !== pending.id))
+  } catch {
+    setTimeout(() => void retryPendingOptionalModuleInstall(pending), 2_000)
+  }
+}
+
+const retryPendingOptionalModuleInstalls = async (): Promise<void> => {
+  for (const pending of getPendingOptionalModules()) {
+    void retryPendingOptionalModuleInstall(pending)
+  }
+}
+
 const installOptionalModuleArtifact = async (
   moduleId: OptionalModuleArtifactId,
   restartBackend = true
 ): Promise<void> => {
-  const module = OPTIONAL_MODULE_ARTIFACT_CATALOG.find((item) => item.id === moduleId)
+  const module = (await getOptionalModuleArtifacts()).find((item) => item.id === moduleId)
   if (!module) {
     throw new Error('未知扩展模块')
   }
   if (moduleId === 'ai') {
     await aiModuleManager.stop()
+  }
+  const installed = getInstalledOptionalModules().find(
+    (item) => item.id === moduleId && item.version === module.version && moduleEntryExists(item)
+  )
+  if (installed) {
+    return
   }
   const archive = await downloadOptionalModuleArchive(module)
   const hash = createHash('sha256').update(archive).digest('hex')
@@ -588,9 +715,10 @@ const installOptionalModuleArtifact = async (
   }
 
   const moduleRoot = join(app.getPath('userData'), 'modules', moduleId)
-  const installPath = join(moduleRoot, module.version)
+  const installPath = getStableOptionalModuleInstallPath(moduleId)
   const temporaryPath = join(moduleRoot, `.install-${randomBytes(8).toString('hex')}`)
   const archivePath = join(app.getPath('temp'), `datadjinn-${moduleId}-${randomBytes(8).toString('hex')}.zip`)
+  let preserveTemporaryPath = false
   try {
     await mkdir(moduleRoot, { recursive: true })
     await writeFile(archivePath, archive)
@@ -612,7 +740,26 @@ const installOptionalModuleArtifact = async (
     ) {
       throw new Error('扩展模块内容或版本不兼容，已拒绝安装')
     }
-    await replaceOptionalModuleInstall(temporaryPath, installPath)
+    try {
+      await replaceOptionalModuleInstall(temporaryPath, installPath)
+    } catch (error) {
+      if (moduleId !== 'mcp') {
+        throw error
+      }
+      const pendingPath = join(moduleRoot, `.pending-${module.version}-${randomBytes(8).toString('hex')}`)
+      await rename(temporaryPath, pendingPath)
+      preserveTemporaryPath = true
+      const pending = getPendingOptionalModules().filter((item) => item.id !== moduleId)
+      pending.push({
+        id: moduleId,
+        version: module.version,
+        temporaryPath: pendingPath,
+        entryPoint: manifest.entryPoint
+      })
+      setPendingOptionalModules(pending)
+      void retryPendingOptionalModuleInstall(pending[pending.length - 1])
+      return
+    }
     const installedModules = getInstalledOptionalModules().filter((item) => item.id !== moduleId)
     installedModules.push({
       id: moduleId,
@@ -627,7 +774,9 @@ const installOptionalModuleArtifact = async (
     }
   } finally {
     await rm(archivePath, { force: true }).catch(() => undefined)
-    await rm(temporaryPath, { recursive: true, force: true }).catch(() => undefined)
+    if (!preserveTemporaryPath) {
+      await rm(temporaryPath, { recursive: true, force: true }).catch(() => undefined)
+    }
   }
 }
 
@@ -744,10 +893,10 @@ const installOptionalModule = async (moduleId: OptionalModuleId): Promise<Option
       await installOptionalModuleArtifact('jre-17', false)
     }
     await restartBackendForRuntimeModule('jdbc-runtime')
-    return getOptionalModules()
+    return await getOptionalModules()
   }
   await installOptionalModuleArtifact(moduleId)
-  return getOptionalModules()
+  return await getOptionalModules()
 }
 
 const uninstallOptionalModuleArtifact = async (moduleId: OptionalModuleArtifactId): Promise<void> => {
@@ -769,11 +918,11 @@ const uninstallOptionalModule = async (moduleId: OptionalModuleId): Promise<Opti
     await uninstallOptionalModuleArtifact('jdbc-runtime')
     await uninstallOptionalModuleArtifact('jre-17')
     await restartBackendForRuntimeModule('jdbc-runtime')
-    return getOptionalModules()
+    return await getOptionalModules()
   }
   await uninstallOptionalModuleArtifact(moduleId)
   await restartBackendForRuntimeModule(moduleId)
-  return getOptionalModules()
+  return await getOptionalModules()
 }
 
 const backendRequestHeaders = (): Record<string, string> => ({
@@ -878,14 +1027,91 @@ const compareVersion = (left: string, right: string): number => {
 
 const githubHeaders = { 'User-Agent': `DataDjinn/${app.getVersion()}` }
 
+const getOptionalModuleArtifacts = async (): Promise<readonly OptionalModuleArtifact[]> => {
+  if (optionalModuleCatalogCache && optionalModuleCatalogCache.expiresAt > Date.now()) {
+    return optionalModuleCatalogCache.artifacts
+  }
+
+  const fallback = [...OPTIONAL_MODULE_ARTIFACT_CATALOG]
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 8_000)
+  try {
+    const response = await fetch(OPTIONAL_MODULE_CATALOG_URL, {
+      headers: githubHeaders,
+      signal: controller.signal,
+      cache: 'no-store'
+    })
+    if (!response.ok) {
+      throw new Error(`扩展目录请求失败：HTTP ${response.status}`)
+    }
+    const payload = (await response.json()) as RemoteOptionalModuleCatalog
+    const remoteById = new Map<OptionalModuleArtifactId, OptionalModuleArtifact>()
+    for (const item of payload.modules ?? []) {
+      if (
+        (item.id === 'mcp' || item.id === 'ai' || item.id === 'jdbc-runtime' || item.id === 'jre-17' || item.id === 'data-versioning') &&
+        typeof item.version === 'string' &&
+        typeof item.url === 'string' &&
+        /^https:\/\/github\.com\/vhukze\/DataDjinn\/releases\/download\//.test(item.url) &&
+        typeof item.sha256 === 'string' &&
+        /^[a-f0-9]{64}$/i.test(item.sha256)
+      ) {
+        remoteById.set(item.id, {
+          id: item.id,
+          version: item.version,
+          artifact: { url: item.url, sha256: item.sha256.toLowerCase() }
+        })
+      }
+    }
+    const artifacts = fallback.map((local) => {
+      const remote = remoteById.get(local.id)
+      return remote && compareVersion(remote.version, local.version) >= 0 ? remote : local
+    })
+    optionalModuleCatalogCache = { artifacts, expiresAt: Date.now() + OPTIONAL_MODULE_CATALOG_CACHE_MS }
+    return artifacts
+  } catch {
+    optionalModuleCatalogCache = { artifacts: fallback, expiresAt: Date.now() + 30_000 }
+    return fallback
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
 const fetchLatestRelease = async (): Promise<GitHubRelease> => {
-  const response = await fetch(GITHUB_RELEASES_API, { headers: githubHeaders })
+  const response = await fetch(GITHUB_RELEASES_ATOM_URL, { headers: githubHeaders, cache: 'no-store' })
 
   if (!response.ok) {
     throw new Error(`检查更新失败：HTTP ${response.status}`)
   }
 
-  return (await response.json()) as GitHubRelease
+  const feed = await response.text()
+  const tags = Array.from(
+    feed.matchAll(/\/releases\/tag\/(v\d+(?:\.\d+){2,3}(?:[-+][^"<\s]*)?)/gi),
+    (match) => match[1]
+  )
+  const tagName = tags.find((tag) => /^v\d+(?:\.\d+){2,3}(?:[-+].*)?$/i.test(tag))
+  if (!tagName) {
+    throw new Error('检查更新失败：没有找到主程序正式版本发布')
+  }
+  const version = normalizeVersion(tagName)
+  return {
+    tag_name: tagName,
+    name: `DataDjinn ${tagName}`,
+    html_url: `${GITHUB_PROJECT_URL}/releases/tag/${tagName}`,
+    assets: [
+      {
+        name: `DataDjinn-${version}-setup.exe`,
+        browser_download_url: `${GITHUB_RELEASE_DOWNLOAD_URL}/${tagName}/DataDjinn-${version}-setup.exe`
+      },
+      {
+        name: `DataDjinn-${version}-win.zip`,
+        browser_download_url: `${GITHUB_RELEASE_DOWNLOAD_URL}/${tagName}/DataDjinn-${version}-win.zip`
+      }
+    ]
+  }
+}
+
+const configureInstallerUpdateFeed = (release: GitHubRelease): void => {
+  autoUpdater.setFeedURL(`${GITHUB_RELEASE_DOWNLOAD_URL}/${encodeURIComponent(release.tag_name)}`)
 }
 
 const releaseToUpdateInfo = (release: GitHubRelease): UpdateInfo => {
@@ -933,6 +1159,8 @@ const checkForUpdatesInBackground = async (): Promise<void> => {
       return
     }
 
+    const release = await fetchLatestRelease()
+    configureInstallerUpdateFeed(release)
     await autoUpdater.checkForUpdates()
   } catch {
     // 后台轮询不打断用户操作；手动检查仍会把错误返回给界面。
@@ -961,6 +1189,28 @@ const isBackendNetworkError = (error: unknown): boolean => {
 const isRequestAbortError = (error: unknown): boolean =>
   error instanceof Error && error.name === 'AbortError'
 
+const canRetryTransientApiRequest = (path: string, method?: string): boolean => {
+  const normalizedMethod = (method ?? 'GET').toUpperCase()
+  if (['GET', 'HEAD', 'OPTIONS'].includes(normalizedMethod)) {
+    return true
+  }
+
+  // The renderer uses one stable attempt id while opening a connection. Replaying
+  // that request after a lost local response is safe, unlike generic POST calls.
+  if (
+    normalizedMethod !== 'POST' ||
+    !/^\/connections\/[^/?]+\/open(?:\?.*)?$/.test(path)
+  ) {
+    return false
+  }
+
+  return new URLSearchParams(path.split('?')[1] ?? '').has('open_attempt_id')
+}
+
+const waitForTransientApiRetry = async (): Promise<void> => {
+  await new Promise<void>((resolve) => setTimeout(resolve, 80))
+}
+
 const ensureBackendForRequest = async (): Promise<string> => {
   const backendStatus = await backendManager.ensureOnline()
 
@@ -971,9 +1221,9 @@ const ensureBackendForRequest = async (): Promise<string> => {
   return backendStatus.apiBaseUrl
 }
 
-const recoverBackendAfterRequestError = (error: unknown): void => {
+const recoverBackendAfterRequestError = async (error: unknown): Promise<void> => {
   if (isBackendNetworkError(error)) {
-    backendManager.recover('检测到后端连接中断，正在自动重启')
+    await backendManager.recoverIfUnhealthy('检测到后端连接中断，正在自动重启')
   }
 }
 
@@ -1380,10 +1630,12 @@ void showMainWindowAfterStartup
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // Set app user model id for windows
   app.setName('DataDjinn')
   electronApp.setAppUserModelId('com.datadjinn.app')
+  await migrateInstalledOptionalModulePaths()
+  await retryPendingOptionalModuleInstalls()
   configureBackendOptionalRuntimeModules()
 
   // Default open or close DevTools by F12 in development
@@ -1653,6 +1905,21 @@ app.whenReady().then(() => {
   ipcMain.handle('sync-local-state:clear', () => {
     store.delete('syncState')
   })
+  ipcMain.handle('connection-tree-preferences:get', () => store.get('connectionTreePreferences') ?? {})
+  ipcMain.handle('connection-tree-preferences:set', (_, preferences: unknown, updatedAt: unknown) => {
+    const nextPreferences =
+      preferences && typeof preferences === 'object' && !Array.isArray(preferences)
+        ? (preferences as Record<string, unknown>)
+        : {}
+    const nextUpdatedAt = Number(updatedAt)
+    const currentUpdatedAt = Number(store.get('connectionTreePreferencesUpdatedAt') ?? 0)
+    if (Number.isFinite(nextUpdatedAt) && nextUpdatedAt < currentUpdatedAt) {
+      return store.get('connectionTreePreferences') ?? {}
+    }
+    store.set('connectionTreePreferences', nextPreferences)
+    store.set('connectionTreePreferencesUpdatedAt', Number.isFinite(nextUpdatedAt) ? nextUpdatedAt : Date.now())
+    return nextPreferences
+  })
   ipcMain.handle('sync-app-settings:get', () => getAppSyncSettings())
   ipcMain.handle('sync-app-settings:apply', (_, settings: Partial<AppSyncSettings>) =>
     applyAppSyncSettings(settings)
@@ -1753,7 +2020,7 @@ app.whenReady().then(() => {
         if (isAiApiPath(path)) {
           void aiModuleManager.recover()
         } else {
-          recoverBackendAfterRequestError(error)
+          void recoverBackendAfterRequestError(error)
         }
         throw error
       } finally {
@@ -1794,6 +2061,8 @@ app.whenReady().then(() => {
       return updateInfo
     }
 
+    const release = await fetchLatestRelease()
+    configureInstallerUpdateFeed(release)
     const result = await autoUpdater.checkForUpdates()
     const nextInfo = {
       currentVersion: app.getVersion(),
@@ -1878,10 +2147,8 @@ app.whenReady().then(() => {
         const timeoutId = hasTimeout
           ? setTimeout(() => controller?.abort(), timeoutMs)
           : undefined
-        let response: Response
-
-        try {
-          response = await fetch(`${apiBaseUrl}${ensureApiPath(path)}`, {
+        const request = async (): Promise<Response> =>
+          await fetch(`${apiBaseUrl}${ensureApiPath(path)}`, {
             method: options?.method,
             headers: {
               'Content-Type': 'application/json',
@@ -1891,11 +2158,24 @@ app.whenReady().then(() => {
             body: options?.body,
             signal: controller?.signal
           })
+        let response: Response
+
+        try {
+          response = await request()
         } catch (error) {
           if (controller?.signal.aborted) {
             throw new Error(`请求超时（${Math.ceil(timeoutMs / 1000)} 秒）`)
           }
-          throw error
+          if (!isBackendNetworkError(error) || !canRetryTransientApiRequest(path, options?.method)) {
+            throw error
+          }
+          console.warn('[api] Local request failed after reaching the backend, retrying once', {
+            method: options?.method ?? 'GET',
+            path,
+            error: error instanceof Error ? error.message : String(error)
+          })
+          await waitForTransientApiRetry()
+          response = await request()
         } finally {
           if (timeoutId !== undefined) {
             clearTimeout(timeoutId)
@@ -1923,7 +2203,7 @@ app.whenReady().then(() => {
         if (isAiApiPath(path)) {
           await aiModuleManager.recover()
         } else {
-          recoverBackendAfterRequestError(error)
+          await recoverBackendAfterRequestError(error)
         }
         throw error
       }

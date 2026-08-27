@@ -229,6 +229,63 @@ class ConnectionManagerSshTests(unittest.TestCase):
         open_ssh_tunnel.assert_called_once()
         self.assertTrue(fake_tunnel.closed)
 
+    def test_mysql_and_postgresql_engines_use_short_connect_timeouts(self) -> None:
+        mysql_request = ConnectionRequest(
+            name="MySQL timeout", database_type="mysql", host="db.internal", port=3306, username="root"
+        )
+        postgresql_request = ConnectionRequest(
+            name="PostgreSQL timeout",
+            database_type="postgresql",
+            host="db.internal",
+            port=5432,
+            username="postgres",
+            database="postgres",
+        )
+
+        with patch.object(connection_manager_module, "create_engine", return_value=Mock()) as create_engine:
+            self.manager._create_mysql_engine(mysql_request)
+            mysql_kwargs = create_engine.call_args.kwargs
+            self.manager._create_postgresql_engine(postgresql_request)
+            postgresql_kwargs = create_engine.call_args.kwargs
+
+        timeout = connection_manager_module.DATABASE_CONNECT_TIMEOUT_SECONDS
+        self.assertEqual(mysql_kwargs["connect_args"], {
+            "connect_timeout": timeout,
+            "read_timeout": timeout,
+            "write_timeout": timeout,
+        })
+        self.assertEqual(postgresql_kwargs["connect_args"], {"connect_timeout": timeout})
+
+    def test_clickhouse_engine_uses_short_connect_timeouts(self) -> None:
+        request = ConnectionRequest(
+            name="ClickHouse timeout",
+            database_type="clickhouse",
+            host="db.internal",
+            port=8123,
+            database="default",
+        )
+        engine = Mock()
+        with (
+            patch.object(connection_manager_module, "_ensure_clickhouse_dialect_registered"),
+            patch.object(connection_manager_module, "create_engine", return_value=engine) as create_engine,
+        ):
+            self.manager._create_clickhouse_engine(request)
+
+        timeout = connection_manager_module.DATABASE_CONNECT_TIMEOUT_SECONDS
+        self.assertEqual(create_engine.call_args.kwargs["connect_args"], {
+            "connect_timeout": timeout,
+            "send_receive_timeout": timeout,
+        })
+
+    def test_cancelling_a_timed_out_attempt_does_not_cancel_a_newer_open_attempt(self) -> None:
+        created = self.manager.create_connection(self.build_ssh_request())
+        self.manager._opening_connection_attempts[created.connection_id] = "new-attempt"
+
+        self.manager.close_connection(created.connection_id, "timed-out-attempt")
+
+        self.assertIn((created.connection_id, "timed-out-attempt"), self.manager._cancelled_open_attempts)
+        self.assertNotIn((created.connection_id, "new-attempt"), self.manager._cancelled_open_attempts)
+
     def test_open_and_close_connection_manage_tunnel_lifecycle(self) -> None:
         created = self.manager.create_connection(self.build_ssh_request())
         fake_tunnel = FakeTunnel(local_port=43123)
@@ -269,6 +326,35 @@ class ConnectionManagerSshTests(unittest.TestCase):
         self.assertIsNone(self.manager.get_engine(created.connection_id))
         self.assertFalse(self.manager.list_connections()[0].is_open)
         dispose_resources.assert_called_once_with(stale_engine, None)
+
+        def reopen(connection_id: str) -> None:
+            self.manager._engines[connection_id] = object()
+
+        with patch.object(self.manager, "open_connection", side_effect=reopen) as open_connection:
+            self.assertTrue(self.manager.ensure_connection_available(created.connection_id))
+        open_connection.assert_called_once_with(created.connection_id)
+
+    def test_ensure_connection_available_reopens_a_connection_still_marked_open(self) -> None:
+        created = self.manager.create_connection(self.build_ssh_request())
+        self.manager._connections[created.connection_id] = created.model_copy(update={"is_open": True})
+
+        def reopen(connection_id: str) -> None:
+            self.manager._engines[connection_id] = object()
+
+        with patch.object(self.manager, "open_connection", side_effect=reopen) as open_connection:
+            self.assertTrue(self.manager.ensure_connection_available(created.connection_id))
+
+        open_connection.assert_called_once_with(created.connection_id)
+        self.assertIsNotNone(self.manager.get_engine(created.connection_id))
+
+    def test_ensure_connection_available_does_not_reopen_a_deliberately_closed_connection(self) -> None:
+        created = self.manager.create_connection(self.build_ssh_request())
+        self.manager._connections[created.connection_id] = created.model_copy(update={"is_open": False})
+
+        with patch.object(self.manager, "open_connection") as open_connection:
+            self.assertFalse(self.manager.ensure_connection_available(created.connection_id))
+
+        open_connection.assert_not_called()
 
     def test_jdbc_pool_pre_ping_uses_the_jdbc_dialect_after_reusing_a_connection(self) -> None:
         class RecordingCursor:

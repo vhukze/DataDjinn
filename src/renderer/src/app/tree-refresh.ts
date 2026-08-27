@@ -18,6 +18,7 @@ type TreeRefreshOptions = {
   setExpandedKeys: React.Dispatch<React.SetStateAction<React.Key[]>>
   setConnectionTreeLoadingText: (connectionId: string, text?: string) => void
   showError: (error: unknown, fallback?: string) => void
+  onUpdated?: () => void
 }
 
 type DatabaseRefreshOptions = {
@@ -33,6 +34,7 @@ type DatabaseRefreshOptions = {
   setTreeData: React.Dispatch<React.SetStateAction<DatabaseTreeNode[]>>
   setConnectionTreeLoadingText: (connectionId: string, text?: string) => void
   showError: (error: unknown, fallback?: string) => void
+  onUpdated?: () => void
 }
 
 const DATABASE_LEVEL_TYPES = new Set<DatabaseType>([
@@ -56,7 +58,8 @@ export const refreshConnectionTreeNode = ({
   setTreeData,
   setExpandedKeys,
   setConnectionTreeLoadingText,
-  showError
+  showError,
+  onUpdated
 }: TreeRefreshOptions): void => {
   const connection = getConnection(connectionId)
   if (!connection) {
@@ -91,6 +94,7 @@ export const refreshConnectionTreeNode = ({
           expandedKeysRef.current = next
           return next
         })
+        onUpdated?.()
         return
       }
 
@@ -103,6 +107,7 @@ export const refreshConnectionTreeNode = ({
           return node
         })
       )
+      onUpdated?.()
     } catch (error) {
       showError(error instanceof Error ? error.message : '刷新连接失败')
     } finally {
@@ -119,7 +124,8 @@ export const refreshDatabaseTreeNode = ({
   preloadDatabaseChildren,
   setTreeData,
   setConnectionTreeLoadingText,
-  showError
+  showError,
+  onUpdated
 }: DatabaseRefreshOptions): void => {
   const connection = getConnection(connectionId)
   if (!connection) {
@@ -137,6 +143,7 @@ export const refreshDatabaseTreeNode = ({
       setTreeData((current) =>
         updateTreeNode(current, `database:${connectionId}:${databaseName}`, children)
       )
+      onUpdated?.()
     } catch (error) {
       showError(error instanceof Error ? error.message : '加载表列表失败')
     } finally {

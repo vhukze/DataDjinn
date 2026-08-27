@@ -76,6 +76,7 @@ def _connection_store_path() -> Path:
 CONNECTION_STORE_PATH = _connection_store_path()
 CRYPTPROTECT_UI_FORBIDDEN = 0x1
 SSH_GATEWAY_CONNECT_TIMEOUT_SECONDS = 5
+DATABASE_CONNECT_TIMEOUT_SECONDS = 5
 CONNECTION_HEALTH_CHECK_INTERVAL_SECONDS = 30
 
 
@@ -612,6 +613,7 @@ class ConnectionManager:
         self._stored_connections: dict[str, StoredConnection] = {}
         self._unavailable_secret_fields: dict[str, set[str]] = {}
         self._connection_health_checked_at: dict[str, float] = {}
+        self._reconnectable_connection_ids: set[str] = set()
         self._opening_connection_attempts: dict[str, str] = {}
         self._cancelled_open_attempts: set[tuple[str, str]] = set()
         self._connection_open_lock = threading.RLock()
@@ -647,6 +649,7 @@ class ConnectionManager:
         old_engine = self._engines.pop(connection_id, None)
         old_tunnel = self._ssh_tunnels.pop(connection_id, None)
         self._connection_health_checked_at.pop(connection_id, None)
+        self._reconnectable_connection_ids.discard(connection_id)
         self._dispose_connection_resources(old_engine, old_tunnel)
 
         info = self._connection_info(connection_id, request, is_open=False)
@@ -727,6 +730,7 @@ class ConnectionManager:
             engine = self._engines.pop(connection_id, None)
             tunnel = self._ssh_tunnels.pop(connection_id, None)
             self._connection_health_checked_at.pop(connection_id, None)
+            self._reconnectable_connection_ids.discard(connection_id)
             self._dispose_connection_resources(engine, tunnel)
 
         next_stored_connections = {
@@ -824,6 +828,7 @@ class ConnectionManager:
                 failed_engine = self._engines.pop(connection_id, None)
                 failed_tunnel = self._ssh_tunnels.pop(connection_id, None)
                 self._connection_health_checked_at.pop(connection_id, None)
+                self._reconnectable_connection_ids.add(connection_id)
                 stored = self._stored_connections.get(connection_id)
                 if stored is not None:
                     self._connections[connection_id] = self._connection_info(
@@ -841,6 +846,38 @@ class ConnectionManager:
                 return True
             return self._engines.get(connection_id) is not None
 
+    def ensure_connection_available(
+        self,
+        connection_id: str,
+        *,
+        force: bool = False,
+    ) -> bool:
+        """Keep a connection that the UI considers open usable after idle disconnects.
+
+        A deliberately closed connection remains closed.  Only a connection whose
+        last published state was open is re-created when its runtime engine has
+        disappeared or its health check fails.
+        """
+        with self._connection_open_lock:
+            connection_info = self._connections.get(connection_id)
+            should_reconnect = bool(
+                connection_info
+                and (connection_info.is_open or connection_id in self._reconnectable_connection_ids)
+            )
+            has_engine = connection_id in self._engines
+
+        if not should_reconnect:
+            return False
+
+        if has_engine and self.ensure_connection_healthy(connection_id, force=force):
+            return True
+
+        try:
+            self.open_connection(connection_id)
+        except Exception:
+            return False
+        return self.get_engine(connection_id) is not None
+
     def delete_connection(self, connection_id: str) -> bool:
         stored = self._stored_connections.pop(connection_id, None)
 
@@ -850,6 +887,7 @@ class ConnectionManager:
         self._connections.pop(connection_id, None)
         self._unavailable_secret_fields.pop(connection_id, None)
         self._connection_health_checked_at.pop(connection_id, None)
+        self._reconnectable_connection_ids.discard(connection_id)
         engine = self._engines.pop(connection_id, None)
         tunnel = self._ssh_tunnels.pop(connection_id, None)
         self._dispose_connection_resources(engine, tunnel)
@@ -968,6 +1006,7 @@ class ConnectionManager:
                 old_engine = self._engines.get(connection_id)
                 old_tunnel = self._ssh_tunnels.get(connection_id)
                 self._engines[connection_id] = engine
+                self._reconnectable_connection_ids.discard(connection_id)
                 if tunnel is not None:
                     self._ssh_tunnels[connection_id] = tunnel
                 else:
@@ -1000,11 +1039,14 @@ class ConnectionManager:
             if open_attempt_id:
                 self._cancelled_open_attempts.add((connection_id, open_attempt_id))
             active_attempt_id = self._opening_connection_attempts.get(connection_id)
-            if active_attempt_id:
+            if active_attempt_id and (
+                open_attempt_id is None or active_attempt_id == open_attempt_id
+            ):
                 self._cancelled_open_attempts.add((connection_id, active_attempt_id))
             engine = self._engines.pop(connection_id, None)
             tunnel = self._ssh_tunnels.pop(connection_id, None)
             self._connection_health_checked_at.pop(connection_id, None)
+            self._reconnectable_connection_ids.discard(connection_id)
         self._dispose_connection_resources(engine, tunnel)
 
         request = self._request_from_stored(stored)
@@ -1259,7 +1301,15 @@ class ConnectionManager:
             port=request.port,
             database=request.database,
         )
-        return create_engine(url, pool_pre_ping=True)
+        return create_engine(
+            url,
+            pool_pre_ping=True,
+            connect_args={
+                "connect_timeout": DATABASE_CONNECT_TIMEOUT_SECONDS,
+                "read_timeout": DATABASE_CONNECT_TIMEOUT_SECONDS,
+                "write_timeout": DATABASE_CONNECT_TIMEOUT_SECONDS,
+            },
+        )
 
     def _create_postgresql_engine(self, request: ConnectionRequest) -> Engine:
         if not request.host:
@@ -1279,7 +1329,11 @@ class ConnectionManager:
             port=request.port,
             database=request.database,
         )
-        return create_engine(url, pool_pre_ping=True)
+        return create_engine(
+            url,
+            pool_pre_ping=True,
+            connect_args={"connect_timeout": DATABASE_CONNECT_TIMEOUT_SECONDS},
+        )
 
     def _create_mongodb_client(self, request: ConnectionRequest) -> MongoClient:
         if MongoClient is None:
@@ -1353,7 +1407,14 @@ class ConnectionManager:
             database=request.database or "default",
         )
         request_snapshot = request.model_copy(deep=True)
-        engine = create_engine(url, pool_pre_ping=False)
+        engine = create_engine(
+            url,
+            pool_pre_ping=False,
+            connect_args={
+                "connect_timeout": DATABASE_CONNECT_TIMEOUT_SECONDS,
+                "send_receive_timeout": DATABASE_CONNECT_TIMEOUT_SECONDS,
+            },
+        )
         setattr(
             engine,
             "_datadjinn_engine_factory",
@@ -1532,6 +1593,7 @@ class ConnectionManager:
                 host=request.host,
                 port=request.port,
                 service_name=request.database,
+                tcp_connect_timeout=DATABASE_CONNECT_TIMEOUT_SECONDS,
             )
 
         url = URL.create(

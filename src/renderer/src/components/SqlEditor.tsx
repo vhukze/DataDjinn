@@ -588,10 +588,10 @@ export const splitSqlStatements = (sql: string): { text: string; start: number; 
       const currentOffset = findExecutableSqlOffset(currentSql)
       const currentKeyword =
         currentOffset >= 0
-          ? currentSql.slice(currentOffset).match(/^([A-Za-z]+)/)?.[1]?.toUpperCase()
+          ? currentSql.slice(currentOffset).match(/^[A-Za-z_][A-Za-z0-9_$]*/)?.[0]?.toUpperCase()
           : undefined
       const nextLine = sql.slice(index + 1)
-      const nextMatch = nextLine.match(/^[\t ]*([A-Za-z]+)/)
+      const nextMatch = nextLine.match(/^[\t ]*([A-Za-z_][A-Za-z0-9_$]*)/)
       const nextKeyword = nextMatch?.[1]?.toUpperCase()
       if (
         currentKeyword &&
@@ -1476,6 +1476,7 @@ function SqlEditor({
         quickSuggestions: readOnly ? false : { other: true, comments: false, strings: false },
         tabSize: 2,
         renderWhitespace: 'none',
+        unicodeHighlight: { ambiguousCharacters: false },
         glyphMargin: false,
         readOnly,
         domReadOnly: readOnly

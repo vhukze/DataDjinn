@@ -91,6 +91,39 @@ test('release workflow should publish installer and portable packages after pack
   )
 })
 
+test('main app update feed should ignore extension-only releases @smoke', () => {
+  const projectRoot = path.resolve(__dirname, '..', '..')
+  const mainSource = fs.readFileSync(path.join(projectRoot, 'src', 'main', 'index.ts'), 'utf-8')
+
+  expect(mainSource).toContain('const GITHUB_RELEASES_ATOM_URL')
+  expect(mainSource).toContain('releases.atom')
+  expect(mainSource).toContain('feed.matchAll')
+  expect(mainSource).toContain('没有找到主程序正式版本发布')
+  expect(mainSource).toContain('configureInstallerUpdateFeed(release)')
+  expect(mainSource).toContain('/^v\\d+(?:\\.\\d+){2,3}')
+})
+
+test('a transient API fetch failure should not restart a healthy backend @smoke', () => {
+  const projectRoot = path.resolve(__dirname, '..', '..')
+  const mainSource = fs.readFileSync(path.join(projectRoot, 'src', 'main', 'index.ts'), 'utf-8')
+  const backendSource = fs.readFileSync(path.join(projectRoot, 'src', 'main', 'backend.ts'), 'utf-8')
+
+  expect(mainSource).toContain('await backendManager.recoverIfUnhealthy')
+  expect(backendSource).toContain('async recoverIfUnhealthy')
+  expect(backendSource).toContain('await checkHealth(`${apiBaseUrl}/health`)')
+})
+
+test('a transient local API read failure should retry once without replaying writes @smoke', () => {
+  const projectRoot = path.resolve(__dirname, '..', '..')
+  const mainSource = fs.readFileSync(path.join(projectRoot, 'src', 'main', 'index.ts'), 'utf-8')
+
+  expect(mainSource).toContain('const canRetryTransientApiRequest')
+  expect(mainSource).toContain("['GET', 'HEAD', 'OPTIONS'].includes(normalizedMethod)")
+  expect(mainSource).toContain(".has('open_attempt_id')")
+  expect(mainSource).toContain('await waitForTransientApiRetry()')
+  expect(mainSource).toContain('retrying once')
+})
+
 test('renderer should defer heavy workspaces and editor surfaces until they are opened @smoke', () => {
   const projectRoot = path.resolve(__dirname, '..', '..')
   const appSource = fs.readFileSync(
@@ -143,6 +176,75 @@ test('AI should be an optional local module and the core backend should not moun
   expect(managerSource).toContain('X-DataDjinn-Api-Token')
   expect(backendSource).not.toContain('app.include_router(ai_router')
   expect(moduleEntrySource).toContain('app.include_router(ai_router, prefix="/api")')
+})
+
+test('optional modules should expose independent update status and action @smoke', () => {
+  const projectRoot = path.resolve(__dirname, '..', '..')
+  const mainSource = fs.readFileSync(path.join(projectRoot, 'src', 'main', 'index.ts'), 'utf-8')
+  const appSource = fs.readFileSync(path.join(projectRoot, 'src', 'renderer', 'src', 'App.tsx'), 'utf-8')
+  const catalog = JSON.parse(
+    fs.readFileSync(path.join(projectRoot, 'module-catalog.json'), 'utf-8')
+  ) as { modules: Array<{ id: string; version: string; sha256: string }> }
+
+  expect(mainSource).toContain("version: '1.0.2'")
+  expect(mainSource).toContain('OPTIONAL_MODULE_CATALOG_URL')
+  expect(mainSource).toContain('getOptionalModuleArtifacts')
+  expect(mainSource).toContain('OPTIONAL_MODULE_CATALOG_CACHE_MS')
+  expect(catalog.modules.find((module) => module.id === 'mcp')).toMatchObject({ version: '1.0.2' })
+  expect(catalog.modules.every((module) => /^[a-f0-9]{64}$/i.test(module.sha256))).toBe(true)
+  expect(appSource).toContain('module.updateAvailable')
+  expect(appSource).toContain('module.pendingRestartRequired')
+  expect(appSource).toContain('重启 MCP 调用方后生效')
+  expect(appSource).toContain('git-background-task-menu')
+  expect(appSource).toContain('/git-versioning/tasks/${taskId}/cancel')
+  expect(appSource).toContain("? '有更新'")
+  expect(appSource).toContain(": '已安装'")
+  expect(appSource).toContain(": '更新'}")
+  expect(appSource).toContain(": '安装'}")
+})
+
+test('MCP artifact metadata should match the published module version @smoke', () => {
+  const projectRoot = path.resolve(__dirname, '..', '..')
+  const mainSource = fs.readFileSync(path.join(projectRoot, 'src', 'main', 'index.ts'), 'utf-8')
+  const catalog = JSON.parse(
+    fs.readFileSync(path.join(projectRoot, 'module-catalog.json'), 'utf-8')
+  ) as { modules: Array<{ id: string; version: string; url: string }> }
+  const mcp = catalog.modules.find((module) => module.id === 'mcp')
+
+  expect(mcp).toMatchObject({
+    version: '1.0.2',
+    url: 'https://github.com/vhukze/DataDjinn/releases/download/modules-v1.0.2/datadjinn-mcp-1.0.2-win-x64.zip'
+  })
+  expect(mainSource).toContain('OPTIONAL_MODULE_ARTIFACT_CATALOG')
+})
+
+test('AI artifact metadata should match the published module version @smoke', () => {
+  const projectRoot = path.resolve(__dirname, '..', '..')
+  const mainSource = fs.readFileSync(path.join(projectRoot, 'src', 'main', 'index.ts'), 'utf-8')
+  const catalog = JSON.parse(
+    fs.readFileSync(path.join(projectRoot, 'module-catalog.json'), 'utf-8')
+  ) as { modules: Array<{ id: string; version: string; url: string }> }
+  const ai = catalog.modules.find((module) => module.id === 'ai')
+
+  expect(ai).toMatchObject({
+    version: '1.0.0',
+    url: 'https://github.com/vhukze/DataDjinn/releases/download/modules-v1.0.0/datadjinn-ai-1.0.0-win-x64.zip'
+  })
+  expect(mainSource).toContain('OPTIONAL_MODULE_ARTIFACT_CATALOG')
+})
+
+test('optional module installs should preserve the stable MCP path @smoke', () => {
+  const projectRoot = path.resolve(__dirname, '..', '..')
+  const mainSource = fs.readFileSync(path.join(projectRoot, 'src', 'main', 'index.ts'), 'utf-8')
+
+  expect(mainSource).toContain("join(app.getPath('userData'), 'modules', moduleId, 'current')")
+  expect(mainSource).toContain('const installPath = getStableOptionalModuleInstallPath(moduleId)')
+  expect(mainSource).toContain('const pendingPath = join(moduleRoot, `.pending-')
+  expect(mainSource).toContain('retryPendingOptionalModuleInstalls')
+  expect(mainSource).toContain('const backupPath = `${installPath}.old-')
+  expect(mainSource).toContain('await migrateInstalledOptionalModulePaths()')
+  expect(mainSource).toContain('const currentModules = installedModules.filter')
+  expect(mainSource).not.toContain('legacyInstallPaths')
 })
 
 test('JDBC bridge should be optional and excluded from the core backend package @smoke', () => {

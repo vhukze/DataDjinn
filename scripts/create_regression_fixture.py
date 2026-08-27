@@ -60,6 +60,11 @@ def build_fixture_db(db_path: Path) -> None:
             """
         )
 
+        wide_columns = ",\n".join(
+            f"column_{index:03d} TEXT NOT NULL" for index in range(1, 121)
+        )
+        cursor.execute(f"CREATE TABLE wide_items (id INTEGER PRIMARY KEY, {wide_columns})")
+
         cursor.executemany(
             "INSERT INTO small_items(id, name, note) VALUES (?, ?, ?)",
             [
@@ -92,6 +97,16 @@ def build_fixture_db(db_path: Path) -> None:
             for index in range(1, 10001)
         ]
         cursor.executemany("INSERT INTO single_column_items(f1) VALUES (?)", single_column_rows)
+
+        wide_rows = [
+            (index, *(f"column_{column:03d}_row_{index:03d}" for column in range(1, 121)))
+            for index in range(1, 1001)
+        ]
+        wide_placeholders = ", ".join("?" for _ in range(121))
+        cursor.executemany(
+            f"INSERT INTO wide_items VALUES ({wide_placeholders})",
+            wide_rows,
+        )
 
         extra_table_statements = []
         for index in range(1, 41):

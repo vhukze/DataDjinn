@@ -24,7 +24,16 @@ from app.git_versioning.data_history import (
     DataVersioningService,
     TableDataSnapshot,
 )
-from app.api.git_versioning import CreateDataSnapshotRequest, create_data_snapshot, list_data_versions
+from app.api.git_versioning import (
+    CreateDataSnapshotRequest,
+    RestoreTableVersionRequest,
+    create_data_snapshot,
+    diff_table_git_version,
+    get_table_git_version_details,
+    list_data_versions,
+    restore_table_git_version,
+    restore_table_structure,
+)
 from app.schemas.query import QueryResponse
 from app.schemas.metadata import TableDataChangeRequest
 
@@ -54,6 +63,7 @@ class DataVersioningServiceTests(unittest.TestCase):
         self, preview, list_columns, connection_manager, github_service
     ) -> None:
         connection_manager.get_connection_request.return_value = self.request
+        connection_manager.ensure_connection_available.return_value = True
         connection_manager.get_engine.return_value = object()
         github_service.status.return_value = SimpleNamespace(authorized=True)
         github_service.read_repository_file.return_value = None
@@ -80,6 +90,7 @@ class DataVersioningServiceTests(unittest.TestCase):
         self.assertEqual(result.snapshot.identity_mode, "primary_key")
         self.assertEqual(result.snapshot.identity_columns, ["id"])
         self.assertEqual(result.snapshot.rows, [{"id": 1, "title": "第一条"}])
+        connection_manager.ensure_connection_available.assert_called_once_with(self.connection_id)
         self.assertEqual(preview.call_args.kwargs["sort_column"], "id")
         github_service.write_repository_file.assert_called_once()
 
@@ -339,6 +350,31 @@ class DataVersioningServiceTests(unittest.TestCase):
         service.return_value.list_versions.assert_called_once_with(
             self.connection_id, "orders", "sales", "business", 10
         )
+
+    @patch("app.api.git_versioning.database_versioning_service")
+    def test_database_version_detail_diff_and_restore_api_forward_scope(self, service) -> None:
+        service.get_table_version_details.return_value = {"changes_sql": "UPDATE"}
+        service.diff_table_version.return_value = {"added_count": 1}
+        service.restore_table_version.return_value = {"executed_count": 1}
+        service.restore_table_structure.return_value = {"changed": True}
+
+        details = get_table_git_version_details("c1", "items", "commit-1", "sales")
+        diff = diff_table_git_version("c1", "items", "commit-1", "sales")
+        restored = restore_table_git_version(
+            "c1", "items", "commit-1", RestoreTableVersionRequest(confirm=True), "sales"
+        )
+        structure = restore_table_structure(
+            "c1", "items", "commit-1", RestoreTableVersionRequest(confirm=True), "sales"
+        )
+
+        self.assertEqual({"changes_sql": "UPDATE"}, details)
+        self.assertEqual({"added_count": 1}, diff)
+        self.assertEqual({"executed_count": 1}, restored)
+        self.assertEqual({"changed": True}, structure)
+        service.get_table_version_details.assert_called_once_with("c1", "sales", "items", "commit-1")
+        service.diff_table_version.assert_called_once_with("c1", "sales", "items", "commit-1")
+        service.restore_table_version.assert_called_once_with("c1", "sales", "items", "commit-1")
+        service.restore_table_structure.assert_called_once_with("c1", "sales", "items", "commit-1")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
+let connectionTreePreferencesUpdatedAt = 0
+
+const nextConnectionTreePreferencesUpdatedAt = (): number => {
+  connectionTreePreferencesUpdatedAt = Math.max(Date.now(), connectionTreePreferencesUpdatedAt + 1)
+  return connectionTreePreferencesUpdatedAt
+}
+
 // Custom APIs for renderer
 const api = {
   selectSqlFile: (): Promise<{ name: string; content: string } | null> =>
@@ -157,6 +164,13 @@ const api = {
   getSyncLocalState: () => ipcRenderer.invoke('sync-local-state:get'),
   setSyncLocalState: (state: unknown) => ipcRenderer.invoke('sync-local-state:set', state),
   clearSyncLocalState: () => ipcRenderer.invoke('sync-local-state:clear'),
+  getConnectionTreePreferences: () => ipcRenderer.invoke('connection-tree-preferences:get'),
+  setConnectionTreePreferences: (preferences: Record<string, unknown>) =>
+    ipcRenderer.invoke(
+      'connection-tree-preferences:set',
+      preferences,
+      nextConnectionTreePreferencesUpdatedAt()
+    ),
   getAppSyncSettings: () => ipcRenderer.invoke('sync-app-settings:get'),
   applyAppSyncSettings: (settings: unknown) =>
     ipcRenderer.invoke('sync-app-settings:apply', settings),

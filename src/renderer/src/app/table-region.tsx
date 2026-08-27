@@ -31,13 +31,6 @@ type TableSearchUiStateLike = {
   activeMatchIndex: number
 }
 
-type WorkspaceTabLike = {
-  key: string
-  kind: string
-  tableRenderVersion?: number
-  selectedRowKeys?: React.Key[]
-}
-
 export const getResultTableScrollHeight = (element: HTMLDivElement): number => {
   const headerHeight = element.querySelector<HTMLElement>('.ant-table-header')?.offsetHeight ?? 0
   const shell = element.closest<HTMLElement>('.result-table-content')
@@ -881,7 +874,11 @@ export const ColumnFilterTrigger = memo(function ColumnFilterTrigger({
 
 export const ResultTableBodyView = memo(
   function ResultTableBodyView({
-    tab,
+    tabKey,
+    tabKind,
+    tableRenderVersion,
+    selectedRowKeys,
+    restoreScrollLeft,
     searchSignature,
     tableColumns,
     tableRows,
@@ -892,12 +889,17 @@ export const ResultTableBodyView = memo(
     setBodyRef,
     setHeaderRef,
     onScrollCapture,
+    onHorizontalScroll,
     onKeyDown,
     onMouseDown,
     onMouseUp,
     onMouseLeave
   }: {
-    tab: WorkspaceTabLike
+    tabKey: string
+    tabKind: string
+    tableRenderVersion?: number
+    selectedRowKeys?: React.Key[]
+    restoreScrollLeft?: number
     searchSignature: string
     tableColumns: ColumnsType<EditableRowLike>
     tableRows: EditableRowLike[]
@@ -908,15 +910,22 @@ export const ResultTableBodyView = memo(
     setBodyRef: (element: HTMLDivElement | null) => void
     setHeaderRef: (element: HTMLDivElement | null) => void
     onScrollCapture: () => void
+    onHorizontalScroll?: (scrollLeft: number, viewportWidth: number) => void
     onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void
     onMouseDown: (event: React.MouseEvent<HTMLDivElement>) => void
     onMouseUp: (event: React.MouseEvent<HTMLDivElement>) => void
     onMouseLeave: () => void
   }) {
     void searchSignature
-    void tab.tableRenderVersion
+    void tableRenderVersion
     const bodyRef = useRef<HTMLDivElement | null>(null)
+    const tableRef = useRef<(TableRef & { scrollTo?: (config: { left?: number }) => void }) | null>(null)
+    const lastReportedHorizontalPositionRef = useRef<number | undefined>(undefined)
     const effectiveTableScrollY = tableScrollY
+    const selectedRowKeySet = useMemo(
+      () => new Set((selectedRowKeys ?? []).map(String)),
+      [selectedRowKeys]
+    )
 
     useLayoutEffect(() => {
       if (!virtual) {
@@ -953,6 +962,18 @@ export const ResultTableBodyView = memo(
       return () => window.cancelAnimationFrame(frameId)
     }, [tableColumns, tableScrollX, virtual])
 
+    useLayoutEffect(() => {
+      if (!virtual || restoreScrollLeft === undefined) {
+        return
+      }
+      tableRef.current?.scrollTo?.({ left: restoreScrollLeft })
+      const header = bodyRef.current?.querySelector<HTMLElement>('.ant-table-header')
+      if (header && Math.abs(header.scrollLeft - restoreScrollLeft) > 1) {
+        header.scrollLeft = restoreScrollLeft
+        header.dispatchEvent(new Event('scroll', { bubbles: true }))
+      }
+    }, [restoreScrollLeft, tableRenderVersion, virtual])
+
     useEffect(() => {
       if (!virtual) {
         return
@@ -962,16 +983,60 @@ export const ResultTableBodyView = memo(
       if (!container || !holder) {
         return
       }
+      const reportHorizontalScroll = (scrollLeft: number): void => {
+        const previousScrollLeft = lastReportedHorizontalPositionRef.current
+        if (
+          previousScrollLeft !== undefined &&
+          Math.abs(previousScrollLeft - scrollLeft) <= 1
+        ) {
+          return
+        }
+        lastReportedHorizontalPositionRef.current = scrollLeft
+        onHorizontalScroll?.(scrollLeft, holder.clientWidth)
+      }
       const syncHeaderScroll = (): void => {
         const header = container.querySelector<HTMLElement>('.ant-table-header')
-        if (header && Math.abs(header.scrollLeft - holder.scrollLeft) > 1) {
+        if (
+          header &&
+          (holder.scrollLeft > 0 || header.scrollLeft === 0) &&
+          Math.abs(header.scrollLeft - holder.scrollLeft) > 1
+        ) {
           header.scrollLeft = holder.scrollLeft
         }
+        reportHorizontalScroll(header?.scrollLeft ?? holder.scrollLeft)
       }
       syncHeaderScroll()
       holder.addEventListener('scroll', syncHeaderScroll)
-      return () => holder.removeEventListener('scroll', syncHeaderScroll)
-    }, [tab.tableRenderVersion, tableScrollX, virtual])
+      const header = container.querySelector<HTMLElement>('.ant-table-header')
+      const syncFromHeaderScroll = (): void => {
+        reportHorizontalScroll(header?.scrollLeft ?? 0)
+      }
+      header?.addEventListener('scroll', syncFromHeaderScroll)
+      const virtualInner = holder.querySelector<HTMLElement>(
+        '.ant-table-tbody-virtual-holder-inner'
+      )
+      const syncFromVirtualOffset = (): void => {
+        const virtualOffset = Math.max(
+          0,
+          -Number.parseFloat(virtualInner?.style.marginLeft || '0')
+        )
+        reportHorizontalScroll(header?.scrollLeft || holder.scrollLeft || virtualOffset)
+      }
+      let virtualOffsetObserver: MutationObserver | undefined
+      if (virtualInner) {
+        virtualOffsetObserver = new MutationObserver(syncFromVirtualOffset)
+        virtualOffsetObserver.observe(virtualInner, {
+          attributes: true,
+          attributeFilter: ['style']
+        })
+      }
+      syncFromVirtualOffset()
+      return () => {
+        holder.removeEventListener('scroll', syncHeaderScroll)
+        header?.removeEventListener('scroll', syncFromHeaderScroll)
+        virtualOffsetObserver?.disconnect()
+      }
+    }, [onHorizontalScroll, tableRenderVersion, tableScrollX, virtual])
 
     useEffect(() => {
       if (!virtual) {
@@ -995,17 +1060,14 @@ export const ResultTableBodyView = memo(
           return
         }
         event.preventDefault()
-        holder.dispatchEvent(
-          new WheelEvent('wheel', {
-            bubbles: true,
-            cancelable: true,
-            deltaX: nextScrollLeft - currentScrollLeft
-          })
-        )
+        if (header) {
+          header.scrollLeft = nextScrollLeft
+          header.dispatchEvent(new Event('scroll', { bubbles: true }))
+        }
       }
       holder.addEventListener('wheel', handleShiftWheel, { passive: false })
       return () => holder.removeEventListener('wheel', handleShiftWheel)
-    }, [tab.tableRenderVersion, virtual])
+    }, [tableRenderVersion, virtual])
 
     return (
       <div
@@ -1051,15 +1113,20 @@ export const ResultTableBodyView = memo(
         onMouseLeave={onMouseLeave}
       >
         <Table
-          key={`${tab.key}:${tab.tableRenderVersion ?? 0}`}
-          ref={setTableRef}
+          // Keep the table instance mounted while selection/editing state changes.
+          // Remounting a wide virtual table makes every click rebuild every column.
+          key={tabKey}
+          ref={(instance) => {
+            tableRef.current = instance as (TableRef & {
+              scrollTo?: (config: { left?: number }) => void
+            }) | null
+            setTableRef(instance)
+          }}
           className="result-table"
           rowClassName={(row) =>
             [
               row.__deleted ? 'row-deleted' : row.__state ? `row-${row.__state}` : '',
-              (tab.selectedRowKeys ?? []).map(String).includes(row.__rowKey)
-                ? 'row-selected'
-                : ''
+              selectedRowKeySet.has(row.__rowKey) ? 'row-selected' : ''
             ]
               .filter(Boolean)
               .join(' ')
@@ -1072,14 +1139,17 @@ export const ResultTableBodyView = memo(
           tableLayout="fixed"
           virtual={virtual}
           scroll={{ x: tableScrollX, y: effectiveTableScrollY }}
-          locale={{ emptyText: tab.kind === 'query' ? '暂无查询结果' : '暂无表数据' }}
+          locale={{ emptyText: tabKind === 'query' ? '暂无查询结果' : '暂无表数据' }}
         />
       </div>
     )
   },
   (prev, next) =>
-    prev.tab === next.tab &&
-    prev.tab.tableRenderVersion === next.tab.tableRenderVersion &&
+    prev.tabKey === next.tabKey &&
+    prev.tabKind === next.tabKind &&
+    prev.tableRenderVersion === next.tableRenderVersion &&
+    prev.selectedRowKeys === next.selectedRowKeys &&
+    prev.restoreScrollLeft === next.restoreScrollLeft &&
     prev.searchSignature === next.searchSignature &&
     prev.tableScrollX === next.tableScrollX &&
     prev.tableScrollY === next.tableScrollY &&

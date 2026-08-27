@@ -50,6 +50,7 @@ export class BackendManager {
   private stopping = false
   private suppressStopStatus = false
   private restartTimer: ReturnType<typeof setTimeout> | null = null
+  private recoveryProbe: Promise<void> | null = null
   private restartAttempts = 0
   private startPromise: Promise<BackendStatus> | null = null
   private launchId = 0
@@ -204,6 +205,38 @@ export class BackendManager {
         message: error instanceof Error ? error.message : '后端自动重启失败'
       })
     })
+  }
+
+  /**
+   * A failed client request alone does not prove that the backend process died.
+   * Probe the health endpoint first so a transient socket failure cannot tear
+   * down healthy in-flight work such as a Git snapshot.
+   */
+  async recoverIfUnhealthy(reason = '检测到后端连接中断，正在自动重启'): Promise<void> {
+    if (this.recoveryProbe) {
+      return this.recoveryProbe
+    }
+
+    const probe = (async (): Promise<void> => {
+      if (this.stopping || this.status.state === 'starting') {
+        return
+      }
+
+      const apiBaseUrl = this.status.apiBaseUrl
+      if (apiBaseUrl && await checkHealth(`${apiBaseUrl}/health`)) {
+        return
+      }
+
+      this.recover(reason)
+    })()
+    this.recoveryProbe = probe
+    try {
+      await probe
+    } finally {
+      if (this.recoveryProbe === probe) {
+        this.recoveryProbe = null
+      }
+    }
   }
 
   async restart(reason = '后端重启中'): Promise<BackendStatus> {

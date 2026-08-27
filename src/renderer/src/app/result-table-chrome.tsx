@@ -7,6 +7,7 @@ import {
   DoubleRightOutlined,
   DownloadOutlined,
   DownOutlined,
+  GithubOutlined,
   LeftOutlined,
   LoadingOutlined,
   MinusOutlined,
@@ -18,7 +19,7 @@ import {
 } from '@ant-design/icons'
 import { Alert, Button, Flex, Input, InputNumber, Select, Space, Tag, Typography } from 'antd'
 import type React from 'react'
-import { useLayoutEffect, useRef } from 'react'
+import { memo } from 'react'
 import { ResultTableHeader, WhereClauseInput } from './table-region'
 import type { ConnectionInfo } from './connection-model'
 import type { MultiStatementResult, TableSearchUiState, WorkspaceTab, RedisKeyEdit } from './workspace-model'
@@ -60,9 +61,10 @@ type EditableCellProps = {
     value: unknown
   ) => void
   displayContent?: React.ReactNode
+  renderVersion?: string
 }
 
-export function ResultEditableCell({
+function ResultEditableCellView({
   tabKey,
   rowKey,
   column,
@@ -78,37 +80,12 @@ export function ResultEditableCell({
   displayContent
 }: EditableCellProps): React.ReactNode {
   const cellKey = `${rowKey}:${column}`
-  const cellRef = useRef<HTMLSpanElement | null>(null)
   const clearNativeSelection = (): void => {
     window.getSelection()?.removeAllRanges()
   }
-  useLayoutEffect(() => {
-    const cell = cellRef.current
-    if (!cell) {
-      return
-    }
-    const host = cell.closest<HTMLElement>('td, .ant-table-cell')
-    cell.classList.toggle('cell-selected-runtime', selected)
-    host?.classList.toggle('cell-selected-runtime-host', selected)
-    host?.classList.toggle('editable-cell-draft-host', draft)
-    if (host && draft) {
-      host.style.setProperty('background', 'rgba(216, 59, 1, 0.14)', 'important')
-      host.style.setProperty('background-color', 'rgba(216, 59, 1, 0.14)', 'important')
-      host.style.setProperty('background-image', 'none', 'important')
-      host.style.setProperty('border-bottom-color', 'var(--dj-grid-border)', 'important')
-      host.style.setProperty('box-shadow', 'inset 0 -1px 0 var(--dj-grid-border)', 'important')
-    } else if (host && !selected) {
-      host.style.removeProperty('background')
-      host.style.removeProperty('background-color')
-      host.style.removeProperty('background-image')
-      host.style.removeProperty('border-bottom-color')
-      host.style.removeProperty('box-shadow')
-    }
-  })
   return (
     <span
-      ref={cellRef}
-      className={`editable-cell${value === null || value === undefined ? ' editable-cell-null' : ''}${draft ? ' editable-cell-draft' : ''}`}
+      className={`editable-cell${value === null || value === undefined ? ' editable-cell-null' : ''}${draft ? ' editable-cell-draft' : ''}${selected ? ' cell-selected-runtime' : ''}`}
       data-cell-column-key={column}
       data-row-key={rowKey}
       data-cell-key={cellKey}
@@ -173,6 +150,7 @@ type ResultStatusProps = {
   pager?: React.ReactNode
   isSchemaScopedType: (databaseType?: ConnectionInfo['database_type']) => boolean
   onPointerClearSelection?: () => void
+  onOpenTableGitHistory?: () => void
 }
 
 export function ResultStatusBar({
@@ -181,7 +159,8 @@ export function ResultStatusBar({
   pendingChanges,
   pager,
   isSchemaScopedType,
-  onPointerClearSelection
+  onPointerClearSelection,
+  onOpenTableGitHistory
 }: ResultStatusProps): React.ReactNode {
   const totalRows = tab.result?.total_count ?? tab.result?.row_count
   const showPager =
@@ -216,6 +195,20 @@ export function ResultStatusBar({
       }}
     >
       <Space wrap className="result-status-left">
+        {tab.kind === 'preview' && connection && connection.database_type !== 'mongodb' && connection.database_type !== 'redis' && onOpenTableGitHistory ? (
+          <Button
+            type="text"
+            size="small"
+            className="table-git-history-button"
+            icon={<GithubOutlined />}
+            title="查看当前表 Git 提交记录"
+            aria-label="查看当前表 Git 提交记录"
+            onClick={(event) => {
+              event.stopPropagation()
+              onOpenTableGitHistory()
+            }}
+          />
+        ) : null}
         <Tag
           className="result-status-pill result-status-kind-pill"
           color={
@@ -334,6 +327,17 @@ export function QueryExecutionStatusCard({
 
   return null
 }
+
+export const ResultEditableCell = memo(ResultEditableCellView, (previous, next) =>
+  previous.tabKey === next.tabKey &&
+  previous.rowKey === next.rowKey &&
+  previous.column === next.column &&
+  previous.value === next.value &&
+  previous.editable === next.editable &&
+  previous.selected === next.selected &&
+  previous.draft === next.draft &&
+  previous.renderVersion === next.renderVersion
+)
 
 export function MultiStatementExecutionCard({ results }: { results: MultiStatementResult[] }): React.ReactNode {
   if (results.length === 0) {

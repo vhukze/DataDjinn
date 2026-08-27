@@ -110,6 +110,7 @@ type TreeRuntimeDeps = {
   treeLoadingKeysRef: MutableRefObject<Set<React.Key>>
   expandedKeysRef: MutableRefObject<React.Key[]>
   setExpandedKeys: React.Dispatch<React.SetStateAction<React.Key[]>>
+  captureTreeScrollPosition?: () => () => void
   notifyTreeLoadingStateChanged: () => void
   showError: (error: unknown, fallback?: string) => void
   connectionTypeIcons: ConnectionTypeIcons
@@ -556,6 +557,7 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
     }
 
     const key = node.key as React.Key
+    const restoreTreeScrollPosition = deps.captureTreeScrollPosition?.()
     const cachedChildren = getCachedObjectGroupChildren(node)
 
     if (expand && !deps.expandedKeysRef.current.includes(key)) {
@@ -584,6 +586,7 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
         childCount: cachedChildren.length,
         duration: Number((performance.now() - startedAt).toFixed(2))
       })
+      restoreTreeScrollPosition?.()
       return
     }
 
@@ -637,6 +640,7 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
     } finally {
       deps.treeLoadingKeysRef.current.delete(node.key)
       deps.notifyTreeLoadingStateChanged()
+      restoreTreeScrollPosition?.()
     }
   }
 

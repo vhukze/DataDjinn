@@ -95,6 +95,10 @@ export type OptionalModuleInfo = {
   version: string
   installed: boolean
   installedAt?: number
+  installedVersion?: string
+  pendingVersion?: string
+  pendingRestartRequired?: boolean
+  updateAvailable?: boolean
 }
 
 export type OptionalModuleLaunchConfig = {

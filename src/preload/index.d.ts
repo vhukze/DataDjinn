@@ -97,6 +97,10 @@ type OptionalModuleInfo = {
   version: string
   installed: boolean
   installedAt?: number
+  installedVersion?: string
+  pendingVersion?: string
+  pendingRestartRequired?: boolean
+  updateAvailable?: boolean
 }
 
 type OptionalModuleLaunchConfig = {
@@ -168,6 +172,10 @@ interface DataDjinnAPI {
   getSyncLocalState: () => Promise<SyncLocalState>
   setSyncLocalState: (state: SyncLocalState) => Promise<SyncLocalState>
   clearSyncLocalState: () => Promise<void>
+  getConnectionTreePreferences: () => Promise<Record<string, unknown>>
+  setConnectionTreePreferences: (
+    preferences: Record<string, unknown>
+  ) => Promise<Record<string, unknown>>
   getAppSyncSettings: () => Promise<AppSyncSettings>
   applyAppSyncSettings: (settings: Partial<AppSyncSettings>) => Promise<AppSyncSettings>
   getOptionalModules: () => Promise<OptionalModuleInfo[]>

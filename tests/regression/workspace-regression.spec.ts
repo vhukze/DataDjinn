@@ -12,6 +12,7 @@ const mediumTableName = 'medium_items'
 const largeTableName = 'large_items'
 const threeColumnTableName = 'three_column_items'
 const singleColumnTableName = 'single_column_items'
+const wideTableName = 'wide_items'
 const MAX_STABLE_CHROME_HASHES = 2
 
 function readFixtureUserDataDir() {
@@ -2381,6 +2382,28 @@ test.describe('workspace regression', () => {
     }
   })
 
+  test('sql identifier with an implicit statement keyword prefix should not split a query @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openQueryWorkspace(page)
+
+      await focusMonacoEditor(page)
+      await page.keyboard.press('Control+A')
+      await page.keyboard.type(
+        "select alert_name, merge_id from xuanji_dwd.dwd_dayu_alert_alert_info\nwhere merge_id = 'a2d8ddcd70eb62bc18398a3ac34a8642'"
+      )
+      await expect(page.locator('.sql-editor-statement-execute')).toHaveCount(1, { timeout: 10000 })
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
   test('sql comments should not create executable statements or break formatted queries @bug', async () => {
     const electronApp = await launchRegressionApp()
 
@@ -2802,7 +2825,7 @@ test.describe('workspace regression', () => {
     }
   })
 
-  test('tree search should count and navigate matching connections by name or address @bug', async () => {
+  test('tree search should count and navigate all loaded node names plus connection addresses @bug', async () => {
     const fixtureUserDataDir = readFixtureUserDataDir()
     const connectionsPath = path.join(fixtureUserDataDir, 'connections.json')
     const originalConnectionsRaw = fs.readFileSync(connectionsPath, 'utf-8')
@@ -2856,11 +2879,26 @@ test.describe('workspace regression', () => {
       const navigationButtons = searchControls.locator('button.tree-search-nav-btn')
       await expect(searchInput).toBeVisible({ timeout: 10000 })
 
+      const expectedTableMatchCount = await page.locator('.table-tree-title').evaluateAll((nodes) =>
+        nodes.filter((node) => (node.textContent ?? '').toLowerCase().includes('items')).length
+      )
+      expect(expectedTableMatchCount).toBeGreaterThan(0)
+      const tableGroupKey = `object-group:${fixtureConnectionId}:::table`
+      await toggleTreeNode(page, tableGroupKey)
+      await expect(page.locator('.table-tree-title')).toHaveCount(0)
+
       await searchInput.fill('items')
       await expect(
         counter,
-        'matching table names must not be counted as connection search results'
-      ).toHaveText('0/0')
+        'all loaded table nodes matching the search text should be counted'
+      ).toHaveText(`1/${expectedTableMatchCount}`)
+      await expect(
+        page.locator('.table-tree-title mark.tree-search-highlight').first(),
+        'searching a collapsed result must expand its path and scroll to the matched node'
+      ).toBeVisible()
+      await expect(
+        page.locator('.ant-tree-node-content-wrapper.ant-tree-node-selected .table-tree-title')
+      ).toContainText('items')
 
       await searchInput.fill('10.88.0.')
       await expect(counter).toHaveText('1/2')
@@ -3061,6 +3099,469 @@ test.describe('workspace regression', () => {
         overflowMetrics.scrollWidth,
         'long single-column query value should still overflow internally for ellipsis'
       ).toBeGreaterThan(overflowMetrics.clientWidth)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('connection groups and selected databases should survive renderer storage reset @bug', async () => {
+    const electronApp = await launchRegressionApp()
+    const folderId = `persistent-folder-${crypto.randomUUID()}`
+    const folderName = `安装后保留分组 ${folderId.slice(-8)}`
+    const storageKeys = [
+      'datadjinn-connection-folders',
+      'datadjinn-connection-folder-assignments',
+      'datadjinn-connection-folder-order',
+      'datadjinn-folder-connection-order',
+      'datadjinn-root-connection-order',
+      'datadjinn-root-item-order',
+      'datadjinn-root-item-order-customized',
+      'datadjinn-pinned-root-item-ids',
+      'datadjinn-selected-databases',
+      'datadjinn-selected-schemas'
+    ]
+    let originalPreferences
+    let localStorageSnapshot
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      originalPreferences = await page.evaluate(() =>
+        window.api.requestJson('/preferences/connection-tree')
+      )
+      localStorageSnapshot = await page.evaluate((keys) =>
+        Object.fromEntries(keys.map((key) => [key, localStorage.getItem(key)])),
+        storageKeys
+      )
+
+      await page.evaluate(
+        async ({ nextFolderId, nextFolderName, connectionId, keys }) => {
+          await window.api.requestJson('/preferences/connection-tree', {
+            method: 'PUT',
+            body: JSON.stringify({
+              preferences: {
+                connection_folders: [{ id: nextFolderId, name: nextFolderName }],
+                connection_folder_assignments: { [connectionId]: nextFolderId },
+                connection_folder_order: [nextFolderId],
+                root_connection_order: [],
+                root_item_order: [`folder:${nextFolderId}`],
+                root_item_order_customized: true,
+                pinned_root_item_ids: [],
+                folder_connection_order: { [nextFolderId]: [connectionId] },
+                selected_databases: { [connectionId]: ['default'] },
+                selected_schemas: {}
+              }
+            })
+          })
+          keys.forEach((key) => localStorage.removeItem(key))
+        },
+        { nextFolderId: folderId, nextFolderName: folderName, connectionId: fixtureConnectionId, keys: storageKeys }
+      )
+
+      await page.reload()
+      await waitForAppReady(page)
+      const folderTitle = page.locator(
+        `.resource-tree-node-title[data-tree-node-key="folder:${folderId}"]`
+      )
+      await expect(folderTitle).toContainText(folderName, { timeout: 15000 })
+      await folderTitle.dblclick()
+      await expect(treeNode(page, `connection:${fixtureConnectionId}`)).toBeVisible({ timeout: 15000 })
+      await expect
+        .poll(() =>
+          page.evaluate((connectionId) => {
+            const selected = JSON.parse(
+              localStorage.getItem('datadjinn-selected-databases') ?? '{}'
+            )
+            return selected[connectionId]
+          }, fixtureConnectionId)
+        )
+        .toEqual(['default'])
+    } finally {
+      const page = await electronApp.firstWindow().catch(() => undefined)
+      if (page && originalPreferences) {
+        await page.evaluate(async (preferences) => {
+          await window.api.requestJson('/preferences/connection-tree', {
+            method: 'PUT',
+            body: JSON.stringify({ preferences: preferences.preferences ?? {} })
+          })
+        }, originalPreferences)
+      }
+      if (page && localStorageSnapshot) {
+        await page.evaluate((snapshot) => {
+          Object.entries(snapshot).forEach(([key, value]) => {
+            if (value === null) {
+              localStorage.removeItem(key)
+            } else {
+              localStorage.setItem(key, value)
+            }
+          })
+        }, localStorageSnapshot)
+      }
+      await electronApp.close()
+    }
+  })
+
+  test('legacy connection tree cache should migrate before an installation upgrade can reset it @bug', async () => {
+    const electronApp = await launchRegressionApp()
+    const folderId = `upgrade-folder-${crypto.randomUUID()}`
+    const folderName = `覆盖安装保留 ${folderId.slice(-8)}`
+    let originalPreferences
+    let originalMainPreferences
+    let localStorageSnapshot
+    const storageKeys = [
+      'datadjinn-connection-folders',
+      'datadjinn-connection-folder-assignments',
+      'datadjinn-connection-folder-order',
+      'datadjinn-folder-connection-order',
+      'datadjinn-root-connection-order',
+      'datadjinn-root-item-order',
+      'datadjinn-root-item-order-customized',
+      'datadjinn-pinned-root-item-ids',
+      'datadjinn-selected-databases',
+      'datadjinn-selected-schemas'
+    ]
+    const legacyPreferences = {
+      connection_folders: [{ id: folderId, name: folderName }],
+      connection_folder_assignments: { [fixtureConnectionId]: folderId },
+      connection_folder_order: [folderId],
+      root_connection_order: [],
+      root_item_order: [`folder:${folderId}`],
+      root_item_order_customized: true,
+      pinned_root_item_ids: [],
+      folder_connection_order: { [folderId]: [fixtureConnectionId] },
+      selected_databases: { [fixtureConnectionId]: ['default'] },
+      selected_schemas: {}
+    }
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      originalPreferences = await page.evaluate(() => window.api.requestJson('/preferences/connection-tree'))
+      originalMainPreferences = await page.evaluate(() => window.api.getConnectionTreePreferences())
+      localStorageSnapshot = await page.evaluate((keys) =>
+        Object.fromEntries(keys.map((key) => [key, localStorage.getItem(key)])),
+        storageKeys
+      )
+      await page.evaluate(
+        async ({ preferences, keys }) => {
+          await window.api.requestJson('/preferences/connection-tree', {
+            method: 'PUT',
+            body: JSON.stringify({ preferences: {} })
+          })
+          await window.api.setConnectionTreePreferences({
+            connection_folders: [],
+            connection_folder_assignments: {},
+            connection_folder_order: [],
+            root_connection_order: [],
+            root_item_order: [],
+            root_item_order_customized: false,
+            pinned_root_item_ids: [],
+            folder_connection_order: {},
+            selected_databases: {},
+            selected_schemas: {}
+          })
+          localStorage.setItem('datadjinn-connection-folders', JSON.stringify(preferences.connection_folders))
+          localStorage.setItem(
+            'datadjinn-connection-folder-assignments',
+            JSON.stringify(preferences.connection_folder_assignments)
+          )
+          localStorage.setItem(
+            'datadjinn-connection-folder-order',
+            JSON.stringify(preferences.connection_folder_order)
+          )
+          localStorage.setItem(
+            'datadjinn-folder-connection-order',
+            JSON.stringify(preferences.folder_connection_order)
+          )
+          localStorage.setItem('datadjinn-root-connection-order', JSON.stringify(preferences.root_connection_order))
+          localStorage.setItem('datadjinn-root-item-order', JSON.stringify(preferences.root_item_order))
+          localStorage.setItem(
+            'datadjinn-root-item-order-customized',
+            String(preferences.root_item_order_customized)
+          )
+          localStorage.setItem('datadjinn-pinned-root-item-ids', JSON.stringify(preferences.pinned_root_item_ids))
+          localStorage.setItem('datadjinn-selected-databases', JSON.stringify(preferences.selected_databases))
+          localStorage.setItem('datadjinn-selected-schemas', JSON.stringify(preferences.selected_schemas))
+          void keys
+        },
+        { preferences: legacyPreferences, keys: storageKeys }
+      )
+
+      await page.reload()
+      await waitForAppReady(page)
+      await expect(
+        page.locator(`.resource-tree-node-title[data-tree-node-key="folder:${folderId}"]`)
+      ).toContainText(folderName, { timeout: 15000 })
+      await expect
+        .poll(() =>
+          page.evaluate(async (connectionId) => {
+            const response = await window.api.requestJson('/preferences/connection-tree')
+            return response.preferences.connection_folder_assignments?.[connectionId]
+          }, fixtureConnectionId)
+        )
+        .toBe(folderId)
+    } finally {
+      const page = await electronApp.firstWindow().catch(() => undefined)
+      if (page && originalPreferences) {
+        await page.evaluate(
+          async ({ preferences, mainPreferences }) => {
+            await Promise.all([
+              window.api.requestJson('/preferences/connection-tree', {
+                method: 'PUT',
+                body: JSON.stringify({ preferences: preferences.preferences ?? {} })
+              }),
+              window.api.setConnectionTreePreferences(mainPreferences)
+            ])
+          },
+          { preferences: originalPreferences, mainPreferences: originalMainPreferences ?? {} }
+        )
+      }
+      if (page && localStorageSnapshot) {
+        await page.evaluate((snapshot) => {
+          Object.entries(snapshot).forEach(([key, value]) => {
+            if (value === null) localStorage.removeItem(key)
+            else localStorage.setItem(key, value)
+          })
+        }, localStorageSnapshot)
+      }
+      await electronApp.close()
+    }
+  })
+
+  test('wide result table should scroll vertically and horizontally without per-frame full-cell scans @bug', async () => {
+    test.setTimeout(60000)
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openQueryWorkspace(page)
+
+      const editorTextbox = page.getByRole('textbox', { name: 'Editor content' }).first()
+      await expect(editorTextbox).toBeVisible({ timeout: 30000 })
+      await editorTextbox.focus()
+      await page.keyboard.press('Control+A')
+      await page.keyboard.type(`select * from ${wideTableName} order by id limit 1000;`)
+      await page.getByRole('button', { name: /执行/i }).first().click()
+
+      const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      const renderedColumnButtons = activeResult.locator('.result-table [data-column-button]')
+      await expect(renderedColumnButtons.first()).toBeVisible({ timeout: 30000 })
+      const initialRenderedColumnCount = await renderedColumnButtons.count()
+      expect(initialRenderedColumnCount).toBeLessThanOrEqual(32)
+      await expect(
+        activeResult.locator('.result-table .ant-table-tbody-virtual-holder')
+      ).toBeVisible({ timeout: 30000 })
+      await waitForBrowserIdle(page)
+
+      await activeResult.evaluate(() => {
+        const longTasks = []
+        const observer = new PerformanceObserver((entries) => {
+          entries.getEntries().forEach((entry) => longTasks.push(entry.duration))
+        })
+        observer.observe({ type: 'longtask' })
+        window.__DATADJINN_WIDE_SCROLL_PROBE__ = { longTasks, observer }
+      })
+      const holder = activeResult.locator('.result-table .ant-table-tbody-virtual-holder')
+      const holderBox = await holder.boundingBox()
+      expect(holderBox).not.toBeNull()
+      await page.mouse.move(holderBox.x + holderBox.width / 2, holderBox.y + holderBox.height / 2)
+      for (let index = 0; index < 8; index += 1) {
+        await page.mouse.wheel(0, 360)
+        await page.waitForTimeout(20)
+      }
+      const verticalLongestTask = await activeResult.evaluate(() => {
+        const probe = window.__DATADJINN_WIDE_SCROLL_PROBE__
+        const longestTask = Math.max(0, ...(probe?.longTasks ?? []))
+        probe?.observer.disconnect()
+        const longTasks: number[] = []
+        const observer = new PerformanceObserver((entries) => {
+          entries.getEntries().forEach((entry) => longTasks.push(entry.duration))
+        })
+        observer.observe({ type: 'longtask' })
+        window.__DATADJINN_WIDE_SCROLL_PROBE__ = { longTasks, observer }
+        return longestTask
+      })
+      const horizontalScrollbar = activeResult.locator(
+        '.result-table .ant-table-tbody-virtual-scrollbar-horizontal'
+      )
+      await expect(horizontalScrollbar).toBeVisible({ timeout: 10000 })
+      const horizontalScrollbarBox = await horizontalScrollbar.boundingBox()
+      expect(horizontalScrollbarBox).not.toBeNull()
+      await page.mouse.move(horizontalScrollbarBox.x + 4, horizontalScrollbarBox.y + horizontalScrollbarBox.height / 2)
+      await page.mouse.down()
+      await page.mouse.move(
+        horizontalScrollbarBox.x + horizontalScrollbarBox.width * 0.7,
+        horizontalScrollbarBox.y + horizontalScrollbarBox.height / 2,
+        { steps: 12 }
+      )
+      await page.mouse.up()
+      await expect(
+        activeResult.locator('.result-table [data-column-button="column_090"]')
+      ).toBeVisible({ timeout: 10000 })
+      const scrollMetrics = await activeResult.evaluate(() => {
+        const holder = document.querySelector('.result-table .ant-table-tbody-virtual-holder')
+        const header = document.querySelector('.result-table .ant-table-header')
+        const inner = document.querySelector('.ant-table-tbody-virtual-holder-inner')
+        const probe = window.__DATADJINN_WIDE_SCROLL_PROBE__
+        probe?.observer.disconnect()
+        if (!(holder instanceof HTMLElement) || !(header instanceof HTMLElement)) {
+          return null
+        }
+        return {
+          scrollTop: holder.scrollTop,
+          scrollLeft: holder.scrollLeft,
+          headerScrollLeft: header.scrollLeft,
+          horizontalOffset: Math.max(0, -Number.parseFloat(inner?.style.marginLeft || '0')),
+          longestTask: Math.max(0, ...(probe?.longTasks ?? []))
+        }
+      })
+      const visibleCurrentWindowCell = await activeResult.evaluate((node) => {
+        const holder = node.querySelector<HTMLElement>(
+          '.result-table .ant-table-tbody-virtual-holder'
+        )
+        if (!holder) {
+          return null
+        }
+        const holderRect = holder.getBoundingClientRect()
+        const cell = Array.from(
+          node.querySelectorAll<HTMLElement>('.result-table .editable-cell[data-cell-key]')
+        ).find((candidate) => {
+          const rect = candidate.getBoundingClientRect()
+          return (
+            rect.width > 8 &&
+            rect.height > 8 &&
+            rect.top >= holderRect.top &&
+            rect.bottom <= holderRect.bottom &&
+            rect.left >= holderRect.left &&
+            rect.right <= holderRect.right
+          )
+        })
+        if (!cell) {
+          return null
+        }
+        const rect = cell.getBoundingClientRect()
+        return {
+          cellKey: cell.dataset.cellKey ?? '',
+          x: rect.x + rect.width / 2,
+          y: rect.y + rect.height / 2
+        }
+      })
+      expect(visibleCurrentWindowCell).not.toBeNull()
+      await activeResult.evaluate((node) => {
+        const table = node.querySelector('.result-table')
+        if (!table) {
+          return
+        }
+        const rows = Array.from(
+          table.querySelectorAll('.ant-table-tbody-virtual-holder .ant-table-row')
+        )
+        const cells = Array.from(table.querySelectorAll('.editable-cell[data-cell-key]'))
+        const mutations = []
+        const observer = new MutationObserver((records) => {
+          records.forEach((record) => {
+            if (record.type === 'childList') {
+              mutations.push(record)
+            }
+          })
+        })
+        observer.observe(table, { childList: true, subtree: true })
+        window.__DATADJINN_WIDE_CLICK_STABILITY__ = { rows, cells, mutations, observer }
+      })
+      await page.mouse.click(visibleCurrentWindowCell.x, visibleCurrentWindowCell.y)
+      const clickFrames = await activeResult.evaluate(async (node) => {
+        const snapshot = () => ({
+          visibleCells: Array.from(
+            node.querySelectorAll<HTMLElement>('.result-table .editable-cell[data-cell-key]')
+          ).filter((cell) => {
+            const rect = cell.getBoundingClientRect()
+            return rect.width > 0 && rect.height > 0
+          }).length,
+          rows: node.querySelectorAll('.result-table .ant-table-tbody-virtual-holder .ant-table-row').length
+        })
+        const frames = [snapshot()]
+        for (let index = 0; index < 5; index += 1) {
+          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+          frames.push(snapshot())
+        }
+        return frames
+      })
+      const clickStability = await activeResult.evaluate((node) => {
+        const probe = window.__DATADJINN_WIDE_CLICK_STABILITY__
+        probe?.observer.disconnect()
+        const table = node.querySelector('.result-table')
+        const currentRows = Array.from(
+          table?.querySelectorAll('.ant-table-tbody-virtual-holder .ant-table-row') ?? []
+        )
+        const currentCells = Array.from(table?.querySelectorAll('.editable-cell[data-cell-key]') ?? [])
+        const result = {
+          childListMutations: probe?.mutations.length ?? -1,
+          replacedRows: currentRows.filter((row) => !probe?.rows.includes(row)).length,
+          replacedCells: currentCells.filter((cell) => !probe?.cells.includes(cell)).length
+        }
+        delete window.__DATADJINN_WIDE_CLICK_STABILITY__
+        return result
+      })
+      expect(
+        Math.min(...clickFrames.map((frame) => frame.visibleCells)),
+        '横向滚动后的左键点击不应出现空白表格帧'
+      ).toBeGreaterThan(0)
+      expect(
+        Math.min(...clickFrames.map((frame) => frame.rows)),
+        '横向滚动后的左键点击不应卸载可见行'
+      ).toBeGreaterThan(0)
+      expect(
+        clickStability,
+        '横向滚动后的左键点击不应重新挂载可见虚拟行或单元格'
+      ).toEqual({ childListMutations: 0, replacedRows: 0, replacedCells: 0 })
+      await expect(
+        activeResult.locator(
+          `.result-table .editable-cell.cell-selected-runtime[data-cell-key="${visibleCurrentWindowCell.cellKey}"]`
+        )
+      ).toBeVisible()
+
+      await page.mouse.click(visibleCurrentWindowCell.x, visibleCurrentWindowCell.y, { button: 'right' })
+      await expect(page.locator('.result-cell-context-menu-panel')).toBeVisible({ timeout: 10000 })
+      const contextFrames = await activeResult.evaluate(async (node) => {
+        const frames: number[] = []
+        for (let index = 0; index < 5; index += 1) {
+          frames.push(
+            Array.from(node.querySelectorAll<HTMLElement>('.result-table .editable-cell[data-cell-key]')).filter(
+              (cell) => cell.getBoundingClientRect().width > 0 && cell.getBoundingClientRect().height > 0
+            ).length
+          )
+          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+        }
+        return frames
+      })
+      expect(
+        Math.min(...contextFrames),
+        '横向滚动后的右键点击不应出现空白表格帧'
+      ).toBeGreaterThan(0)
+      const recordViewStart = Date.now()
+      await clickVisibleDropdownMenuItem(page, '记录视图')
+      const recordInspector = activeResult.locator('.cell-inspector.is-open')
+      await expect(recordInspector).toBeVisible({ timeout: 10000 })
+      await expect(recordInspector.locator('.cell-inspector-field-value').first()).toBeVisible({
+        timeout: 10000
+      })
+      const recordViewElapsed = Date.now() - recordViewStart
+      expect(
+        await recordInspector.locator('.cell-inspector-field-value').count(),
+        '宽表记录视图应完整显示当前记录字段'
+      ).toBeGreaterThan(100)
+      expect(recordViewElapsed, '宽表记录视图应在点击后快速显示').toBeLessThan(1000)
+
+      expect(scrollMetrics).not.toBeNull()
+      expect(scrollMetrics.scrollTop).toBeGreaterThan(0)
+      expect(scrollMetrics.horizontalOffset).toBeGreaterThan(0)
+      console.log(
+        `[perf][wide-result-scroll] ${JSON.stringify({ verticalLongestTask, recordViewElapsed, ...scrollMetrics })}`
+      )
+      expect(verticalLongestTask).toBeLessThan(50)
+      expect(scrollMetrics.longestTask).toBeLessThan(50)
     } finally {
       await electronApp.close()
     }
@@ -3798,6 +4299,35 @@ test.describe('workspace regression', () => {
         dragSelectionState.selectedCount,
         'dragging across preview cells should create a range selection'
       ).toBeGreaterThan(1)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('table preview click and context menu should not blank the result table @bug', async () => {
+    const electronApp = await launchRegressionApp()
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openFixtureTable(page, largeTableName)
+
+      const result = page.locator('.workspace-tab-panels .workspace-active-content')
+      const cell = result.locator('.editable-cell[data-cell-key]:visible').first()
+      await expect(cell).toBeVisible()
+      const before = await result.locator('.editable-cell[data-cell-key]:visible').count()
+
+      await cell.click()
+      await page.waitForTimeout(80)
+      await expect(result.locator('.ant-table-tbody')).toBeVisible()
+      await expect.poll(() => result.locator('.editable-cell[data-cell-key]:visible').count()).toBeGreaterThan(0)
+
+      await cell.click({ button: 'right' })
+      await page.waitForTimeout(80)
+      await expect(result.locator('.ant-table-tbody')).toBeVisible()
+      await expect.poll(() => result.locator('.editable-cell[data-cell-key]:visible').count()).toBeGreaterThan(0)
+      expect(before).toBeGreaterThan(0)
     } finally {
       await electronApp.close()
     }
@@ -5330,6 +5860,8 @@ test.describe('workspace regression', () => {
       await modal.getByRole('button', { name: '安装 AI 助手' }).click()
       await expect(modal.locator('.ai-settings-add-btn')).toBeVisible({ timeout: 90000 })
       await expect(modal).toContainText('旧配置')
+      await modal.locator('.ai-settings-primary-btn').click()
+      await expect(page.locator('.ant-message').filter({ hasText: 'AI 配置已保存' })).toBeVisible()
 
       const routeProbe = await page.evaluate(() =>
         window.api.requestJson('/ai/ping', { method: 'POST', body: '{}' })
@@ -5431,6 +5963,12 @@ test.describe('workspace regression', () => {
         await expect(moduleCard.locator('.optional-module-install-btn')).toBeDisabled()
         await expect(moduleCard.getByText('已安装')).toBeVisible({ timeout: 90000 })
 
+        const firstLaunchConfig = await page.evaluate(() => window.api.getOptionalModuleLaunchConfig('mcp'))
+        expect(firstLaunchConfig?.command).toMatch(/[\\/]modules[\\/]mcp[\\/]current[\\/]/i)
+        await page.evaluate(() => window.api.installOptionalModule('mcp'))
+        const secondLaunchConfig = await page.evaluate(() => window.api.getOptionalModuleLaunchConfig('mcp'))
+        expect(secondLaunchConfig?.command).toBe(firstLaunchConfig?.command)
+
         await modal.getByRole('menuitem', { name: 'MCP' }).click()
         const card = modal.locator('.mcp-settings-card')
         await expect(card.locator('.mcp-launch-command')).toHaveValue(/datadjinn-mcp\.exe$/i)
@@ -5465,6 +6003,50 @@ test.describe('workspace regression', () => {
       }
     } finally {
       await electronApp.close()
+    }
+  })
+
+  test('Git version management should silently open a closed connection before reading scopes @bug', async () => {
+    const fixtureUserDataDir = readFixtureUserDataDir()
+    const connectionsPath = path.join(fixtureUserDataDir, 'connections.json')
+    const originalConnectionsRaw = fs.readFileSync(connectionsPath, 'utf-8')
+    const connectionStore = JSON.parse(originalConnectionsRaw)
+    const fixtureConnection = connectionStore.connections.find(
+      (item) => item.connection_id === fixtureConnectionId
+    )
+    if (!fixtureConnection) {
+      throw new Error(`Fixture connection not found: ${fixtureConnectionId}`)
+    }
+    fixtureConnection.git_versioning_enabled = true
+    fixtureConnection.git_versioning_scopes = []
+    fixtureConnection.is_open = false
+    fs.writeFileSync(connectionsPath, JSON.stringify(connectionStore, null, 2), 'utf-8')
+
+    const electronApp = await launchRegressionApp({ aiModuleEnabled: false })
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+
+      const connectionTitle = page.locator(
+        `.connection-tree-title[data-connection-id="${fixtureConnectionId}"]`
+      )
+      const gitButton = connectionTitle.locator('.connection-git-status-icon')
+      await expect(gitButton).toBeVisible({ timeout: 10000 })
+      await gitButton.click()
+
+      await expect(page.locator('.connection-schema-version-modal')).toBeVisible({ timeout: 30000 })
+      await expect
+        .poll(async () => {
+          const response = await page.evaluate(() => window.api.requestJson('/connections'))
+          return response.connections.find((item) => item.connection_id === fixtureConnectionId)?.is_open
+        })
+        .toBe(true)
+      await expect(page.getByRole('dialog', { name: '操作失败' })).toHaveCount(0)
+    } finally {
+      await electronApp.close()
+      fs.writeFileSync(connectionsPath, originalConnectionsRaw, 'utf-8')
     }
   })
 
@@ -9972,6 +10554,8 @@ test.describe('workspace regression', () => {
     const electronApp = await launchRegressionApp()
     let page
     let storageSnapshot
+    let originalMainPreferences
+    let originalServerPreferences
     const storageKeys = [
       'datadjinn-connection-folders',
       'datadjinn-connection-folder-assignments',
@@ -9990,6 +10574,10 @@ test.describe('workspace regression', () => {
       await ensureWindowSize(page)
       storageSnapshot = await page.evaluate((keys) =>
         Object.fromEntries(keys.map((key) => [key, localStorage.getItem(key)])), storageKeys)
+      originalMainPreferences = await page.evaluate(() => window.api.getConnectionTreePreferences())
+      originalServerPreferences = await page.evaluate(() =>
+        window.api.requestJson('/preferences/connection-tree')
+      )
       await page.evaluate((nextFolderId) => {
         localStorage.setItem(
           'datadjinn-connection-folders',
@@ -9998,6 +10586,21 @@ test.describe('workspace regression', () => {
         localStorage.setItem('datadjinn-connection-folder-assignments', JSON.stringify({}))
         localStorage.setItem('datadjinn-connection-folder-order', JSON.stringify([nextFolderId]))
         localStorage.setItem('datadjinn-folder-connection-order', JSON.stringify({ [nextFolderId]: [] }))
+      }, folderId)
+      await page.evaluate(async (nextFolderId) => {
+        const preferences = {
+          connection_folders: [{ id: nextFolderId, name: 'Regression tree scroll folder' }],
+          connection_folder_assignments: {},
+          connection_folder_order: [nextFolderId],
+          folder_connection_order: { [nextFolderId]: [] }
+        }
+        await Promise.all([
+          window.api.setConnectionTreePreferences(preferences),
+          window.api.requestJson('/preferences/connection-tree', {
+            method: 'PUT',
+            body: JSON.stringify({ preferences })
+          })
+        ])
       }, folderId)
       await page.reload()
       await waitForAppReady(page)
@@ -10025,12 +10628,23 @@ test.describe('workspace regression', () => {
       })
       const submenu = page.locator('.tree-context-menu-panel')
       await submenu.getByText('添加到分组', { exact: true }).hover()
-      await page.getByText('Regression tree scroll folder', { exact: true }).last().click()
+      await page.getByRole('menuitem', { name: 'Regression tree scroll folder', exact: true }).click()
       await expect.poll(() => viewport.evaluate((node) => {
         const holder = node.querySelector('.ant-tree-list-holder')
         return holder instanceof HTMLElement ? holder.scrollTop : null
       })).toBeGreaterThanOrEqual(scrollBefore - 2)
     } finally {
+      if (page && originalMainPreferences && originalServerPreferences) {
+        await page.evaluate(async ({ mainPreferences, serverPreferences }) => {
+          await Promise.all([
+            window.api.setConnectionTreePreferences(mainPreferences),
+            window.api.requestJson('/preferences/connection-tree', {
+              method: 'PUT',
+              body: JSON.stringify({ preferences: serverPreferences.preferences ?? {} })
+            })
+          ])
+        }, { mainPreferences: originalMainPreferences, serverPreferences: originalServerPreferences })
+      }
       if (page && storageSnapshot) {
         await page.evaluate(({ snapshot }) => {
           Object.entries(snapshot).forEach(([key, value]) => {
@@ -10041,6 +10655,274 @@ test.describe('workspace regression', () => {
             }
           })
         }, { snapshot: storageSnapshot })
+      }
+      await electronApp.close()
+      fs.writeFileSync(connectionsPath, originalConnectionsRaw, 'utf-8')
+    }
+  })
+
+  test('connection groups should survive renderer cache loss across an application restart @bug', async () => {
+    const electronApp = await launchRegressionApp()
+    let page
+    let localStorageSnapshot
+    let originalMainPreferences
+    let originalServerPreferences
+    const storageKeys = [
+      'datadjinn-connection-folders',
+      'datadjinn-connection-folder-assignments',
+      'datadjinn-connection-folder-order',
+      'datadjinn-folder-connection-order',
+      'datadjinn-root-connection-order',
+      'datadjinn-root-item-order',
+      'datadjinn-root-item-order-customized',
+      'datadjinn-pinned-root-item-ids'
+    ]
+
+    try {
+      page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      localStorageSnapshot = await page.evaluate((keys) =>
+        Object.fromEntries(keys.map((key) => [key, localStorage.getItem(key)])), storageKeys)
+      originalMainPreferences = await page.evaluate(() => window.api.getConnectionTreePreferences())
+      originalServerPreferences = await page.evaluate(() =>
+        window.api.requestJson('/preferences/connection-tree')
+      )
+      await page.evaluate(async (keys) => {
+        keys.forEach((key) => localStorage.removeItem(key))
+        await Promise.all([
+          window.api.setConnectionTreePreferences({}),
+          window.api.requestJson('/preferences/connection-tree', {
+            method: 'PUT',
+            body: JSON.stringify({ preferences: {} })
+          })
+        ])
+      }, storageKeys)
+      await page.reload()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+
+      const folderName = `Regression durable group ${crypto.randomUUID().slice(0, 8)}`
+      await page.locator('.resource-add').click()
+      await page.getByText('新建分组', { exact: true }).click()
+      const folderModal = page.locator('.folder-editor-modal')
+      await folderModal.locator('input').fill(folderName)
+      await page.locator('.ant-modal-footer .ant-btn-primary').last().click()
+      await expect(folderModal).toBeHidden()
+
+      await expect
+        .poll(
+          () =>
+            page.evaluate((name) => {
+              const folders = JSON.parse(localStorage.getItem('datadjinn-connection-folders') ?? '[]')
+              return folders.find((folder) => folder?.name === name)?.id ?? null
+            }, folderName),
+          { timeout: 10000 }
+        )
+        .not.toBeNull()
+      const resolvedFolderId = await page.evaluate((name) => {
+        const folders = JSON.parse(localStorage.getItem('datadjinn-connection-folders') ?? '[]')
+        return folders.find((folder) => folder?.name === name)?.id ?? null
+      }, folderName)
+      expect(resolvedFolderId).not.toBeNull()
+
+      const connectionKey = `connection:${fixtureConnectionId}`
+      await expect.poll(async () => revealTreeNode(page, connectionKey), { timeout: 15000 }).toBe(true)
+      const connectionNode = treeNode(page, connectionKey)
+      const connectionBox = await connectionNode.boundingBox()
+      expect(connectionBox).not.toBeNull()
+      await page.mouse.click(connectionBox.x + 80, connectionBox.y + connectionBox.height / 2, {
+        button: 'right'
+      })
+      await page.locator('.tree-context-menu-panel').getByText('添加到分组', { exact: true }).hover()
+      await page.getByRole('menuitem', { name: folderName, exact: true }).click()
+
+      await expect
+        .poll(
+          () =>
+            page.evaluate(async ({ connectionId, folderId }) => {
+              const [mainPreferences, response] = await Promise.all([
+                window.api.getConnectionTreePreferences(),
+                window.api.requestJson('/preferences/connection-tree')
+              ])
+              const localAssignments = JSON.parse(
+                localStorage.getItem('datadjinn-connection-folder-assignments') ?? '{}'
+              )
+              return (
+                mainPreferences.connection_folder_assignments?.[connectionId] === folderId &&
+                response.preferences.connection_folder_assignments?.[connectionId] === folderId &&
+                localAssignments[connectionId] === folderId
+              )
+            }, { connectionId: fixtureConnectionId, folderId: resolvedFolderId }),
+          { timeout: 10000 }
+        )
+        .toBe(true)
+
+      await page.evaluate((keys) => keys.forEach((key) => localStorage.removeItem(key)), storageKeys)
+      await page.reload()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await doubleClickTreeNode(page, `folder:${resolvedFolderId}`)
+      await expect(treeNode(page, connectionKey)).toBeVisible({ timeout: 10000 })
+      await expect
+        .poll(
+          () =>
+            page.evaluate((key) => {
+              const node = document.querySelector(
+                `.resource-tree-node-title[data-tree-node-key="${CSS.escape(key)}"]`
+              )
+              return node?.closest('.tree-folder-connection-row') !== null
+            }, connectionKey),
+          { timeout: 10000 }
+        )
+        .toBe(true)
+    } finally {
+      if (page && originalMainPreferences && originalServerPreferences) {
+        await page.evaluate(async ({ mainPreferences, serverPreferences }) => {
+          await Promise.all([
+            window.api.setConnectionTreePreferences(mainPreferences),
+            window.api.requestJson('/preferences/connection-tree', {
+              method: 'PUT',
+              body: JSON.stringify({ preferences: serverPreferences.preferences ?? {} })
+            })
+          ])
+        }, { mainPreferences: originalMainPreferences, serverPreferences: originalServerPreferences })
+      }
+      if (page && localStorageSnapshot) {
+        await page.evaluate(({ snapshot }) => {
+          Object.entries(snapshot).forEach(([key, value]) => {
+            if (value === null) {
+              localStorage.removeItem(key)
+            } else {
+              localStorage.setItem(key, value)
+            }
+          })
+        }, { snapshot: localStorageSnapshot })
+      }
+      await electronApp.close()
+    }
+  })
+
+  test('double-clicking a table group should retain the resource tree scroll position @bug', async () => {
+    const fixtureUserDataDir = readFixtureUserDataDir()
+    const connectionsPath = path.join(fixtureUserDataDir, 'connections.json')
+    const originalConnectionsRaw = fs.readFileSync(connectionsPath, 'utf-8')
+    const connectionStore = JSON.parse(originalConnectionsRaw)
+    const sourceConnection = connectionStore.connections.find(
+      (item) => item.connection_id === fixtureConnectionId
+    )
+    if (!sourceConnection) {
+      throw new Error(`Fixture connection not found: ${fixtureConnectionId}`)
+    }
+    connectionStore.connections = connectionStore.connections.filter(
+      (item) => !item.connection_id.startsWith('regression-table-scroll-')
+    )
+    connectionStore.connections.push(
+      ...Array.from({ length: 160 }, (_, index) => ({
+        ...sourceConnection,
+        connection_id: `regression-table-scroll-${String(index + 1).padStart(3, '0')}`,
+        name: `Regression table scroll ${String(index + 1).padStart(3, '0')}`
+      }))
+    )
+    fs.writeFileSync(connectionsPath, JSON.stringify(connectionStore, null, 2), 'utf-8')
+
+    const electronApp = await launchRegressionApp()
+    let page
+    let localStorageSnapshot
+    let originalMainPreferences
+    let originalServerPreferences
+    const storageKeys = [
+      'datadjinn-connection-folders',
+      'datadjinn-connection-folder-assignments',
+      'datadjinn-connection-folder-order',
+      'datadjinn-folder-connection-order',
+      'datadjinn-root-connection-order',
+      'datadjinn-root-item-order',
+      'datadjinn-root-item-order-customized',
+      'datadjinn-pinned-root-item-ids'
+    ]
+
+    try {
+      page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      localStorageSnapshot = await page.evaluate((keys) =>
+        Object.fromEntries(keys.map((key) => [key, localStorage.getItem(key)])), storageKeys)
+      originalMainPreferences = await page.evaluate(() => window.api.getConnectionTreePreferences())
+      originalServerPreferences = await page.evaluate(() =>
+        window.api.requestJson('/preferences/connection-tree')
+      )
+      await page.evaluate(async (keys) => {
+        keys.forEach((key) => localStorage.removeItem(key))
+        await Promise.all([
+          window.api.setConnectionTreePreferences({}),
+          window.api.requestJson('/preferences/connection-tree', {
+            method: 'PUT',
+            body: JSON.stringify({ preferences: {} })
+          })
+        ])
+      }, storageKeys)
+      await page.reload()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+
+      const tableGroupKey = `object-group:${fixtureConnectionId}:::table`
+      await expect.poll(async () => revealTreeNode(page, tableGroupKey), { timeout: 15000 }).toBe(true)
+      const viewport = page.locator('.resource-tree-viewport')
+      const scrollBefore = await viewport.evaluate((node) => {
+        const holder = node.querySelector('.ant-tree-list-holder')
+        if (!(holder instanceof HTMLElement)) {
+          return -1
+        }
+        holder.scrollTop = 48
+        return holder.scrollTop
+      })
+      expect(scrollBefore).toBeGreaterThan(0)
+      const tableGroup = treeNode(page, tableGroupKey)
+      await expect(tableGroup).toBeVisible({ timeout: 10000 })
+      await tableGroup.evaluate((element) => {
+        element.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, detail: 2 }))
+      })
+      await expect
+        .poll(() =>
+          page.locator(
+            `.resource-tree-node-title[data-tree-node-key^="table:${fixtureConnectionId}:::table:"]`
+          ).count()
+        )
+        .toBeGreaterThan(0)
+      await expect
+        .poll(() =>
+          viewport.evaluate((node) => {
+            const holder = node.querySelector('.ant-tree-list-holder')
+            return holder instanceof HTMLElement ? holder.scrollTop : -1
+          })
+        )
+        .toBeGreaterThanOrEqual(scrollBefore - 2)
+    } finally {
+      if (page && originalMainPreferences && originalServerPreferences) {
+        await page.evaluate(async ({ mainPreferences, serverPreferences }) => {
+          await Promise.all([
+            window.api.setConnectionTreePreferences(mainPreferences),
+            window.api.requestJson('/preferences/connection-tree', {
+              method: 'PUT',
+              body: JSON.stringify({ preferences: serverPreferences.preferences ?? {} })
+            })
+          ])
+        }, { mainPreferences: originalMainPreferences, serverPreferences: originalServerPreferences })
+      }
+      if (page && localStorageSnapshot) {
+        await page.evaluate(({ snapshot }) => {
+          Object.entries(snapshot).forEach(([key, value]) => {
+            if (value === null) {
+              localStorage.removeItem(key)
+            } else {
+              localStorage.setItem(key, value)
+            }
+          })
+        }, { snapshot: localStorageSnapshot })
       }
       await electronApp.close()
       fs.writeFileSync(connectionsPath, originalConnectionsRaw, 'utf-8')
@@ -10147,7 +11029,7 @@ test.describe('workspace regression', () => {
       await waitForAppReady(page)
       await ensureWindowSize(page)
       await openFixtureConnection(page)
-      await openFixtureTable(page, largeTableName)
+      await openFixtureTable(page, wideTableName)
 
       const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
       const holder = activeResult.locator('.result-table .ant-table-tbody-virtual-holder')

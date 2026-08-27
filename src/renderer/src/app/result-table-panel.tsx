@@ -239,11 +239,20 @@ type ResultTablePanelProps = {
   showError: (error: unknown, fallback?: string) => void
   messageApi: MessageInstance
   isSchemaScopedType: (databaseType?: ConnectionInfo['database_type']) => boolean
+  onOpenTableGitHistory?: (tab: WorkspaceTab) => void
   tableSearchShortcut: string
 }
 
 const shouldUseVirtualTable = (tab: WorkspaceTab): boolean =>
   tab.kind === 'query' || tab.kind === 'preview'
+
+const HORIZONTAL_COLUMN_VIRTUALIZATION_THRESHOLD = 32
+const HORIZONTAL_COLUMN_OVERSCAN = 1
+
+type HorizontalColumnRange = {
+  start: number
+  end: number
+}
 
 const ResultTablePanel = memo(
   function ResultTablePanel({
@@ -290,6 +299,7 @@ const ResultTablePanel = memo(
     showError,
     messageApi,
     isSchemaScopedType,
+    onOpenTableGitHistory,
     tableSearchShortcut
   }: ResultTablePanelProps): ReactNode {
     const active = useWorkspaceStore((state) => state.activeTabKey === tab.key)
@@ -297,6 +307,14 @@ const ResultTablePanel = memo(
     const tableBodyHostRef = useRef<HTMLDivElement | null>(null)
     const [tableScrollY, setTableScrollY] = useState(320)
     const [tableViewportWidth, setTableViewportWidth] = useState(0)
+    const [horizontalColumnRange, setHorizontalColumnRange] = useState<HorizontalColumnRange>({
+      start: 0,
+      end: HORIZONTAL_COLUMN_VIRTUALIZATION_THRESHOLD
+    })
+    const horizontalColumnRangeFrameRef = useRef<number | undefined>(undefined)
+    const pendingHorizontalColumnRangeRef = useRef<
+      { scrollLeft: number; viewportWidth: number } | undefined
+    >(undefined)
     const [searchVisibleLocal, setSearchVisibleLocal] = useState(
       Boolean(searchState.query.trim() || searchState.visible)
     )
@@ -410,15 +428,10 @@ const ResultTablePanel = memo(
         const virtualHolder = container?.querySelector<HTMLElement>('.ant-table-tbody-virtual-holder')
         const header = container?.querySelector<HTMLElement>('.ant-table-header')
         if (virtualHolder && header) {
-          const horizontalDelta = savedScrollLeft - header.scrollLeft
-          if (Math.abs(horizontalDelta) > 1) {
-            virtualHolder.dispatchEvent(
-              new WheelEvent('wheel', {
-                bubbles: true,
-                cancelable: true,
-                deltaX: horizontalDelta
-              })
-            )
+          if (Math.abs(savedScrollLeft - header.scrollLeft) > 1) {
+            refs.tableComponentRefs.current[tab.key]?.scrollTo?.({ left: savedScrollLeft })
+            header.scrollLeft = savedScrollLeft
+            header.dispatchEvent(new Event('scroll', { bubbles: true }))
           }
           return
         }
@@ -669,6 +682,7 @@ const ResultTablePanel = memo(
         pendingChanges={countPendingChanges(currentTab)}
         pager={renderResultPager(currentTab)}
         isSchemaScopedType={isSchemaScopedType}
+        onOpenTableGitHistory={() => onOpenTableGitHistory?.(currentTab)}
         onPointerClearSelection={() => {
           clearActiveSearchCellHighlight(currentTab.key)
           clearRuntimeColumnSelection(currentTab.key)
@@ -951,9 +965,10 @@ const ResultTablePanel = memo(
           formatCellText: cellDisplayText
         }),
       [
-        tab,
         searchState,
-        tab.result,
+        tab.kind,
+        tab.result?.columns,
+        tab.result?.rows,
         tab.editRows,
         tab.columnOrder,
         tab.columnWidths,
@@ -2118,7 +2133,7 @@ const ResultTablePanel = memo(
             verticalDirection < 0 ? rect.top : rect.bottom
           )
         }
-        if (horizontalDirection) {
+        if (horizontalDirection && header) {
           const amount = scrollAmount(
             horizontalDirection,
             pointer.x,
@@ -2130,13 +2145,9 @@ const ResultTablePanel = memo(
           )
           horizontalScrollChanged = nextScrollLeft !== previousScrollLeft
           if (horizontalScrollChanged) {
-            holder.dispatchEvent(
-              new WheelEvent('wheel', {
-                bubbles: true,
-                cancelable: true,
-                deltaX: nextScrollLeft - previousScrollLeft
-              })
-            )
+            refs.tableComponentRefs.current[tab.key]?.scrollTo?.({ left: nextScrollLeft })
+            header.scrollLeft = nextScrollLeft
+            header.dispatchEvent(new Event('scroll', { bubbles: true }))
           }
         }
         updateCellDragTargetFromPointer()
@@ -2235,7 +2246,8 @@ const ResultTablePanel = memo(
       draft: boolean,
       onCellDragEnter: () => void,
       onContextSelection: (cellKey: string) => string[],
-      displayContent?: ReactNode
+      displayContent?: ReactNode,
+      renderVersion?: string
     ): ReactNode => (
       <ResultEditableCellProxy
         tabKey={currentTabKey}
@@ -2243,9 +2255,12 @@ const ResultTablePanel = memo(
         column={column}
         value={value}
         editable={editable}
-        selected={(tab.selectedCellKeys ?? []).includes(`${rowKey}:${column}`)}
+        // Selection highlighting is synchronized on the rendered DOM. Keeping it
+        // out of the column closure prevents every click from rebuilding all columns.
+        selected={false}
         draft={draft}
         onCellDragEnter={onCellDragEnter}
+        renderVersion={renderVersion}
         onPrepareContextSelection={(nextTabKey, cellKey) => {
           focusResultTable()
           refs.rowDragAnchorRefs.current[nextTabKey] = undefined
@@ -2487,7 +2502,7 @@ const ResultTablePanel = memo(
       )
     }
 
-    const rowNumberColumn: ColumnsType<EditableRow>[number] = {
+    const rowNumberColumn = useMemo<ColumnsType<EditableRow>[number]>(() => ({
       title: (
         <button
           type="button"
@@ -2530,9 +2545,7 @@ const ResultTablePanel = memo(
         return (
           <button
             type="button"
-            className={`row-number-button${
-              (tab.selectedRowKeys ?? []).map(String).includes(row.__rowKey) ? ' selected' : ''
-            }`}
+            className="row-number-button"
             title="选中当前行，拖动可选择多行"
             onMouseDown={(event) => {
               event.preventDefault()
@@ -2579,7 +2592,13 @@ const ResultTablePanel = memo(
           </button>
         )
       }
-    }
+    }), [
+      tab.key,
+      orderedColumns,
+      orderedRowKeys,
+      orderedRowIndexMap,
+      rowNumberOffset
+    ])
 
     const searchSignature = `${searchState.query}\u0000${searchState.caseSensitive ? 1 : 0}\u0000${searchState.regex ? 1 : 0}\u0000${searchState.wholeWord ? 1 : 0}\u0000${searchState.filterRows ? 1 : 0}`
     const renderedTableRows = useMemo(
@@ -2587,7 +2606,127 @@ const ResultTablePanel = memo(
       [searchSignature, tableRows]
     )
 
-    const dataColumns: ColumnsType<EditableRow> = orderedColumns.map((column) => {
+    const enableVirtualTable = shouldUseVirtualTable(tab)
+    const enableHorizontalColumnVirtualization =
+      enableVirtualTable && orderedColumns.length > HORIZONTAL_COLUMN_VIRTUALIZATION_THRESHOLD
+    const orderedColumnWidths = useMemo(
+      () => orderedColumns.map((column) => getResultColumnWidth(column)),
+      [columnWidths, orderedColumns, supportsCellSelection, tableViewportWidth]
+    )
+    const resolvedHorizontalColumnRange = useCallback(
+      (scrollLeft: number, viewportWidth: number): HorizontalColumnRange => {
+        if (!enableHorizontalColumnVirtualization) {
+          return { start: 0, end: orderedColumns.length }
+        }
+
+        const visibleStart = Math.max(0, scrollLeft)
+        const visibleEnd = visibleStart + Math.max(viewportWidth, DEFAULT_RESULT_COLUMN_WIDTH * 8)
+        let consumedWidth = 0
+        let firstVisibleIndex = 0
+        let lastVisibleIndex = orderedColumns.length - 1
+
+        for (let index = 0; index < orderedColumnWidths.length; index += 1) {
+          const columnEnd = consumedWidth + orderedColumnWidths[index]
+          if (columnEnd > visibleStart) {
+            firstVisibleIndex = index
+            break
+          }
+          consumedWidth = columnEnd
+        }
+
+        consumedWidth = 0
+        for (let index = 0; index < orderedColumnWidths.length; index += 1) {
+          consumedWidth += orderedColumnWidths[index]
+          if (consumedWidth >= visibleEnd) {
+            lastVisibleIndex = index
+            break
+          }
+        }
+
+        return {
+          start: Math.max(0, firstVisibleIndex - HORIZONTAL_COLUMN_OVERSCAN),
+          end: Math.min(orderedColumns.length, lastVisibleIndex + HORIZONTAL_COLUMN_OVERSCAN + 1)
+        }
+      },
+      [enableHorizontalColumnVirtualization, orderedColumnWidths, orderedColumns.length]
+    )
+    const updateHorizontalColumnRange = useCallback(
+      (scrollLeft: number, viewportWidth: number): void => {
+        if (!enableHorizontalColumnVirtualization) {
+          return
+        }
+        const nextRange = resolvedHorizontalColumnRange(scrollLeft, viewportWidth)
+        startTransition(() => {
+          setHorizontalColumnRange((currentRange) =>
+            currentRange.start === nextRange.start && currentRange.end === nextRange.end
+              ? currentRange
+              : nextRange
+          )
+        })
+      },
+      [resolvedHorizontalColumnRange]
+    )
+    const handleHorizontalScroll = useCallback(
+      (scrollLeft: number, viewportWidth: number): void => {
+        if (!refs.tableScrollRestoreLocks.current[tab.key]) {
+          refs.tableScrollLeftRefs.current[tab.key] = scrollLeft
+        }
+        pendingHorizontalColumnRangeRef.current = { scrollLeft, viewportWidth }
+        if (horizontalColumnRangeFrameRef.current !== undefined) {
+          return
+        }
+        horizontalColumnRangeFrameRef.current = window.requestAnimationFrame(() => {
+          horizontalColumnRangeFrameRef.current = undefined
+          const pending = pendingHorizontalColumnRangeRef.current
+          pendingHorizontalColumnRangeRef.current = undefined
+          if (pending) {
+            updateHorizontalColumnRange(pending.scrollLeft, pending.viewportWidth)
+          }
+        })
+      },
+      [refs, tab.key, updateHorizontalColumnRange]
+    )
+
+    useEffect(
+      () => () => {
+        if (horizontalColumnRangeFrameRef.current !== undefined) {
+          window.cancelAnimationFrame(horizontalColumnRangeFrameRef.current)
+        }
+      },
+      []
+    )
+
+    useEffect(() => {
+      const savedScrollLeft = refs.tableScrollLeftRefs.current[tab.key] ?? 0
+      updateHorizontalColumnRange(savedScrollLeft, tableViewportWidth)
+    }, [refs, tab.key, tableViewportWidth, updateHorizontalColumnRange])
+
+    const displayedColumns = useMemo(() => {
+      if (!enableHorizontalColumnVirtualization) {
+        return orderedColumns
+      }
+      return orderedColumns.slice(horizontalColumnRange.start, horizontalColumnRange.end)
+    }, [enableHorizontalColumnVirtualization, horizontalColumnRange, orderedColumns])
+    const leftColumnSpacerWidth = useMemo(
+      () =>
+        enableHorizontalColumnVirtualization
+          ? orderedColumnWidths
+              .slice(0, horizontalColumnRange.start)
+              .reduce((total, width) => total + width, 0)
+          : 0,
+      [enableHorizontalColumnVirtualization, horizontalColumnRange.start, orderedColumnWidths]
+    )
+    const rightColumnSpacerWidth = useMemo(
+      () =>
+        enableHorizontalColumnVirtualization
+          ? orderedColumnWidths
+              .slice(horizontalColumnRange.end)
+              .reduce((total, width) => total + width, 0)
+          : 0,
+      [enableHorizontalColumnVirtualization, horizontalColumnRange.end, orderedColumnWidths]
+    )
+
+    const dataColumns = useMemo<ColumnsType<EditableRow>>(() => displayedColumns.map((column) => {
       const columnWidth = getResultColumnWidth(column)
       const columnCellStyle = {
         '--result-column-width': `${columnWidth}px`
@@ -2639,7 +2778,8 @@ const ResultTablePanel = memo(
                 `${row.__rowKey}:${column}`,
                 cellDisplayText(value),
                 'table-cell-text'
-              )
+              ),
+              searchSignature
             )
           : highlightResultText(
               `${row.__rowKey}:${column}`,
@@ -2647,11 +2787,62 @@ const ResultTablePanel = memo(
               'table-cell-text'
             )
       }
-    })
+    }), [
+      displayedColumns,
+      columnWidths,
+      columnFilters,
+      tab.key,
+      tab.kind,
+      tab.sortState?.column,
+      tab.sortState?.direction,
+      tab.draggingColumn,
+      tab.selectedColumns,
+      supportsCellSelection,
+      supportsWritableCells,
+      queryWritableColumns,
+      searchSignature
+    ])
 
-    const tableColumns: ColumnsType<EditableRow> = supportsCellSelection
-      ? [rowNumberColumn, ...dataColumns]
-      : dataColumns
+    const createColumnSpacer = useCallback(
+      (key: string, width: number): ColumnsType<EditableRow>[number] => ({
+        key,
+        title: null,
+        width,
+        className: 'result-column-width result-column-virtual-spacer',
+        onCell: () =>
+          ({
+            'aria-hidden': true,
+            className: 'result-column-width result-column-virtual-spacer',
+            style: { '--result-column-width': `${width}px` } as CSSProperties
+          }) as TdHTMLAttributes<HTMLElement>,
+        onHeaderCell: () =>
+          ({
+            'aria-hidden': true,
+            className: 'result-column-width result-column-virtual-spacer',
+            style: { '--result-column-width': `${width}px` } as CSSProperties
+          }) as TdHTMLAttributes<HTMLElement>,
+        render: () => null
+      }),
+      []
+    )
+    const tableColumns = useMemo<ColumnsType<EditableRow>>(() => {
+      const spacerColumns: ColumnsType<EditableRow> = []
+      if (leftColumnSpacerWidth > 0) {
+        spacerColumns.push(createColumnSpacer('__column-virtual-left', leftColumnSpacerWidth))
+      }
+      spacerColumns.push(...dataColumns)
+      if (rightColumnSpacerWidth > 0) {
+        spacerColumns.push(createColumnSpacer('__column-virtual-right', rightColumnSpacerWidth))
+      }
+      return supportsCellSelection ? [rowNumberColumn, ...spacerColumns] : spacerColumns
+    }, [
+      createColumnSpacer,
+      dataColumns,
+      leftColumnSpacerWidth,
+      rightColumnSpacerWidth,
+      rowNumberColumn,
+      supportsCellSelection
+    ])
     const tableScrollX = Math.max(
       orderedColumns.reduce(
         (total, column) => total + getResultColumnWidth(column),
@@ -2659,7 +2850,6 @@ const ResultTablePanel = memo(
       ),
       1
     )
-    const enableVirtualTable = shouldUseVirtualTable(tab)
 
     const showQueryEmptyState = tab.kind === 'query' && !tab.resultVisible
 
@@ -2769,7 +2959,11 @@ const ResultTablePanel = memo(
               </div>
             )}
             <ResultTableBodyView
-              tab={tab}
+              tabKey={tab.key}
+              tabKind={tab.kind}
+              tableRenderVersion={tab.tableRenderVersion}
+              selectedRowKeys={tab.selectedRowKeys}
+              restoreScrollLeft={refs.tableScrollLeftRefs.current[tab.key]}
               searchSignature={searchSignature}
               tableColumns={tableColumns}
               tableRows={renderedTableRows}
@@ -2783,6 +2977,7 @@ const ResultTablePanel = memo(
               setHeaderRef={(element) => {
                 refs.tableHeaderRefs.current[tab.key] = element
               }}
+              onHorizontalScroll={handleHorizontalScroll}
               onScrollCapture={() => {
                 const container = refs.tableBodyRefs.current[tab.key]
                 const holder = container?.querySelector<HTMLElement>(
@@ -2790,16 +2985,27 @@ const ResultTablePanel = memo(
                 )
                 if (holder) {
                   refs.tableScrollTopRefs.current[tab.key] = holder.scrollTop
-                  if (!refs.tableScrollRestoreLocks.current[tab.key]) {
-                    const headerScrollLeft = refs.tableHeaderRefs.current[tab.key]?.scrollLeft ?? 0
-                    refs.tableScrollLeftRefs.current[tab.key] = headerScrollLeft || holder.scrollLeft
-                  }
                 }
-                const selectedRows = getCurrentSelectedRowKeys()
+                const hasSelectedRows = Boolean(
+                  refs.rowSelectionDraftRefs.current[tab.key]?.length ||
+                    refs.selectedRowRefs.current[tab.key]?.length ||
+                    tab.selectedRowKeys?.length
+                )
+                const selectedRows = hasSelectedRows ? getCurrentSelectedRowKeys() : []
                 if (selectedRows.length > 0) {
                   updateRenderedSelectedRows(selectedRows)
                 }
-                scheduleRenderedCellSelectionSync(tab.key)
+                // Virtual rows are replaced while scrolling. Reapply selection only when one
+                // actually exists; scanning every rendered cell on each scroll frame makes
+                // wide result sets noticeably lag even when the user is only navigating.
+                if (
+                  selectedRows.length > 0 ||
+                  (refs.selectedCellRefs.current[tab.key]?.length ?? 0) > 0 ||
+                  (refs.runtimeSelectedCellRefs.current[tab.key]?.length ?? 0) > 0 ||
+                  Boolean(refs.selectedColumnRefs.current[tab.key])
+                ) {
+                  scheduleRenderedCellSelectionSync(tab.key)
+                }
               }}
               onKeyDown={(event) => {
                 const container = refs.tableBodyRefs.current[tab.key]

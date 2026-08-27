@@ -774,6 +774,59 @@ def list_tables(
     return [TableInfo(name=table_name) for table_name in inspector.get_table_names(schema=database_name)]
 
 
+VERSIONING_MIGRATION_TABLE_PREFIXES = (
+    "_flyway_schema_",
+    "flyway_schema_",
+    "databasechangelog",
+    "databasechangeloglock",
+    "schema_migrations",
+    "__efmigrationshistory",
+    "django_migrations",
+    "alembic_version",
+    "typeorm_metadata",
+    "_prisma_migrations",
+)
+
+
+def is_versionable_table_name(table_name: str, database_type: str) -> bool:
+    """Return whether a table is suitable for user-managed data snapshots.
+
+    This filter is intentionally only used by Git data versioning. The normal
+    metadata tree must continue to expose every object returned by the database.
+    """
+
+    normalized_name = table_name.strip().casefold()
+    if not normalized_name:
+        return False
+    if normalized_name.startswith(VERSIONING_MIGRATION_TABLE_PREFIXES):
+        return False
+
+    normalized_database_type = database_type.casefold()
+    if normalized_database_type in {"dm", "dmpython"} and normalized_name in {
+        "##histograms_table",
+        "##plan_table",
+    }:
+        return False
+    if normalized_database_type == "sqlite" and normalized_name.startswith("sqlite_"):
+        return False
+    return True
+
+
+def list_versionable_tables(
+    engine: Engine,
+    database_name: str | None = None,
+    pg_database: str | None = None,
+) -> list[TableInfo]:
+    """List tables shown by the optional Git table-data versioning feature."""
+
+    database_type = str(getattr(getattr(engine, "dialect", None), "name", ""))
+    return [
+        table
+        for table in list_tables(engine, database_name, pg_database, include_stats=False)
+        if is_versionable_table_name(table.name, database_type)
+    ]
+
+
 def list_db_objects(
     engine: Engine,
     database_name: str | None = None,

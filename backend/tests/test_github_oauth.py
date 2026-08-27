@@ -337,3 +337,37 @@ class GitHubOAuthTests(unittest.TestCase):
             "full_name": "vhukze/datadjinn-sync-a1b2c3d4",
             "html_url": "https://github.com/vhukze/datadjinn-sync-a1b2c3d4",
         }
+
+
+class GitHubRepositoryWriteTests(unittest.TestCase):
+    def test_batch_write_rebuilds_from_latest_head_after_non_fast_forward(self) -> None:
+        service = GitHubOAuthService()
+        conflict = HTTPError(
+            "https://api.github.com/git/refs/heads/main",
+            422,
+            "Unprocessable Entity",
+            hdrs=None,
+            fp=io.BytesIO(json.dumps({"message": "Update is not a fast forward"}).encode()),
+        )
+        result = github_oauth_module.GitHubRepositoryBatchWriteResult(
+            commit_sha="new-head", paths=["snapshot.json"]
+        )
+        with patch.object(service, "_write_repository_files_once", side_effect=[conflict, result]) as write_once, patch(
+            "app.git_sync.github_oauth.time.sleep"
+        ) as sleep:
+            actual = service.write_repository_files({"snapshot.json": "{}"}, "快照")
+
+        self.assertEqual(result, actual)
+        self.assertEqual(2, write_once.call_count)
+        sleep.assert_called_once()
+
+    def test_batch_write_reports_readable_error_after_retry_exhaustion(self) -> None:
+        service = GitHubOAuthService()
+        conflict = HTTPError(
+            "https://api.github.com/git/refs/heads/main", 422, "Unprocessable Entity", hdrs=None,
+            fp=io.BytesIO(b'{"message":"Update is not a fast forward"}'),
+        )
+        with patch.object(service, "_write_repository_files_once", side_effect=[conflict, conflict, conflict]), patch(
+            "app.git_sync.github_oauth.time.sleep"
+        ), self.assertRaisesRegex(ValueError, "远端仓库刚刚发生了更新"):
+            service.write_repository_files({"snapshot.json": "{}"}, "快照")

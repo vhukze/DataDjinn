@@ -15,6 +15,7 @@ const waitForNextFrame = (): Promise<void> =>
 
 type EnsureTreePathExpandedOptions = {
   targetPath?: string[]
+  expandTarget?: boolean
   treeDataRef: RefObject<DatabaseTreeNode[]>
   expandedKeysRef: RefObject<React.Key[]>
   setExpandedKeys: React.Dispatch<React.SetStateAction<React.Key[]>>
@@ -23,6 +24,7 @@ type EnsureTreePathExpandedOptions = {
 
 export const ensureTreePathExpanded = async ({
   targetPath,
+  expandTarget = true,
   treeDataRef,
   expandedKeysRef,
   setExpandedKeys,
@@ -58,6 +60,7 @@ export const ensureTreePathExpanded = async ({
   }
 
   if (
+    expandTarget &&
     isLoadableTreeNode(targetNode) &&
     !expandedKeysRef.current?.includes(targetNode.key as React.Key)
   ) {
@@ -74,6 +77,7 @@ export const ensureTreePathExpanded = async ({
 
 type LocateTreePathOptions = {
   targetPath?: string[]
+  expandTarget?: boolean
   treeDataRef: RefObject<DatabaseTreeNode[]>
   expandedKeysRef: RefObject<React.Key[]>
   setExpandedKeys: React.Dispatch<React.SetStateAction<React.Key[]>>
@@ -89,6 +93,7 @@ type LocateTreePathOptions = {
 
 export const locateTreePathInView = async ({
   targetPath,
+  expandTarget,
   treeDataRef,
   expandedKeysRef,
   setExpandedKeys,
@@ -103,6 +108,7 @@ export const locateTreePathInView = async ({
 }: LocateTreePathOptions): Promise<void> => {
   const targetNode = await ensureTreePathExpanded({
     targetPath,
+    expandTarget,
     treeDataRef,
     expandedKeysRef,
     setExpandedKeys,

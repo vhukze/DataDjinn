@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 import os
 import time
+from threading import Lock
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -24,6 +26,7 @@ SYNC_POINTER_DESCRIPTION = "DataDjinn private sync pointer"
 SYNC_POINTER_FILE = "datadjinn-sync.json"
 GITHUB_REQUEST_ATTEMPTS = 3
 GITHUB_REQUEST_RETRY_DELAY_SECONDS = 0.35
+_repository_write_lock = Lock()
 
 
 def _data_dir() -> Path:
@@ -66,6 +69,11 @@ class GitHubRepositoryFile(BaseModel):
 class GitHubRepositoryWriteResult(BaseModel):
     path: str
     sha: str
+
+
+class GitHubRepositoryBatchWriteResult(BaseModel):
+    commit_sha: str
+    paths: list[str]
 
 
 class GitHubRepositoryCommit(BaseModel):
@@ -113,14 +121,20 @@ class GitHubOAuthService:
             gist_id = self._string_or_none(gist.get("id"))
             if not gist_id:
                 continue
-            pointer = self._github_request("GET", f"/gists/{gist_id}", token)
+            try:
+                pointer = self._github_request("GET", f"/gists/{gist_id}", token)
+            except HTTPError:
+                continue
             content = ((pointer.get("files") or {}).get(SYNC_POINTER_FILE) or {}).get("content")
             try:
                 repository_name = json.loads(content).get("repository") if isinstance(content, str) else None
             except json.JSONDecodeError:
                 repository_name = None
             if isinstance(repository_name, str) and repository_name:
-                return self._remember_repository(self._github_request("GET", f"/repos/{repository_name}", token))
+                try:
+                    return self._remember_repository(self._github_request("GET", f"/repos/{repository_name}", token))
+                except HTTPError:
+                    continue
 
         repository = self._github_request(
             "POST",
@@ -167,6 +181,91 @@ class GitHubOAuthService:
             sha=self._required_string(payload, "sha"),
             content=content,
         )
+
+    def read_repository_file_bytes(self, path: str, *, ref: str | None = None) -> bytes | None:
+        """读取 GitHub Contents API 文件原始字节，支持 gzip 等二进制快照。"""
+        normalized_path = self._normalize_repository_path(path)
+        repository = self.ensure_sync_repository()
+        query = f"?ref={quote(ref, safe='')}" if ref else ""
+        try:
+            payload = self._github_request(
+                "GET",
+                f"/repos/{repository.full_name}/contents/{quote(normalized_path, safe='/')}{query}",
+                self._access_token(),
+            )
+        except HTTPError as exc:
+            if exc.code == 404:
+                return None
+            raise
+        encoded_content = self._required_string(payload, "content").replace("\n", "")
+        try:
+            return base64.b64decode(encoded_content, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise ValueError("GitHub 同步文件不是有效的 Base64 内容") from exc
+
+    def write_repository_files(
+        self,
+        files: dict[str, bytes | str],
+        message: str,
+    ) -> GitHubRepositoryBatchWriteResult:
+        """通过 Git Data API 一次提交多个文件，避免 Contents API 为每张表生成独立提交。"""
+        normalized_message = message.strip()
+        if not normalized_message:
+            raise ValueError("GitHub 同步提交说明不能为空")
+        if not files:
+            raise ValueError("GitHub 同步提交至少需要一个文件")
+
+        with _repository_write_lock:
+            for attempt in range(3):
+                try:
+                    return self._write_repository_files_once(files, normalized_message)
+                except HTTPError as exc:
+                    if exc.code != 422:
+                        raise
+                    if attempt >= 2:
+                        raise ValueError("远端仓库刚刚发生了更新，自动重试后仍未成功，请稍后重试") from exc
+                    time.sleep(GITHUB_REQUEST_RETRY_DELAY_SECONDS * (attempt + 1))
+        raise RuntimeError("GitHub 同步提交失败")
+
+    def _write_repository_files_once(
+        self, files: dict[str, bytes | str], normalized_message: str
+    ) -> GitHubRepositoryBatchWriteResult:
+        repository = self.ensure_sync_repository()
+        token = self._access_token()
+        repository_info = self._github_request("GET", f"/repos/{repository.full_name}", token)
+        branch = self._required_string(repository_info, "default_branch")
+        ref_payload = self._github_request(
+            "GET", f"/repos/{repository.full_name}/git/ref/heads/{quote(branch, safe='')}", token
+        )
+        current_commit_sha = self._required_string(self._required_dict(ref_payload, "object"), "sha")
+        commit_payload = self._github_request(
+            "GET", f"/repos/{repository.full_name}/git/commits/{current_commit_sha}", token
+        )
+        base_tree_sha = self._required_string(self._required_dict(commit_payload, "tree"), "sha")
+        tree_items: list[dict[str, str]] = []
+        for path, content in files.items():
+            normalized_path = self._normalize_repository_path(path)
+            raw = content.encode("utf-8") if isinstance(content, str) else bytes(content)
+            blob = self._github_request(
+                "POST", f"/repos/{repository.full_name}/git/blobs", token,
+                {"encoding": "base64", "content": base64.b64encode(raw).decode("ascii")},
+            )
+            tree_items.append({"path": normalized_path, "mode": "100644", "type": "blob", "sha": self._required_string(blob, "sha")})
+        tree = self._github_request(
+            "POST", f"/repos/{repository.full_name}/git/trees", token,
+            {"base_tree": base_tree_sha, "tree": tree_items},
+        )
+        tree_sha = self._required_string(tree, "sha")
+        commit = self._github_request(
+            "POST", f"/repos/{repository.full_name}/git/commits", token,
+            {"message": normalized_message, "tree": tree_sha, "parents": [current_commit_sha]},
+        )
+        commit_sha = self._required_string(commit, "sha")
+        self._github_request(
+            "PATCH", f"/repos/{repository.full_name}/git/refs/heads/{quote(branch, safe='')}", token,
+            {"sha": commit_sha, "force": False},
+        )
+        return GitHubRepositoryBatchWriteResult(commit_sha=commit_sha, paths=[self._normalize_repository_path(path) for path in files])
 
     def list_repository_commits(self, path: str, *, per_page: int = 30) -> list[GitHubRepositoryCommit]:
         normalized_path = self._normalize_repository_path(path)
@@ -344,8 +443,25 @@ class GitHubOAuthService:
 
     def _github_request(self, method: str, path: str, token: str, payload: dict[str, Any] | None = None) -> Any:
         request = Request(f"{GITHUB_API_URL}{path}", data=json.dumps(payload).encode("utf-8") if payload is not None else None, headers={"Accept": "application/vnd.github+json", "Authorization": f"Bearer {token}", "User-Agent": "DataDjinn", "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json"}, method=method)
-        with self._open_url(request, timeout=20) as response:
-            return json.loads(response.read().decode("utf-8"))
+        try:
+            with self._open_url(request, timeout=20) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            try:
+                error_payload = json.loads(exc.read().decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError, OSError):
+                error_payload = None
+            if isinstance(error_payload, dict):
+                message = error_payload.get("message")
+                errors = error_payload.get("errors")
+                detail_text = "; ".join(
+                    item.get("message", "")
+                    for item in errors
+                    if isinstance(item, dict) and isinstance(item.get("message"), str)
+                ) if isinstance(errors, list) else ""
+                if isinstance(message, str) and message:
+                    exc.msg = f"{message}: {detail_text}" if detail_text else message
+            raise
 
     @staticmethod
     def _open_url(request: Request, *, timeout: int):
@@ -396,6 +512,13 @@ class GitHubOAuthService:
     @staticmethod
     def _read_http_error(error: HTTPError) -> dict[str, Any]:
         return GitHubOAuthService._decode_json(error.read())
+
+    @staticmethod
+    def _required_dict(payload: Any, key: str) -> dict[str, Any]:
+        value = payload.get(key) if isinstance(payload, dict) else None
+        if not isinstance(value, dict):
+            raise ValueError(f"GitHub 返回内容缺少必要字段：{key}")
+        return value
 
     @staticmethod
     def _required_string(payload: dict[str, Any], key: str) -> str:

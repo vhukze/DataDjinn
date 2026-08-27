@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.backup import router as backup_router
 from app.api.connections import router as connections_router
+from app.api.connection_tree_preferences import router as connection_tree_preferences_router
 from app.api.health import router as health_router
 from app.api.drivers import router as drivers_router
 from app.api.metadata import router as metadata_router
@@ -64,14 +65,14 @@ async def protect_local_api(request: Request, call_next):
                 return JSONResponse(status_code=401, content={"detail": "未授权的本地 API 请求"})
 
         connection_id = await _request_connection_id(request)
-        if connection_id and not connection_manager.ensure_connection_healthy(connection_id):
+        if connection_id and not connection_manager.ensure_connection_available(connection_id):
             return _connection_unavailable_response()
 
         response = await call_next(request)
         if (
             connection_id
             and response.status_code >= 500
-            and not connection_manager.ensure_connection_healthy(connection_id, force=True)
+            and not connection_manager.ensure_connection_available(connection_id, force=True)
         ):
             return _connection_unavailable_response()
         return response
@@ -87,6 +88,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 
 app.include_router(health_router, prefix="/api")
 app.include_router(connections_router, prefix="/api")
+app.include_router(connection_tree_preferences_router, prefix="/api")
 app.include_router(drivers_router, prefix="/api")
 app.include_router(metadata_router, prefix="/api")
 app.include_router(query_router, prefix="/api")

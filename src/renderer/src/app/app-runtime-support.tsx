@@ -20,6 +20,7 @@ import { useWorkspaceStore } from './workspace-store'
 
 export const RESOURCE_TREE_ITEM_HEIGHT = 30
 export const SSH_TEST_REQUEST_TIMEOUT_MS = 10_000
+export const DATABASE_CONNECTION_REQUEST_TIMEOUT_MS = 10_000
 const SYNC_DEVICE_STORAGE_KEY = 'datadjinn-sync-device-id'
 export const AUTO_SYNC_INTERVAL_MS = 15 * 60 * 1000
 
@@ -127,6 +128,21 @@ export type SchemaSnapshotResult = {
   version_id?: string | null
 }
 
+export type GitSnapshotTask = {
+  id: string
+  connection_id: string
+  title: string
+  status: 'running' | 'success' | 'error' | 'cancelled'
+  current: number
+  total: number
+  percent: number
+  detail: string
+  error?: string | null
+  started_at: string
+  finished_at?: string | null
+  result?: Record<string, unknown> | null
+}
+
 export type VersioningScopeConfig = {
   scope_kind: 'database' | 'schema' | 'single'
   available_scopes: string[]
@@ -175,13 +191,18 @@ export const collectTreeSearchMatches = (
   const matches: TreeSearchMatch[] = []
   const visit = (currentNodes: DatabaseTreeNode[], parentPath: string[]): void => {
     for (const node of currentNodes) {
+      if (node.kind === 'folder-drop-placeholder') {
+        continue
+      }
       const key = String(node.key)
       const path = [...parentPath, key]
       const connection = node.connectionId ? connectionsById.get(node.connectionId) : undefined
-      const searchText = connection
-        ? `${connection.name}\n${getConnectionAddress(connection) ?? ''}`.toLowerCase()
-        : ''
-      if (node.kind === 'connection' && searchText.includes(keyword)) {
+      const nodeName =
+        node.kind === 'column' ? node.columnName ?? String(node.title ?? '') : String(node.title ?? '')
+      const connectionAddress =
+        node.kind === 'connection' && connection ? getConnectionAddress(connection) ?? '' : ''
+      const searchText = `${nodeName}\n${connectionAddress}`.toLowerCase()
+      if (searchText.includes(keyword)) {
         matches.push({ key, path, node })
       }
       if (node.children?.length) {

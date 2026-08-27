@@ -55,7 +55,18 @@ def get_data_versioning_service() -> Any:
 
 
 def schedule_data_snapshot(*args: Any, **kwargs: Any) -> None:
-    """Skip background snapshots until the optional runtime has been installed."""
-    if not is_data_versioning_module_installed():
-        return
-    get_data_versioning_service().schedule_snapshot(*args, **kwargs)
+    """在已建立库级基线后触发后台数据库快照；保留旧扩展作为兼容回退。"""
+    if len(args) >= 2:
+        try:
+            from app.git_versioning.database_history import database_versioning_service
+
+            background_tasks, connection_id = args[0], args[1]
+            reason = args[5] if len(args) > 5 else kwargs.get("reason", "保存表格数据")
+            add_task = getattr(background_tasks, "add_task", None)
+            if callable(add_task):
+                add_task(database_versioning_service.schedule_snapshot, connection_id, reason)
+            return
+        except Exception:
+            pass
+    if is_data_versioning_module_installed():
+        get_data_versioning_service().schedule_snapshot(*args, **kwargs)

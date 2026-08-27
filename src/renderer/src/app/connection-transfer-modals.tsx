@@ -207,10 +207,10 @@ type ConnectionPasswordPromptModalProps = {
 
 export function ConnectionPasswordPromptModal({ open, connectionName, reason, password, onClose, onPasswordChange, onRetry }: ConnectionPasswordPromptModalProps): React.JSX.Element {
   return (
-    <Modal title="输入连接密码" open={open} onCancel={onClose} onOk={onRetry} okText="重试连接" cancelText="取消" maskClosable={false} {...FAST_MODAL_PROPS}>
+    <Modal title="输入连接密码" open={open} onCancel={onClose} onOk={onRetry} okText="保存并重新连接" cancelText="取消" maskClosable={false} {...FAST_MODAL_PROPS}>
       <Space direction="vertical" className="full-width" size={12}>
         <Typography.Text><Typography.Text strong>连接：</Typography.Text>{connectionName}</Typography.Text>
-        <Alert type="warning" showIcon message={reason || '请输入密码后重试连接'} />
+        <Alert type="warning" showIcon message={reason || '请输入密码后保存并重新连接'} />
         <Input.Password autoFocus value={password} placeholder="请输入密码" onChange={(event) => onPasswordChange(event.target.value)} onPressEnter={onRetry} />
       </Space>
     </Modal>

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -19,16 +20,41 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+
+def _configure_stdio_encoding() -> None:
+    """MCP stdio is a UTF-8 JSON-RPC stream, including on Chinese Windows."""
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError, ValueError):
+            # Some MCP clients replace stdio with a binary or minimal stream.
+            continue
+
+
+_configure_stdio_encoding()
+
+
 def _configure_data_directory() -> None:
     """Find Electron's saved-connection directory without overriding an explicit path."""
     if os.environ.get("DATADJINN_DATA_DIR"):
         return
     data_roots = (os.environ.get("APPDATA"), os.environ.get("LOCALAPPDATA"))
+    candidates: list[Path] = []
     for data_root in data_roots:
         if not data_root:
             continue
-        desktop_data_dir = Path(data_root) / "DataDjinn"
-        if (desktop_data_dir / "connections.json").exists():
+        for directory_name in ("datadjinn", "DataDjinn"):
+            candidate = Path(data_root) / directory_name
+            if candidate not in candidates:
+                candidates.append(candidate)
+
+    for desktop_data_dir in candidates:
+        # config.json is created before the first connection is saved. Using it
+        # here lets a newly installed client complete the MCP handshake too.
+        if (desktop_data_dir / "config.json").exists() or (desktop_data_dir / "connections.json").exists():
             os.environ["DATADJINN_DATA_DIR"] = str(desktop_data_dir)
             return
 
@@ -37,17 +63,90 @@ def _configure_data_directory() -> None:
 # client starts this script directly it does not inherit that environment.
 _configure_data_directory()
 
-from app.db.connection_manager import connection_manager
-from app.db.metadata import list_columns, list_databases, list_schemas, list_tables
-from app.db.readonly_query import execute_query, execute_readonly_query, preview_table
+# Database drivers are intentionally loaded after the MCP handshake. Importing
+# every optional driver before reading stdin can make an MCP client wait forever
+# while PyInstaller initializes native database dependencies.
+class _LazyRuntimeObject:
+    _RUNTIME_METHODS = {
+        "list_connections",
+        "open_connection",
+        "close_connection",
+        "get_engine",
+    }
+
+    def __init__(self, global_name: str) -> None:
+        self._global_name = global_name
+
+    def __getattr__(self, name: str) -> Any:
+        # unittest.mock and a few MCP launchers probe dunder attributes while
+        # resolving the command object. Do not turn those probes into a runtime
+        # import (or recurse through this proxy indefinitely).
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        if name not in self._RUNTIME_METHODS:
+            raise AttributeError(name)
+
+        def deferred_call(*args: Any, **kwargs: Any) -> Any:
+            _load_database_runtime()
+            runtime_object = globals()[self._global_name]
+            return getattr(runtime_object, name)(*args, **kwargs)
+
+        return deferred_call
+
+
+connection_manager: Any = _LazyRuntimeObject("connection_manager")
+list_columns: Any = None
+list_databases: Any = None
+list_schemas: Any = None
+list_tables: Any = None
+execute_query: Any = None
+execute_readonly_query: Any = None
+preview_table: Any = None
+_runtime_loaded = False
+_tool_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="datadjinn-mcp-tool")
 
 
 SERVER_INFO = {"name": "datadjinn-local", "version": "0.1.0"}
 PROTOCOL_VERSION = "2025-03-26"
 MAX_QUERY_ROWS = 1_000
 MAX_SAMPLE_ROWS = 100
+MCP_TOOL_TIMEOUT_SECONDS = 45
 READONLY_PREFIXES = ("SELECT", "WITH", "SHOW", "EXPLAIN", "DESCRIBE", "DESC", "PRAGMA")
 REDIS_READONLY_COMMANDS = {"SCAN", "KEYS", "GET", "HGETALL", "LRANGE", "SMEMBERS", "ZRANGE", "XRANGE", "TYPE", "TTL"}
+
+
+def _load_database_runtime() -> None:
+    global _runtime_loaded, connection_manager, list_columns, list_databases, list_schemas, list_tables
+    global execute_query, execute_readonly_query, preview_table
+    if _runtime_loaded:
+        return
+    deferred_connection_manager = connection_manager
+    from app.db.connection_manager import connection_manager as loaded_connection_manager
+    from app.db.metadata import (
+        list_columns as loaded_list_columns,
+        list_databases as loaded_list_databases,
+        list_schemas as loaded_list_schemas,
+        list_tables as loaded_list_tables,
+    )
+    from app.db.readonly_query import (
+        execute_query as loaded_execute_query,
+        execute_readonly_query as loaded_execute_readonly_query,
+        preview_table as loaded_preview_table,
+    )
+
+    if isinstance(deferred_connection_manager, _LazyRuntimeObject):
+        for name, value in vars(deferred_connection_manager).items():
+            if name != "_global_name":
+                setattr(loaded_connection_manager, name, value)
+    connection_manager = loaded_connection_manager
+    list_columns = loaded_list_columns
+    list_databases = loaded_list_databases
+    list_schemas = loaded_list_schemas
+    list_tables = loaded_list_tables
+    execute_query = loaded_execute_query
+    execute_readonly_query = loaded_execute_readonly_query
+    preview_table = loaded_preview_table
+    _runtime_loaded = True
 
 
 def _mcp_settings() -> dict[str, Any]:
@@ -163,6 +262,7 @@ def _tool_error(message: str) -> dict[str, Any]:
 
 
 def _connection(connection_id: str) -> Any:
+    _load_database_runtime()
     _ensure_connection_allowed(connection_id)
     if connection_id not in {item.connection_id for item in connection_manager.list_connections()}:
         raise ValueError("连接不存在")
@@ -198,6 +298,7 @@ def _is_readonly_sql(sql: str) -> bool:
 
 
 def list_connections() -> dict[str, Any]:
+    _load_database_runtime()
     settings = _mcp_settings()
     connections = connection_manager.list_connections()
     if settings["restrictConnections"]:
@@ -207,11 +308,13 @@ def list_connections() -> dict[str, Any]:
 
 
 def open_connection(connection_id: str) -> dict[str, Any]:
+    _load_database_runtime()
     _ensure_connection_allowed(connection_id)
     return _connection_summary(connection_manager.open_connection(connection_id))
 
 
 def close_connection(connection_id: str) -> dict[str, Any]:
+    _load_database_runtime()
     _ensure_connection_allowed(connection_id)
     return _connection_summary(connection_manager.close_connection(connection_id))
 
@@ -274,7 +377,11 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any] | None:
     if method == "notifications/initialized":
         return None
     if method == "initialize":
-        result = {"protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {}}, "serverInfo": SERVER_INFO}
+        requested_version = params.get("protocolVersion")
+        protocol_version = requested_version if requested_version in {"2024-11-05", PROTOCOL_VERSION} else PROTOCOL_VERSION
+        result = {"protocolVersion": protocol_version, "capabilities": {"tools": {}}, "serverInfo": SERVER_INFO}
+    elif method == "ping":
+        result = {}
     elif method == "tools/list":
         result = {"tools": TOOLS}
     elif method == "tools/call":
@@ -286,7 +393,13 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any] | None:
             handler = TOOL_HANDLERS.get(name)
             if handler is None:
                 raise ValueError(f"未知工具：{name}")
-            result = _tool_result(handler(**arguments))
+            future = _tool_executor.submit(handler, **arguments)
+            try:
+                result = _tool_result(future.result(timeout=MCP_TOOL_TIMEOUT_SECONDS))
+            except FutureTimeoutError:
+                result = _tool_error(
+                    f"MCP 工具调用超过 {MCP_TOOL_TIMEOUT_SECONDS} 秒仍未返回，已中止等待；请检查数据库连接或重新启动 MCP 进程。"
+                )
         except Exception as exc:
             result = _tool_error(str(exc))
     else:

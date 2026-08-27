@@ -91,9 +91,7 @@ class SchemaVersioningService:
         if not github_oauth_service.status().authorized:
             raise ValueError("请先在设置的“同步与版本”中登录 GitHub")
 
-        engine = connection_manager.get_engine(connection_id)
-        if engine is None:
-            raise ValueError("连接尚未打开，无法创建结构快照")
+        engine = self._get_active_engine(connection_id, "创建结构快照")
 
         snapshot = self._capture_snapshot(
             connection_id,
@@ -146,13 +144,26 @@ class SchemaVersioningService:
 
     def _create_snapshot_safely(self, connection_id: str, reason: str) -> None:
         try:
-            self.create_snapshot(connection_id, reason)
+            from app.git_versioning.database_history import database_versioning_service
+
+            database_versioning_service.schedule_snapshot(connection_id, reason)
         except Exception:
             logger.exception("自动创建结构版本失败：connection_id=%s", connection_id)
 
     def list_versions(self, connection_id: str, limit: int = 30) -> list[SchemaVersionInfo]:
         self._ensure_versioning_enabled(connection_id)
-        return [self._version_info(commit) for commit in github_oauth_service.list_repository_commits(self.snapshot_path(connection_id), per_page=limit)]
+        commits = github_oauth_service.list_repository_commits(self.snapshot_path(connection_id), per_page=limit)
+        if commits:
+            return [self._version_info(commit) for commit in commits]
+        try:
+            from app.git_versioning.database_history import database_versioning_service
+
+            return [
+                SchemaVersionInfo(id=commit.sha, message=commit.message, committed_at=commit.committed_at)
+                for commit in github_oauth_service.list_repository_commits(database_versioning_service.manifest_path(connection_id), per_page=limit)
+            ]
+        except Exception:
+            return []
 
     def get_scope_config(self, connection_id: str) -> VersioningScopeConfig:
         request = connection_manager.get_connection_request(connection_id)
@@ -160,9 +171,7 @@ class SchemaVersioningService:
             raise ValueError("请先在连接设置中开启 Git 版本管理")
         if request.database_type in {"mongodb", "redis"}:
             raise ValueError("MongoDB 和 Redis 暂不支持结构版本管理")
-        engine = connection_manager.get_engine(connection_id)
-        if engine is None:
-            raise ValueError("连接尚未打开，无法读取可纳管范围")
+        engine = self._get_active_engine(connection_id, "读取可纳管范围")
 
         scope_kind = self._scope_kind(request.database_type)
         if scope_kind == "single":
@@ -205,9 +214,17 @@ class SchemaVersioningService:
     def get_version(self, connection_id: str, version_id: str) -> SchemaSnapshot:
         self._ensure_versioning_enabled(connection_id)
         snapshot_file = github_oauth_service.read_repository_file(self.snapshot_path(connection_id), ref=version_id)
-        if snapshot_file is None:
-            raise ValueError("找不到指定的结构版本")
-        return self._parse_snapshot(snapshot_file.content)
+        if snapshot_file is not None:
+            return self._parse_snapshot(snapshot_file.content)
+        try:
+            from app.git_versioning.database_history import database_versioning_service
+
+            manifest = github_oauth_service.read_repository_file(database_versioning_service.manifest_path(connection_id), ref=version_id)
+            if manifest is not None:
+                return database_versioning_service._parse_manifest(manifest.content).schema_snapshot
+        except Exception:
+            pass
+        raise ValueError("找不到指定的结构版本")
 
     def _ensure_versioning_enabled(self, connection_id: str) -> None:
         request = connection_manager.get_connection_request(connection_id)
@@ -217,6 +234,14 @@ class SchemaVersioningService:
             raise ValueError("MongoDB 和 Redis 暂不支持结构版本管理")
         if not github_oauth_service.status().authorized:
             raise ValueError("请先在设置的“同步与版本”中登录 GitHub")
+
+    def _get_active_engine(self, connection_id: str, operation: str) -> Engine:
+        if not connection_manager.ensure_connection_available(connection_id):
+            raise ValueError(f"连接暂时不可用，无法{operation}")
+        engine = connection_manager.get_engine(connection_id)
+        if engine is None:
+            raise ValueError(f"连接暂时不可用，无法{operation}")
+        return engine
 
     def _capture_snapshot(
         self,

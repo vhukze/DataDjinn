@@ -1,10 +1,9 @@
 import logging
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, status
 
 from app.db.connection_manager import connection_manager
 from app.db.error_utils import friendly_error
-from app.git_versioning.schema_history import schema_versioning_service
 from app.schemas.connection import (
     ConnectionCreateResponse,
     ConnectionListResponse,
@@ -106,12 +105,10 @@ def get_connection_password(connection_id: str) -> ConnectionPasswordResponse:
 
 @router.post("/{connection_id}/open", response_model=ConnectionCreateResponse)
 def open_connection(
-    background_tasks: BackgroundTasks, connection_id: str, open_attempt_id: str | None = Query(default=None)
+    connection_id: str, open_attempt_id: str | None = Query(default=None)
 ) -> ConnectionCreateResponse:
     try:
-        connection = connection_manager.open_connection(connection_id, open_attempt_id)
-        schema_versioning_service.schedule_snapshot(background_tasks, connection_id, "打开连接时检查结构基线")
-        return connection
+        return connection_manager.open_connection(connection_id, open_attempt_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=friendly_error(exc)) from exc
     except Exception as exc:

@@ -8,7 +8,9 @@ from fastapi import BackgroundTasks
 
 from app.api.git_versioning import (
     UpdateVersioningScopesRequest,
+    get_database_baseline,
     get_versioning_scopes,
+    list_database_versions,
     update_versioning_scopes,
 )
 from app.api.query import query
@@ -138,6 +140,7 @@ class SchemaVersioningServiceTests(unittest.TestCase):
             database_type="dm",
             git_versioning_scopes=["app"],
         )
+        connection_manager.ensure_connection_available.return_value = True
         connection_manager.get_engine.return_value = object()
         list_databases.return_value = [
             SimpleNamespace(name="SYS"),
@@ -150,6 +153,7 @@ class SchemaVersioningServiceTests(unittest.TestCase):
         self.assertEqual(config.scope_kind, "schema")
         self.assertEqual(config.available_scopes, ["APP", "REPORT"])
         self.assertEqual(config.selected_scopes, ["APP"])
+        connection_manager.ensure_connection_available.assert_called_once_with(self.connection_id)
 
     @patch("app.db.metadata.list_databases", return_value=[SimpleNamespace(name="REPORT")])
     def test_refuses_to_overwrite_history_when_selected_schema_no_longer_exists(
@@ -173,6 +177,31 @@ class SchemaVersioningServiceTests(unittest.TestCase):
         )
         service.get_scope_config.assert_called_once_with(self.connection_id)
         service.update_scope_config.assert_called_once_with(self.connection_id, ["APP"])
+
+    @patch("app.api.git_versioning.database_versioning_service")
+    def test_database_versions_api_uses_database_snapshot_history(self, database_service) -> None:
+        database_service.list_versions.return_value = [
+            {"id": "commit-1", "message": "DataDjinn: 初始数据库快照", "committed_at": "2026-08-19T00:00:00Z"}
+        ]
+
+        versions = list_database_versions(self.connection_id, 20)
+
+        self.assertEqual("commit-1", versions[0].id)
+        database_service.list_versions.assert_called_once_with(self.connection_id, 20)
+
+    @patch("app.api.git_versioning.github_oauth_service")
+    @patch("app.api.git_versioning.database_versioning_service")
+    def test_database_baseline_api_checks_manifest_presence(self, database_service, github_service) -> None:
+        database_service._ensure_enabled.return_value = self.request
+        database_service.manifest_path.return_value = "versioning/database/c1/manifest.json"
+        github_service.read_repository_file.return_value = object()
+
+        result = get_database_baseline(self.connection_id)
+
+        self.assertEqual({"exists": True}, result)
+        github_service.read_repository_file.assert_called_once_with(
+            "versioning/database/c1/manifest.json"
+        )
 
     @patch("app.git_versioning.schema_history.github_oauth_service")
     @patch("app.git_versioning.schema_history.connection_manager")

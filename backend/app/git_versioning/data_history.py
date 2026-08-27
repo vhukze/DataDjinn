@@ -86,9 +86,7 @@ class DataVersioningService:
         reason: str = "手动创建数据快照",
     ) -> DataSnapshotResult:
         request = self._ensure_versioning_enabled(connection_id)
-        engine = connection_manager.get_engine(connection_id)
-        if engine is None:
-            raise ValueError("连接尚未打开，无法创建数据快照")
+        engine = self._get_active_engine(connection_id, "创建数据快照")
 
         snapshot = self._capture_snapshot(
             connection_id,
@@ -216,9 +214,7 @@ class DataVersioningService:
             raise ValueError("该历史快照没有主键或唯一键标识，只能查看完整快照，不能生成行级差异")
 
         request = self._ensure_versioning_enabled(connection_id)
-        engine = connection_manager.get_engine(connection_id)
-        if engine is None:
-            raise ValueError("连接尚未打开，无法比对数据版本")
+        engine = self._get_active_engine(connection_id, "比对数据版本")
         current = self._capture_snapshot(
             connection_id,
             request.database_type,
@@ -283,6 +279,14 @@ class DataVersioningService:
         if not github_oauth_service.status().authorized:
             raise ValueError("请先在设置的“同步与版本”中登录 GitHub")
         return request
+
+    def _get_active_engine(self, connection_id: str, operation: str) -> Any:
+        if not connection_manager.ensure_connection_available(connection_id):
+            raise ValueError(f"连接暂时不可用，无法{operation}")
+        engine = connection_manager.get_engine(connection_id)
+        if engine is None:
+            raise ValueError(f"连接暂时不可用，无法{operation}")
+        return engine
 
     def _capture_snapshot(
         self,

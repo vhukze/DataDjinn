@@ -61,6 +61,25 @@ class FakeDmEngine:
 
 
 class DamengMetadataUpdateTests(unittest.TestCase):
+    def test_versioning_table_filter_excludes_dameng_system_and_migration_tables(self) -> None:
+        engine = FakeDmEngine()
+        tables = [
+            metadata_module.TableInfo(name="ORDERS"),
+            metadata_module.TableInfo(name="##HISTOGRAMS_TABLE"),
+            metadata_module.TableInfo(name="##PLAN_TABLE"),
+            metadata_module.TableInfo(name="_flyway_schema_dscp_123"),
+        ]
+
+        with patch.object(metadata_module, "list_tables", return_value=tables) as list_tables:
+            result = metadata_module.list_versionable_tables(engine)  # type: ignore[arg-type]
+
+        self.assertEqual(["ORDERS"], [table.name for table in result])
+        list_tables.assert_called_once_with(engine, None, None, include_stats=False)
+
+    def test_versioning_table_filter_keeps_normal_hash_prefixed_user_table(self) -> None:
+        self.assertTrue(metadata_module.is_versionable_table_name("#USER_TABLE", "dm"))
+        self.assertTrue(metadata_module.is_versionable_table_name("business_orders", "dm"))
+
     def test_tree_object_endpoint_skips_per_table_statistics_and_comments(self) -> None:
         engine = FakeDmEngine()
         objects = [DbObjectInfo(name=f"ORDERS_{index}", type="table") for index in range(2_000)]
@@ -90,6 +109,19 @@ class DamengMetadataUpdateTests(unittest.TestCase):
 
         self.assertEqual(response.objects[0].size_display, "64K")
         list_objects.assert_called_once_with(engine, "APP", None, "table", True)
+
+    def test_table_endpoint_can_request_only_versionable_tables(self) -> None:
+        engine = FakeDmEngine()
+        tables = [metadata_module.TableInfo(name="ORDERS")]
+
+        with (
+            patch.object(metadata_api.connection_manager, "get_engine", return_value=engine),
+            patch.object(metadata_api, "list_versionable_tables", return_value=tables) as list_tables,
+        ):
+            response = metadata_api.get_tables("dm-connection", "APP", versionable_only=True)
+
+        self.assertEqual(["ORDERS"], [table.name for table in response.tables])
+        list_tables.assert_called_once_with(engine, "APP", None)
 
     def test_update_endpoint_keeps_the_original_path_and_returns_the_renamed_table(self) -> None:
         engine = FakeDmEngine()

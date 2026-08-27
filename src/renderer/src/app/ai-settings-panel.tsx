@@ -1,5 +1,5 @@
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons'
-import { Alert, Button, Collapse, Flex, Form, Input, InputNumber, Select, Space, Switch, Tag, Typography } from 'antd'
+import { Alert, Button, Collapse, Flex, Form, Input, InputNumber, Select, Space, Switch, Tag, Typography, message } from 'antd'
 import { useEffect, useState } from 'react'
 
 type AIConfig = {
@@ -57,6 +57,7 @@ export default function AISettingsPanel({
   const [configs, setConfigs] = useState<AIConfigItem[]>([])
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
+  const [messageApi, contextHolder] = message.useMessage()
 
   const loadConfigs = async (): Promise<void> => {
     const [storedConfigs, legacyConfig] = await Promise.all([window.api.getAIConfigs(), window.api.getAIConfig()])
@@ -79,10 +80,16 @@ export default function AISettingsPanel({
   }, [installed])
 
   const saveConfigs = async (nextConfigs = configs): Promise<AIConfigItem[]> => {
-    const saved = await window.api.setAIConfigs(nextConfigs)
-    setConfigs(saved)
-    window.dispatchEvent(new CustomEvent('datadjinn-ai-configs-changed'))
-    return saved
+    try {
+      const saved = await window.api.setAIConfigs(nextConfigs)
+      setConfigs(saved)
+      window.dispatchEvent(new CustomEvent('datadjinn-ai-configs-changed'))
+      messageApi.success('AI 配置已保存')
+      return saved
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : 'AI 配置保存失败')
+      throw error
+    }
   }
 
   const updateConfig = (id: string, patch: Partial<AIConfigItem>): void => {
@@ -126,7 +133,9 @@ export default function AISettingsPanel({
   }
 
   return (
-    <Space direction="vertical" className="full-width ai-settings-body" size="middle">
+    <>
+      {contextHolder}
+      <Space direction="vertical" className="full-width ai-settings-body" size="middle">
       <Flex justify="space-between" align="center" className="ai-settings-toolbar">
         <Typography.Text type="secondary">可添加多个 OpenAI 或 Anthropic 兼容配置，同一时间最多启用一个。</Typography.Text>
         <Button className="ai-panel-ghost-btn ai-settings-add-btn" icon={<PlusOutlined />} onClick={() => setConfigs((current) => [...current, createAIConfigItem({ name: `AI 配置 ${current.length + 1}` })])}>
@@ -157,9 +166,10 @@ export default function AISettingsPanel({
       )}
       {testResult && <Alert type={testResult.success ? 'success' : 'error'} showIcon message={testResult.message} />}
       <Space className="ai-settings-actions">
-        <Button type="primary" className="ai-settings-primary-btn" onClick={() => void saveConfigs()}>保存</Button>
+        <Button type="primary" className="ai-settings-primary-btn" onClick={() => void saveConfigs().catch(() => undefined)}>保存</Button>
         <Button className="ai-panel-ghost-btn" loading={testing} onClick={() => void testAI()}>测试连接</Button>
       </Space>
-    </Space>
+      </Space>
+    </>
   )
 }

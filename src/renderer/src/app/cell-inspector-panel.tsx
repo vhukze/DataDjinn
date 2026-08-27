@@ -1,6 +1,6 @@
 import { CloseOutlined } from '@ant-design/icons'
 import { Button, Flex, Input, Typography } from 'antd'
-import { forwardRef, memo, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 
 type EditableRowLike = Record<string, unknown> & {
   __rowKey: string
@@ -99,19 +99,29 @@ const CellInspectorPanel = memo(
       () => [...orderedRowKeys].sort((left, right) => right.length - left.length),
       [orderedRowKeys]
     )
+    const orderedRowIndexMap = useMemo(
+      () => Object.fromEntries(orderedRowKeys.map((rowKey, index) => [rowKey, index] as const)),
+      [orderedRowKeys]
+    )
     const orderedColumnIndexMap = useMemo(
       () => Object.fromEntries(orderedColumns.map((column, index) => [column, index] as const)),
       [orderedColumns]
     )
-
-    const bounds = useMemo(() => {
-      const parseCellKey = (cellKey: string): { rowKey: string; column: string } | null => {
+    const parseCellKey = useCallback(
+      (cellKey: string): { rowKey: string; column: string } | null => {
         for (const rowKey of orderedRowKeysByLength) {
           const prefix = `${rowKey}:`
           if (cellKey.startsWith(prefix)) {
             return { rowKey, column: cellKey.slice(prefix.length) }
           }
         }
+        return null
+      },
+      [orderedRowKeysByLength]
+    )
+
+    const bounds = useMemo(() => {
+      if (view === 'value') {
         return null
       }
 
@@ -121,7 +131,7 @@ const CellInspectorPanel = memo(
           if (!parsed) {
             return null
           }
-          const rowIndex = orderedRowKeys.indexOf(parsed.rowKey)
+          const rowIndex = orderedRowIndexMap[parsed.rowKey]
           const columnIndex = orderedColumnIndexMap[parsed.column]
           if (rowIndex < 0 || columnIndex === undefined) {
             return null
@@ -159,24 +169,23 @@ const CellInspectorPanel = memo(
         rowKeys: orderedRowKeys.slice(rowStart, rowEnd + 1),
         columns: orderedColumns.slice(columnStart, columnEnd + 1)
       }
-    }, [orderedColumnIndexMap, orderedColumns, orderedRowKeys, orderedRowKeysByLength, selection])
+    }, [orderedColumnIndexMap, orderedColumns, orderedRowIndexMap, orderedRowKeys, parseCellKey, selection, view])
 
     const columnTypeOf = (column: string): string | undefined =>
       columnInfoMap?.[column]?.type ?? undefined
     const canEditColumn = (column: string): boolean =>
       editable && (!editableColumns || editableColumns.includes(column))
     const anchorSelection = useMemo(() => {
-      if (!bounds) {
+      const anchor = selection[0] ? parseCellKey(selection[0]) : null
+      if (!anchor) {
         return null
       }
-      const rowKey = bounds.rowKeys[0]
-      const column = bounds.columns[0]
       return {
-        rowKey,
-        column,
-        value: rowByKey.get(rowKey)?.[column]
+        rowKey: anchor.rowKey,
+        column: anchor.column,
+        value: rowByKey.get(anchor.rowKey)?.[anchor.column]
       }
-    }, [bounds, rowByKey])
+    }, [parseCellKey, rowByKey, selection])
     const formattedJsonValue = useMemo(
       () => tryFormatJsonText(anchorSelection?.value),
       [anchorSelection?.value]
@@ -210,7 +219,7 @@ const CellInspectorPanel = memo(
                         <span className="cell-inspector-field-type">{columnTypeOf(column)}</span>
                       )}
                     </div>
-                    <Input.TextArea
+                    <textarea
                       className="cell-inspector-field-value"
                       readOnly={!canEditColumn(column)}
                       rows={3}
@@ -245,7 +254,7 @@ const CellInspectorPanel = memo(
     }
 
     const renderValueView = (): React.ReactNode => {
-      if (!bounds || !anchorSelection) {
+      if (!anchorSelection) {
         return (
           <div className="cell-inspector-empty">
             <Typography.Text type="secondary">请选择单元格后查看值</Typography.Text>

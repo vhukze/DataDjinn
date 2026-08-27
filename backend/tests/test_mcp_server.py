@@ -1,9 +1,17 @@
 import json
+import io
 import os
+import tempfile
 import unittest
 from unittest.mock import patch
 
-from app.mcp_server import MAX_QUERY_ROWS, _configure_data_directory, _is_readonly_sql, handle_request
+from app.mcp_server import (
+    MAX_QUERY_ROWS,
+    _configure_data_directory,
+    _configure_stdio_encoding,
+    _is_readonly_sql,
+    handle_request,
+)
 from app.schemas.query import QueryResponse
 
 
@@ -46,10 +54,67 @@ class DataDjinnMcpServerTests(unittest.TestCase):
         self.assertEqual(response["result"]["serverInfo"]["name"], "datadjinn-local")
         self.assertEqual(response["result"]["capabilities"], {"tools": {}})
 
+    def test_initialize_and_tools_list_do_not_load_database_runtime(self) -> None:
+        with patch("app.mcp_server._load_database_runtime") as load_runtime:
+            initialize = handle_request(
+                {"jsonrpc": "2.0", "id": 20, "method": "initialize", "params": {}}
+            )
+            tools = handle_request(
+                {"jsonrpc": "2.0", "id": 21, "method": "tools/list", "params": {}}
+            )
+
+        self.assertIn("result", initialize)
+        self.assertIn("result", tools)
+        load_runtime.assert_not_called()
+
     def test_mcp_uses_explicit_data_directory_without_overriding_it(self) -> None:
         with patch.dict(os.environ, {"DATADJINN_DATA_DIR": "C:\\custom\\DataDjinn"}, clear=True):
             _configure_data_directory()
             self.assertEqual(os.environ["DATADJINN_DATA_DIR"], "C:\\custom\\DataDjinn")
+
+    def test_mcp_finds_data_directory_before_connections_are_saved(self) -> None:
+        with tempfile.TemporaryDirectory() as data_root:
+            data_dir = os.path.join(data_root, "datadjinn")
+            os.makedirs(data_dir)
+            with open(os.path.join(data_dir, "config.json"), "w", encoding="utf-8") as stream:
+                stream.write("{}")
+            with patch.dict(
+                os.environ,
+                {"APPDATA": data_root, "LOCALAPPDATA": "", "DATADJINN_DATA_DIR": ""},
+                clear=True,
+            ):
+                _configure_data_directory()
+                self.assertEqual(os.environ["DATADJINN_DATA_DIR"], data_dir)
+
+    def test_mcp_stdio_is_configured_for_utf8_json_rpc(self) -> None:
+        input_stream = io.TextIOWrapper(io.BytesIO(), encoding="cp936")
+        output_stream = io.TextIOWrapper(io.BytesIO(), encoding="cp936")
+        error_stream = io.TextIOWrapper(io.BytesIO(), encoding="cp936")
+        with patch("app.mcp_server.sys.stdin", input_stream), patch(
+            "app.mcp_server.sys.stdout", output_stream
+        ), patch("app.mcp_server.sys.stderr", error_stream):
+            _configure_stdio_encoding()
+
+        self.assertEqual("utf-8", input_stream.encoding.lower())
+        self.assertEqual("utf-8", output_stream.encoding.lower())
+        self.assertEqual("utf-8", error_stream.encoding.lower())
+        input_stream.close()
+        output_stream.close()
+        error_stream.close()
+
+    def test_ping_and_protocol_version_are_compatible_with_mcp_clients(self) -> None:
+        ping = handle_request({"jsonrpc": "2.0", "id": 10, "method": "ping", "params": {}})
+        initialize = handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 11,
+                "method": "initialize",
+                "params": {"protocolVersion": "2024-11-05"},
+            }
+        )
+
+        self.assertEqual(ping["result"], {})
+        self.assertEqual(initialize["result"]["protocolVersion"], "2024-11-05")
 
     def test_tools_list_exposes_connection_scoped_operations(self) -> None:
         response = handle_request({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
@@ -127,7 +192,8 @@ class DataDjinnMcpServerTests(unittest.TestCase):
         list_request = {"jsonrpc": "2.0", "id": 42, "method": "tools/call", "params": {"name": "list_connections", "arguments": {}}}
         direct_request = {"jsonrpc": "2.0", "id": 43, "method": "tools/call", "params": {"name": "open_connection", "arguments": {"connection_id": "connection_2"}}}
 
-        with patch("app.mcp_server.connection_manager.list_connections", return_value=[allowed, blocked]):
+        with patch("app.mcp_server._load_database_runtime"), patch("app.mcp_server.connection_manager") as manager:
+            manager.list_connections.return_value = [allowed, blocked]
             listed = handle_request(list_request)
         blocked_result = handle_request(direct_request)
 

@@ -645,6 +645,47 @@ body[data-theme='dark'] {
   min-height: 96px;
 }
 
+.git-snapshot-progress-card {
+  padding: 12px 14px;
+  border: 1px solid var(--dj-border-default);
+  border-radius: var(--dj-radius-md);
+  background: var(--dj-bg-surface);
+}
+
+.git-change-sql-preview {
+  max-height: 60vh;
+  margin: 0;
+  overflow: auto;
+  padding: 12px;
+  white-space: pre-wrap;
+  background: var(--dj-bg-surface);
+  border: 1px solid var(--dj-border-default);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+}
+
+.git-background-task-menu {
+  width: min(360px, calc(100vw - 24px));
+  max-height: min(420px, calc(100vh - 96px));
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--dj-border-default);
+  border-radius: var(--dj-radius-md);
+  background: var(--dj-bg-elevated);
+  box-shadow: var(--dj-shadow-soft);
+}
+
+.git-background-task-entry {
+  display: grid;
+  gap: 5px;
+  padding: 9px 2px;
+}
+
+.git-background-task-entry + .git-background-task-entry {
+  border-top: 1px solid var(--dj-border-subtle);
+}
+
 .connection-versioning-divider.ant-divider {
   margin: 4px 0 !important;
 }
@@ -3778,7 +3819,7 @@ body[data-theme='dark'] .ant-popover-message {
   flex: 1 1 auto;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
   min-width: 0;
   overflow: hidden;
 }
@@ -3796,8 +3837,8 @@ body[data-theme='dark'] .ant-popover-message {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   padding: 0;
   border: 0;
   border-radius: 4px;
@@ -3843,7 +3884,7 @@ body[data-theme='dark'] .ant-popover-message {
 
 .connection-tree-name {
   display: block !important;
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
@@ -3857,7 +3898,7 @@ body[data-theme='dark'] .ant-popover-message {
 
 .connection-tree-address {
   display: block !important;
-  flex: 0 1 auto;
+  flex: 0 10 45%;
   min-width: 0;
   max-width: 45%;
   overflow: hidden;
@@ -3869,6 +3910,15 @@ body[data-theme='dark'] .ant-popover-message {
   letter-spacing: 0.01em;
   line-height: 16px;
   opacity: 0.64;
+}
+
+/* Action buttons consume the narrowest tree rows first; keep the name and Git marker visible. */
+.connection-tree-title:has(.connection-tree-actions) .connection-tree-address {
+  flex-basis: 0;
+  max-width: 0;
+  padding-inline-start: 0;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .connection-tree-main > .connection-tree-name:first-child {
@@ -7125,13 +7175,22 @@ body:not([data-theme='dark']) .workspace-tabs .ant-tabs-tab-active {
   text-transform: uppercase;
 }
 
-.cell-inspector-field-value.ant-input,
+.cell-inspector-field-value,
 .cell-inspector-value-area.ant-input {
+  width: 100%;
+  min-height: 66px;
+  padding: 4px 11px;
+  color: var(--dj-text-primary);
+  background: var(--dj-bg-surface);
+  border: 1px solid var(--dj-border-subtle);
+  border-radius: 6px;
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
 }
 
-.cell-inspector-field-value.ant-input:not([readonly]),
+.cell-inspector-field-value:not([readonly]),
 .cell-inspector-value-area.ant-input:not([readonly]) {
   background: var(--dj-bg-base);
   border-color: var(--dj-accent-soft);

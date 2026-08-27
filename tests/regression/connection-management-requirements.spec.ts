@@ -225,6 +225,81 @@ test('new connections can create a group and copy connection details @smoke', as
   }
 })
 
+test('missing password prompt should save the password and reconnect after closing @bug', async () => {
+  const electronApp = await launchRegressionApp()
+  const connectionName = `无密码重连 ${crypto.randomUUID().slice(0, 8)}`
+  let connectionId
+
+  try {
+    const page = await electronApp.firstWindow()
+    await waitForAppReady(page)
+    connectionId = await page.evaluate(async (name) => {
+      const created = await window.api.requestJson('/connections', {
+        method: 'POST',
+        body: JSON.stringify({
+          name,
+          database_type: 'mysql',
+          host: '127.0.0.1',
+          port: 1,
+          username: 'root',
+          database: 'test'
+        })
+      })
+      return created.connection_id
+    }, connectionName)
+
+    await page.reload()
+    await waitForAppReady(page)
+    const connectionTitle = page.locator(
+      `.resource-tree-node-title[data-tree-node-key="connection:${connectionId}"]`
+    )
+    await expect(connectionTitle).toBeVisible({ timeout: 10000 })
+    await connectionTitle.dblclick()
+
+    const passwordPrompt = page.getByRole('dialog').filter({ hasText: '输入连接密码' })
+    await expect(passwordPrompt).toBeVisible({ timeout: 10000 })
+    await expect(passwordPrompt.getByRole('button', { name: '保存并重新连接' })).toBeVisible()
+    await passwordPrompt.getByPlaceholder('请输入密码').fill('saved-password')
+    await passwordPrompt.getByRole('button', { name: '保存并重新连接' }).click()
+    await expect(passwordPrompt).toBeHidden({ timeout: 3000 })
+    await expect
+      .poll(
+        () =>
+          page.evaluate(async (id) => {
+            const result = await window.api.requestJson(`/connections/${id}/password`)
+            return result.password
+          }, connectionId),
+        { timeout: 10000 }
+      )
+      .toBe('saved-password')
+  } finally {
+    const page = electronApp.windows().length > 0 ? electronApp.windows()[0] : null
+    if (page && connectionId) {
+      await page.evaluate(async (id) => {
+        await window.api.requestJson(`/connections/${id}`, { method: 'DELETE' })
+      }, connectionId)
+    }
+    await electronApp.close()
+  }
+})
+
+test('database selector should use the same current selection as tree rendering and connection requests stay bounded @bug', async () => {
+  const appSource = fs.readFileSync(
+    path.join(projectRoot, 'src', 'renderer', 'src', 'App.tsx'),
+    'utf-8'
+  )
+  const runtimeSource = fs.readFileSync(
+    path.join(projectRoot, 'src', 'renderer', 'src', 'app', 'app-runtime-support.tsx'),
+    'utf-8'
+  )
+
+  expect(appSource).toContain(
+    'selectedDatabasesRef.current[connectionId] ?? selectedDatabases[connectionId] ?? dbList'
+  )
+  expect(appSource).toContain('timeoutMs: DATABASE_CONNECTION_REQUEST_TIMEOUT_MS')
+  expect(runtimeSource).toContain('export const DATABASE_CONNECTION_REQUEST_TIMEOUT_MS = 10_000')
+})
+
 test('connection Git versioning preference persists and is visible in the tree @smoke', async () => {
   const electronApp = await launchRegressionApp()
   const connectionName = `Git Versioned SQLite ${crypto.randomUUID().slice(0, 8)}`
@@ -267,13 +342,25 @@ test('connection Git versioning preference persists and is visible in the tree @
       name: `打开 ${connectionName} 的 Git 版本管理`
     })
     await expect(versionEntry).toBeVisible()
+    const connectionLayout = await connectionTitle.locator('.connection-tree-name').evaluate((nameNode) => {
+      const style = window.getComputedStyle(nameNode)
+      const gitNode = nameNode.parentElement?.querySelector('.connection-git-status-icon')
+      return {
+        nameFlexGrow: style.flexGrow,
+        nameVisibleWidth: nameNode.getBoundingClientRect().width,
+        gitVisibleWidth: gitNode instanceof HTMLElement ? gitNode.getBoundingClientRect().width : 0
+      }
+    })
+    expect(connectionLayout.nameFlexGrow).toBe('1')
+    expect(connectionLayout.nameVisibleWidth).toBeGreaterThan(0)
+    expect(connectionLayout.gitVisibleWidth).toBeGreaterThan(0)
     await versionEntry.click()
     const versionModal = page.locator('.connection-schema-version-modal')
     await expect(versionModal).toBeVisible({ timeout: 10000 })
     await expect(versionModal.getByText('Git Versioned SQLite', { exact: false })).toBeVisible()
     await expect(versionModal.getByText('当前连接为单库类型，结构版本会管理该数据库的全部对象。')).toBeVisible()
     await expect(versionModal.getByText('请先完成 GitHub 授权，才能读取或创建该连接的版本记录。')).toBeVisible()
-    await expect(versionModal.getByRole('button', { name: '创建快照' })).toBeDisabled()
+    await expect(versionModal.getByRole('button', { name: '创建初始快照' })).toBeDisabled()
     await versionModal.locator('.ant-modal-close').click()
 
     await connectionTitle.click({ button: 'right' })

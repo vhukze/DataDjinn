@@ -6,7 +6,7 @@ from app.data_versioning_runtime import schedule_data_snapshot
 from app.git_versioning.schema_history import contains_schema_mutation, schema_versioning_service
 from app.db.mongo_utils import is_mongo_client
 from app.db.redis_utils import is_redis_client
-from app.db.metadata import apply_redis_data_changes, apply_table_data_changes, create_database, create_oracle_user, create_schema, create_table, drop_database, drop_db_object, ensure_ddl_terminator, get_object_ddl, get_sequence_detail, get_table_comment, list_columns, list_databases, list_db_objects, list_schemas, list_tables, update_table_columns
+from app.db.metadata import apply_redis_data_changes, apply_table_data_changes, create_database, create_oracle_user, create_schema, create_table, drop_database, drop_db_object, ensure_ddl_terminator, get_object_ddl, get_sequence_detail, get_table_comment, list_columns, list_databases, list_db_objects, list_schemas, list_tables, list_versionable_tables, update_table_columns
 from app.db.readonly_query import preview_table
 from app.db.routine_executor import execute_routine, list_routine_parameters
 from app.db.sql_executor import execute_sql_file
@@ -99,13 +99,23 @@ def create_schema_endpoint(connection_id: str, request: DatabaseCreateRequest, d
 
 
 @router.get("/{connection_id}/tables", response_model=TablesResponse)
-def get_tables(connection_id: str, database: str | None = None, pg_database: str | None = None, include_comment: bool = False) -> TablesResponse:
+def get_tables(
+    connection_id: str,
+    database: str | None = None,
+    pg_database: str | None = None,
+    include_comment: bool = False,
+    versionable_only: bool = False,
+) -> TablesResponse:
     engine = connection_manager.get_engine(connection_id)
 
     if engine is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="连接已关闭，请先打开连接")
 
-    tables = list_tables(engine, database, pg_database)
+    tables = (
+        list_versionable_tables(engine, database, pg_database)
+        if versionable_only
+        else list_tables(engine, database, pg_database)
+    )
     if include_comment:
         for table in tables:
             table.comment = get_table_comment(engine, table.name, database, pg_database)
