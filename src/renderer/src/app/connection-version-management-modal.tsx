@@ -117,7 +117,7 @@ export function ConnectionVersionManagementModal({
           </div>
         ) : null}
         {versioningScopesLoading ? (
-          <Typography.Text type="secondary">正在打开连接并读取可纳管范围...</Typography.Text>
+          <Typography.Text type="secondary">正在读取可纳管范围...</Typography.Text>
         ) : versioningScopeConfig?.scope_kind === 'single' ? (
           <Typography.Text type="secondary">当前连接为单库类型，结构版本会管理该数据库的全部对象。</Typography.Text>
         ) : versioningScopeConfig ? (
@@ -155,6 +155,8 @@ export function ConnectionVersionManagementModal({
               />
             ) : null}
           </div>
+        ) : connectionId ? (
+          <Typography.Text type="secondary">连接未打开。双击打开连接后，可在这里查看和调整纳管范围。</Typography.Text>
         ) : null}
         {!authorized ? (
           <Alert

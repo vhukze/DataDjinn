@@ -78,6 +78,7 @@ type ResourceTreePanelProps = {
   selectConnectionNodes: (connectionIds: string[], anchorId?: string) => void
   setFocusedTreeNode: (node: DatabaseTreeNode) => void
   setSelectedConnectionId: (connectionId?: string) => void
+  captureTreeScrollPosition: () => () => void
   setExpandedKeys: React.Dispatch<React.SetStateAction<Key[]>>
   setSelectedTreeKeys: React.Dispatch<React.SetStateAction<Key[]>>
   setTreeContextMenu: React.Dispatch<
@@ -158,6 +159,7 @@ const ResourceTreePanel = memo(
     selectConnectionNodes,
     setFocusedTreeNode,
     setSelectedConnectionId,
+    captureTreeScrollPosition,
     setExpandedKeys,
     setSelectedTreeKeys,
     setTreeContextMenu,
@@ -268,6 +270,15 @@ const ResourceTreePanel = memo(
         commitTreeSelection(node, nativeEvent)
       },
       [commitTreeSelection]
+    )
+
+    const setExpandedKeysPreservingScrollPosition = useCallback(
+      (keys: Key[]) => {
+        const restoreTreeScrollPosition = captureTreeScrollPosition()
+        setExpandedKeys(keys)
+        restoreTreeScrollPosition()
+      },
+      [captureTreeScrollPosition, setExpandedKeys]
     )
 
     return (
@@ -492,7 +503,7 @@ const ResourceTreePanel = memo(
                     isTreeNodeChildrenLoaded(node) ||
                     !isLoadableTreeNode(node, getConnection(node.connectionId)?.database_type)
                   ) {
-                    setExpandedKeys(keys)
+                    setExpandedKeysPreservingScrollPosition(keys)
                     if (info.expanded && (node.kind === 'database' || node.kind === 'pg-schema')) {
                       activateAIContextFromNode(node)
                     }
@@ -502,7 +513,7 @@ const ResourceTreePanel = memo(
                     collapseTreeNode(node)
                     return
                   }
-                  setExpandedKeys(keys)
+                  setExpandedKeysPreservingScrollPosition(keys)
                   if (node.kind === 'database' || node.kind === 'pg-schema') {
                     activateAIContextFromNode(node)
                   }

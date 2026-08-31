@@ -153,11 +153,12 @@ def restore_table_git_version(
     version_id: str,
     request: RestoreTableVersionRequest,
     scope: str | None = None,
+    pg_database: str | None = None,
 ) -> Any:
     try:
         if not request.confirm:
             raise ValueError("恢复历史数据前必须明确确认 confirm=true")
-        return database_versioning_service.restore_table_version(connection_id, scope, table_name, version_id)
+        return database_versioning_service.restore_table_version(connection_id, scope, table_name, version_id, pg_database)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
     except Exception as exc:

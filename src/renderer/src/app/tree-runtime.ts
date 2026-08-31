@@ -726,8 +726,10 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
 
   const collapseTreeNode = (node: DatabaseTreeNode): void => {
     const key = node.key as React.Key
+    const restoreTreeScrollPosition = deps.captureTreeScrollPosition?.()
     deps.expandedKeysRef.current = deps.expandedKeysRef.current.filter((item) => item !== key)
     deps.setExpandedKeys(deps.expandedKeysRef.current)
+    restoreTreeScrollPosition?.()
   }
 
   const toggleOrLoadTreeNode = (node: DatabaseTreeNode): void => {
@@ -739,6 +741,7 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
     }
 
     const key = node.key as React.Key
+    const restoreTreeScrollPosition = deps.captureTreeScrollPosition?.()
     if (deps.expandedKeysRef.current.includes(key)) {
       collapseTreeNode(node)
       return
@@ -755,6 +758,7 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
         ? deps.expandedKeysRef.current
         : [...deps.expandedKeysRef.current, key]
       deps.setExpandedKeys(deps.expandedKeysRef.current)
+      restoreTreeScrollPosition?.()
       return
     }
 
@@ -767,6 +771,7 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
       ? deps.expandedKeysRef.current
       : [...deps.expandedKeysRef.current, key]
     deps.setExpandedKeys(deps.expandedKeysRef.current)
+    restoreTreeScrollPosition?.()
   }
 
   return {

@@ -386,6 +386,12 @@ cd backend
 7. 推送 tag
 8. 创建 GitHub Release
 
+### 13.1 版本号纪律
+
+- 只有用户明确要求“正式发版”，并且会完成提交、打 tag、推送和创建 GitHub Release 时，才允许修改 `package.json`、`package-lock.json`、`RELEASE_NOTES.md` 中的版本号。
+- 仅为本地验证、测试或交付安装包执行 `npm run build:win:installer` 时，必须保持当前已发布版本号，不得创建 tag、GitHub Release 或伪造新版本。
+- 正式发版默认基于上一个正式 Release 顺序递增一个补丁版本，例如 `v0.3.0` 后应为 `v0.3.1`；只有用户明确要求调整主版本或次版本时，才允许跳转对应版本位，禁止无理由跨多个补丁号。
+
 本次实际发布信息：
 
 - release commit：`d7a8268`

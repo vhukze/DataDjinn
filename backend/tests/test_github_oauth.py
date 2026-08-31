@@ -1,5 +1,6 @@
 import io
 import base64
+import gzip
 import json
 import tempfile
 import unittest
@@ -255,6 +256,44 @@ class GitHubOAuthTests(unittest.TestCase):
             github_request.call_args_list[1].args[1],
             "/repos/vhukze/datadjinn-sync-a1b2c3d4/contents/sync/config.json",
         )
+
+    def test_reads_large_repository_file_from_git_blob_when_contents_omits_content(self) -> None:
+        self._store_authorized_repository()
+        expected = gzip.compress(b"large compressed snapshot", mtime=0)
+        with patch.object(github_oauth_module, "_decrypt_password", return_value="token"), patch.object(
+            self.service,
+            "_github_request",
+            side_effect=[
+                self._repository_response(),
+                {"sha": "large-blob-sha", "encoding": "none", "size": len(expected)},
+                {"sha": "large-blob-sha", "encoding": "base64", "content": base64.b64encode(expected).decode("ascii")},
+            ],
+        ) as github_request:
+            content = self.service.read_repository_file_bytes("versioning/database/c1/changes.sql.gz", ref="commit-1")
+
+        self.assertEqual(expected, content)
+        self.assertEqual(
+            "/repos/vhukze/datadjinn-sync-a1b2c3d4/git/blobs/large-blob-sha",
+            github_request.call_args_list[2].args[1],
+        )
+
+    def test_reads_large_utf8_repository_file_from_git_blob_when_contents_omits_content(self) -> None:
+        self._store_authorized_repository()
+        expected = '{"name":"数据库快照"}'
+        with patch.object(github_oauth_module, "_decrypt_password", return_value="token"), patch.object(
+            self.service,
+            "_github_request",
+            side_effect=[
+                self._repository_response(),
+                {"sha": "manifest-blob-sha", "encoding": "none", "size": len(expected.encode("utf-8"))},
+                {"sha": "manifest-blob-sha", "encoding": "base64", "content": base64.b64encode(expected.encode("utf-8")).decode("ascii")},
+            ],
+        ):
+            repository_file = self.service.read_repository_file("versioning/database/c1/manifest.json")
+
+        self.assertIsNotNone(repository_file)
+        self.assertEqual(expected, repository_file.content)
+        self.assertEqual("manifest-blob-sha", repository_file.sha)
 
     def test_missing_repository_file_is_a_first_sync(self) -> None:
         self._store_authorized_repository()

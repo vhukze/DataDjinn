@@ -358,7 +358,9 @@ test('connection Git versioning preference persists and is visible in the tree @
     const versionModal = page.locator('.connection-schema-version-modal')
     await expect(versionModal).toBeVisible({ timeout: 10000 })
     await expect(versionModal.getByText('Git Versioned SQLite', { exact: false })).toBeVisible()
-    await expect(versionModal.getByText('当前连接为单库类型，结构版本会管理该数据库的全部对象。')).toBeVisible()
+    await expect(
+      versionModal.getByText('连接未打开。双击打开连接后，可在这里查看和调整纳管范围。')
+    ).toBeVisible()
     await expect(versionModal.getByText('请先完成 GitHub 授权，才能读取或创建该连接的版本记录。')).toBeVisible()
     await expect(versionModal.getByRole('button', { name: '创建初始快照' })).toBeDisabled()
     await versionModal.locator('.ant-modal-close').click()

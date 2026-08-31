@@ -7,6 +7,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from fastapi import BackgroundTasks
+
 from app.git_versioning.database_history import DatabaseVersioningService, TableSnapshot
 from app.git_versioning.schema_history import SchemaSnapshot, SchemaSnapshotObject
 from app.git_versioning.task_progress import GitTask
@@ -67,10 +69,26 @@ class DatabaseVersioningServiceTests(unittest.TestCase):
         diff = self.service._row_diff(historical, current, "commit-1")
 
         self.assertEqual((1, 1, 1), (diff["added_count"], diff["deleted_count"], diff["updated_count"]))
-        self.assertEqual({"id": 3, "title": "added"}, diff["added"][0])
-        self.assertEqual({"id": 2, "title": "gone"}, diff["deleted"][0])
+        self.assertEqual({"id": 3}, diff["added"][0]["identity"])
+        self.assertEqual({"id": 3, "title": "added"}, diff["added"][0]["after"])
+        self.assertEqual({"id": 2}, diff["deleted"][0]["identity"])
+        self.assertEqual({"id": 2, "title": "gone"}, diff["deleted"][0]["before"])
+        self.assertEqual(["title"], diff["updated"][0]["changed_columns"])
         self.assertEqual("old", diff["updated"][0]["before"]["title"])
         self.assertEqual("new", diff["updated"][0]["after"]["title"])
+
+    def test_database_snapshot_commit_message_keeps_sql_out_of_history_summary(self) -> None:
+        manifest = SimpleNamespace(tables=[{}, {}])
+
+        message = self.service._commit_message("保存表格数据", manifest, 3, 2)
+
+        self.assertEqual("DataDjinn: 保存表格数据（2 张表，结构变更 3 项，数据变更 2 张表）", message)
+        self.assertNotIn("CREATE TABLE", message)
+
+    def test_history_message_uses_only_first_commit_message_line(self) -> None:
+        message = self.service._history_message("DataDjinn: 手动创建数据库 Git 快照（2 张表）\n\nCREATE TABLE items (...)")
+
+        self.assertEqual("DataDjinn: 手动创建数据库 Git 快照（2 张表）", message)
 
     def test_restore_generates_sql_from_current_state_to_historical_state(self) -> None:
         historical = TableSnapshot(
@@ -207,3 +225,58 @@ class DatabaseVersioningServiceTests(unittest.TestCase):
         self.assertEqual(snapshot.rows, restored_table.rows)
         self.assertIn("CREATE TABLE items", gzip.decompress(files[self.service.changes_path(connection_id)]).decode("utf-8"))
         self.assertIn("初始化数据库 Git 快照", message)
+
+    @patch("app.git_versioning.database_history.github_oauth_service")
+    @patch("app.git_versioning.database_history.connection_manager")
+    def test_table_snapshot_uploads_only_current_table_files(
+        self, connection_manager, github_service
+    ) -> None:
+        engine = SimpleNamespace(
+            dialect=SimpleNamespace(identifier_preparer=SimpleNamespace(quote=lambda value: f'"{value}"'))
+        )
+        request = SimpleNamespace(git_versioning_enabled=True, database_type="sqlite")
+        schema = SchemaSnapshot(
+            connection_id="c1", database_type="sqlite", captured_at="", fingerprint="schema",
+            objects=[SchemaSnapshotObject(scope="main", name="items", type="table", ddl="CREATE TABLE items (id INT)")],
+        )
+        manifest = {"connection_id": "c1", "database_type": "sqlite", "captured_at": "", "fingerprint": "old", "schema": schema.model_dump(), "tables": [
+            {"scope": "main", "table_name": "items", "path": self.service.table_path("c1", "main", "items"), "fingerprint": "old-table", "row_count": 1},
+            {"scope": "main", "table_name": "other", "path": self.service.table_path("c1", "main", "other"), "fingerprint": "other", "row_count": 1},
+        ]}
+        previous = TableSnapshot(table_name="items", scope="main", columns=["id"], identity_columns=["id"], rows=[{"id": 1}], captured_at="", fingerprint="old-table")
+        current = previous.model_copy(update={"rows": [{"id": 2}], "fingerprint": "new-table"})
+        connection_manager.get_connection_request.return_value = request
+        connection_manager.get_engine.return_value = engine
+        github_service.status.return_value = SimpleNamespace(authorized=True)
+        github_service.read_repository_file.side_effect = [SimpleNamespace(content=json.dumps(manifest), sha="manifest-sha")]
+        github_service.read_repository_file_bytes.return_value = gzip.compress(previous.model_dump_json().encode())
+        github_service.write_repository_files.return_value = SimpleNamespace(commit_sha="commit-2")
+        with patch.object(self.service, "_capture_table", return_value=current):
+            result = self.service._create_table_snapshot("c1", "main", "items", "main", None, "保存表格数据", GitTask(id="task", connection_id="c1", title="表"))
+        files, _ = github_service.write_repository_files.call_args.args
+        self.assertEqual("commit-2", result["commit_sha"])
+        self.assertEqual({self.service.manifest_path("c1"), self.service.table_path("c1", "main", "items"), self.service.changes_path("c1")}, set(files))
+        updated_manifest = json.loads(files[self.service.manifest_path("c1")])
+        self.assertEqual("other", updated_manifest["tables"][1]["table_name"])
+        self.assertEqual("new-table", updated_manifest["tables"][0]["fingerprint"])
+
+    @patch("app.git_versioning.database_history.github_oauth_service")
+    @patch("app.git_versioning.database_history.connection_manager")
+    def test_table_change_always_starts_a_visible_table_task_after_database_baseline(
+        self, connection_manager, github_service
+    ) -> None:
+        background_tasks = BackgroundTasks()
+        connection_manager.get_connection_request.return_value = SimpleNamespace(
+            git_versioning_enabled=True, database_type="dm"
+        )
+        github_service.status.return_value = SimpleNamespace(authorized=True)
+        github_service.read_repository_file.return_value = SimpleNamespace(sha="manifest-sha")
+
+        self.service.schedule_table_snapshot(
+            background_tasks, "c1", "items", "APP", None, "保存表格数据"
+        )
+
+        self.assertEqual(1, len(background_tasks.tasks))
+        task = background_tasks.tasks[0]
+        self.assertIs(task.func.__func__, self.service.create_table_snapshot_async.__func__)
+        self.assertEqual(("c1", "APP", "items", "APP", None, "保存表格数据"), task.args)

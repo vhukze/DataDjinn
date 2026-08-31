@@ -637,8 +637,29 @@ body[data-theme='dark'] {
 }
 
 .schema-versioning-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
   padding: 10px 0;
   border-top: 1px solid color-mix(in srgb, var(--dj-border-subtle) 72%, transparent);
+}
+
+.schema-versioning-entry > .ant-space:first-child {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.schema-versioning-entry > .ant-space:first-child .ant-typography {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.schema-versioning-entry > .ant-space:last-child {
+  flex: 0 0 auto;
 }
 
 .connection-schema-version-list {
@@ -7361,10 +7382,6 @@ body:not([data-theme='dark']) .workspace-tabs .ant-tabs-tab-active {
   border-color: color-mix(in srgb, var(--success-color) 24%, var(--border-color));
 }
 
-.query-multi-execution-item.error {
-  color: var(--error-color);
-}
-
 .query-multi-execution-body {
   display: flex;
   min-width: 0;
@@ -12175,7 +12192,7 @@ body[data-theme='dark'] .query-history-item-delete.ant-btn {
   border-color: color-mix(in srgb, #52c41a 45%, var(--dj-border-subtle));
 }
 
-.query-execution-card.error {
+.query-result-table-shell > .query-execution-card.error {
   flex: 1 1 0;
   height: auto;
   align-items: stretch;
@@ -12189,7 +12206,7 @@ body[data-theme='dark'] .query-history-item-delete.ant-btn {
   font-weight: 600;
 }
 
-.query-execution-card.error > svg {
+.query-result-table-shell > .query-execution-card.error > svg {
   flex: 0 0 auto;
   align-self: flex-start;
 }
@@ -12204,7 +12221,7 @@ body[data-theme='dark'] .query-history-item-delete.ant-btn {
   overflow: hidden;
 }
 
-.query-execution-card.error .query-execution-card-body {
+.query-result-table-shell > .query-execution-card.error .query-execution-card-body {
   align-self: stretch;
 }
 
@@ -12249,6 +12266,18 @@ body[data-theme='dark'] .query-history-item-delete.ant-btn {
 
 .query-multi-execution-item.running > svg {
   color: var(--dj-accent);
+}
+
+.query-multi-execution-item.error {
+  border-color: var(--ant-color-error, #ff4d4f);
+  background: color-mix(in srgb, var(--ant-color-error, #ff4d4f) 7%, var(--dj-bg-glass));
+}
+
+.query-multi-execution-item.error > .anticon,
+.query-multi-execution-item.error > .anticon svg,
+.query-multi-execution-item.error .query-execution-card-heading .ant-typography:first-child,
+.query-multi-execution-item.error .query-execution-error-text {
+  color: var(--ant-color-error, #ff4d4f);
 }
 
 .query-execution-error-text {

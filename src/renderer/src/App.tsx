@@ -171,6 +171,8 @@ import {
   type ImperativeModalHandle
 } from './app/modal-region'
 import { ConnectionEditorModal } from './app/connection-editor-modal'
+import { DataVersionDiffModal } from './app/data-version-diff-modal'
+import type { TableDataSnapshotDiff } from './app/data-versioning-diff'
 import {
   buildAIContextSourceId,
   mergeAIContextSources,
@@ -554,14 +556,20 @@ function App(): React.JSX.Element {
     connectionId: string
     tableName: string
     scope?: string
+    databaseName?: string
+    pgDatabaseName?: string
   }>()
   const [tableGitHistory, setTableGitHistory] = useState<SchemaVersionInfo[]>([])
   const [tableGitHistoryLoading, setTableGitHistoryLoading] = useState(false)
   const [tableGitDetails, setTableGitDetails] = useState<{
     title: string
     sql?: string
-    diff?: { added_count: number; deleted_count: number; updated_count: number }
   }>()
+  const [tableGitDiffDetails, setTableGitDiffDetails] = useState<{
+    title: string
+    diff?: TableDataSnapshotDiff
+  }>()
+  const [tableGitDiffTab, setTableGitDiffTab] = useState<'added' | 'deleted' | 'updated'>('updated')
   const [tableGitActionVersion, setTableGitActionVersion] = useState<string>()
   const [versioningScopeConfig, setVersioningScopeConfig] = useState<VersioningScopeConfig>()
   const [versioningScopeDraft, setVersioningScopeDraft] = useState<string[]>([])
@@ -1401,30 +1409,32 @@ function App(): React.JSX.Element {
     setGitSnapshotTask(undefined)
     setVersioningScopeConfig(undefined)
     setVersioningScopeDraft([])
-    setVersioningScopesLoading(true)
+    setVersioningScopesLoading(Boolean(connection?.is_open))
     setSchemaVersionModalOpen(true)
 
-    if (connection && !connection.is_open) {
-      const openedConnection = await openConnectionById(connectionId)
-      if (!openedConnection) {
-        setVersioningScopesLoading(false)
-        return
-      }
-    }
-    void loadVersioningScopes(connectionId)
-    if (gitHubAuthStatus.authorized) {
-      void loadSchemaVersions(connectionId)
+    if (connection?.is_open) {
+      void loadVersioningScopes(connectionId)
     }
   }
+
+  useEffect(() => {
+    if (schemaVersionModalOpen && schemaVersionConnectionId && gitHubAuthStatus.authorized) {
+      void loadSchemaVersions(schemaVersionConnectionId)
+    }
+  }, [gitHubAuthStatus.authorized, schemaVersionConnectionId, schemaVersionModalOpen])
 
   const openTableGitHistory = async (tab: WorkspaceTab): Promise<void> => {
     if (!tab.connectionId || !tab.tableName) {
       return
     }
+    const connection = getConnection(tab.connectionId)
+    const scope = connection?.database_type === 'sqlite' ? undefined : tab.databaseName
     const target = {
       connectionId: tab.connectionId,
       tableName: tab.tableName,
-      scope: tab.databaseName
+      scope,
+      databaseName: tab.databaseName,
+      pgDatabaseName: tab.pgDatabaseName
     }
     setTableGitHistoryTarget(target)
     setTableGitHistory([])
@@ -1452,7 +1462,10 @@ function App(): React.JSX.Element {
     if (!target) return
     setTableGitActionVersion(version.id)
     try {
-      const query = target.scope ? `?scope=${encodeURIComponent(target.scope)}` : ''
+      const queryParams = new URLSearchParams()
+      if (target.scope) queryParams.set('scope', target.scope)
+      if (target.pgDatabaseName) queryParams.set('pg_database', target.pgDatabaseName)
+      const query = queryParams.toString() ? `?${queryParams.toString()}` : ''
       const details = await requestJson<{ changes_sql: string }>(
         `/git-versioning/connections/${target.connectionId}/tables/${encodeURIComponent(target.tableName)}/versions/${version.id}/details${query}`
       )
@@ -1468,13 +1481,16 @@ function App(): React.JSX.Element {
     const target = tableGitHistoryTarget
     if (!target) return
     setTableGitActionVersion(version.id)
+    setTableGitDiffTab('updated')
+    setTableGitDiffDetails({ title: `${version.message} · 数据差异` })
     try {
       const query = target.scope ? `?scope=${encodeURIComponent(target.scope)}` : ''
-      const diff = await requestJson<{ added_count: number; deleted_count: number; updated_count: number }>(
+      const diff = await requestJson<TableDataSnapshotDiff>(
         `/git-versioning/connections/${target.connectionId}/tables/${encodeURIComponent(target.tableName)}/versions/${version.id}/diff${query}`
       )
-      setTableGitDetails({ title: `${version.message} · 数据差异`, diff })
+      setTableGitDiffDetails({ title: `${version.message} · 数据差异`, diff })
     } catch (error) {
+      setTableGitDiffDetails(undefined)
       showError(error instanceof Error ? error.message : '加载数据差异失败')
     } finally {
       setTableGitActionVersion(undefined)
@@ -1497,12 +1513,36 @@ function App(): React.JSX.Element {
     if (!confirmed) return
     setTableGitActionVersion(version.id)
     try {
-      const query = target.scope ? `?scope=${encodeURIComponent(target.scope)}` : ''
+      const queryParams = new URLSearchParams()
+      if (target.scope) queryParams.set('scope', target.scope)
+      if (target.pgDatabaseName) queryParams.set('pg_database', target.pgDatabaseName)
+      const query = queryParams.toString() ? `?${queryParams.toString()}` : ''
       await requestJson(
         `/git-versioning/connections/${target.connectionId}/tables/${encodeURIComponent(target.tableName)}/versions/${version.id}/restore${query}`,
         { method: 'POST', body: JSON.stringify({ confirm: true }) }
       )
-      messageApi.success('历史表数据已恢复，请刷新表预览')
+      const previewTab = getWorkspaceTabs().find(
+        (tab) =>
+          tab.kind === 'preview' &&
+          tab.connectionId === target.connectionId &&
+          tab.tableName === target.tableName &&
+          (tab.databaseName ?? '') === (target.databaseName ?? '') &&
+          (tab.pgDatabaseName ?? '') === (target.pgDatabaseName ?? '')
+      )
+      if (previewTab?.connectionId && previewTab.tableName) {
+        await previewTableRef.current(
+          previewTab.connectionId,
+          previewTab.tableName,
+          previewTab.databaseName,
+          previewTab.pgDatabaseName,
+          previewTab.limit,
+          previewTab.page,
+          previewTab.where,
+          previewTab.objectType,
+          previewTab.sortState
+        )
+      }
+      messageApi.success('历史表数据已恢复，并已刷新表预览')
     } catch (error) {
       showError(error instanceof Error ? error.message : '恢复历史表数据失败')
     } finally {
@@ -8539,7 +8579,8 @@ function App(): React.JSX.Element {
 
   const openConnectionById = async (
     connectionId: string,
-    savedConnection?: ConnectionInfo
+    savedConnection?: ConnectionInfo,
+    options: { preloadTree?: boolean; timeoutMs?: number } = {}
   ): Promise<ConnectionInfo | undefined> => {
     const openAttemptId = crypto.randomUUID()
     connectionOpenAttemptRefs.current[connectionId] = openAttemptId
@@ -8560,7 +8601,10 @@ function App(): React.JSX.Element {
 
       const connection = await requestJson<ConnectionInfo>(
         `/connections/${connectionId}/open?open_attempt_id=${encodeURIComponent(openAttemptId)}`,
-        { method: 'POST', timeoutMs: DATABASE_CONNECTION_REQUEST_TIMEOUT_MS }
+        {
+          method: 'POST',
+          timeoutMs: options.timeoutMs ?? DATABASE_CONNECTION_REQUEST_TIMEOUT_MS
+        }
       )
       if (!isCurrentOpenAttempt()) {
         return undefined
@@ -8587,6 +8631,10 @@ function App(): React.JSX.Element {
         return next
       })
 
+      if (options.preloadTree === false) {
+        return connection
+      }
+
       if (connection.database_type === 'sqlite') {
         await ensureDatabasesLoaded(connectionId, connection)
         if (!isCurrentOpenAttempt()) {
@@ -8600,6 +8648,9 @@ function App(): React.JSX.Element {
           return undefined
         }
       }
+      if (schemaVersionModalOpen && schemaVersionConnectionId === connectionId) {
+        void loadVersioningScopes(connectionId)
+      }
       return connection
     } catch (err) {
       if (!isCurrentOpenAttempt()) {
@@ -8607,7 +8658,7 @@ function App(): React.JSX.Element {
       }
       const errorMessage = err instanceof Error ? err.message : '打开连接失败'
       if (errorMessage.startsWith('请求超时')) {
-        void closeConnectionById(connectionId)
+        void closeConnectionById(connectionId, { silent: true })
       }
       const currentConnection = getConnection(connectionId)
       if (
@@ -8653,7 +8704,10 @@ function App(): React.JSX.Element {
     }
   }
 
-  const closeConnectionById = async (connectionId: string): Promise<void> => {
+  const closeConnectionById = async (
+    connectionId: string,
+    options: { silent?: boolean } = {}
+  ): Promise<void> => {
     const openAttemptId = connectionOpenAttemptRefs.current[connectionId]
     connectionOpenAttemptRefs.current[connectionId] = undefined
     setConnectionTreeLoadingText(connectionId)
@@ -8692,7 +8746,9 @@ function App(): React.JSX.Element {
       })
       setTreeData((current) => replaceConnectionNode(current, connection, buildConnectionNode))
     } catch (err) {
-      showError(err instanceof Error ? err.message : '关闭连接失败')
+      if (!options.silent) {
+        showError(err instanceof Error ? err.message : '关闭连接失败')
+      }
     }
   }
 
@@ -11317,17 +11373,6 @@ function App(): React.JSX.Element {
             </Space>
             <div className="titlebar-spacer" />
             <Space className="toolbar-actions titlebar-no-drag" size={4}>
-              <Button
-                className="toolbar-query-btn"
-                type="primary"
-                size="small"
-                icon={<FileAddOutlined />}
-                onClick={() => openQueryWorkspace('', '新建查询')}
-                title="新建查询"
-                aria-label="新建查询"
-              >
-                新建查询
-              </Button>
               {gitSnapshotTasks.length > 0 && (
                 <Dropdown
                   trigger={['click']}
@@ -11365,6 +11410,17 @@ function App(): React.JSX.Element {
                   />
                 </Dropdown>
               )}
+              <Button
+                className="toolbar-query-btn"
+                type="primary"
+                size="small"
+                icon={<FileAddOutlined />}
+                onClick={() => openQueryWorkspace('', '新建查询')}
+                title="新建查询"
+                aria-label="新建查询"
+              >
+                新建查询
+              </Button>
               <Button
                 className="toolbar-icon-btn"
                 type="text"
@@ -11594,6 +11650,7 @@ function App(): React.JSX.Element {
                 selectConnectionNodes={selectConnectionNodes}
                 setFocusedTreeNode={setFocusedTreeNode}
                 setSelectedConnectionId={setSelectedConnectionId}
+                captureTreeScrollPosition={captureResourceTreeScrollPosition}
                 setExpandedKeys={setExpandedKeys}
                 setSelectedTreeKeys={setSelectedTreeKeys}
                 setTreeContextMenu={setTreeContextMenu}
@@ -11971,16 +12028,17 @@ function App(): React.JSX.Element {
           onCancel={() => setTableGitDetails(undefined)}
           {...FAST_MODAL_PROPS}
         >
-          {tableGitDetails?.diff ? (
-            <Space direction="vertical" className="full-width">
-              <Typography.Text>新增：{tableGitDetails.diff.added_count} 行</Typography.Text>
-              <Typography.Text>修改：{tableGitDetails.diff.updated_count} 行</Typography.Text>
-              <Typography.Text>删除：{tableGitDetails.diff.deleted_count} 行</Typography.Text>
-            </Space>
-          ) : (
-            <pre className="git-change-sql-preview">{tableGitDetails?.sql}</pre>
-          )}
+          <pre className="git-change-sql-preview">{tableGitDetails?.sql}</pre>
         </Modal>
+        <DataVersionDiffModal
+          open={Boolean(tableGitDiffDetails)}
+          title={tableGitDiffDetails?.title || '数据差异'}
+          loading={Boolean(tableGitDiffDetails && !tableGitDiffDetails.diff)}
+          diff={tableGitDiffDetails?.diff}
+          tab={tableGitDiffTab}
+          onTabChange={setTableGitDiffTab}
+          onClose={() => setTableGitDiffDetails(undefined)}
+        />
         <ImperativeModalHost
           ref={settingsModalRef}
           title="设置"

@@ -2045,6 +2045,52 @@ test.describe('workspace regression', () => {
     }
   })
 
+  test('multiple sql statements should display the database error for each failed statement @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openQueryWorkspace(page)
+
+      await focusMonacoEditor(page)
+      await page.keyboard.press('Control+A')
+      await page.keyboard.type("select 'before' as value;\nSELECT FROM;\nselect 'after' as value;")
+      await page.keyboard.press('Control+A')
+      await page.locator('.query-execute-button').click()
+
+      const results = page.locator('[data-testid="multi-statement-results"]')
+      await expect(results).toBeVisible({ timeout: 30000 })
+      const failedItem = results.locator('[data-testid="multi-statement-item-1"]')
+      await expect(failedItem).toContainText('SQL 2')
+      await expect(failedItem).toContainText('执行失败')
+      await expect(failedItem.locator('.query-execution-error-text')).toBeVisible()
+      await expect(failedItem.locator('.query-execution-error-text')).not.toHaveText('执行失败')
+      await expect
+        .poll(() =>
+          failedItem.evaluate((element) => {
+            const icon = element.querySelector('svg')
+            const isRed = (color: string): boolean => {
+              const channels = color.match(/\d+/g)?.map(Number) ?? []
+              return channels.length >= 3 && channels[0] > channels[1] + 30 && channels[0] > channels[2] + 30
+            }
+            return {
+              borderIsRed: isRed(window.getComputedStyle(element).borderTopColor),
+              iconIsRed: icon ? isRed(window.getComputedStyle(icon).color) : false
+            }
+          })
+        )
+        .toEqual({ borderIsRed: true, iconIsRed: true })
+      await expect(results.locator('[data-testid="multi-statement-item-0"]')).toContainText('before')
+      await expect(results.locator('[data-testid="multi-statement-item-2"]')).toContainText('after')
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
   test('multiple command statements should show compact status without an empty result table @bug', async () => {
     const electronApp = await launchRegressionApp()
 
@@ -6006,7 +6052,7 @@ test.describe('workspace regression', () => {
     }
   })
 
-  test('Git version management should silently open a closed connection before reading scopes @bug', async () => {
+  test('Git version management should show history without opening a closed connection @bug', async () => {
     const fixtureUserDataDir = readFixtureUserDataDir()
     const connectionsPath = path.join(fixtureUserDataDir, 'connections.json')
     const originalConnectionsRaw = fs.readFileSync(connectionsPath, 'utf-8')
@@ -6029,6 +6075,17 @@ test.describe('workspace regression', () => {
       await waitForAppReady(page)
       await ensureWindowSize(page)
 
+      await page.evaluate(() => {
+        const api = window.api
+        const originalRequestJson = api.requestJson.bind(api)
+        const requestPaths: string[] = []
+        api.requestJson = async (path, options) => {
+          requestPaths.push(path)
+          return originalRequestJson(path, options)
+        }
+        ;(window as Window & { __gitVersioningRequestPaths?: string[] }).__gitVersioningRequestPaths = requestPaths
+      })
+
       const connectionTitle = page.locator(
         `.connection-tree-title[data-connection-id="${fixtureConnectionId}"]`
       )
@@ -6037,12 +6094,10 @@ test.describe('workspace regression', () => {
       await gitButton.click()
 
       await expect(page.locator('.connection-schema-version-modal')).toBeVisible({ timeout: 30000 })
-      await expect
-        .poll(async () => {
-          const response = await page.evaluate(() => window.api.requestJson('/connections'))
-          return response.connections.find((item) => item.connection_id === fixtureConnectionId)?.is_open
-        })
-        .toBe(true)
+      const requestPaths = await page.evaluate(
+        () => (window as Window & { __gitVersioningRequestPaths?: string[] }).__gitVersioningRequestPaths ?? []
+      )
+      expect(requestPaths.some((path) => /\/connections\/[^/]+\/open/.test(path))).toBe(false)
       await expect(page.getByRole('dialog', { name: '操作失败' })).toHaveCount(0)
     } finally {
       await electronApp.close()
@@ -10901,6 +10956,60 @@ test.describe('workspace regression', () => {
           })
         )
         .toBeGreaterThanOrEqual(scrollBefore - 2)
+
+      // 展开箭头走的是 Tree.onExpand，与双击标题使用的运行时入口不同。
+      // 这里覆盖已加载节点的收起再展开，避免后续只保护双击路径。
+      await page.evaluate((targetKey) => {
+        const title = document.querySelector(
+          `.resource-tree-node-title[data-tree-node-key="${CSS.escape(targetKey)}"]`
+        )
+        const switcher = title?.closest('.ant-tree-treenode')?.querySelector('.ant-tree-switcher')
+        if (!(switcher instanceof HTMLElement)) {
+          throw new Error('Table group switcher not found')
+        }
+        switcher.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+      }, tableGroupKey)
+      await expect
+        .poll(() =>
+          page.locator(
+            `.resource-tree-node-title[data-tree-node-key^="table:${fixtureConnectionId}:::table:"]`
+          ).count()
+        )
+        .toBe(0)
+      const switcherScrollBefore = await viewport.evaluate((node) => {
+        const holder = node.querySelector('.ant-tree-list-holder')
+        if (!(holder instanceof HTMLElement)) {
+          return -1
+        }
+        holder.scrollTop = 48
+        return holder.scrollTop
+      })
+      expect(switcherScrollBefore).toBeGreaterThan(0)
+      await page.evaluate((targetKey) => {
+        const title = document.querySelector(
+          `.resource-tree-node-title[data-tree-node-key="${CSS.escape(targetKey)}"]`
+        )
+        const switcher = title?.closest('.ant-tree-treenode')?.querySelector('.ant-tree-switcher')
+        if (!(switcher instanceof HTMLElement)) {
+          throw new Error('Table group switcher not found')
+        }
+        switcher.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+      }, tableGroupKey)
+      await expect
+        .poll(() =>
+          page.locator(
+            `.resource-tree-node-title[data-tree-node-key^="table:${fixtureConnectionId}:::table:"]`
+          ).count()
+        )
+        .toBeGreaterThan(0)
+      await expect
+        .poll(() =>
+          viewport.evaluate((node) => {
+            const holder = node.querySelector('.ant-tree-list-holder')
+            return holder instanceof HTMLElement ? holder.scrollTop : -1
+          })
+        )
+        .toBeGreaterThanOrEqual(switcherScrollBefore - 2)
     } finally {
       if (page && originalMainPreferences && originalServerPreferences) {
         await page.evaluate(async ({ mainPreferences, serverPreferences }) => {

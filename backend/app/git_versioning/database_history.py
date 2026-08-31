@@ -92,6 +92,28 @@ class DatabaseVersioningService:
             detail=task.detail,
         )
 
+    def create_table_snapshot_async(
+        self,
+        connection_id: str,
+        scope: str | None,
+        table_name: str,
+        database: str | None = None,
+        pg_database: str | None = None,
+        reason: str = "保存表格数据",
+    ) -> DatabaseSnapshotResult:
+        task = git_task_registry.start(
+            connection_id,
+            f"表 Git 快照 · {table_name}",
+            lambda item: self._create_table_snapshot(connection_id, scope, table_name, database, pg_database, reason, item),
+        )
+        return DatabaseSnapshotResult(
+            id=task.id,
+            task_id=task.id,
+            status=task.status,
+            percent=task.percent,
+            detail=task.detail,
+        )
+
     def schedule_snapshot(self, connection_id: str, reason: str) -> None:
         """仅在用户已经建立过基线后响应结构或数据变更。"""
         try:
@@ -103,10 +125,97 @@ class DatabaseVersioningService:
             # 自动提交不能影响用户刚刚完成的数据库操作，失败信息由后台任务或日志记录。
             return
 
+    def schedule_table_snapshot(
+        self,
+        background_tasks: object,
+        connection_id: str,
+        table_name: str,
+        database: str | None = None,
+        pg_database: str | None = None,
+        reason: str = "保存表格数据",
+    ) -> None:
+        """表数据变更只提交当前表、清单和本次 SQL。"""
+        try:
+            request = self._ensure_enabled(connection_id)
+            if github_oauth_service.read_repository_file(self.manifest_path(connection_id)) is None:
+                return
+            add_task = getattr(background_tasks, "add_task", None)
+            if callable(add_task):
+                add_task(
+                    self.create_table_snapshot_async,
+                    connection_id,
+                    self._table_scope(request.database_type, database),
+                    table_name,
+                    database,
+                    pg_database,
+                    reason,
+                )
+        except Exception:
+            return
+
+    def _create_table_snapshot(
+        self,
+        connection_id: str,
+        scope: str | None,
+        table_name: str,
+        database: str | None,
+        pg_database: str | None,
+        reason: str,
+        task: GitTask,
+    ) -> dict[str, object]:
+        request = self._ensure_enabled(connection_id)
+        engine = connection_manager.get_engine(connection_id)
+        if engine is None:
+            raise ValueError("连接尚未打开，无法创建 Git 快照")
+        task.total = 100
+        task.current = 10
+        task.detail = f"正在读取并压缩表 {table_name}"
+        path = self.table_path(connection_id, scope, table_name)
+        previous_manifest_file = github_oauth_service.read_repository_file(self.manifest_path(connection_id))
+        if previous_manifest_file is None:
+            return {"changed": False}
+        previous_manifest = self._parse_manifest(previous_manifest_file.content)
+        previous_table = self._read_table_from_path(path)
+        current_table = self._capture_table(engine, request.database_type, scope, table_name, database, pg_database)
+        if previous_table is not None and previous_table.fingerprint == current_table.fingerprint:
+            task.current = 99
+            task.detail = "远端已是最新快照，无需上传"
+            return {"commit_sha": previous_manifest_file.sha, "changed": False, "table_name": table_name}
+
+        entries = [dict(item) for item in previous_manifest.tables]
+        entry = next((item for item in entries if item.get("path") == path), None)
+        next_entry = {"scope": scope, "table_name": table_name, "path": path, "fingerprint": current_table.fingerprint, "row_count": len(current_table.rows)}
+        if entry is None:
+            entries.append(next_entry)
+        else:
+            entry.update(next_entry)
+        manifest = DatabaseSnapshotManifest(
+            connection_id=previous_manifest.connection_id,
+            database_type=previous_manifest.database_type,
+            captured_at=datetime.now(timezone.utc).isoformat(),
+            fingerprint=hashlib.sha256(json.dumps({"schema": previous_manifest.schema_snapshot.fingerprint, "tables": entries}, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest(),
+            schema=previous_manifest.schema_snapshot,
+            tables=entries,
+        )
+        sql = self._table_changes(previous_table, current_table, engine, scope) or "-- 数据没有变化"
+        task.current = 70
+        task.detail = "正在生成变更 SQL"
+        files: dict[str, bytes | str] = {
+            path: gzip.compress(current_table.model_dump_json(ensure_ascii=False).encode("utf-8"), compresslevel=9, mtime=0),
+            self.manifest_path(connection_id): manifest.model_dump_json(indent=2, ensure_ascii=False, by_alias=True),
+            self.changes_path(connection_id): gzip.compress(f"-- {scope + '.' if scope else ''}{table_name}\n{sql}".encode("utf-8"), compresslevel=9, mtime=0),
+        }
+        task.current = 90
+        task.detail = f"正在上传表 {table_name} 的快照"
+        result = github_oauth_service.write_repository_files(files, self._table_commit_message(reason, table_name))
+        task.current = 99
+        task.detail = f"远端提交完成：表 {table_name}"
+        return {"commit_sha": result.commit_sha, "changed": True, "table_name": table_name}
+
     def list_versions(self, connection_id: str, limit: int = 30) -> list[dict[str, Any]]:
         self._ensure_enabled(connection_id)
         return [
-            {"id": commit.sha, "message": commit.message, "committed_at": commit.committed_at}
+            {"id": commit.sha, "message": self._history_message(commit.message), "committed_at": commit.committed_at}
             for commit in github_oauth_service.list_repository_commits(self.manifest_path(connection_id), per_page=limit)
         ]
 
@@ -114,7 +223,7 @@ class DatabaseVersioningService:
         self._ensure_enabled(connection_id)
         path = self.table_path(connection_id, scope, table_name)
         return [
-            {"id": commit.sha, "message": commit.message, "committed_at": commit.committed_at}
+            {"id": commit.sha, "message": self._history_message(commit.message), "committed_at": commit.committed_at}
             for commit in github_oauth_service.list_repository_commits(path, per_page=limit)
         ]
 
@@ -149,21 +258,39 @@ class DatabaseVersioningService:
         return self._row_diff(historical, current, version_id)
 
     def restore_table_version(
-        self, connection_id: str, scope: str | None, table_name: str, version_id: str
+        self, connection_id: str, scope: str | None, table_name: str, version_id: str, pg_database: str | None = None
     ) -> dict[str, Any]:
         historical = self.get_table_snapshot(connection_id, scope, table_name, version_id)
         request = self._ensure_enabled(connection_id)
         engine = connection_manager.get_engine(connection_id)
         if engine is None:
             raise ValueError("连接尚未打开，无法恢复历史数据")
-        current = self._capture_table(engine, request.database_type, scope, table_name, None, None)
+        current = self._capture_table(engine, request.database_type, scope, table_name, scope, pg_database)
         sql = self._table_changes(current, historical, engine, scope)
         statements = [str(statement).strip() for statement in sqlparse.parse(sql) if str(statement).strip()]
         if statements:
             with engine.begin() as connection:
                 for statement in statements:
                     connection.execute(text(statement))
-        return {"version_id": version_id, "table_name": table_name, "executed_count": len(statements)}
+        task_id: str | None = None
+        try:
+            if github_oauth_service.read_repository_file(self.manifest_path(connection_id)) is not None:
+                task_id = self.create_table_snapshot_async(
+                    connection_id,
+                    scope,
+                    table_name,
+                    scope,
+                    pg_database,
+                    "恢复历史数据",
+                ).task_id
+        except Exception:
+            task_id = None
+        return {
+            "version_id": version_id,
+            "table_name": table_name,
+            "executed_count": len(statements),
+            "task_id": task_id,
+        }
 
     def restore_table_structure(
         self, connection_id: str, scope: str | None, table_name: str, version_id: str
@@ -241,10 +368,27 @@ class DatabaseVersioningService:
             raise ValueError("该历史快照没有稳定的主键或唯一键，无法生成行级差异")
         old = {cls._row_key(row, historical.identity_columns): row for row in historical.rows}
         new = {cls._row_key(row, historical.identity_columns): row for row in current.rows}
-        added = [row for key, row in new.items() if key not in old]
-        deleted = [row for key, row in old.items() if key not in new]
+        added = [
+            {"identity": cls._identity_values(row, historical.identity_columns), "after": row, "changed_columns": []}
+            for key, row in new.items()
+            if key not in old
+        ]
+        deleted = [
+            {"identity": cls._identity_values(row, historical.identity_columns), "before": row, "changed_columns": []}
+            for key, row in old.items()
+            if key not in new
+        ]
         updated = [
-            {"before": old[key], "after": row}
+            {
+                "identity": cls._identity_values(row, historical.identity_columns),
+                "before": old[key],
+                "after": row,
+                "changed_columns": [
+                    column
+                    for column in current.columns
+                    if column not in historical.identity_columns and old[key].get(column) != row.get(column)
+                ],
+            }
             for key, row in new.items()
             if key in old and old[key] != row
         ]
@@ -285,6 +429,7 @@ class DatabaseVersioningService:
         table_entries: list[dict[str, Any]] = []
         sql_sections: list[str] = []
         schema_sql = self._schema_changes(previous_manifest.schema_snapshot if previous_manifest else None, schema)
+        schema_change_count = len([statement for statement in sqlparse.parse(schema_sql) if str(statement).strip()])
         if schema_sql:
             sql_sections.append("-- DDL\n" + schema_sql)
 
@@ -318,6 +463,7 @@ class DatabaseVersioningService:
 
         task.current = 76
         task.detail = "数据读取完成，正在生成变更 SQL"
+        changed_table_count = 0
         for index, (scope, table_name, database, pg_database) in enumerate(table_targets, start=1):
             if task.cancel_requested:
                 return {"cancelled": True}
@@ -327,6 +473,7 @@ class DatabaseVersioningService:
             previous_entry = previous_tables.get(path)
             if previous_entry and previous_entry.get("fingerprint") == table_snapshot.fingerprint:
                 continue
+            changed_table_count += 1
             files[path] = gzip.compress(table_snapshot.model_dump_json(ensure_ascii=False).encode("utf-8"), compresslevel=9, mtime=0)
             previous_snapshot = self._read_table_from_path(path)
             sql = self._table_changes(previous_snapshot, table_snapshot, engine, scope)
@@ -350,7 +497,7 @@ class DatabaseVersioningService:
             return {"commit_sha": previous_manifest_file.sha, "table_count": len(table_targets), "changed": False}
         files[self.manifest_path(connection_id)] = manifest.model_dump_json(indent=2, ensure_ascii=False, by_alias=True)
         files[self.changes_path(connection_id)] = gzip.compress(sql_text.encode("utf-8"), compresslevel=9, mtime=0)
-        message = self._commit_message(reason, manifest, sql_text)
+        message = self._commit_message(reason, manifest, schema_change_count, changed_table_count)
         task.current = 92
         task.detail = "正在上传快照文件并更新远端分支"
         result = github_oauth_service.write_repository_files(files, message)
@@ -436,6 +583,14 @@ class DatabaseVersioningService:
         return f"{quote(scope)}.{quote(snapshot.table_name)}" if scope else quote(snapshot.table_name)
 
     @staticmethod
+    def _identity_values(row: dict[str, Any], columns: list[str]) -> dict[str, Any]:
+        return {column: row.get(column) for column in columns}
+
+    @staticmethod
+    def _table_scope(database_type: str, database: str | None) -> str | None:
+        return database if database_type in {"mysql", "clickhouse", "postgresql", "gaussdb", "dm", "oracle"} else None
+
+    @staticmethod
     def _row_key(row: dict[str, Any], columns: list[str]) -> str:
         return json.dumps({column: row.get(column) for column in columns}, ensure_ascii=False, sort_keys=True, default=str)
 
@@ -452,11 +607,24 @@ class DatabaseVersioningService:
         return "'" + str(value).replace("'", "''") + "'"
 
     @staticmethod
-    def _commit_message(reason: str, manifest: DatabaseSnapshotManifest, sql_text: str) -> str:
+    def _commit_message(
+        reason: str, manifest: DatabaseSnapshotManifest, schema_change_count: int, changed_table_count: int
+    ) -> str:
         normalized = reason.strip() or "更新数据库 Git 快照"
-        preview = sql_text[:12_000]
-        suffix = "\n-- 完整变更 SQL 已压缩保存到 versioning/database/*/changes.sql.gz" if len(sql_text) > len(preview) else ""
-        return f"DataDjinn: {normalized}（{len(manifest.tables)} 张表）\n\n{preview}{suffix}"
+        return (
+            f"DataDjinn: {normalized}（{len(manifest.tables)} 张表，"
+            f"结构变更 {schema_change_count} 项，数据变更 {changed_table_count} 张表）"
+        )
+
+    @staticmethod
+    def _table_commit_message(reason: str, table_name: str) -> str:
+        normalized = reason.strip() or "更新表数据 Git 快照"
+        return f"DataDjinn: {normalized}（表 {table_name}，数据变更 1 张表）"
+
+    @staticmethod
+    def _history_message(message: str) -> str:
+        """旧版本曾将 SQL 写入 commit message，这里只向界面暴露概要首行。"""
+        return next((line.strip() for line in message.splitlines() if line.strip()), "DataDjinn: 数据库 Git 快照")
 
     @staticmethod
     def _ensure_enabled(connection_id: str) -> Any:

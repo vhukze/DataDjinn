@@ -373,7 +373,7 @@ class DataVersioningServiceTests(unittest.TestCase):
         self.assertEqual({"changed": True}, structure)
         service.get_table_version_details.assert_called_once_with("c1", "sales", "items", "commit-1")
         service.diff_table_version.assert_called_once_with("c1", "sales", "items", "commit-1")
-        service.restore_table_version.assert_called_once_with("c1", "sales", "items", "commit-1")
+        service.restore_table_version.assert_called_once_with("c1", "sales", "items", "commit-1", None)
         service.restore_table_structure.assert_called_once_with("c1", "sales", "items", "commit-1")
 
 

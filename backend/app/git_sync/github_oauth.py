@@ -156,6 +156,29 @@ class GitHubOAuthService:
         return result
 
     def read_repository_file(self, path: str, *, ref: str | None = None) -> GitHubRepositoryFile | None:
+        try:
+            repository_file = self._read_repository_file_content(path, ref=ref)
+            if repository_file is None:
+                return None
+            normalized_path, sha, content_bytes = repository_file
+            content = content_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("GitHub 同步文件不是有效的 UTF-8 内容") from exc
+        return GitHubRepositoryFile(
+            path=normalized_path,
+            sha=sha,
+            content=content,
+        )
+
+    def read_repository_file_bytes(self, path: str, *, ref: str | None = None) -> bytes | None:
+        """读取 GitHub Contents API 文件原始字节，支持 gzip 等二进制快照。"""
+        repository_file = self._read_repository_file_content(path, ref=ref)
+        return repository_file[2] if repository_file is not None else None
+
+    def _read_repository_file_content(
+        self, path: str, *, ref: str | None = None
+    ) -> tuple[str, str, bytes] | None:
+        """读取仓库文件；超过 Contents API 内嵌内容阈值时改用 Git Blob API。"""
         normalized_path = self._normalize_repository_path(path)
         repository = self.ensure_sync_repository()
         token = self._access_token()
@@ -170,36 +193,15 @@ class GitHubOAuthService:
             if exc.code == 404:
                 return None
             raise
-
-        encoded_content = self._required_string(payload, "content")
-        try:
-            content = base64.b64decode(encoded_content).decode("utf-8")
-        except (ValueError, UnicodeDecodeError) as exc:
-            raise ValueError("GitHub 同步文件不是有效的 UTF-8 内容") from exc
-        return GitHubRepositoryFile(
-            path=normalized_path,
-            sha=self._required_string(payload, "sha"),
-            content=content,
-        )
-
-    def read_repository_file_bytes(self, path: str, *, ref: str | None = None) -> bytes | None:
-        """读取 GitHub Contents API 文件原始字节，支持 gzip 等二进制快照。"""
-        normalized_path = self._normalize_repository_path(path)
-        repository = self.ensure_sync_repository()
-        query = f"?ref={quote(ref, safe='')}" if ref else ""
-        try:
+        sha = self._required_string(payload, "sha")
+        encoded_content = payload.get("content") if isinstance(payload, dict) else None
+        if not isinstance(encoded_content, str):
             payload = self._github_request(
-                "GET",
-                f"/repos/{repository.full_name}/contents/{quote(normalized_path, safe='/')}{query}",
-                self._access_token(),
+                "GET", f"/repos/{repository.full_name}/git/blobs/{sha}", token
             )
-        except HTTPError as exc:
-            if exc.code == 404:
-                return None
-            raise
-        encoded_content = self._required_string(payload, "content").replace("\n", "")
+            encoded_content = self._required_string(payload, "content")
         try:
-            return base64.b64decode(encoded_content, validate=True)
+            return normalized_path, sha, base64.b64decode(encoded_content.replace("\n", ""), validate=True)
         except (ValueError, binascii.Error) as exc:
             raise ValueError("GitHub 同步文件不是有效的 Base64 内容") from exc
 

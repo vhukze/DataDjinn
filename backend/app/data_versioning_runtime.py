@@ -55,16 +55,18 @@ def get_data_versioning_service() -> Any:
 
 
 def schedule_data_snapshot(*args: Any, **kwargs: Any) -> None:
-    """在已建立库级基线后触发后台数据库快照；保留旧扩展作为兼容回退。"""
-    if len(args) >= 2:
+    """在已建立库级基线后触发表级后台快照；保留旧扩展作为兼容回退。"""
+    if len(args) >= 3:
         try:
             from app.git_versioning.database_history import database_versioning_service
 
-            background_tasks, connection_id = args[0], args[1]
+            background_tasks, connection_id, table_name = args[0], args[1], args[2]
+            database = args[3] if len(args) > 3 else kwargs.get("database")
+            pg_database = args[4] if len(args) > 4 else kwargs.get("pg_database")
             reason = args[5] if len(args) > 5 else kwargs.get("reason", "保存表格数据")
-            add_task = getattr(background_tasks, "add_task", None)
-            if callable(add_task):
-                add_task(database_versioning_service.schedule_snapshot, connection_id, reason)
+            database_versioning_service.schedule_table_snapshot(
+                background_tasks, connection_id, table_name, database, pg_database, reason
+            )
             return
         except Exception:
             pass
