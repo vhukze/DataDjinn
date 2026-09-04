@@ -26,6 +26,24 @@
       "sha256": "fb7ce5543383a1ecb2974b04186c40a687c752bd438f815e3d81fee59fa48f59"
     },
     {
+      "id": "clickhouse",
+      "version": "1.0.0",
+      "url": "https://github.com/vhukze/DataDjinn/releases/download/modules-v1.3.0/datadjinn-clickhouse-1.0.0-win-x64.zip",
+      "sha256": "35e61d27c2e64147233835ea4a387506e48bb429bdb68d1d9b064614ec2ba994"
+    },
+    {
+      "id": "elasticsearch",
+      "version": "1.0.0",
+      "url": "https://github.com/vhukze/DataDjinn/releases/download/modules-v1.3.0/datadjinn-elasticsearch-1.0.0-win-x64.zip",
+      "sha256": "80e5b37cc5e9491171f2bf911ebd73b014f59372f01ca0a2e0170a8d262f129c"
+    },
+    {
+      "id": "oracle",
+      "version": "1.0.0",
+      "url": "https://github.com/vhukze/DataDjinn/releases/download/modules-v1.3.0/datadjinn-oracle-1.0.0-win-x64.zip",
+      "sha256": "6e9ca387d6146df264435b098eb44741962688646db90847d97e68c4bc5e723a"
+    },
+    {
       "id": "data-versioning",
       "version": "1.0.0",
       "url": "https://github.com/vhukze/DataDjinn/releases/download/modules-v1.2.0/datadjinn-data-versioning-1.0.0-win-x64.zip",
