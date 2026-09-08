@@ -148,6 +148,19 @@ test('new connections can create a group and copy connection details @smoke', as
     await expect
       .poll(() => page.evaluate(() => navigator.clipboard.readText()), { timeout: 10000 })
       .toBe('jdbc:mysql://10.41.27.166:5432/aidb')
+
+    // 新建连接选择分组后，重载 renderer，验证持久化副本恢复的是同一分组关系。
+    await page.reload()
+    await waitForAppReady(page)
+    const restoredFolderTreeItem = page.getByRole('treeitem').filter({ hasText: folderName })
+    await expect(restoredFolderTreeItem).toBeVisible({ timeout: 15000 })
+    await expect(restoredFolderTreeItem).toContainText('1')
+    await restoredFolderTreeItem.dblclick()
+    await expect(
+      page
+        .locator(`.resource-tree-node-title[data-tree-node-key^="connection:"]`)
+        .filter({ hasText: connectionName })
+    ).toBeVisible({ timeout: 15000 })
   } finally {
     const page = electronApp.windows().length > 0 ? electronApp.windows()[0] : null
     if (page) {
@@ -223,6 +236,113 @@ test('new connections can create a group and copy connection details @smoke', as
     }
     await electronApp.close()
   }
+})
+
+test('other database picker exposes installable Elasticsearch and JDBC choices @bug', async () => {
+  const electronApp = await launchRegressionApp()
+
+  try {
+    const page = await electronApp.firstWindow()
+    await waitForAppReady(page)
+
+    await page.locator('.resource-header .resource-add').click()
+    await clickVisibleDropdownMenuItem(page, '其他')
+
+    const picker = page.locator('.database-extension-picker-modal')
+    await expect(picker).toBeVisible()
+    await expect(picker.locator('.database-extension-picker-list')).toHaveCSS('display', 'grid')
+    const jdbcCardBounds = await picker
+      .locator('.database-extension-picker-item')
+      .filter({ hasText: '达梦' })
+      .evaluate((element) => {
+        const card = element.getBoundingClientRect()
+        const children = Array.from(element.children).map((child) => child.getBoundingClientRect())
+        return { cardBottom: card.bottom, childrenBottom: Math.max(...children.map((child) => child.bottom)) }
+      })
+    expect(jdbcCardBounds.childrenBottom).toBeLessThanOrEqual(jdbcCardBounds.cardBottom + 1)
+    await expect(picker.getByText('Elasticsearch', { exact: true })).toBeVisible()
+    await expect(picker.getByText('ClickHouse', { exact: true })).toBeVisible()
+    await expect(picker.getByText('达梦', { exact: true })).toBeVisible()
+    await expect(picker.getByText('高斯数据库', { exact: true })).toBeVisible()
+    await expect(picker.getByText('JDBC', { exact: true })).toHaveCount(2)
+    await picker.getByPlaceholder('搜索数据库类型').fill('elastic')
+    await expect(picker.getByText('Elasticsearch', { exact: true })).toBeVisible()
+    await expect(picker.getByText('ClickHouse', { exact: true })).toBeHidden()
+
+    await picker.getByPlaceholder('搜索数据库类型').fill('jdbc')
+    await expect(picker.getByText('达梦', { exact: true })).toBeVisible()
+    await expect(picker.getByText('高斯数据库', { exact: true })).toBeVisible()
+    await expect(picker.getByText('JDBC', { exact: true })).toHaveCount(2)
+    await picker.getByPlaceholder('搜索数据库类型').fill('')
+    await picker.getByText('Elasticsearch', { exact: true }).click()
+    const installConfirm = page.locator('.ant-modal-confirm')
+    await expect(installConfirm.locator('.ant-modal-confirm-title')).toHaveText('需要安装扩展')
+    await expect(installConfirm.getByText(/首次使用Elasticsearch需要安装/)).toBeVisible()
+    await installConfirm.locator('.ant-modal-confirm-btns .ant-btn').first().click()
+    await expect(installConfirm).toBeHidden()
+    await picker.locator('.ant-modal-close').click()
+    await expect(picker).toBeHidden()
+  } finally {
+    await electronApp.close()
+  }
+})
+
+test('Elasticsearch auth mode controls credential fields and validation @bug', () => {
+  const projectRoot = path.resolve(__dirname, '..', '..')
+  const editorSource = fs.readFileSync(
+    path.join(projectRoot, 'src', 'renderer', 'src', 'app', 'connection-editor-modal.tsx'),
+    'utf-8'
+  )
+  const appSource = fs.readFileSync(path.join(projectRoot, 'src', 'renderer', 'src', 'App.tsx'), 'utf-8')
+  const connectionManagerSource = fs.readFileSync(
+    path.join(projectRoot, 'backend', 'app', 'db', 'connection_manager.py'),
+    'utf-8'
+  )
+
+  expect(editorSource).toContain("databaseType !== 'elasticsearch' || esAuthType === 'basic'")
+  expect(editorSource).toContain("message: '请输入用户名'")
+  expect(editorSource).toContain("message: '请输入密码'")
+  expect(editorSource).toContain("esAuthType === 'api_key'")
+  expect(editorSource).toContain("value: 'none'")
+  expect(appSource).toContain("currentConnection.database_type === 'elasticsearch' && currentConnection.es_auth_type !== 'basic'")
+  expect(connectionManagerSource).toContain('es_auth_type=stored.es_auth_type')
+  const treeRuntimeSource = fs.readFileSync(
+    path.join(projectRoot, 'src', 'renderer', 'src', 'app', 'tree-runtime.ts'),
+    'utf-8'
+  )
+  expect(treeRuntimeSource).toContain("connection.database_type === 'elasticsearch'")
+  expect(treeRuntimeSource).toContain('preloadObjectGroupNodes')
+})
+
+test('Git sync must not overwrite the local interface theme @bug', () => {
+  const projectRoot = path.resolve(__dirname, '..', '..')
+  const appSource = fs.readFileSync(path.join(projectRoot, 'src', 'renderer', 'src', 'App.tsx'), 'utf-8')
+  const payloadBuilder = appSource.slice(
+    appSource.indexOf('const buildLocalGitSyncPayload'),
+    appSource.indexOf('const applyGitSyncPayload')
+  )
+  const payloadApplier = appSource.slice(
+    appSource.indexOf('const applyGitSyncPayload'),
+    appSource.indexOf('const finishGitSync')
+  )
+
+  expect(payloadBuilder).not.toContain('theme,')
+  expect(payloadApplier).not.toContain('setTheme(preferences.theme)')
+  expect(payloadApplier).toContain('主题属于本机界面偏好')
+})
+
+test('JDBC database requests allow JVM startup time without slowing common databases @bug', () => {
+  const projectRoot = path.resolve(__dirname, '..', '..')
+  const runtimeSource = fs.readFileSync(
+    path.join(projectRoot, 'src', 'renderer', 'src', 'app', 'app-runtime-support.tsx'),
+    'utf-8'
+  )
+  const appSource = fs.readFileSync(path.join(projectRoot, 'src', 'renderer', 'src', 'App.tsx'), 'utf-8')
+
+  expect(runtimeSource).toContain('JDBC_DATABASE_CONNECTION_REQUEST_TIMEOUT_MS = 30_000')
+  expect(runtimeSource).toContain("databaseType === 'dm' || databaseType === 'gaussdb'")
+  expect(appSource).toContain('getDatabaseConnectionRequestTimeoutMs(values.database_type)')
+  expect(appSource).toContain('getDatabaseConnectionRequestTimeoutMs(currentConnection?.database_type')
 })
 
 test('missing password prompt should save the password and reconnect after closing @bug', async () => {
@@ -429,8 +549,8 @@ test('sync settings expose GitHub authorization and encrypted sync controls @smo
     await expect(passphraseConfirmInput).toBeFocused()
 
     await settingsModal.getByRole('menuitem', { name: '扩展' }).click()
-    await expect(settingsModal.locator('.optional-module-property')).toHaveCount(4)
-    await expect(settingsModal.locator('.optional-module-description')).toHaveCount(4)
+    await expect(settingsModal.locator('.optional-module-property')).toHaveCount(7)
+    await expect(settingsModal.locator('.optional-module-description')).toHaveCount(7)
     await expect(
       settingsModal.locator('.settings-section-card').filter({ hasText: 'Git 表数据版本管理' })
     ).toBeVisible()

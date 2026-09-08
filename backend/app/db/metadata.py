@@ -9,6 +9,7 @@ from sqlalchemy import Engine, inspect, text
 from app.db.gaussdb import execute_gaussdb_database_ddl
 from app.db.mongo_utils import is_mongo_client, mongo_default_database, mongo_value_type
 from app.db.redis_utils import is_redis_client, parse_redis_database_name, redis_client_for_database, redis_current_database, redis_database_count, redis_database_name, redis_key_length, redis_key_type, redis_memory_usage, redis_scan_keys, redis_text, serialize_redis_value
+from app.db.elasticsearch_utils import flatten_mapping_properties, is_elasticsearch_client, response_body
 from app.schemas.metadata import ColumnInfo, DatabaseInfo, DbObjectInfo, RedisDataChangeRequest, RedisKeyUpdate, SequenceDetailResponse, TableDataChangeRequest, TableInfo, TableUpdateColumn
 
 COLUMN_TYPE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_ (),]*$")
@@ -182,6 +183,9 @@ def _pg_engine(engine: Engine, database_name: str) -> Engine:
 
 
 def list_databases(engine: Engine) -> list[DatabaseInfo]:
+    if is_elasticsearch_client(engine):
+        return []
+
     if is_mongo_client(engine):
         databases = []
         for name in engine.list_database_names():
@@ -544,6 +548,39 @@ def list_tables(
     pg_database: str | None = None,
     include_stats: bool = True,
 ) -> list[TableInfo]:
+    if is_elasticsearch_client(engine):
+        indices_response = response_body(
+            engine.indices.get(index="*", expand_wildcards="open,hidden", allow_no_indices=True)
+        )
+        stats_response: dict[str, Any] = {}
+        if include_stats:
+            try:
+                stats_response = response_body(engine.indices.stats(index="*", expand_wildcards="open,hidden"))
+            except Exception:
+                stats_response = {}
+        index_stats = stats_response.get("indices", {}) if isinstance(stats_response, dict) else {}
+        tables: list[TableInfo] = []
+        for name in sorted(indices_response if isinstance(indices_response, dict) else {}):
+            if str(name).startswith("."):
+                continue
+            stats = index_stats.get(name, {}) if isinstance(index_stats, dict) else {}
+            primary = stats.get("primaries", {}) if isinstance(stats, dict) else {}
+            docs = primary.get("docs", {}) if isinstance(primary, dict) else {}
+            store = primary.get("store", {}) if isinstance(primary, dict) else {}
+            row_count = int(docs.get("count", 0) or 0) if include_stats else None
+            size_bytes = int(store.get("size_in_bytes", 0) or 0) if include_stats else None
+            tables.append(
+                TableInfo(
+                    name=str(name),
+                    row_count=row_count,
+                    size_bytes=size_bytes,
+                    size_display=format_size(size_bytes) if size_bytes is not None else None,
+                    storage_size_bytes=size_bytes,
+                    storage_size_display=format_size(size_bytes) if size_bytes is not None else None,
+                )
+            )
+        return tables
+
     if is_mongo_client(engine):
         target_db = database_name or mongo_default_database(engine)
         if not target_db:
@@ -835,6 +872,14 @@ def list_db_objects(
     include_stats: bool = True,
 ) -> list[DbObjectInfo]:
     objects: list[DbObjectInfo] = []
+
+    if is_elasticsearch_client(engine):
+        if object_type not in {None, "table"}:
+            return []
+        return [
+            DbObjectInfo(type="table", **table.model_dump())
+            for table in list_tables(engine, include_stats=include_stats)
+        ]
 
     if is_mongo_client(engine):
         if object_type not in {None, "table"}:
@@ -1374,6 +1419,9 @@ def _pg_sequence_increment(engine: Engine, table_name: str, column_name: str, sc
 
 
 def get_table_comment(engine: Engine, table_name: str, database_name: str | None = None, pg_database: str | None = None) -> str | None:
+    if is_elasticsearch_client(engine):
+        return None
+
     if is_mongo_client(engine) or is_redis_client(engine) or _is_clickhouse_engine(engine):
         return None
 
@@ -1412,6 +1460,17 @@ def get_table_comment(engine: Engine, table_name: str, database_name: str | None
 
 
 def list_columns(engine: Engine, table_name: str, database_name: str | None = None, pg_database: str | None = None) -> list[ColumnInfo]:
+    if is_elasticsearch_client(engine):
+        response = response_body(engine.indices.get_mapping(index=table_name))
+        mapping = response.get(table_name, {}).get("mappings", {}) if isinstance(response, dict) else {}
+        properties = mapping.get("properties", {}) if isinstance(mapping, dict) else {}
+        fields = [ColumnInfo(name="_id", type="_id", nullable=False, primary_key=True)]
+        fields.extend(
+            ColumnInfo(name=name, type=field_type, nullable=True, primary_key=False)
+            for name, field_type in flatten_mapping_properties(properties if isinstance(properties, dict) else {})
+        )
+        return fields
+
     if is_mongo_client(engine):
         target_db = database_name or mongo_default_database(engine)
         if not target_db:
@@ -1703,6 +1762,13 @@ def get_sequence_detail(engine: Engine, sequence_name: str, database_name: str |
 
 
 def get_object_ddl(engine: Engine, object_name: str, object_type: str, database_name: str | None = None, pg_database: str | None = None) -> str:
+    if is_elasticsearch_client(engine):
+        if object_type != "table":
+            raise ValueError("Elasticsearch 当前仅支持查看索引映射")
+        response = response_body(engine.indices.get(index=object_name, expand_wildcards="open,hidden"))
+        mapping = response.get(object_name) if isinstance(response, dict) else None
+        return json.dumps(mapping or {}, ensure_ascii=False, indent=2)
+
     object_type = object_type.strip().lower()
 
     if is_mongo_client(engine):
@@ -1905,6 +1971,9 @@ def ensure_ddl_terminator(ddl: str, object_type: str) -> str:
 
 
 def drop_db_object(engine: Engine, object_name: str, object_type: str, database_name: str | None = None, pg_database: str | None = None) -> None:
+    if is_elasticsearch_client(engine):
+        raise ValueError("Elasticsearch 索引不支持在当前版本中删除")
+
     if is_mongo_client(engine):
         if object_type != "table":
             raise ValueError("MongoDB 当前仅支持删除集合")
@@ -1946,6 +2015,9 @@ def drop_db_object(engine: Engine, object_name: str, object_type: str, database_
 
 
 def create_table(engine: Engine, request: Any) -> None:
+    if is_elasticsearch_client(engine):
+        raise ValueError("Elasticsearch 不支持通过表设计器创建索引")
+
     table_name = request.name.strip()
     if not table_name:
         raise ValueError("表名不能为空")
@@ -1998,6 +2070,9 @@ def update_table_columns(
     table_comment: str | None = None,
     new_table_name: str | None = None,
 ) -> str:
+    if is_elasticsearch_client(engine):
+        raise ValueError("Elasticsearch 索引映射不支持通过表设计器修改")
+
     if pg_database and engine.dialect.name in {"postgresql", "gaussdb"}:
         db_engine = _pg_engine(engine, pg_database)
         try:
@@ -2057,6 +2132,9 @@ def update_table_columns(
 
 
 def apply_table_data_changes(engine: Engine, table_name: str, changes: TableDataChangeRequest, database_name: str | None = None, pg_database: str | None = None) -> None:
+    if is_elasticsearch_client(engine):
+        raise ValueError("Elasticsearch 文档不支持表格行内编辑")
+
     if is_mongo_client(engine):
         raise ValueError("MongoDB 当前暂不支持在表格中直接编辑文档")
 

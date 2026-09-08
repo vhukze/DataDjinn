@@ -103,6 +103,9 @@ export const objectGroupTitle = (type: DbObjectType, databaseType?: DatabaseType
   if (databaseType === 'mongodb' && type === 'table') {
     return '集合'
   }
+  if (databaseType === 'elasticsearch' && type === 'table') {
+    return '索引'
+  }
   return DB_OBJECT_GROUP_BY_TYPE[type].title
 }
 
@@ -115,7 +118,8 @@ export const DB_OBJECT_TYPES_BY_DATABASE: Record<DatabaseType, DbObjectType[]> =
   oracle: ['table', 'view', 'trigger', 'procedure', 'function', 'sequence', 'index'],
   clickhouse: ['table', 'view'],
   mongodb: ['table'],
-  redis: ['table']
+  redis: ['table'],
+  elasticsearch: ['table']
 }
 
 export const collectConnectionNodesById = (

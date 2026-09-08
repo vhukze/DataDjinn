@@ -29,13 +29,23 @@ def load_connection_tree_preferences() -> tuple[bool, dict[str, Any]]:
     return isinstance(payload, dict), payload if isinstance(payload, dict) else {}
 
 
-def save_connection_tree_preferences(preferences: dict[str, Any]) -> dict[str, Any]:
+def save_connection_tree_preferences(
+    preferences: dict[str, Any], updated_at: int | None = None
+) -> dict[str, Any]:
     path = _preferences_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     content = json.dumps(preferences, ensure_ascii=False, indent=2, sort_keys=True)
     temporary_path = path.with_suffix(".tmp")
 
     with _preferences_lock:
+        if updated_at is not None and path.exists():
+            try:
+                current_updated_at = path.stat().st_mtime_ns // 1_000_000
+                if current_updated_at >= updated_at:
+                    _, current_preferences = load_connection_tree_preferences()
+                    return current_preferences
+            except OSError:
+                pass
         temporary_path.write_text(content, encoding="utf-8")
         temporary_path.replace(path)
 

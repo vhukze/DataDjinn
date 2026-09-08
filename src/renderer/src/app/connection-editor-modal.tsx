@@ -79,6 +79,7 @@ export const ConnectionEditorModal = memo(function ConnectionEditorModal({
   const sshEnabled = Form.useWatch('ssh_enabled', form) ?? false
   const sshPort = Form.useWatch('ssh_port', form)
   const sshAuthType = Form.useWatch('ssh_auth_type', form) ?? 'password'
+  const esAuthType = Form.useWatch('es_auth_type', form) ?? 'basic'
   const splitLayout = databaseType !== 'sqlite'
   const handleSshEnabledChange = (checked: boolean): void => {
     if (!checked) {
@@ -320,41 +321,85 @@ export const ConnectionEditorModal = memo(function ConnectionEditorModal({
                                   ? '27017'
                                   : databaseType === 'redis'
                                     ? '6379'
+                                    : databaseType === 'elasticsearch'
+                                      ? '9200'
                                     : '3306'
                       }
                     />
                   )}
                 </Form.Item>
-                <Form.Item
-                  name="username"
-                  label="用户名"
-                  rules={
-                    databaseType === 'mongodb' || databaseType === 'redis'
-                      ? undefined
-                      : [{ required: true, message: '请输入用户名' }]
-                  }
-                >
-                  <Input
-                    placeholder={
-                      databaseType === 'postgresql'
-                        ? 'postgres'
-                        : databaseType === 'gaussdb'
-                          ? 'gaussdb'
-                          : databaseType === 'oracle'
-                            ? 'system'
-                            : databaseType === 'dm'
-                              ? 'SYSDBA'
-                              : databaseType === 'redis'
-                                ? 'Redis ACL 用户名，可选'
-                                : databaseType === 'clickhouse'
-                                  ? 'default'
-                                  : undefined
+                {databaseType !== 'elasticsearch' || esAuthType === 'basic' ? (
+                  <Form.Item
+                    name="username"
+                    label="用户名"
+                    rules={
+                      databaseType === 'mongodb' || databaseType === 'redis'
+                        ? undefined
+                        : [{ required: true, message: '请输入用户名' }]
                     }
-                  />
-                </Form.Item>
-                <Form.Item name="password" label="密码">
-                  <Input.Password />
-                </Form.Item>
+                  >
+                    <Input
+                      placeholder={
+                        databaseType === 'postgresql'
+                          ? 'postgres'
+                          : databaseType === 'gaussdb'
+                            ? 'gaussdb'
+                            : databaseType === 'oracle'
+                              ? 'system'
+                              : databaseType === 'dm'
+                                ? 'SYSDBA'
+                                : databaseType === 'redis'
+                                  ? 'Redis ACL 用户名，可选'
+                                  : databaseType === 'elasticsearch'
+                                    ? 'elastic'
+                                    : databaseType === 'clickhouse'
+                                      ? 'default'
+                                      : undefined
+                      }
+                    />
+                  </Form.Item>
+                ) : null}
+                {databaseType !== 'elasticsearch' || esAuthType === 'basic' ? (
+                  <Form.Item
+                    name="password"
+                    label="密码"
+                    rules={
+                      databaseType === 'elasticsearch'
+                        ? [{ required: true, message: '请输入密码' }]
+                        : undefined
+                    }
+                  >
+                    <Input.Password />
+                  </Form.Item>
+                ) : null}
+                {databaseType === 'elasticsearch' && (
+                  <>
+                    <Form.Item name="es_auth_type" label="认证方式" initialValue="basic">
+                      <Select
+                        options={[
+                          { label: '用户名 / 密码', value: 'basic' },
+                          { label: 'API Key', value: 'api_key' },
+                          { label: '不认证', value: 'none' }
+                        ]}
+                      />
+                    </Form.Item>
+                    {esAuthType === 'api_key' && (
+                      <Form.Item
+                        name="es_api_key"
+                        label="API Key"
+                        rules={[{ required: true, message: '请输入 Elasticsearch API Key' }]}
+                      >
+                        <Input.Password />
+                      </Form.Item>
+                    )}
+                    <Form.Item name="es_use_ssl" label="使用 HTTPS" valuePropName="checked">
+                      <Switch />
+                    </Form.Item>
+                    <Form.Item name="es_verify_certs" label="校验证书" valuePropName="checked">
+                      <Switch />
+                    </Form.Item>
+                  </>
+                )}
                 <Form.Item
                   name="database"
                   label={
@@ -370,6 +415,8 @@ export const ConnectionEditorModal = memo(function ConnectionEditorModal({
                               ? '默认 DB 序号（可选）'
                               : databaseType === 'clickhouse'
                                 ? '默认数据库'
+                                : databaseType === 'elasticsearch'
+                                  ? '索引由左侧树加载'
                                 : '默认数据库（可选）'
                   }
                   rules={
@@ -386,6 +433,7 @@ export const ConnectionEditorModal = memo(function ConnectionEditorModal({
                   }
                 >
                   <Input
+                    disabled={databaseType === 'elasticsearch'}
                     placeholder={
                       databaseType === 'postgresql'
                         ? 'postgres'
@@ -401,6 +449,8 @@ export const ConnectionEditorModal = memo(function ConnectionEditorModal({
                                   ? '默认 0，例如 0、1、2'
                                   : databaseType === 'clickhouse'
                                     ? '默认 default'
+                                    : databaseType === 'elasticsearch'
+                                      ? '不适用'
                                     : '不填则连接服务器并加载全部数据库'
                     }
                   />
@@ -444,12 +494,14 @@ export const ConnectionEditorModal = memo(function ConnectionEditorModal({
                 <div>
                   <Typography.Text strong>Git 版本管理</Typography.Text>
                   <Typography.Text type="secondary">
-                    为此连接保留结构和表数据版本；表数据按需创建快照并共享同一 Git 历史。
+                    {databaseType === 'elasticsearch'
+                      ? 'Elasticsearch 索引不支持 Git 表数据版本管理。'
+                      : '为此连接保留结构和表数据版本；表数据按需创建快照并共享同一 Git 历史。'}
                   </Typography.Text>
                 </div>
               </div>
               <Form.Item name="git_versioning_enabled" valuePropName="checked" noStyle>
-                <Switch aria-label="启用 Git 版本管理" />
+                <Switch aria-label="启用 Git 版本管理" disabled={databaseType === 'elasticsearch'} />
               </Form.Item>
             </div>
           </div>

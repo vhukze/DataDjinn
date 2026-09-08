@@ -40,8 +40,6 @@ for (const requiredEntry of requiredEntries) {
 
 const requiredBackendEntries = [
   'backend/datadjinn-backend.exe',
-  'backend/_internal/clickhouse_connect',
-  'backend/_internal/oracledb',
   'backend/_internal/pymongo',
   'backend/_internal/psycopg_binary'
 ]
@@ -54,7 +52,11 @@ for (const requiredEntry of requiredBackendEntries) {
 const forbiddenBackendEntries = [
   'backend/_internal/org.jpype.jar',
   'backend/_internal/jpype',
-  'backend/_internal/jaydebeapi'
+  'backend/_internal/jaydebeapi',
+  'backend/_internal/clickhouse_connect',
+  'backend/_internal/elasticsearch',
+  'backend/_internal/elastic_transport',
+  'backend/_internal/oracledb'
 ]
 for (const forbiddenEntry of forbiddenBackendEntries) {
   if (fs.existsSync(path.join(resourcesDirectory, forbiddenEntry))) {

@@ -6,6 +6,7 @@ import type { DatabaseType } from './data-sources'
 import type { DatabaseTreeNode } from './tree-model'
 import type { ConnectionTypeIcons } from './tree-builders'
 import clickhouseIcon from '../assets/icons/clickhouse.png'
+import elasticsearchIcon from '../assets/icons/elasticsearch.svg'
 import dmIcon from '../assets/icons/dm.svg'
 import mongoIcon from '../assets/icons/mongo.png'
 import mysqlIcon from '../assets/icons/mysql.png'
@@ -21,6 +22,12 @@ import { useWorkspaceStore } from './workspace-store'
 export const RESOURCE_TREE_ITEM_HEIGHT = 30
 export const SSH_TEST_REQUEST_TIMEOUT_MS = 10_000
 export const DATABASE_CONNECTION_REQUEST_TIMEOUT_MS = 10_000
+export const JDBC_DATABASE_CONNECTION_REQUEST_TIMEOUT_MS = 30_000
+
+export const getDatabaseConnectionRequestTimeoutMs = (databaseType: DatabaseType): number =>
+  databaseType === 'dm' || databaseType === 'gaussdb'
+    ? JDBC_DATABASE_CONNECTION_REQUEST_TIMEOUT_MS
+    : DATABASE_CONNECTION_REQUEST_TIMEOUT_MS
 const SYNC_DEVICE_STORAGE_KEY = 'datadjinn-sync-device-id'
 export const AUTO_SYNC_INTERVAL_MS = 15 * 60 * 1000
 
@@ -41,6 +48,7 @@ export const createConnectionTypeIcons = (): ConnectionTypeIcons => ({
   mongodb: <img src={mongoIcon} alt="MongoDB" style={{ width: 16, height: 16 }} />,
   redis: <img src={redisIcon} alt="Redis" style={{ width: 16, height: 16 }} />,
   clickhouse: <img src={clickhouseIcon} alt="ClickHouse" style={{ width: 16, height: 16 }} />,
+  elasticsearch: <img src={elasticsearchIcon} alt="Elasticsearch" style={{ width: 16, height: 16 }} />,
   oracle: <img src={oracleIcon} alt="Oracle" style={{ width: 16, height: 16 }} />,
   mysql: <img src={mysqlIcon} alt="MySQL" style={{ width: 16, height: 16 }} />,
   dm: <img src={dmIcon} alt="DM" style={{ width: 16, height: 16 }} />,

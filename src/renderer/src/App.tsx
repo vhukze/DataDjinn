@@ -245,7 +245,7 @@ import {
   BACKEND_LABELS,
   collectTreeSearchMatches,
   createConnectionTypeIcons,
-  DATABASE_CONNECTION_REQUEST_TIMEOUT_MS,
+  getDatabaseConnectionRequestTimeoutMs,
   FAST_MODAL_PROPS,
   FAST_PRELOADED_DROPDOWN_PROPS,
   FOLDER_DROP_PLACEHOLDER_KEY_PREFIX,
@@ -325,6 +325,7 @@ import dmIcon from './assets/icons/dm.svg'
 import mongoIcon from './assets/icons/mongo.png'
 import redisIcon from './assets/icons/redis.png'
 import clickhouseIcon from './assets/icons/clickhouse.png'
+import elasticsearchIcon from './assets/icons/elasticsearch.svg'
 import oracleIcon from './assets/icons/oracle.png'
 import appIcon from '../../../resources/icon.svg'
 import appLogoHorizontal from '../../../resources/logo-horizontal.svg'
@@ -357,6 +358,8 @@ function App(): React.JSX.Element {
   const [connectionTreeLoading, setConnectionTreeLoading] = useState<Record<string, string>>({})
   const [treeLoadingVersion, setTreeLoadingVersion] = useState(0)
   const [connectionModalOpen, setConnectionModalOpen] = useState(false)
+  const [otherDatabasePickerOpen, setOtherDatabasePickerOpen] = useState(false)
+  const [otherDatabaseSearch, setOtherDatabaseSearch] = useState('')
   const [connectionMode, setConnectionMode] = useState<'create' | 'edit'>('create')
   const [editingConnectionInfoId, setEditingConnectionInfoId] = useState<string>()
   const [connectionModalFolderId, setConnectionModalFolderId] = useState<string>()
@@ -691,6 +694,8 @@ function App(): React.JSX.Element {
   >(() => readPersistedJson<PersistedQueryWorkspace[]>(STORAGE_QUERY_WORKSPACES, []))
   const selectedDatabasesRef = useRef(selectedDatabases)
   const selectedSchemasRef = useRef(selectedSchemas)
+  const connectionFoldersRef = useRef(connectionFolders)
+  const connectionTreePreferencesWriteVersionRef = useRef(0)
 
   useEffect(() => {
     selectedDatabasesRef.current = selectedDatabases
@@ -699,6 +704,10 @@ function App(): React.JSX.Element {
   useEffect(() => {
     selectedSchemasRef.current = selectedSchemas
   }, [selectedSchemas])
+
+  useEffect(() => {
+    connectionFoldersRef.current = connectionFolders
+  }, [connectionFolders])
 
   useEffect(() => {
     localStorage.setItem(STORAGE_CONNECTION_FOLDERS, JSON.stringify(connectionFolders))
@@ -1096,14 +1105,22 @@ function App(): React.JSX.Element {
   >(undefined)
   const draggingConnectionIdsRef = useRef<string[]>([])
   const queryResultToggleRefs = useRef<Record<string, HTMLButtonElement | null>>({})
-  const aiPanelResizeRef = useRef<{ startX: number; startSize: number; lastSize?: number } | null>(
-    null
-  )
+  const aiPanelResizeRef = useRef<{
+    startX: number
+    startSize: number
+    maxSize: number
+    guideOffset: number
+    lastSize?: number
+  } | null>(null)
+  const aiPanelResizeGuideRef = useRef<HTMLDivElement | null>(null)
   const resourcePanelResizeRef = useRef<{
     startX: number
     startSize: number
+    maxSize: number
+    guideOffset: number
     lastSize?: number
   } | null>(null)
+  const resourcePanelResizeGuideRef = useRef<HTMLDivElement | null>(null)
   const draggingConnectionFolderIdRef = useRef<string | undefined>(undefined)
   const ddlPreviewModalRef = useRef<DdlPreviewModalHandle | null>(null)
   const columnResizeRefs = useRef<
@@ -1171,7 +1188,7 @@ function App(): React.JSX.Element {
     []
   )
 
-  const { theme, setTheme, toggleTheme } = useTheme()
+  const { theme, toggleTheme } = useTheme()
 
   const refreshUpdateSettings = async (): Promise<void> => {
     const settings = await window.api.getUpdateSettings()
@@ -1706,9 +1723,26 @@ function App(): React.JSX.Element {
     }
   }, [aiModuleInstalled, aiPanelOpen, optionalModulesLoaded])
 
-  const installOptionalModule = async (moduleId: OptionalModuleInfo['id']): Promise<void> => {
+  const forceInstallMcp = async (): Promise<boolean> => {
+    setInstallingOptionalModuleId('mcp')
+    try {
+      const updatedModules = await window.api.forceInstallOptionalModule('mcp')
+      setOptionalModules(updatedModules)
+      setOptionalModulesLoaded(true)
+      await refreshMcpLaunchConfig()
+      messageApi.success('MCP 已强制更新，请重启 MCP 调用方后使用新版本')
+      return true
+    } catch (forceError) {
+      showError(forceError instanceof Error ? forceError.message : '强制更新 MCP 失败')
+      return false
+    } finally {
+      setInstallingOptionalModuleId(null)
+    }
+  }
+
+  const installOptionalModule = async (moduleId: OptionalModuleInfo['id']): Promise<boolean> => {
     if (installingOptionalModuleId) {
-      return
+      return false
     }
     const isUpdate = optionalModules.some((module) => module.id === moduleId && module.updateAvailable)
     setInstallingOptionalModuleId(moduleId)
@@ -1730,8 +1764,22 @@ function App(): React.JSX.Element {
             ? '扩展模块已更新'
             : '扩展模块已安装'
       )
+      return true
     } catch (error) {
-      showError(error instanceof Error ? error.message : '安装扩展模块失败')
+      const errorMessage = error instanceof Error ? error.message : '安装扩展模块失败'
+      if (moduleId === 'mcp' && errorMessage.includes('MCP 模块正在被外部调用方占用')) {
+        await refreshOptionalModules().catch(() => undefined)
+        Modal.confirm({
+          title: 'MCP 正在被占用',
+          content: 'MCP 调用方当前正在使用旧版本。强制更新会中断当前调用并替换旧文件，是否继续？',
+          okText: '关闭进程并更新',
+          cancelText: '稍后处理',
+          onOk: forceInstallMcp
+        })
+      } else {
+        showError(errorMessage)
+      }
+      return false
     } finally {
       setInstallingOptionalModuleId(null)
     }
@@ -1967,6 +2015,24 @@ function App(): React.JSX.Element {
       throw new Error(lastConnectionError ? '数据库连接暂时不可用，请稍后重试' : '操作失败')
     },
     [normalizeRequestError, reopenConnectionSilently, requestJsonRaw]
+  )
+
+  const persistConnectionTreePreferences = useCallback(
+    (preferences: Record<string, unknown>): Promise<unknown[]> => {
+      const updatedAt = Math.max(
+        Date.now(),
+        connectionTreePreferencesWriteVersionRef.current + 1
+      )
+      connectionTreePreferencesWriteVersionRef.current = updatedAt
+      return Promise.all([
+        window.api.setConnectionTreePreferences(preferences, updatedAt),
+        requestJson('/preferences/connection-tree', {
+          method: 'PUT',
+          body: JSON.stringify({ preferences, updated_at: updatedAt })
+        })
+      ])
+    },
+    [requestJson]
   )
 
   const loadSqlCompletionColumns = async (
@@ -2351,16 +2417,19 @@ function App(): React.JSX.Element {
 
   const locateTreePath = async (
     targetPath?: string[],
-    expandTarget = true
+    expandTarget = true,
+    focusTree = true
   ): Promise<void> => {
     await locateTreePathInView({
       targetPath,
       expandTarget,
+      focusTree,
       treeDataRef,
       expandedKeysRef,
       setExpandedKeys,
       reloadNodeChildren,
-      handleTreeSelection: (node) => handleTreeSelection(node),
+      handleTreeSelection: (node, focusContainer) =>
+        handleTreeSelection(node, undefined, focusContainer),
       resourceTreeContainerRef,
       resourceTreeRef,
       resourceTreeViewportRef,
@@ -2414,7 +2483,7 @@ function App(): React.JSX.Element {
     if (!match) {
       return
     }
-    void locateTreePath(match.path, false).catch(() => undefined)
+    void locateTreePath(match.path, false, false).catch(() => undefined)
   }, [treeSearchMatchIndex, treeSearchText])
 
   useEffect(() => {
@@ -2599,7 +2668,9 @@ function App(): React.JSX.Element {
     }
 
     const folderId = globalThis.crypto?.randomUUID?.() ?? `folder-${Date.now()}`
-    setConnectionFolders((current) => [...current, { id: folderId, name: nextName }])
+    const nextFolders = [...connectionFoldersRef.current, { id: folderId, name: nextName }]
+    connectionFoldersRef.current = nextFolders
+    setConnectionFolders(nextFolders)
     setConnectionFolderOrder((current) => [...current.filter((id) => id !== folderId), folderId])
     setExpandedKeys((current) =>
       current.includes(`folder:${folderId}`) ? current : [...current, `folder:${folderId}`]
@@ -2807,13 +2878,7 @@ function App(): React.JSX.Element {
       STORAGE_FOLDER_CONNECTION_ORDER,
       JSON.stringify(nextTreePreferences.folder_connection_order)
     )
-    void Promise.all([
-      window.api.setConnectionTreePreferences(nextTreePreferences),
-      requestJson('/preferences/connection-tree', {
-        method: 'PUT',
-        body: JSON.stringify({ preferences: nextTreePreferences })
-      })
-    ]).catch(() => undefined)
+    void persistConnectionTreePreferences(nextTreePreferences).catch(() => undefined)
     setConnectionFolderAssignments(nextConnectionFolderAssignments)
     restoreTreeScrollPosition()
 
@@ -3036,10 +3101,15 @@ function App(): React.JSX.Element {
     )
   }
 
-  const handleTreeSelection = (node: DatabaseTreeNode, nativeEvent?: MouseEvent): void => {
+  const handleTreeSelection = (
+    node: DatabaseTreeNode,
+    nativeEvent?: MouseEvent,
+    focusContainer = true
+  ): void => {
     handleTreeSelectionChange({
       node,
       nativeEvent,
+      focusContainer,
       resourceTreeContainer: resourceTreeContainerRef.current,
       connectionSelectionAnchorId,
       selectedConnectionIds,
@@ -4037,34 +4107,27 @@ function App(): React.JSX.Element {
     }
     const handleMouseMove = (event: MouseEvent): void => {
       const resizeState = resourcePanelResizeRef.current
-      const shell = workspaceShellRef.current
-      if (!resizeState || !shell) {
+      if (!resizeState) {
         return
       }
-      const shellWidth = shell.getBoundingClientRect().width
-      const nextSize = Math.min(
-        500,
+      const boundedSize = Math.min(
+        resizeState.maxSize,
         Math.max(
           RESOURCE_PANEL_MIN_WIDTH,
           resizeState.startSize + (event.clientX - resizeState.startX)
         )
       )
-      const boundedSize = Math.min(
-        nextSize,
-        Math.max(RESOURCE_PANEL_MIN_WIDTH, shellWidth - (aiPanelVisible ? aiPanelSize : 0) - 260)
-      )
-      if (resourcePanelRef.current) {
-        resourcePanelRef.current.style.width = `${boundedSize}px`
-        resourcePanelRef.current.style.flex = `0 0 ${boundedSize}px`
+      if (resourcePanelResizeGuideRef.current) {
+        resourcePanelResizeGuideRef.current.style.transform = `translate3d(${resizeState.guideOffset + boundedSize - resizeState.startSize}px, 0, 0)`
       }
-      if (mainPanelRef.current) {
-        mainPanelRef.current.style.width = ''
-      }
-      resourcePanelResizeRef.current = { ...resizeState, lastSize: boundedSize }
+      resizeState.lastSize = boundedSize
     }
     const handleMouseUp = (): void => {
       const lastSize = resourcePanelResizeRef.current?.lastSize
       resourcePanelResizeRef.current = null
+      if (resourcePanelResizeGuideRef.current) {
+        resourcePanelResizeGuideRef.current.style.transform = ''
+      }
       setResizingResourcePanel(false)
       if (typeof lastSize === 'number') {
         setResourcePanelSize(lastSize)
@@ -4084,25 +4147,24 @@ function App(): React.JSX.Element {
     }
     const handleMouseMove = (event: MouseEvent): void => {
       const resizeState = aiPanelResizeRef.current
-      const shell = workspaceShellRef.current
-      if (!resizeState || !shell) {
+      if (!resizeState) {
         return
       }
-      const shellWidth = shell.getBoundingClientRect().width
-      const nextSize = Math.min(
-        720,
+      const boundedSize = Math.min(
+        resizeState.maxSize,
         Math.max(260, resizeState.startSize - (event.clientX - resizeState.startX))
       )
-      const boundedSize = Math.min(nextSize, Math.max(260, shellWidth - resourcePanelSize - 260))
-      if (aiDockPanelRef.current) {
-        aiDockPanelRef.current.style.width = `${boundedSize}px`
-        aiDockPanelRef.current.style.flex = `0 0 ${boundedSize}px`
+      if (aiPanelResizeGuideRef.current) {
+        aiPanelResizeGuideRef.current.style.transform = `translate3d(${resizeState.guideOffset + resizeState.startSize - boundedSize}px, 0, 0)`
       }
       resizeState.lastSize = boundedSize
     }
     const handleMouseUp = (): void => {
       const lastSize = aiPanelResizeRef.current?.lastSize
       aiPanelResizeRef.current = null
+      if (aiPanelResizeGuideRef.current) {
+        aiPanelResizeGuideRef.current.style.transform = ''
+      }
       setResizingAiPanel(false)
       if (typeof lastSize === 'number') {
         setAiPanelSize(lastSize)
@@ -4730,8 +4792,10 @@ function App(): React.JSX.Element {
     setSelectedConnectionId(connectionId)
     const connection = getConnection(connectionId)
     const sql =
-      connection?.database_type === 'mongodb' || connection?.database_type === 'redis'
-        ? quoteTableName(connectionId, tableName, databaseName)
+      connection?.database_type === 'elasticsearch'
+        ? JSON.stringify({ index: tableName, query: { match_all: {} } }, null, 2)
+        : connection?.database_type === 'mongodb' || connection?.database_type === 'redis'
+          ? quoteTableName(connectionId, tableName, databaseName)
         : `select * from ${quoteTableName(connectionId, tableName, databaseName)} limit 1000;`
     openQueryWorkspace(sql, `${tableName} 查询`, connectionId, databaseName, pgDatabaseName)
   }
@@ -5134,23 +5198,33 @@ function App(): React.JSX.Element {
     const canPreview = objectType === 'table' || objectType === 'view'
 
     return [
-      ...(canPreview ? [{ key: 'select', label: '生成 SELECT 查询' }] : []),
+      ...(canPreview
+        ? [
+            {
+              key: 'select',
+              label: connection?.database_type === 'elasticsearch' ? '生成查询 DSL' : '生成 SELECT 查询'
+            }
+          ]
+        : []),
       { key: 'ddl', label: '查看 DDL' },
       ...(objectType === 'table' &&
       connection?.database_type !== 'mongodb' &&
-      connection?.database_type !== 'redis'
+      connection?.database_type !== 'redis' &&
+      connection?.database_type !== 'elasticsearch'
         ? [{ key: 'edit', label: '修改表' }]
         : []),
       { key: 'copy', label: '复制对象名' },
       { type: 'divider' },
-      ...(canPreview ? [{ key: 'export', label: '导出', icon: <FileAddOutlined /> }] : []),
-      ...(connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis'
+      ...(canPreview && connection?.database_type !== 'elasticsearch'
+        ? [{ key: 'export', label: '导出', icon: <FileAddOutlined /> }]
+        : []),
+      ...(connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis' && connection?.database_type !== 'elasticsearch'
         ? [{ key: 'import', label: '导入', icon: <ImportOutlined /> }]
         : []),
       ...(objectType === 'procedure'
         ? [{ key: 'execute-routine', label: '执行存储过程', icon: <PlayCircleOutlined /> }]
         : []),
-      ...(canPreview
+      ...(canPreview && connection?.database_type !== 'elasticsearch'
         ? [
             { type: 'divider' as const },
             { key: 'delete', label: '删除', danger: true, icon: <DeleteOutlined /> }
@@ -5249,7 +5323,7 @@ function App(): React.JSX.Element {
             }
           ]
         : [{ key: 'open', label: '打开连接', icon: <PlayCircleOutlined />, disabled: loading }]),
-      ...(connection.database_type === 'redis' || connection.database_type === 'sqlite'
+      ...(connection.database_type === 'redis' || connection.database_type === 'sqlite' || connection.database_type === 'elasticsearch'
         ? []
         : [
             {
@@ -5258,12 +5332,13 @@ function App(): React.JSX.Element {
               icon: <PlusOutlined />
             }
           ]),
-      ...(connection.database_type !== 'mongodb' && connection.database_type !== 'redis'
+      ...(connection.database_type !== 'mongodb' && connection.database_type !== 'redis' && connection.database_type !== 'elasticsearch'
         ? [{ key: 'run-sql', label: '运行 SQL 文件', icon: <PlayCircleOutlined /> }]
         : []),
       ...(connection.git_versioning_enabled &&
       connection.database_type !== 'mongodb' &&
-      connection.database_type !== 'redis'
+      connection.database_type !== 'redis' &&
+      connection.database_type !== 'elasticsearch'
         ? [{ key: 'schema-versions', label: '版本管理', icon: <HistoryOutlined /> }]
         : []),
       { type: 'divider' as const },
@@ -6437,13 +6512,24 @@ function App(): React.JSX.Element {
       requestJson<{
         exists: boolean
         preferences: Record<string, unknown>
+        updated_at?: number | null
       }>('/preferences/connection-tree'),
-      window.api.getConnectionTreePreferences()
+      window.api.getConnectionTreePreferencesMeta()
     ])
     const storedTreePreferences =
-      storedPreferences && typeof storedPreferences === 'object' && !Array.isArray(storedPreferences)
-        ? storedPreferences
+      storedPreferences?.preferences &&
+      typeof storedPreferences.preferences === 'object' &&
+      !Array.isArray(storedPreferences.preferences)
+        ? storedPreferences.preferences
         : {}
+    const serverUpdatedAt =
+      typeof response.updated_at === 'number' && Number.isFinite(response.updated_at)
+        ? response.updated_at
+        : 0
+    const storedUpdatedAt =
+      typeof storedPreferences?.updatedAt === 'number' && Number.isFinite(storedPreferences.updatedAt)
+        ? storedPreferences.updatedAt
+        : 0
     const hasMeaningfulTreePreferences = (candidate: Record<string, unknown>): boolean =>
       Object.values(candidate).some((value) => {
         if (Array.isArray(value)) {
@@ -6499,11 +6585,34 @@ function App(): React.JSX.Element {
       !storedHasMeaningfulTreePreferences &&
       !serverHasMeaningfulTreePreferences &&
       localHasMeaningfulTreePreferences
-    const preferences = storedHasMeaningfulTreePreferences
-      ? storedTreePreferences
-      : serverHasMeaningfulTreePreferences
-        ? response.preferences
-        : localTreePreferences
+    // Electron store 与后端文件都是持久化副本。优先使用带有较新版本号的副本，
+    // 旧版本没有版本号时才按原有兼容策略选择，避免覆盖安装后旧配置覆盖新分组。
+    const preferences =
+      storedHasMeaningfulTreePreferences &&
+      serverHasMeaningfulTreePreferences &&
+      storedUpdatedAt > 0 &&
+      serverUpdatedAt > 0
+        ? storedUpdatedAt >= serverUpdatedAt
+          ? storedTreePreferences
+          : response.preferences
+        : storedHasMeaningfulTreePreferences
+          ? storedTreePreferences
+          : serverHasMeaningfulTreePreferences
+            ? response.preferences
+            : localTreePreferences
+
+    if (storedUpdatedAt > 0 && serverUpdatedAt > 0 && storedUpdatedAt !== serverUpdatedAt) {
+      if (storedUpdatedAt > serverUpdatedAt && storedHasMeaningfulTreePreferences) {
+        // Electron 副本更新时后端写入可能尚未完成，启动时补写较新的副本。
+        void requestJson('/preferences/connection-tree', {
+          method: 'PUT',
+          body: JSON.stringify({ preferences: storedTreePreferences, updated_at: storedUpdatedAt })
+        }).catch(() => undefined)
+      } else if (serverHasMeaningfulTreePreferences) {
+        // 后端副本更新时同步修正 Electron store，避免下次启动再次选到旧状态。
+        void window.api.setConnectionTreePreferences(response.preferences, serverUpdatedAt)
+      }
+    }
 
     if (
       storedHasMeaningfulTreePreferences ||
@@ -6542,13 +6651,7 @@ function App(): React.JSX.Element {
     ) {
       // 首次升级时把旧版本仅存于 Chromium localStorage 的树状态立即迁移到
       // 用户数据目录，不能等异步防抖写入，避免安装覆盖后的首次退出丢失分组。
-      await Promise.all([
-        requestJson('/preferences/connection-tree', {
-          method: 'PUT',
-          body: JSON.stringify({ preferences: localTreePreferences })
-        }),
-        window.api.setConnectionTreePreferences(localTreePreferences)
-      ])
+      await persistConnectionTreePreferences(localTreePreferences)
     }
 
     // Let the restoration state commit before enabling writes, so an empty
@@ -6573,13 +6676,7 @@ function App(): React.JSX.Element {
       selected_databases: selectedDatabases,
       selected_schemas: selectedSchemas
     }
-    void Promise.all([
-      requestJson('/preferences/connection-tree', {
-        method: 'PUT',
-        body: JSON.stringify({ preferences })
-      }),
-      window.api.setConnectionTreePreferences(preferences)
-    ]).catch(() => undefined)
+    void persistConnectionTreePreferences(preferences).catch(() => undefined)
   }, [
     connectionFolderAssignments,
     connectionFolderOrder,
@@ -6607,7 +6704,6 @@ function App(): React.JSX.Element {
       connections: connectionSnapshot.connections,
       settings: appSettings as unknown as Record<string, unknown>,
       preferences: {
-        theme,
         shortcut_settings: shortcutSettings,
         connection_folders: connectionFolders,
         connection_folder_assignments: connectionFolderAssignments,
@@ -6667,9 +6763,7 @@ function App(): React.JSX.Element {
     // 先让连接列表进入 React 状态，再恢复分组归属，避免连接归属清理逻辑误删远端映射。
     await loadConnections()
     await window.api.applyAppSyncSettings(payload.settings as never)
-    if (preferences.theme === 'dark' || preferences.theme === 'light') {
-      setTheme(preferences.theme)
-    }
+    // 主题属于本机界面偏好，不能被另一台设备或旧同步基线静默覆盖。
     if (isRecord(preferences.shortcut_settings)) {
       const syncedShortcuts = preferences.shortcut_settings
       setShortcutSettings(
@@ -7023,6 +7117,18 @@ function App(): React.JSX.Element {
         ...buildConnectionSshDefaults()
       }
     }
+    if (nextDatabaseType === 'elasticsearch') {
+      return {
+        database_type: 'elasticsearch',
+        name: 'Elasticsearch',
+        host: '127.0.0.1',
+        port: 9200,
+        es_auth_type: 'basic',
+        es_use_ssl: false,
+        es_verify_certs: true,
+        ...buildConnectionSshDefaults()
+      }
+    }
     return {
       database_type: 'mysql',
       name: 'MySQL',
@@ -7059,6 +7165,42 @@ function App(): React.JSX.Element {
   }
 
   openConnectionModalRef.current = openConnectionModal
+
+  const optionalModuleForDatabaseType = (
+    databaseType: DatabaseType
+  ): OptionalModuleInfo['id'] | undefined => {
+    const extensionByDatabaseType: Partial<Record<DatabaseType, OptionalModuleInfo['id']>> = {
+      clickhouse: 'clickhouse',
+      elasticsearch: 'elasticsearch',
+      dm: 'jdbc',
+      gaussdb: 'jdbc',
+      oracle: 'oracle'
+    }
+    return extensionByDatabaseType[databaseType]
+  }
+
+  const openNewConnectionForDatabaseType = async (
+    nextDatabaseType: DatabaseType
+  ): Promise<boolean> => {
+    const moduleId = optionalModuleForDatabaseType(nextDatabaseType)
+    if (moduleId) {
+      let knownModules = optionalModules
+      if (!optionalModulesLoaded) {
+        knownModules = await window.api.getOptionalModules()
+        setOptionalModules(knownModules)
+        setOptionalModulesLoaded(true)
+      }
+      if (!knownModules.some((module) => module.id === moduleId && module.installed)) {
+        const installed = await installOptionalModule(moduleId)
+        if (!installed) {
+          return false
+        }
+      }
+    }
+    setOtherDatabasePickerOpen(false)
+    await openConnectionModal(nextDatabaseType)
+    return true
+  }
 
   const openEditConnectionModal = async (connection: ConnectionInfo): Promise<void> => {
     resetConnectionTestingState()
@@ -7119,6 +7261,10 @@ function App(): React.JSX.Element {
         sqlite_path: formValues.sqlite_path,
         driver_id: formValues.driver_id,
         dm_driver_id: formValues.dm_driver_id,
+        es_auth_type: formValues.es_auth_type,
+        es_api_key: formValues.es_api_key,
+        es_use_ssl: formValues.es_use_ssl,
+        es_verify_certs: formValues.es_verify_certs,
         ssh_enabled: formValues.ssh_enabled,
         ssh_auth_type: formValues.ssh_auth_type,
         git_versioning_enabled: Boolean(formValues.git_versioning_enabled),
@@ -7166,11 +7312,6 @@ function App(): React.JSX.Element {
         icon: <img src={postgresIcon} alt="" style={{ width: 16, height: 16 }} />
       },
       {
-        key: 'oracle',
-        label: 'Oracle',
-        icon: <img src={oracleIcon} alt="Oracle" style={{ width: 16, height: 16 }} />
-      },
-      {
         key: 'mongodb',
         label: 'MongoDB',
         icon: <img src={mongoIcon} alt="" style={{ width: 16, height: 16 }} />
@@ -7181,27 +7322,92 @@ function App(): React.JSX.Element {
         icon: <img src={redisIcon} alt="Redis" style={{ width: 16, height: 16 }} />
       },
       {
-        key: 'clickhouse',
-        label: 'ClickHouse',
-        icon: <img src={clickhouseIcon} alt="ClickHouse" style={{ width: 16, height: 16 }} />
-      },
-      {
         key: 'others',
         label: '其他',
-        icon: <DatabaseOutlined />,
-        popupClassName: 'resource-create-submenu-popup',
-        children: [
-          {
-            key: 'dm',
-            label: '达梦',
-            icon: <img src={dmIcon} alt="" style={{ width: 16, height: 16 }} />
-          },
-          { key: 'gaussdb', label: '高斯数据库', icon: <DatabaseOutlined /> }
-        ]
+        icon: <DatabaseOutlined />
       }
     ],
     []
   )
+
+  const otherDatabaseOptions = useMemo(
+    () => [
+      {
+        type: 'clickhouse' as const,
+        name: 'ClickHouse',
+        keywords: 'ck clickhouse 列式 分析',
+        icon: <img src={clickhouseIcon} alt="ClickHouse" style={{ width: 22, height: 22 }} />,
+        extension: 'ClickHouse 数据库支持'
+      },
+      {
+        type: 'elasticsearch' as const,
+        name: 'Elasticsearch',
+        keywords: 'es elasticsearch 索引 文档',
+        icon: <img src={elasticsearchIcon} alt="Elasticsearch" style={{ width: 22, height: 22 }} />,
+        extension: 'Elasticsearch 数据库支持'
+      },
+      {
+        type: 'dm' as const,
+        name: '达梦',
+        keywords: 'dm dameng 达梦 jdbc',
+        icon: <img src={dmIcon} alt="达梦" style={{ width: 22, height: 22 }} />,
+        extension: 'JDBC 数据库支持',
+        jdbc: true
+      },
+      {
+        type: 'gaussdb' as const,
+        name: '高斯数据库',
+        keywords: 'gauss gaussdb opengauss 高斯 jdbc',
+        icon: <DatabaseOutlined />,
+        extension: 'JDBC 数据库支持',
+        jdbc: true
+      },
+      {
+        type: 'oracle' as const,
+        name: 'Oracle',
+        keywords: 'oracle',
+        icon: <img src={oracleIcon} alt="Oracle" style={{ width: 22, height: 22 }} />,
+        extension: 'Oracle 数据库支持'
+      }
+    ],
+    []
+  )
+
+  const filteredOtherDatabaseOptions = useMemo(() => {
+    const keyword = otherDatabaseSearch.trim().toLowerCase()
+    if (!keyword) {
+      return otherDatabaseOptions
+    }
+    return otherDatabaseOptions.filter((item) =>
+      `${item.name} ${item.keywords}`.toLowerCase().includes(keyword)
+    )
+  }, [otherDatabaseOptions, otherDatabaseSearch])
+
+  const handleOtherDatabaseOptionClick = (databaseType: DatabaseType): void => {
+    const moduleId = optionalModuleForDatabaseType(databaseType)
+    const installed = moduleId
+      ? optionalModules.some((module) => module.id === moduleId && module.installed)
+      : true
+    if (installed) {
+      void openNewConnectionForDatabaseType(databaseType)
+      return
+    }
+
+    const option = otherDatabaseOptions.find((item) => item.type === databaseType)
+    const extensionName = option?.extension ?? '数据库支持扩展'
+    Modal.confirm({
+      title: '需要安装扩展',
+      content: `首次使用${option?.name ?? '该数据库'}需要安装${extensionName}，是否现在安装？`,
+      okText: '安装并继续',
+      cancelText: '取消',
+      onOk: async () => {
+        const installedSuccessfully = await openNewConnectionForDatabaseType(databaseType)
+        if (!installedSuccessfully) {
+          throw new Error('扩展安装失败')
+        }
+      }
+    })
+  }
 
   const importConnectionPreviewColumns: ColumnsType<ImportConnectionCandidate> = [
     {
@@ -7289,10 +7495,21 @@ function App(): React.JSX.Element {
           openCreateFolderModal()
           return
         }
-        void openConnectionModalRef.current(key as DatabaseType)
+        if (key === 'others') {
+          setOtherDatabaseSearch('')
+          setOtherDatabasePickerOpen(true)
+          return
+        }
+        void openNewConnectionForDatabaseType(key as DatabaseType)
       }
     }),
-    [openCreateFolderModal, stableConnectionCreateMenuItems]
+    [
+      openCreateFolderModal,
+      stableConnectionCreateMenuItems,
+      openNewConnectionForDatabaseType,
+      optionalModules,
+      optionalModulesLoaded
+    ]
   )
 
   const buildConnectionSshPayload = (
@@ -7436,6 +7653,24 @@ function App(): React.JSX.Element {
         password: values.password,
         database: values.database,
         ...gitVersioning,
+        ...buildConnectionSshPayload(values)
+      }
+    }
+
+    if (values.database_type === 'elasticsearch') {
+      return {
+        name: values.name,
+        database_type: 'elasticsearch',
+        host: values.host,
+        port: values.port,
+        username: values.username,
+        password: values.password,
+        es_auth_type: values.es_auth_type ?? 'basic',
+        es_api_key: values.es_api_key,
+        es_use_ssl: Boolean(values.es_use_ssl),
+        es_verify_certs: values.es_verify_certs !== false,
+        git_versioning_enabled: false,
+        git_versioning_scopes: [],
         ...buildConnectionSshPayload(values)
       }
     }
@@ -8372,14 +8607,18 @@ function App(): React.JSX.Element {
     setTestingConnection(true)
 
     try {
-      const values = await form.validateFields([
+      const databaseType = form.getFieldValue('database_type') as DatabaseType
+      const esAuthType = form.getFieldValue('es_auth_type') as ConnectionFormValues['es_auth_type']
+      const fields = [
         'name',
         'database_type',
         'sqlite_path',
         'host',
         'port',
-        'username',
-        'password',
+        'es_auth_type',
+        'es_api_key',
+        'es_use_ssl',
+        'es_verify_certs',
         'database',
         'driver_id',
         'dm_driver_id',
@@ -8391,11 +8630,15 @@ function App(): React.JSX.Element {
         'ssh_password',
         'ssh_private_key_path',
         'ssh_passphrase'
-      ])
+      ]
+      if (databaseType !== 'elasticsearch' || esAuthType === 'basic') {
+        fields.push('username', 'password')
+      }
+      const values = await form.validateFields(fields)
       const result = await requestJson<ConnectionTestResponse>('/connections/test', {
         method: 'POST',
         body: JSON.stringify(cleanFormValues(values)),
-        timeoutMs: DATABASE_CONNECTION_REQUEST_TIMEOUT_MS
+        timeoutMs: getDatabaseConnectionRequestTimeoutMs(values.database_type)
       })
 
       if (connectionTestRunRef.current !== testRunId) {
@@ -8510,35 +8753,67 @@ function App(): React.JSX.Element {
       })
       const nextConnections = [...connections, connection]
       setConnections(nextConnections)
-      if (
+      const connectionId = connection.connection_id
+      const targetFolderId =
         connectionModalFolderId &&
-        connectionFolders.some((folder) => folder.id === connectionModalFolderId)
-      ) {
-        const targetFolderId = connectionModalFolderId
-        const connectionId = connection.connection_id
-        // Commit the new connection's folder placement together so the subsequent
-        // tree rebuild cannot observe an intermediate root-level assignment.
-        setConnectionFolderAssignments((current) => ({
-          ...current,
-          [connectionId]: targetFolderId
-        }))
-        setRootConnectionOrder((current) => current.filter((id) => id !== connectionId))
-        setRootItemOrder((current) =>
-          current.filter((id) => id !== rootConnectionOrderId(connectionId))
-        )
-        setFolderConnectionOrder((current) => ({
-          ...current,
-          [targetFolderId]: [
-            ...(current[targetFolderId] ?? []).filter((id) => id !== connectionId),
-            connectionId
-          ]
-        }))
+        connectionFoldersRef.current.some((folder) => folder.id === connectionModalFolderId)
+          ? connectionModalFolderId
+          : undefined
+      const nextConnectionFolderAssignments = { ...connectionFolderAssignments }
+      if (targetFolderId) {
+        nextConnectionFolderAssignments[connectionId] = targetFolderId
+      } else {
+        delete nextConnectionFolderAssignments[connectionId]
+      }
+      const nextRootConnectionOrder = targetFolderId
+        ? rootConnectionOrder.filter((id) => id !== connectionId)
+        : [...rootConnectionOrder.filter((id) => id !== connectionId), connectionId]
+      const rootItemId = rootConnectionOrderId(connectionId)
+      const nextRootItemOrder = targetFolderId
+        ? rootItemOrder.filter((id) => id !== rootItemId)
+        : [...rootItemOrder.filter((id) => id !== rootItemId), rootItemId]
+      const nextFolderConnectionOrder: Record<string, string[]> = Object.fromEntries(
+        Object.entries(folderConnectionOrder).map(([folderId, ids]) => [
+          folderId,
+          ids.filter((id) => id !== connectionId)
+        ])
+      )
+      if (targetFolderId) {
+        nextFolderConnectionOrder[targetFolderId] = [
+          ...(nextFolderConnectionOrder[targetFolderId] ?? []),
+          connectionId
+        ]
         setExpandedKeys((current) =>
           current.includes(`folder:${targetFolderId}`)
             ? current
             : [...current, `folder:${targetFolderId}`]
         )
       }
+      const nextTreePreferences = {
+        connection_folders: connectionFolders,
+        connection_folder_assignments: nextConnectionFolderAssignments,
+        connection_folder_order: connectionFolderOrder,
+        root_connection_order: nextRootConnectionOrder,
+        root_item_order: rootItemOrderCustomized ? nextRootItemOrder : rootItemOrder,
+        root_item_order_customized: rootItemOrderCustomized,
+        pinned_root_item_ids: pinnedRootItemIds,
+        folder_connection_order: nextFolderConnectionOrder,
+        selected_databases: selectedDatabasesRef.current,
+        selected_schemas: selectedSchemasRef.current
+      }
+      localStorage.setItem(STORAGE_CONNECTION_FOLDERS, JSON.stringify(connectionFolders))
+      localStorage.setItem(
+        STORAGE_CONNECTION_FOLDER_ASSIGNMENTS,
+        JSON.stringify(nextConnectionFolderAssignments)
+      )
+      localStorage.setItem(STORAGE_ROOT_CONNECTION_ORDER, JSON.stringify(nextRootConnectionOrder))
+      localStorage.setItem(STORAGE_ROOT_ITEM_ORDER, JSON.stringify(nextTreePreferences.root_item_order))
+      localStorage.setItem(STORAGE_FOLDER_CONNECTION_ORDER, JSON.stringify(nextFolderConnectionOrder))
+      void persistConnectionTreePreferences(nextTreePreferences).catch(() => undefined)
+      setConnectionFolderAssignments(nextConnectionFolderAssignments)
+      setRootConnectionOrder(nextRootConnectionOrder)
+      setRootItemOrder(nextTreePreferences.root_item_order)
+      setFolderConnectionOrder(nextFolderConnectionOrder)
       setSelectedConnectionId(connection.connection_id)
       selectConnectionNodes([connection.connection_id], connection.connection_id)
       refreshTree(nextConnections)
@@ -8593,7 +8868,8 @@ function App(): React.JSX.Element {
         currentConnection &&
         !currentConnection.has_password &&
         currentConnection.database_type !== 'sqlite' &&
-        currentConnection.database_type !== 'redis'
+        currentConnection.database_type !== 'redis' &&
+        !(currentConnection.database_type === 'elasticsearch' && currentConnection.es_auth_type !== 'basic')
       ) {
         openConnectionPasswordPrompt(currentConnection, '当前连接未保存密码，请输入密码后重试')
         return undefined
@@ -8603,7 +8879,9 @@ function App(): React.JSX.Element {
         `/connections/${connectionId}/open?open_attempt_id=${encodeURIComponent(openAttemptId)}`,
         {
           method: 'POST',
-          timeoutMs: options.timeoutMs ?? DATABASE_CONNECTION_REQUEST_TIMEOUT_MS
+          timeoutMs:
+            options.timeoutMs ??
+            getDatabaseConnectionRequestTimeoutMs(currentConnection?.database_type ?? 'mysql')
         }
       )
       if (!isCurrentOpenAttempt()) {
@@ -10449,19 +10727,36 @@ function App(): React.JSX.Element {
 
   const handleConnectionCreateMenuClick = ({ key }: { key: string }) => {
     if (key === 'others') {
+      setOtherDatabaseSearch('')
+      setOtherDatabasePickerOpen(true)
       return
     }
-    void openConnectionModalRef.current(key as DatabaseType)
+    void openNewConnectionForDatabaseType(key as DatabaseType)
   }
 
   handleConnectionCreateMenuClickRef.current = handleConnectionCreateMenuClick
 
   const handleAiPanelResizeMouseDown = useCallback(
     (event: React.MouseEvent<HTMLDivElement>) => {
-      aiPanelResizeRef.current = { startX: event.clientX, startSize: aiPanelSize }
+      const shell = workspaceShellRef.current
+      const panel = aiDockPanelRef.current
+      if (!shell || !panel) {
+        return
+      }
+      event.preventDefault()
+      const shellRect = shell.getBoundingClientRect()
+      const panelRect = panel.getBoundingClientRect()
+      const guideContainerRect = mainPanelRef.current?.getBoundingClientRect() ?? shellRect
+      aiPanelResizeRef.current = {
+        startX: event.clientX,
+        startSize: aiPanelSize,
+        maxSize: Math.min(720, Math.max(260, shellRect.width - resourcePanelSize - 260)),
+        guideOffset: panelRect.left - guideContainerRect.left,
+        lastSize: aiPanelSize
+      }
       setResizingAiPanel(true)
     },
-    [aiPanelSize]
+    [aiPanelSize, resourcePanelSize]
   )
 
   const handleAiPanelWorkspaceAction = useCallback(
@@ -11548,6 +11843,11 @@ function App(): React.JSX.Element {
         <Layout.Content className="app-content">
           <div ref={workspaceShellRef} className="workspace">
             <div
+              ref={resourcePanelResizeGuideRef}
+              className={`workspace-resize-guide${resizingResourcePanel ? ' active' : ''}`}
+              aria-hidden="true"
+            />
+            <div
               ref={resourcePanelRef}
               className="resource-panel"
               style={{ width: resourcePanelSize, flex: `0 0 ${resourcePanelSize}px` }}
@@ -11669,9 +11969,26 @@ function App(): React.JSX.Element {
             <div
               className={`workspace-side-resizer${resizingResourcePanel ? ' active' : ''}`}
               onMouseDown={(event) => {
+                const shell = workspaceShellRef.current
+                const panel = resourcePanelRef.current
+                if (!shell || !panel) {
+                  return
+                }
+                event.preventDefault()
+                const shellRect = shell.getBoundingClientRect()
+                const panelRect = panel.getBoundingClientRect()
                 resourcePanelResizeRef.current = {
                   startX: event.clientX,
-                  startSize: resourcePanelSize
+                  startSize: resourcePanelSize,
+                  maxSize: Math.min(
+                    500,
+                    Math.max(
+                      RESOURCE_PANEL_MIN_WIDTH,
+                      shellRect.width - (aiPanelVisible ? aiPanelSize : 0) - 260
+                    )
+                  ),
+                  guideOffset: panelRect.right - shellRect.left,
+                  lastSize: resourcePanelSize
                 }
                 setResizingResourcePanel(true)
               }}
@@ -11679,6 +11996,7 @@ function App(): React.JSX.Element {
             <MainWorkspacePanel
               mainPanelRef={mainPanelRef}
               aiDockPanelRef={aiDockPanelRef}
+              aiPanelResizeGuideRef={aiPanelResizeGuideRef}
               theme={theme}
               aiPanelOpen={aiPanelVisible}
               aiPanelSize={aiPanelSize}
@@ -12436,7 +12754,25 @@ function App(): React.JSX.Element {
                               </Tag>
                               {module.installed ? (
                                 <Space>
-                                  {module.updateAvailable && !module.pendingRestartRequired && (
+                                  {module.pendingRestartRequired ? (
+                                    <Button
+                                      type="primary"
+                                      className="optional-module-update-btn"
+                                      loading={installingOptionalModuleId === module.id}
+                                      disabled={installingOptionalModuleId !== null}
+                                      onClick={() => {
+                                        Modal.confirm({
+                                          title: 'MCP 正在被占用',
+                                          content: 'MCP 调用方当前正在使用旧版本。强制更新会中断当前调用并替换旧文件，是否继续？',
+                                          okText: '关闭进程并更新',
+                                          cancelText: '稍后处理',
+                                          onOk: forceInstallMcp
+                                        })
+                                      }}
+                                    >
+                                      {installingOptionalModuleId === module.id ? '更新中' : '立即替换'}
+                                    </Button>
+                                  ) : module.updateAvailable && (
                                     <Button
                                       type="primary"
                                       className="optional-module-update-btn"
@@ -13397,6 +13733,68 @@ function App(): React.JSX.Element {
             createTableLoading
           )}
         </CreateTableModal>
+        <Modal
+          title="选择其他数据库"
+          open={otherDatabasePickerOpen}
+          footer={null}
+          destroyOnHidden
+          width={680}
+          className="database-extension-picker-modal"
+          onCancel={() => setOtherDatabasePickerOpen(false)}
+        >
+          <Space direction="vertical" size={12} className="full-width">
+            <Input
+              autoFocus
+              allowClear
+              value={otherDatabaseSearch}
+              prefix={<SearchOutlined />}
+              placeholder="搜索数据库类型"
+              onChange={(event) => setOtherDatabaseSearch(event.target.value)}
+            />
+            <div className="database-extension-picker-list">
+              {filteredOtherDatabaseOptions.map((item) => (
+                <Button
+                  key={item.type}
+                  block
+                  className="database-extension-picker-item"
+                  disabled={installingOptionalModuleId !== null || !optionalModulesLoaded}
+                  onClick={() => handleOtherDatabaseOptionClick(item.type)}
+                  >
+                  <span className="database-extension-picker-icon">{item.icon}</span>
+                  <span className="database-extension-picker-name">{item.name}</span>
+                  {item.jdbc && <Tag color="blue">JDBC</Tag>}
+                  <span className="database-extension-picker-extension">{item.extension}</span>
+                  <Tag
+                    color={
+                      !optionalModulesLoaded
+                        ? 'default'
+                        : optionalModules.some(
+                              (module) =>
+                                module.id === optionalModuleForDatabaseType(item.type) && module.installed
+                            )
+                          ? 'success'
+                          : 'default'
+                    }
+                  >
+                    {!optionalModulesLoaded
+                      ? '检查中'
+                      : optionalModules.some(
+                            (module) =>
+                              module.id === optionalModuleForDatabaseType(item.type) && module.installed
+                          )
+                        ? '已安装'
+                        : '需要安装'}
+                  </Tag>
+                </Button>
+              ))}
+              {filteredOtherDatabaseOptions.length === 0 && (
+                <Typography.Text type="secondary" className="database-extension-picker-empty">
+                  未找到匹配的数据库类型
+                </Typography.Text>
+              )}
+            </div>
+          </Space>
+        </Modal>
         <ConnectionEditorModal
           form={form}
           open={connectionModalOpen}

@@ -20,11 +20,11 @@
 
 DataDjinn 是面向 Windows 的本地数据库客户端。它把连接管理、对象浏览、SQL 编辑、数据编辑、导入导出与可选的 AI、MCP、Git 同步和版本管理能力放进同一套桌面工作区。基础功能开箱即用，体积和依赖较大的能力按需安装。
 
-当前最新版本：`v0.3.10`
+当前最新版本：`v0.3.11`
 
 ## 核心能力
 
-- 多数据库连接：SQLite、MySQL、PostgreSQL、Oracle、达梦 DM、高斯数据库、MongoDB、Redis、ClickHouse。
+- 多数据库连接：SQLite、MySQL、PostgreSQL、Oracle、达梦 DM、高斯数据库、MongoDB、Redis、ClickHouse、Elasticsearch。
 - 连接树：分组与子分组、拖拽排序、置顶、搜索定位、SSH 隧道、连接测试、保存密码后重连、静默重连和多种连接导入导出。
 - SQL 工作区：Monaco 编辑器、多标签查询、SQL/存储过程补全、关键字高亮、语句级执行和逐条结果展示。
 - 数据浏览与编辑：WHERE 过滤、分页、列搜索、列宽与列顺序调整、Excel 式 Ctrl/Shift 多选、行列选择、批量编辑、草稿状态和提交。
@@ -98,6 +98,7 @@ MCP 服务仅通过本机 STDIO 工作，不监听网络端口。安装 MCP 扩�
 | MongoDB | PyMongo | 数据库/集合浏览、字段推断、集合预览、命令执行与 JSON 导出 |
 | Redis | redis-py | DB/Key 浏览与 String、Hash、List、Set、ZSet 编辑 |
 | ClickHouse | clickhouse-connect | 数据库/表浏览、查询、结构查看和 SQL 执行 |
+| Elasticsearch | elasticsearch-py | 支持 Elasticsearch 7.10+、8.x；兼容识别 OpenSearch，但不同版本的 DSL/API 差异需实测 |
 
 ## 安装与开发
 

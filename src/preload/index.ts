@@ -165,11 +165,12 @@ const api = {
   setSyncLocalState: (state: unknown) => ipcRenderer.invoke('sync-local-state:set', state),
   clearSyncLocalState: () => ipcRenderer.invoke('sync-local-state:clear'),
   getConnectionTreePreferences: () => ipcRenderer.invoke('connection-tree-preferences:get'),
-  setConnectionTreePreferences: (preferences: Record<string, unknown>) =>
+  getConnectionTreePreferencesMeta: () => ipcRenderer.invoke('connection-tree-preferences:get-meta'),
+  setConnectionTreePreferences: (preferences: Record<string, unknown>, updatedAt?: number) =>
     ipcRenderer.invoke(
       'connection-tree-preferences:set',
       preferences,
-      nextConnectionTreePreferencesUpdatedAt()
+      updatedAt ?? nextConnectionTreePreferencesUpdatedAt()
     ),
   getAppSyncSettings: () => ipcRenderer.invoke('sync-app-settings:get'),
   applyAppSyncSettings: (settings: unknown) =>
@@ -177,6 +178,8 @@ const api = {
   getOptionalModules: () => ipcRenderer.invoke('optional-modules:list'),
   installOptionalModule: (moduleId: string) =>
     ipcRenderer.invoke('optional-modules:install', moduleId),
+  forceInstallOptionalModule: (moduleId: string) =>
+    ipcRenderer.invoke('optional-modules:install-force', moduleId),
   uninstallOptionalModule: (moduleId: string) =>
     ipcRenderer.invoke('optional-modules:uninstall', moduleId),
   getOptionalModuleLaunchConfig: (moduleId: string) =>

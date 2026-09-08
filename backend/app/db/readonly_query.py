@@ -1,5 +1,6 @@
 import ast
 import fnmatch
+import json
 from datetime import date, datetime, time
 from itertools import islice
 from decimal import Decimal
@@ -13,6 +14,7 @@ from app.db.gaussdb import execute_gaussdb_database_ddl, is_gaussdb_database_ddl
 from app.db.mongo_utils import is_mongo_client, mongo_default_database, serialize_mongo_document
 from app.db.query_timeout import apply_query_timeout
 from app.db.redis_utils import is_redis_client, redis_client_for_database, redis_key_length, redis_key_type, redis_scan_keys, redis_text, serialize_redis_value
+from app.db.elasticsearch_utils import is_elasticsearch_client, json_document, response_body
 from app.schemas.query import QueryResponse
 from app.db.query_editing import analyze_query_column_origins
 
@@ -123,6 +125,9 @@ def _query_rows(raw_rows: list[Any], columns: list[tuple[Any, str]]) -> list[dic
 
 
 def execute_readonly_query(engine: Engine, sql: str, limit: int | None, offset: int = 0, database: str | None = None, pg_database: str | None = None) -> QueryResponse:
+    if is_elasticsearch_client(engine):
+        return _execute_elasticsearch_query(engine, sql, limit, offset)
+
     if is_mongo_client(engine):
         return _execute_mongo_readonly_query(engine, sql, limit, offset, database)
 
@@ -170,6 +175,9 @@ def count_readonly_query(
     database: str | None = None,
     pg_database: str | None = None,
 ) -> int:
+    if is_elasticsearch_client(engine):
+        return _execute_elasticsearch_query(engine, sql, None, 0).total_count or 0
+
     if is_mongo_client(engine) or is_redis_client(engine):
         return execute_readonly_query(engine, sql, None, 0, database, pg_database).row_count
 
@@ -220,6 +228,9 @@ def count_readonly_query(
 
 
 def execute_query(engine: Engine, sql: str, limit: int | None, offset: int = 0, database: str | None = None, pg_database: str | None = None) -> QueryResponse:
+    if is_elasticsearch_client(engine):
+        return _execute_elasticsearch_query(engine, sql, limit, offset)
+
     if is_mongo_client(engine):
         return _execute_mongo_readonly_query(engine, sql, limit, offset, database)
 
@@ -299,6 +310,84 @@ def _preview_mongo_collection(engine: Engine, collection_name: str, limit: int |
 def _redis_response(rows: list[dict[str, Any]], limited: bool) -> QueryResponse:
     columns = list(dict.fromkeys(key for row in rows for key in row.keys()))
     return QueryResponse(columns=columns, rows=rows, row_count=len(rows), limited=limited)
+
+
+def _elasticsearch_total_count(total: Any) -> int | None:
+    if isinstance(total, int):
+        return total
+    if isinstance(total, dict) and isinstance(total.get("value"), int):
+        return int(total["value"])
+    return None
+
+
+def _elasticsearch_response(payload: Any, limit: int | None, offset: int) -> QueryResponse:
+    body = response_body(payload)
+    hits_section = body.get("hits", {}) if isinstance(body, dict) else {}
+    raw_hits = hits_section.get("hits", []) if isinstance(hits_section, dict) else []
+    rows: list[dict[str, Any]] = []
+    for hit in raw_hits if isinstance(raw_hits, list) else []:
+        if not isinstance(hit, dict):
+            continue
+        source = hit.get("_source")
+        row = dict(source) if isinstance(source, dict) else {"_source": source}
+        row = {"_id": hit.get("_id"), "_index": hit.get("_index"), "_score": hit.get("_score"), **row}
+        rows.append(row)
+
+    total_count = _elasticsearch_total_count(hits_section.get("total") if isinstance(hits_section, dict) else None)
+    limited = bool(limit is not None and total_count is not None and total_count > offset + len(rows))
+    columns = list(dict.fromkeys(key for row in rows for key in row))
+    return QueryResponse(
+        columns=columns,
+        rows=rows,
+        row_count=len(rows),
+        limited=limited,
+        total_count=total_count,
+    )
+
+
+def _execute_elasticsearch_query(
+    engine: Any, sql: str, limit: int | None, offset: int = 0
+) -> QueryResponse:
+    payload = json_document(sql, "Elasticsearch 查询")
+    index = str(payload.pop("index", "*") or "*")
+    payload.pop("from", None)
+    payload.pop("size", None)
+    response = engine.search(
+        index=index,
+        from_=offset,
+        size=10_000 if limit is None else limit,
+        track_total_hits=True,
+        **payload,
+    )
+    return _elasticsearch_response(response, limit, offset)
+
+
+def _preview_elasticsearch_index(
+    engine: Any,
+    index_name: str,
+    limit: int | None,
+    offset: int,
+    where: str | None,
+    sort_column: str | None,
+    sort_direction: str | None,
+) -> QueryResponse:
+    query: dict[str, Any] = {"match_all": {}}
+    if where and where.strip():
+        parsed = json_document(where, "Elasticsearch 过滤条件")
+        query = parsed.get("query", parsed)
+        if not isinstance(query, dict):
+            raise ValueError("Elasticsearch 过滤条件中的 query 必须是 JSON 对象")
+    options: dict[str, Any] = {"query": query}
+    if sort_column:
+        options["sort"] = [{sort_column: {"order": "desc" if sort_direction == "descend" else "asc"}}]
+    response = engine.search(
+        index=index_name,
+        from_=offset,
+        size=10_000 if limit is None else limit,
+        track_total_hits=True,
+        **options,
+    )
+    return _elasticsearch_response(response, limit, offset)
 
 
 def _redis_key_summary(target: Any, key: str) -> dict[str, Any]:
@@ -615,6 +704,11 @@ def preview_table(
     sort_column: str | None = None,
     sort_direction: str | None = None,
 ) -> QueryResponse:
+    if is_elasticsearch_client(engine):
+        return _preview_elasticsearch_index(
+            engine, table_name, limit, offset, where, sort_column, sort_direction
+        )
+
     if is_mongo_client(engine):
         return _preview_mongo_collection(engine, table_name, limit, offset, database_name)
 

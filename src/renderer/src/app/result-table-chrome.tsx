@@ -195,7 +195,7 @@ export function ResultStatusBar({
       }}
     >
       <Space wrap className="result-status-left">
-        {tab.kind === 'preview' && connection && connection.database_type !== 'mongodb' && connection.database_type !== 'redis' && onOpenTableGitHistory ? (
+        {tab.kind === 'preview' && connection && connection.database_type !== 'mongodb' && connection.database_type !== 'redis' && connection.database_type !== 'elasticsearch' && onOpenTableGitHistory ? (
           <Button
             type="text"
             size="small"
@@ -434,6 +434,7 @@ export function MultiStatementExecutionCard({ results }: { results: MultiStateme
 
 type WhereInputProps = {
   tab: WorkspaceTab
+  connection?: ConnectionInfo
   onUpdateWhere: (nextWhere: string) => void
   onPreviewTable: (tab: WorkspaceTab, nextWhere: string) => void
   onPreviewRedisDatabase: (tab: WorkspaceTab, nextWhere: string) => void
@@ -441,6 +442,7 @@ type WhereInputProps = {
 
 export function ResultWhereInput({
   tab,
+  connection,
   onUpdateWhere,
   onPreviewTable,
   onPreviewRedisDatabase
@@ -470,6 +472,13 @@ export function ResultWhereInput({
     <WhereClauseInput
       tabKey={tab.key}
       columns={(tab.result?.columns ?? []).filter((column) => column !== '__rowKey')}
+      label={connection?.database_type === 'elasticsearch' ? 'QUERY DSL' : undefined}
+      placeholder={
+        connection?.database_type === 'elasticsearch'
+          ? '输入 JSON Query DSL，例如：{"term":{"status":"open"}}'
+          : undefined
+      }
+      disableSuggestions={connection?.database_type === 'elasticsearch'}
       value={tab.where ?? ''}
       onSubmit={(nextWhere) => {
         onUpdateWhere(nextWhere)

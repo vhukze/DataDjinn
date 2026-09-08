@@ -22,3 +22,16 @@ def test_connection_tree_preferences_round_trip(tmp_path, monkeypatch) -> None:
 
     assert exists is True
     assert preferences == expected
+
+
+def test_older_tree_preferences_cannot_overwrite_newer_snapshot(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(preferences_store, "_data_dir", lambda: Path(tmp_path))
+
+    latest = {"connection_folder_assignments": {"new": "folder"}}
+    older = {"connection_folder_assignments": {"old": "folder"}}
+    preferences_store.save_connection_tree_preferences(latest, updated_at=2_000)
+    preferences_store.save_connection_tree_preferences(older, updated_at=1_000)
+
+    exists, preferences = preferences_store.load_connection_tree_preferences()
+    assert exists is True
+    assert preferences == latest

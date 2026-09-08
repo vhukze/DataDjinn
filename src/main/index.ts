@@ -65,12 +65,22 @@ type SyncLocalState = {
   autoSyncEnabled?: boolean
 }
 
-type OptionalModuleId = 'mcp' | 'ai' | 'jdbc' | 'data-versioning'
+type OptionalModuleId =
+  | 'mcp'
+  | 'ai'
+  | 'jdbc'
+  | 'clickhouse'
+  | 'elasticsearch'
+  | 'oracle'
+  | 'data-versioning'
 type OptionalModuleArtifactId =
   | 'mcp'
   | 'ai'
   | 'jdbc-runtime'
   | 'jre-17'
+  | 'clickhouse'
+  | 'elasticsearch'
+  | 'oracle'
   | 'data-versioning'
 
 type OptionalModuleState = {
@@ -142,6 +152,24 @@ const OPTIONAL_MODULE_CATALOG = [
     description: '为达梦、高斯等 JDBC 连接安装桥接依赖。安装时自动检测本机可用 Java；未检测到时自动安装 Java 17。'
   },
   {
+    id: 'clickhouse',
+    version: '1.0.0',
+    name: 'ClickHouse 数据库支持',
+    description: '按需安装 ClickHouse 客户端和 SQLAlchemy 方言。'
+  },
+  {
+    id: 'elasticsearch',
+    version: '1.0.0',
+    name: 'Elasticsearch 数据库支持',
+    description: '按需安装 Elasticsearch 客户端，用于浏览索引、文档和执行 Query DSL。'
+  },
+  {
+    id: 'oracle',
+    version: '1.0.0',
+    name: 'Oracle 数据库支持',
+    description: '按需安装 Oracle Thin 客户端。'
+  },
+  {
     id: 'data-versioning',
     version: '1.0.0',
     name: 'Git 表数据版本管理',
@@ -182,6 +210,30 @@ const OPTIONAL_MODULE_ARTIFACT_CATALOG: readonly OptionalModuleArtifact[] = [
     artifact: {
       url: 'https://github.com/vhukze/DataDjinn/releases/download/modules-v1.1.0/datadjinn-jre-17.0.20%2B8-win-x64.zip',
       sha256: 'fb7ce5543383a1ecb2974b04186c40a687c752bd438f815e3d81fee59fa48f59'
+    }
+  },
+  {
+    id: 'clickhouse',
+    version: '1.0.0',
+    artifact: {
+      url: 'https://github.com/vhukze/DataDjinn/releases/download/modules-v1.3.0/datadjinn-clickhouse-1.0.0-win-x64.zip',
+      sha256: '35e61d27c2e64147233835ea4a387506e48bb429bdb68d1d9b064614ec2ba994'
+    }
+  },
+  {
+    id: 'elasticsearch',
+    version: '1.0.0',
+    artifact: {
+      url: 'https://github.com/vhukze/DataDjinn/releases/download/modules-v1.3.0/datadjinn-elasticsearch-1.0.0-win-x64.zip',
+      sha256: '80e5b37cc5e9491171f2bf911ebd73b014f59372f01ca0a2e0170a8d262f129c'
+    }
+  },
+  {
+    id: 'oracle',
+    version: '1.0.0',
+    artifact: {
+      url: 'https://github.com/vhukze/DataDjinn/releases/download/modules-v1.3.0/datadjinn-oracle-1.0.0-win-x64.zip',
+      sha256: '6e9ca387d6146df264435b098eb44741962688646db90847d97e68c4bc5e723a'
     }
   },
   {
@@ -470,6 +522,9 @@ const getInstalledOptionalModules = (): OptionalModuleState[] => {
         module.id === 'ai' ||
         module.id === 'jdbc-runtime' ||
         module.id === 'jre-17' ||
+        module.id === 'clickhouse' ||
+        module.id === 'elasticsearch' ||
+        module.id === 'oracle' ||
         module.id === 'data-versioning') &&
       typeof module.version === 'string' &&
       Number.isFinite(module.installedAt) &&
@@ -506,20 +561,33 @@ const configureBackendOptionalRuntimeModules = (): void => {
   const jdbcRuntimePath = getOptionalModuleInstallPath('jdbc-runtime')
   const jreRuntimePath = getOptionalModuleInstallPath('jre-17')
   const dataVersioningModulePath = getOptionalModuleInstallPath('data-versioning')
+  const clickHouseModulePath = getOptionalModuleInstallPath('clickhouse')
+  const elasticsearchModulePath = getOptionalModuleInstallPath('elasticsearch')
+  const oracleModulePath = getOptionalModuleInstallPath('oracle')
   backendManager.setRuntimeEnvironment({
     DATADJINN_JDBC_RUNTIME_PATH: jdbcRuntimePath,
     DATADJINN_JRE_MODULE_HOME: jreRuntimePath ? join(jreRuntimePath, 'jre') : undefined,
-    DATADJINN_DATA_VERSIONING_MODULE_PATH: dataVersioningModulePath
+    DATADJINN_DATA_VERSIONING_MODULE_PATH: dataVersioningModulePath,
+    DATADJINN_CLICKHOUSE_MODULE_PATH: clickHouseModulePath,
+    DATADJINN_ELASTICSEARCH_MODULE_PATH: elasticsearchModulePath,
+    DATADJINN_ORACLE_MODULE_PATH: oracleModulePath
   })
 }
 
 const restartBackendForRuntimeModule = async (moduleId: OptionalModuleArtifactId): Promise<void> => {
-  if (moduleId !== 'jdbc-runtime' && moduleId !== 'jre-17' && moduleId !== 'data-versioning') {
+  if (
+    moduleId !== 'jdbc-runtime' &&
+    moduleId !== 'jre-17' &&
+    moduleId !== 'clickhouse' &&
+    moduleId !== 'elasticsearch' &&
+    moduleId !== 'oracle' &&
+    moduleId !== 'data-versioning'
+  ) {
     return
   }
   configureBackendOptionalRuntimeModules()
   if (backendManager.getStatus().state === 'online') {
-    const status = await backendManager.restart('JDBC 运行时模块已更新，正在重启后端服务')
+    const status = await backendManager.restart('数据库扩展已更新，正在重启后端服务')
     if (status.state !== 'online') {
       throw new Error(status.message ?? '后端服务重启失败')
     }
@@ -637,6 +705,78 @@ const replaceOptionalModuleInstall = async (
   throw new Error(`替换扩展模块文件失败，请关闭占用该模块的程序后重试：${detail}`)
 }
 
+type WindowsProcessInfo = {
+  ProcessId?: number
+  ExecutablePath?: string
+}
+
+const listWindowsProcesses = async (): Promise<WindowsProcessInfo[]> => {
+  if (process.platform !== 'win32') {
+    return []
+  }
+  return await new Promise((resolvePromise) => {
+    const child = spawn(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        '$ErrorActionPreference="SilentlyContinue"; Get-CimInstance Win32_Process | Select-Object ProcessId,ExecutablePath | ConvertTo-Json -Compress'
+      ],
+      { windowsHide: true }
+    )
+    let output = ''
+    child.stdout.on('data', (chunk) => {
+      output += String(chunk)
+    })
+    child.once('error', () => resolvePromise([]))
+    child.once('exit', (code) => {
+      if (code !== 0 || !output.trim()) {
+        resolvePromise([])
+        return
+      }
+      try {
+        const parsed = JSON.parse(output) as WindowsProcessInfo | WindowsProcessInfo[]
+        resolvePromise(Array.isArray(parsed) ? parsed : [parsed])
+      } catch {
+        resolvePromise([])
+      }
+    })
+  })
+}
+
+const getMcpProcessIds = async (): Promise<number[]> => {
+  const targetPath = resolve(getStableOptionalModuleInstallPath('mcp'), 'datadjinn-mcp.exe').toLowerCase()
+  const processes = await listWindowsProcesses()
+  return [
+    ...new Set(
+      processes
+        .filter(
+          (item) =>
+            typeof item.ProcessId === 'number' &&
+            typeof item.ExecutablePath === 'string' &&
+            resolve(item.ExecutablePath).toLowerCase() === targetPath
+        )
+        .map((item) => item.ProcessId as number)
+    )
+  ]
+}
+
+const terminateMcpProcesses = async (): Promise<number[]> => {
+  const processIds = await getMcpProcessIds()
+  for (const pid of processIds) {
+    await new Promise<void>((resolvePromise) => {
+      const child = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true })
+      child.once('error', () => resolvePromise())
+      child.once('exit', () => resolvePromise())
+    })
+  }
+  if (processIds.length > 0) {
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 350))
+  }
+  return processIds
+}
+
 const getPendingOptionalModules = (): PendingOptionalModuleState[] => {
   const value = store.get('pendingOptionalModules')
   return Array.isArray(value)
@@ -647,6 +787,9 @@ const getPendingOptionalModules = (): PendingOptionalModuleState[] => {
             item.id === 'ai' ||
             item.id === 'jdbc-runtime' ||
             item.id === 'jre-17' ||
+            item.id === 'clickhouse' ||
+            item.id === 'elasticsearch' ||
+            item.id === 'oracle' ||
             item.id === 'data-versioning') &&
           typeof item.version === 'string' &&
           typeof item.temporaryPath === 'string' &&
@@ -693,7 +836,8 @@ const retryPendingOptionalModuleInstalls = async (): Promise<void> => {
 
 const installOptionalModuleArtifact = async (
   moduleId: OptionalModuleArtifactId,
-  restartBackend = true
+  restartBackend = true,
+  forceReplace = false
 ): Promise<void> => {
   const module = (await getOptionalModuleArtifacts()).find((item) => item.id === moduleId)
   if (!module) {
@@ -743,7 +887,7 @@ const installOptionalModuleArtifact = async (
     try {
       await replaceOptionalModuleInstall(temporaryPath, installPath)
     } catch (error) {
-      if (moduleId !== 'mcp') {
+      if (moduleId !== 'mcp' || forceReplace) {
         throw error
       }
       const pendingPath = join(moduleRoot, `.pending-${module.version}-${randomBytes(8).toString('hex')}`)
@@ -758,7 +902,7 @@ const installOptionalModuleArtifact = async (
       })
       setPendingOptionalModules(pending)
       void retryPendingOptionalModuleInstall(pending[pending.length - 1])
-      return
+      throw new Error('MCP 模块正在被外部调用方占用，新版本已下载。请确认后关闭占用进程并立即更新。')
     }
     const installedModules = getInstalledOptionalModules().filter((item) => item.id !== moduleId)
     installedModules.push({
@@ -778,6 +922,35 @@ const installOptionalModuleArtifact = async (
       await rm(temporaryPath, { recursive: true, force: true }).catch(() => undefined)
     }
   }
+}
+
+const forceInstallMcpModule = async (): Promise<OptionalModuleInfo[]> => {
+  const pending = getPendingOptionalModules().find((item) => item.id === 'mcp')
+  const installPath = getStableOptionalModuleInstallPath('mcp')
+  const pendingWithoutMcp = getPendingOptionalModules().filter((item) => item.id !== 'mcp')
+  if (pending?.temporaryPath && existsSync(pending.temporaryPath)) {
+    setPendingOptionalModules(pendingWithoutMcp)
+    try {
+      await terminateMcpProcesses()
+      await replaceOptionalModuleInstall(pending.temporaryPath, installPath)
+      const installedModules = getInstalledOptionalModules().filter((item) => item.id !== 'mcp')
+      installedModules.push({
+        id: 'mcp',
+        version: pending.version,
+        installedAt: Date.now(),
+        installPath,
+        entryPoint: pending.entryPoint
+      })
+      store.set('optionalModules', installedModules)
+      return await getOptionalModules()
+    } catch (error) {
+      setPendingOptionalModules([...pendingWithoutMcp, pending])
+      throw error
+    }
+  }
+  await terminateMcpProcesses()
+  await installOptionalModuleArtifact('mcp', true, true)
+  return await getOptionalModules()
 }
 
 type DetectedJavaRuntime = {
@@ -1048,7 +1221,14 @@ const getOptionalModuleArtifacts = async (): Promise<readonly OptionalModuleArti
     const remoteById = new Map<OptionalModuleArtifactId, OptionalModuleArtifact>()
     for (const item of payload.modules ?? []) {
       if (
-        (item.id === 'mcp' || item.id === 'ai' || item.id === 'jdbc-runtime' || item.id === 'jre-17' || item.id === 'data-versioning') &&
+        (item.id === 'mcp' ||
+          item.id === 'ai' ||
+          item.id === 'jdbc-runtime' ||
+          item.id === 'jre-17' ||
+          item.id === 'clickhouse' ||
+          item.id === 'elasticsearch' ||
+          item.id === 'oracle' ||
+          item.id === 'data-versioning') &&
         typeof item.version === 'string' &&
         typeof item.url === 'string' &&
         /^https:\/\/github\.com\/vhukze\/DataDjinn\/releases\/download\//.test(item.url) &&
@@ -1205,6 +1385,17 @@ const canRetryTransientApiRequest = (path: string, method?: string): boolean => 
   }
 
   return new URLSearchParams(path.split('?')[1] ?? '').has('open_attempt_id')
+}
+
+const normalizeUpdateCheckError = (error: unknown): Error => {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  if (/fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|TLS|schannel|socket hang up/i.test(message)) {
+    return new Error('检查更新失败：当前网络无法连接 GitHub，请检查网络或代理设置后重试')
+  }
+  if (/latest\.yml.*(?:404|not found)|Cannot find latest\.yml/i.test(message)) {
+    return new Error('检查更新失败：当前发布缺少更新元数据，请稍后重试')
+  }
+  return new Error(message || '检查更新失败')
 }
 
 const waitForTransientApiRetry = async (): Promise<void> => {
@@ -1906,6 +2097,10 @@ app.whenReady().then(async () => {
     store.delete('syncState')
   })
   ipcMain.handle('connection-tree-preferences:get', () => store.get('connectionTreePreferences') ?? {})
+  ipcMain.handle('connection-tree-preferences:get-meta', () => ({
+    preferences: store.get('connectionTreePreferences') ?? {},
+    updatedAt: Number(store.get('connectionTreePreferencesUpdatedAt') ?? 0)
+  }))
   ipcMain.handle('connection-tree-preferences:set', (_, preferences: unknown, updatedAt: unknown) => {
     const nextPreferences =
       preferences && typeof preferences === 'object' && !Array.isArray(preferences)
@@ -1926,6 +2121,12 @@ app.whenReady().then(async () => {
   )
   ipcMain.handle('optional-modules:list', () => getOptionalModules())
   ipcMain.handle('optional-modules:install', (_, moduleId: OptionalModuleId) => installOptionalModule(moduleId))
+  ipcMain.handle('optional-modules:install-force', (_, moduleId: OptionalModuleId) => {
+    if (moduleId !== 'mcp') {
+      throw new Error('仅支持强制更新 MCP 扩展')
+    }
+    return forceInstallMcpModule()
+  })
   ipcMain.handle('optional-modules:uninstall', (_, moduleId: OptionalModuleId) => uninstallOptionalModule(moduleId))
   ipcMain.handle('optional-modules:launch-config', (_, moduleId: OptionalModuleId) =>
     getOptionalModuleLaunchConfig(moduleId)
@@ -2052,35 +2253,39 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('update:check', async () => {
-    if (appUpdateMode === 'portable') {
-      const updateInfo = await checkPortableUpdate()
-      sendUpdateEvent(
-        updateInfo.available ? 'update:available' : 'update:not-available',
-        updateInfo
-      )
-      return updateInfo
-    }
+    try {
+      if (appUpdateMode === 'portable') {
+        const updateInfo = await checkPortableUpdate()
+        sendUpdateEvent(
+          updateInfo.available ? 'update:available' : 'update:not-available',
+          updateInfo
+        )
+        return updateInfo
+      }
 
-    const release = await fetchLatestRelease()
-    configureInstallerUpdateFeed(release)
-    const result = await autoUpdater.checkForUpdates()
-    const nextInfo = {
-      currentVersion: app.getVersion(),
-      latestVersion: result?.updateInfo.version,
-      available: result ? compareVersion(result.updateInfo.version, app.getVersion()) > 0 : false,
-      mode: 'installer',
-      releaseName: result?.updateInfo.releaseName ?? undefined,
-      releaseNotes:
-        typeof result?.updateInfo.releaseNotes === 'string'
-          ? result.updateInfo.releaseNotes
+      const release = await fetchLatestRelease()
+      configureInstallerUpdateFeed(release)
+      const result = await autoUpdater.checkForUpdates()
+      const nextInfo = {
+        currentVersion: app.getVersion(),
+        latestVersion: result?.updateInfo.version,
+        available: result ? compareVersion(result.updateInfo.version, app.getVersion()) > 0 : false,
+        mode: 'installer',
+        releaseName: result?.updateInfo.releaseName ?? undefined,
+        releaseNotes:
+          typeof result?.updateInfo.releaseNotes === 'string'
+            ? result.updateInfo.releaseNotes
+            : undefined,
+        releaseUrl: result?.updateInfo.version
+          ? `https://github.com/vhukze/DataDjinn/releases/tag/v${result.updateInfo.version}`
           : undefined,
-      releaseUrl: result?.updateInfo.version
-        ? `https://github.com/vhukze/DataDjinn/releases/tag/v${result.updateInfo.version}`
-        : undefined,
-      installerDownloaded: installerUpdateDownloaded
-    } satisfies UpdateInfo
-    lastInstallerUpdateInfo = nextInfo.available ? nextInfo : null
-    return nextInfo
+        installerDownloaded: installerUpdateDownloaded
+      } satisfies UpdateInfo
+      lastInstallerUpdateInfo = nextInfo.available ? nextInfo : null
+      return nextInfo
+    } catch (error) {
+      throw normalizeUpdateCheckError(error)
+    }
   })
 
   ipcMain.handle('update:download', async () => {

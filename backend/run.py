@@ -8,6 +8,21 @@ from pathlib import Path
 BACKEND_DIR = Path(__file__).resolve().parent
 
 
+def _configure_optional_database_runtimes() -> None:
+    """Expose installed database client modules before importing the API app."""
+    for variable in (
+        "DATADJINN_CLICKHOUSE_MODULE_PATH",
+        "DATADJINN_ELASTICSEARCH_MODULE_PATH",
+        "DATADJINN_ORACLE_MODULE_PATH",
+    ):
+        configured_path = os.environ.get(variable, "").strip()
+        if not configured_path:
+            continue
+        python_path = Path(configured_path).expanduser() / "python"
+        if python_path.is_dir():
+            sys.path.insert(0, str(python_path))
+
+
 def _configure_optional_jdbc_runtime() -> None:
     """Expose the separately installed JDBC bridge before importing the API app."""
     configured_path = os.environ.get("DATADJINN_JDBC_RUNTIME_PATH", "").strip()
@@ -25,6 +40,7 @@ def _configure_optional_jdbc_runtime() -> None:
         sys.path.insert(0, str(python_path))
 
 
+_configure_optional_database_runtimes()
 _configure_optional_jdbc_runtime()
 
 import uvicorn

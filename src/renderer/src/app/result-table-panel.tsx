@@ -703,6 +703,7 @@ const ResultTablePanel = memo(
       currentTab.kind === 'preview' || currentTab.kind === 'redis-browser' ? (
         <ResultWhereInput
           tab={currentTab}
+          connection={getConnection(currentTab.connectionId)}
           onUpdateWhere={(nextWhere) => updateWorkspaceTab(currentTab.key, { where: nextWhere })}
           onPreviewTable={(nextTab, nextWhere) => {
             const previewObjectType = nextTab.objectType === 'view' ? 'view' : 'table'
@@ -952,9 +953,11 @@ const ResultTablePanel = memo(
       tableSearchShortcut
     ])
     const queryWritableColumns = tab.result?.column_origins ?? {}
-    const supportsWritableCells =
-      tab.kind === 'preview' || (tab.kind === 'query' && Object.keys(queryWritableColumns).length > 0)
     const connection = getConnection(tab.connectionId)
+    const supportsWritableCells =
+      connection?.database_type !== 'elasticsearch' &&
+      (tab.kind === 'preview' ||
+        (tab.kind === 'query' && Object.keys(queryWritableColumns).length > 0))
     const derivedState = useMemo(
       () =>
         buildResultTableDerivedState({

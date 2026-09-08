@@ -444,6 +444,23 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
     connection: ConnectionInfo,
     selectedDatabaseOverride?: string[]
   ): Promise<DatabaseTreeNode[]> => {
+    // Elasticsearch 没有数据库层级，索引组直接挂在连接节点下。
+    if (connection.database_type === 'elasticsearch') {
+      const objectGroups = await preloadObjectGroupNodes(
+        connection.connection_id,
+        undefined,
+        undefined,
+        connection.database_type
+      )
+      deps.setAllDatabases((current) => ({ ...current, [connection.connection_id]: [] }))
+      deps.setTreeData((current) => {
+        const next = updateTreeNode(current, `connection:${connection.connection_id}`, objectGroups)
+        deps.treeDataRef.current = next
+        return next
+      })
+      return objectGroups
+    }
+
     const data = await deps.requestJson<{ databases: DatabaseInfo[] }>(
       `/connections/${connection.connection_id}/databases`
     )
@@ -490,7 +507,8 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
           'oracle',
           'mongodb',
           'redis',
-          'clickhouse'
+          'clickhouse',
+          'elasticsearch'
         ].includes(connection.database_type)
       ) {
         return []

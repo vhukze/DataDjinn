@@ -180,6 +180,99 @@ async function resizeResourcePanel(page, targetWidth) {
     .toBeGreaterThanOrEqual(targetWidth - 6)
 }
 
+async function dragResourcePanelAndReadPreview(page, targetWidth) {
+  const metrics = await page.evaluate((desiredWidth) => {
+    const panel = document.querySelector('.resource-panel')
+    const resizer = document.querySelector('.workspace-side-resizer')
+    const guide = document.querySelector('.workspace-resize-guide')
+    if (!(panel instanceof HTMLElement) || !(resizer instanceof HTMLElement) || !(guide instanceof HTMLElement)) {
+      return null
+    }
+
+    const panelRect = panel.getBoundingClientRect()
+    const resizerRect = resizer.getBoundingClientRect()
+    return {
+      currentWidth: panelRect.width,
+      guideLeft: guide.getBoundingClientRect().left,
+      startX: resizerRect.left + resizerRect.width / 2,
+      targetX: panelRect.left + desiredWidth,
+      y: resizerRect.top + Math.min(160, Math.max(40, resizerRect.height / 2))
+    }
+  }, targetWidth)
+
+  expect(metrics, 'resource panel resize preview should exist').not.toBeNull()
+  if (!metrics) {
+    return null
+  }
+
+  await page.mouse.move(metrics.startX, metrics.y)
+  await page.mouse.down()
+  await page.evaluate(
+    () => new Promise((resolve) => window.requestAnimationFrame(() => resolve(undefined)))
+  )
+  await page.mouse.move(metrics.targetX, metrics.y, { steps: 12 })
+  const preview = await page.evaluate(
+    () => {
+      const panel = document.querySelector('.resource-panel')
+      const guide = document.querySelector('.workspace-resize-guide')
+      if (!(panel instanceof HTMLElement) || !(guide instanceof HTMLElement)) {
+        return null
+      }
+      return {
+        panelWidth: panel.getBoundingClientRect().width,
+        guideLeft: guide.getBoundingClientRect().left,
+        guideVisible: window.getComputedStyle(guide).opacity
+      }
+    }
+  )
+
+  return { metrics, preview }
+}
+
+async function dragAiPanelAndReadPreview(page, targetWidth) {
+  const metrics = await page.evaluate((desiredWidth) => {
+    const panel = document.querySelector('.ai-dock-panel')
+    const resizer = document.querySelector('.ai-panel-resizer')
+    const guide = document.querySelector('.ai-panel-resize-guide')
+    if (!(panel instanceof HTMLElement) || !(resizer instanceof HTMLElement) || !(guide instanceof HTMLElement)) {
+      return null
+    }
+
+    const panelRect = panel.getBoundingClientRect()
+    const resizerRect = resizer.getBoundingClientRect()
+    return {
+      currentWidth: panelRect.width,
+      guideLeft: guide.getBoundingClientRect().left,
+      startX: resizerRect.left + resizerRect.width / 2,
+      targetX: panelRect.right - desiredWidth,
+      y: resizerRect.top + Math.min(160, Math.max(40, resizerRect.height / 2))
+    }
+  }, targetWidth)
+
+  expect(metrics, 'ai panel resize preview should exist').not.toBeNull()
+  if (!metrics) {
+    return null
+  }
+
+  await page.mouse.move(metrics.startX, metrics.y)
+  await page.mouse.down()
+  await page.mouse.move(metrics.targetX, metrics.y, { steps: 12 })
+  const preview = await page.evaluate(() => {
+    const panel = document.querySelector('.ai-dock-panel')
+    const guide = document.querySelector('.ai-panel-resize-guide')
+    if (!(panel instanceof HTMLElement) || !(guide instanceof HTMLElement)) {
+      return null
+    }
+    return {
+      panelWidth: panel.getBoundingClientRect().width,
+      guideLeft: guide.getBoundingClientRect().left,
+      guideVisible: window.getComputedStyle(guide).opacity
+    }
+  })
+
+  return { metrics, preview }
+}
+
 function treeNode(page, key) {
   return page.locator(`.resource-tree-node-title[data-tree-node-key="${key}"]`)
 }
@@ -2924,6 +3017,21 @@ test.describe('workspace regression', () => {
       const counter = searchControls.locator('.tree-search-counter')
       const navigationButtons = searchControls.locator('button.tree-search-nav-btn')
       await expect(searchInput).toBeVisible({ timeout: 10000 })
+      await expect(searchInput).toBeFocused()
+
+      for (const character of 'items') {
+        await searchInput.press(character)
+        await expect(
+          searchInput,
+          `typing '${character}' must keep focus in the tree search input`
+        ).toBeFocused()
+      }
+      await expect(searchInput).toHaveValue('items')
+      await expect(
+        searchInput,
+        'typing a search term must keep focus in the tree search input'
+      ).toBeFocused()
+      await searchInput.fill('')
 
       const expectedTableMatchCount = await page.locator('.table-tree-title').evaluateAll((nodes) =>
         nodes.filter((node) => (node.textContent ?? '').toLowerCase().includes('items')).length
@@ -6350,6 +6458,91 @@ test.describe('workspace regression', () => {
     }
   })
 
+  test('resource sidebar resize should defer workspace reflow until mouse release @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+
+      const result = await dragResourcePanelAndReadPreview(page, 420)
+      expect(result).not.toBeNull()
+      if (!result) {
+        return
+      }
+
+      expect(
+        Math.abs(result.preview.panelWidth - result.metrics.currentWidth),
+        'dragging the divider should not repeatedly resize the workspace'
+      ).toBeLessThanOrEqual(1)
+      expect(result.preview.guideVisible, 'resize preview line should be visible while dragging').toBe(
+        '1'
+      )
+      expect(
+        Math.abs(result.preview.guideLeft - result.metrics.targetX),
+        'resize preview line should follow the target sidebar edge'
+      ).toBeLessThanOrEqual(3)
+
+      await page.mouse.up()
+      await expect
+        .poll(
+          () =>
+            page
+              .locator('.resource-panel')
+              .evaluate((node) => Math.round(node.getBoundingClientRect().width)),
+          { timeout: 10000 }
+        )
+        .toBeGreaterThanOrEqual(414)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('ai sidebar resize should defer workspace reflow until mouse release @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await expect(page.locator('.ai-panel-resizer')).toBeVisible({ timeout: 15000 })
+
+      const result = await dragAiPanelAndReadPreview(page, 500)
+      expect(result).not.toBeNull()
+      if (!result || !result.preview) {
+        return
+      }
+
+      expect(
+        Math.abs(result.preview.panelWidth - result.metrics.currentWidth),
+        'dragging the ai divider should not repeatedly resize the workspace'
+      ).toBeLessThanOrEqual(1)
+      expect(result.preview.guideVisible, 'ai resize preview line should be visible while dragging').toBe(
+        '1'
+      )
+      expect(
+        Math.abs(result.preview.guideLeft - result.metrics.targetX),
+        'ai resize preview line should follow the target panel edge'
+      ).toBeLessThanOrEqual(6)
+
+      await page.mouse.up()
+      await expect
+        .poll(
+          () =>
+            page
+              .locator('.ai-dock-panel')
+              .evaluate((node) => Math.round(node.getBoundingClientRect().width)),
+          { timeout: 10000 }
+        )
+        .toBeGreaterThanOrEqual(Math.round(result.metrics.currentWidth + 70))
+    } finally {
+      await electronApp.close()
+    }
+  })
+
   test('resource sidebar header should stay single-line and keep primary actions readable at minimum width @bug', async () => {
     const electronApp = await launchRegressionApp()
 
@@ -8056,6 +8249,58 @@ test.describe('workspace regression', () => {
       console.log('[perf][column-hover] after:', JSON.stringify(afterInfo))
 
       expect(afterInfo.cellBg, 'cell background should not change on hover').toBe(info.cellBg)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('ordinary result rows should not change color on mouse hover @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await doubleClickTreeNode(page, `object-group:${fixtureConnectionId}:::table`)
+      await openFixtureTable(page, largeTableName)
+
+      const target = page.locator('.workspace-active-content .editable-cell[data-cell-key]').first()
+      await expect(target).toBeVisible({ timeout: 30000 })
+      const before = await target.evaluate((node) => {
+        const cell = node.closest('.ant-table-cell, td') ?? node.parentElement
+        const row = node.closest('tr, .ant-table-row')
+        if (!(cell instanceof HTMLElement) || !(row instanceof HTMLElement)) {
+          return null
+        }
+        return {
+          cellBackground: window.getComputedStyle(cell).backgroundColor,
+          rowBackground: window.getComputedStyle(row).backgroundColor
+        }
+      })
+      expect(before).not.toBeNull()
+
+      await target.hover()
+      await page.waitForTimeout(120)
+      const after = await target.evaluate((node) => {
+        const cell = node.closest('.ant-table-cell, td') ?? node.parentElement
+        const row = node.closest('tr, .ant-table-row')
+        if (!(cell instanceof HTMLElement) || !(row instanceof HTMLElement)) {
+          return null
+        }
+        return {
+          cellBackground: window.getComputedStyle(cell).backgroundColor,
+          rowBackground: window.getComputedStyle(row).backgroundColor
+        }
+      })
+      expect(after).not.toBeNull()
+      expect(after?.cellBackground, 'ordinary cell background should stay unchanged on hover').toBe(
+        before?.cellBackground
+      )
+      expect(after?.rowBackground, 'ordinary row background should stay unchanged on hover').toBe(
+        before?.rowBackground
+      )
     } finally {
       await electronApp.close()
     }

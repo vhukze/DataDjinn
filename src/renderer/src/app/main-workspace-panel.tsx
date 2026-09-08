@@ -19,6 +19,7 @@ const FAST_PRELOADED_DROPDOWN_PROPS = {
 type MainWorkspacePanelProps = {
   mainPanelRef: RefObject<HTMLDivElement | null>
   aiDockPanelRef: RefObject<HTMLDivElement | null>
+  aiPanelResizeGuideRef: RefObject<HTMLDivElement | null>
   theme: string
   aiPanelOpen: boolean
   aiPanelSize: number
@@ -189,6 +190,7 @@ const WorkspaceCenterArea = memo(
 
 type WorkspaceAiDockProps = {
   aiDockPanelRef: RefObject<HTMLDivElement | null>
+  aiPanelResizeGuideRef: RefObject<HTMLDivElement | null>
   aiPanelOpen: boolean
   aiPanelSize: number
   resizingAiPanel: boolean
@@ -199,6 +201,7 @@ type WorkspaceAiDockProps = {
 const WorkspaceAiDock = memo(
   function WorkspaceAiDock({
     aiDockPanelRef,
+    aiPanelResizeGuideRef,
     aiPanelOpen,
     aiPanelSize,
     resizingAiPanel,
@@ -219,6 +222,11 @@ const WorkspaceAiDock = memo(
     return (
       <>
         <div
+          ref={aiPanelResizeGuideRef}
+          className={`ai-panel-resize-guide${resizingAiPanel ? ' active' : ''}`}
+          aria-hidden="true"
+        />
+        <div
           className={`ai-panel-resizer${resizingAiPanel ? ' active' : ''}`}
           onMouseDown={handleAiPanelResizeMouseDown}
         />
@@ -233,6 +241,7 @@ const WorkspaceAiDock = memo(
     )
   },
   (prev, next) =>
+    prev.aiPanelResizeGuideRef === next.aiPanelResizeGuideRef &&
     prev.aiPanelOpen === next.aiPanelOpen &&
     prev.aiPanelSize === next.aiPanelSize &&
     prev.resizingAiPanel === next.resizingAiPanel &&
@@ -244,6 +253,7 @@ const MainWorkspacePanel = memo(
   function MainWorkspacePanel({
     mainPanelRef,
     aiDockPanelRef,
+    aiPanelResizeGuideRef,
     theme,
     aiPanelOpen,
     aiPanelSize,
@@ -279,6 +289,7 @@ const MainWorkspacePanel = memo(
           />
           <WorkspaceAiDock
             aiDockPanelRef={aiDockPanelRef}
+            aiPanelResizeGuideRef={aiPanelResizeGuideRef}
             aiPanelOpen={aiPanelOpen}
             aiPanelSize={aiPanelSize}
             resizingAiPanel={resizingAiPanel}
@@ -291,6 +302,7 @@ const MainWorkspacePanel = memo(
   },
   (prev, next) =>
     prev.theme === next.theme &&
+    prev.aiPanelResizeGuideRef === next.aiPanelResizeGuideRef &&
     prev.aiPanelOpen === next.aiPanelOpen &&
     prev.aiPanelSize === next.aiPanelSize &&
     prev.resizingAiPanel === next.resizingAiPanel &&

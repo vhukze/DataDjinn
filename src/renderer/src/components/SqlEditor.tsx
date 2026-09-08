@@ -63,6 +63,7 @@ export type SqlDialect =
   | 'mongodb'
   | 'redis'
   | 'clickhouse'
+  | 'elasticsearch'
 
 export interface SqlCompletionColumn {
   name: string
@@ -297,7 +298,8 @@ const DIALECT_KEYWORDS: Record<SqlDialect, string[]> = {
     'Nullable',
     'SHOW CREATE TABLE',
     'DESCRIBE TABLE'
-  ]
+  ],
+  elasticsearch: ['query', 'match', 'term', 'bool', 'must', 'filter', 'range', 'aggs', 'sort', 'index']
 }
 
 const TABLE_CONTEXT_KEYWORDS = ['FROM', 'JOIN', 'UPDATE', 'INTO']
@@ -645,7 +647,8 @@ const SQL_FORMATTER_LANGUAGE: Record<SqlDialect, SqlLanguage> = {
   oracle: 'plsql',
   mongodb: 'sql',
   redis: 'sql',
-  clickhouse: 'clickhouse'
+  clickhouse: 'clickhouse',
+  elasticsearch: 'sql'
 }
 
 const formatSql = (sql: string, dialect: SqlDialect = 'sqlite'): string => {

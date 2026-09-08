@@ -3,6 +3,7 @@ import type { DatabaseTreeNode } from './tree-model'
 type HandleTreeSelectionOptions = {
   node: DatabaseTreeNode
   nativeEvent?: MouseEvent
+  focusContainer?: boolean
   resourceTreeContainer: HTMLDivElement | null
   connectionSelectionAnchorId?: string
   selectedConnectionIds: string[]
@@ -30,6 +31,7 @@ export const selectConnectionTreeNodes = (
 export const handleTreeSelectionChange = ({
   node,
   nativeEvent,
+  focusContainer = true,
   resourceTreeContainer,
   connectionSelectionAnchorId,
   selectedConnectionIds,
@@ -40,7 +42,9 @@ export const handleTreeSelectionChange = ({
   setSelectedTreeKeys,
   setConnectionSelectionAnchorId
 }: HandleTreeSelectionOptions): void => {
-  resourceTreeContainer?.focus()
+  if (focusContainer) {
+    resourceTreeContainer?.focus()
+  }
   setFocusedTreeNode(node)
   if (node.connectionId) {
     setSelectedConnectionId(node.connectionId)

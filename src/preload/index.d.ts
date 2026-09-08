@@ -88,7 +88,14 @@ type SyncLocalState = {
   autoSyncEnabled?: boolean
 }
 
-type OptionalModuleId = 'mcp' | 'ai' | 'jdbc' | 'data-versioning'
+type OptionalModuleId =
+  | 'mcp'
+  | 'ai'
+  | 'jdbc'
+  | 'clickhouse'
+  | 'elasticsearch'
+  | 'oracle'
+  | 'data-versioning'
 
 type OptionalModuleInfo = {
   id: OptionalModuleId
@@ -173,13 +180,19 @@ interface DataDjinnAPI {
   setSyncLocalState: (state: SyncLocalState) => Promise<SyncLocalState>
   clearSyncLocalState: () => Promise<void>
   getConnectionTreePreferences: () => Promise<Record<string, unknown>>
-  setConnectionTreePreferences: (
+  getConnectionTreePreferencesMeta: () => Promise<{
     preferences: Record<string, unknown>
+    updatedAt: number
+  }>
+  setConnectionTreePreferences: (
+    preferences: Record<string, unknown>,
+    updatedAt?: number
   ) => Promise<Record<string, unknown>>
   getAppSyncSettings: () => Promise<AppSyncSettings>
   applyAppSyncSettings: (settings: Partial<AppSyncSettings>) => Promise<AppSyncSettings>
   getOptionalModules: () => Promise<OptionalModuleInfo[]>
   installOptionalModule: (moduleId: OptionalModuleId) => Promise<OptionalModuleInfo[]>
+  forceInstallOptionalModule: (moduleId: OptionalModuleId) => Promise<OptionalModuleInfo[]>
   uninstallOptionalModule: (moduleId: OptionalModuleId) => Promise<OptionalModuleInfo[]>
   getOptionalModuleLaunchConfig: (moduleId: OptionalModuleId) => Promise<OptionalModuleLaunchConfig | null>
   minimizeWindow: () => Promise<void>

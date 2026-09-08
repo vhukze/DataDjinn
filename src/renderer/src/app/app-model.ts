@@ -86,7 +86,14 @@ export const DEFAULT_MCP_SETTINGS: McpSettings = {
   allowedConnectionIds: []
 }
 
-export type OptionalModuleId = 'mcp' | 'ai' | 'jdbc' | 'data-versioning'
+export type OptionalModuleId =
+  | 'mcp'
+  | 'ai'
+  | 'jdbc'
+  | 'clickhouse'
+  | 'elasticsearch'
+  | 'oracle'
+  | 'data-versioning'
 
 export type OptionalModuleInfo = {
   id: OptionalModuleId

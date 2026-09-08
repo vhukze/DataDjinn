@@ -2,7 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-DatabaseType = Literal["sqlite", "mysql", "postgresql", "dm", "gaussdb", "oracle", "mongodb", "redis", "clickhouse"]
+DatabaseType = Literal["sqlite", "mysql", "postgresql", "dm", "gaussdb", "oracle", "mongodb", "redis", "clickhouse", "elasticsearch"]
 
 
 class ConnectionRequest(BaseModel):
@@ -18,6 +18,10 @@ class ConnectionRequest(BaseModel):
     driver_path: str | None = None
     dm_driver_id: str | None = None
     dm_driver_path: str | None = None
+    es_auth_type: Literal["basic", "api_key", "none"] = "basic"
+    es_api_key: str | None = None
+    es_use_ssl: bool = False
+    es_verify_certs: bool = True
     ssh_enabled: bool = False
     ssh_host: str | None = None
     ssh_port: int | None = None
@@ -37,6 +41,7 @@ class ConnectionInfo(BaseModel):
     host: str | None = None
     port: int | str | None = None
     database: str
+    es_auth_type: Literal["basic", "api_key", "none"] = "basic"
     has_password: bool = False
     is_open: bool = False
     server_version: str | None = None

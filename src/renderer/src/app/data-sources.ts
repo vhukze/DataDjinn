@@ -8,6 +8,7 @@ export type DatabaseType =
   | 'mongodb'
   | 'redis'
   | 'clickhouse'
+  | 'elasticsearch'
 
 export const DATABASE_TYPE_LABELS: Record<DatabaseType, string> = {
   sqlite: 'SQLite',
@@ -18,7 +19,8 @@ export const DATABASE_TYPE_LABELS: Record<DatabaseType, string> = {
   oracle: 'Oracle',
   mongodb: 'Mongo',
   redis: 'Redis',
-  clickhouse: 'CK'
+  clickhouse: 'CK',
+  elasticsearch: 'ES'
 }
 
 export type ImportConnectionSource = 'datagrip' | 'dbeaver' | 'datadjinn'
@@ -38,6 +40,10 @@ export type ConnectionFormValues = {
   driver_path?: string
   dm_driver_id?: string
   dm_driver_path?: string
+  es_auth_type?: 'basic' | 'api_key' | 'none'
+  es_api_key?: string
+  es_use_ssl?: boolean
+  es_verify_certs?: boolean
   ssh_enabled?: boolean
   ssh_host?: string
   ssh_port?: number
@@ -114,6 +120,9 @@ export const defaultPortForDatabaseType = (databaseType: DatabaseType): number |
   if (databaseType === 'clickhouse') {
     return 8123
   }
+  if (databaseType === 'elasticsearch') {
+    return 9200
+  }
   return undefined
 }
 
@@ -145,6 +154,9 @@ export const inferDataGripDatabaseType = (params: {
 
   if (fingerprint.includes('clickhouse')) {
     return 'clickhouse'
+  }
+  if (fingerprint.includes('elasticsearch')) {
+    return 'elasticsearch'
   }
   if (fingerprint.includes('postgres')) {
     return 'postgresql'
@@ -246,6 +258,7 @@ const inferDBeaverDatabaseType = (params: {
 
   if (fingerprint.includes('sqlite')) return 'sqlite'
   if (fingerprint.includes('clickhouse')) return 'clickhouse'
+  if (fingerprint.includes('elasticsearch')) return 'elasticsearch'
   if (fingerprint.includes('postgres')) return 'postgresql'
   if (fingerprint.includes('gauss') || fingerprint.includes('opengauss')) return 'gaussdb'
   if (fingerprint.includes('dameng') || fingerprint.includes('jdbc:dm:')) return 'dm'

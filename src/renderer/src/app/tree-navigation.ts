@@ -78,11 +78,12 @@ export const ensureTreePathExpanded = async ({
 type LocateTreePathOptions = {
   targetPath?: string[]
   expandTarget?: boolean
+  focusTree?: boolean
   treeDataRef: RefObject<DatabaseTreeNode[]>
   expandedKeysRef: RefObject<React.Key[]>
   setExpandedKeys: React.Dispatch<React.SetStateAction<React.Key[]>>
   reloadNodeChildren: (node: DatabaseTreeNode, expand?: boolean) => Promise<void>
-  handleTreeSelection: (node: DatabaseTreeNode) => void
+  handleTreeSelection: (node: DatabaseTreeNode, focusContainer?: boolean) => void
   resourceTreeContainerRef: RefObject<HTMLDivElement | null>
   resourceTreeRef: RefObject<unknown>
   resourceTreeViewportRef: RefObject<HTMLDivElement | null>
@@ -94,6 +95,7 @@ type LocateTreePathOptions = {
 export const locateTreePathInView = async ({
   targetPath,
   expandTarget,
+  focusTree = true,
   treeDataRef,
   expandedKeysRef,
   setExpandedKeys,
@@ -118,8 +120,10 @@ export const locateTreePathInView = async ({
     return
   }
 
-  handleTreeSelection(targetNode)
-  resourceTreeContainerRef.current?.focus()
+  handleTreeSelection(targetNode, focusTree)
+  if (focusTree) {
+    resourceTreeContainerRef.current?.focus()
+  }
   if (enableVirtualTree) {
     const treeApi = resourceTreeRef.current as {
       scrollTo?: (options: {

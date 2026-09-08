@@ -4,6 +4,7 @@ import base64
 import ctypes
 import importlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -18,7 +19,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import Engine, URL, create_engine, text
 from sqlalchemy.dialects import registry
 from sqlalchemy.engine import default
@@ -30,7 +31,15 @@ from app.db.jdbc_bridge import load_jdbc_bridge
 from app.db import java_runtime
 from app.db.mongo_utils import MongoClient, is_mongo_client
 from app.db.redis_utils import Redis, is_redis_client
+from app.db.elasticsearch_utils import (
+    ElasticsearchClient,
+    disable_elasticsearch_compatibility_headers,
+    is_elasticsearch_client,
+)
 from app.schemas.connection import ConnectionInfo, ConnectionRequest, DatabaseType
+
+
+logger = logging.getLogger(__name__)
 
 
 def _is_clickhouse_engine(engine: Any) -> bool:
@@ -516,6 +525,10 @@ class StoredConnection(BaseModel):
     driver_path: str | None = None
     dm_driver_id: str | None = None
     dm_driver_path: str | None = None
+    es_auth_type: str = "basic"
+    encrypted_es_api_key: str | None = None
+    es_use_ssl: bool = False
+    es_verify_certs: bool = True
     ssh_enabled: bool = False
     ssh_host: str | None = None
     ssh_port: int | None = None
@@ -607,7 +620,7 @@ def _decrypt_password(encrypted_password: str | None) -> str | None:
 
 class ConnectionManager:
     def __init__(self) -> None:
-        self._engines: dict[str, Engine | MongoClient | Redis] = {}
+        self._engines: dict[str, Engine | MongoClient | Redis | ElasticsearchClient] = {}
         self._ssh_tunnels: dict[str, SshTunnelHandle] = {}
         self._connections: dict[str, ConnectionInfo] = {}
         self._stored_connections: dict[str, StoredConnection] = {}
@@ -774,6 +787,10 @@ class ConnectionManager:
             driver_path=_manual_driver_path(stored),
             dm_driver_id=stored.dm_driver_id,
             dm_driver_path=stored.dm_driver_path,
+            es_auth_type=stored.es_auth_type if stored.es_auth_type in {"basic", "api_key", "none"} else "basic",
+            es_api_key=self._decrypt_stored_secret(stored, "es_api_key", stored.encrypted_es_api_key),
+            es_use_ssl=stored.es_use_ssl,
+            es_verify_certs=stored.es_verify_certs,
             ssh_enabled=stored.ssh_enabled,
             ssh_host=stored.ssh_host,
             ssh_port=stored.ssh_port,
@@ -799,7 +816,7 @@ class ConnectionManager:
 
         return password
 
-    def get_engine(self, connection_id: str) -> Engine | MongoClient | Redis | None:
+    def get_engine(self, connection_id: str) -> Engine | MongoClient | Redis | ElasticsearchClient | None:
         return self._engines.get(connection_id)
 
     def ensure_connection_healthy(
@@ -901,7 +918,17 @@ class ConnectionManager:
 
         data = json.loads(CONNECTION_STORE_PATH.read_text(encoding="utf-8"))
         for item in data.get("connections", []):
-            stored = StoredConnection.model_validate(item)
+            try:
+                stored = StoredConnection.model_validate(item)
+            except (ValidationError, TypeError, ValueError) as exc:
+                unsupported_type = item.get("database_type") if isinstance(item, dict) else None
+                logger.warning(
+                    "跳过无法加载的已保存连接%s%s：%s",
+                    f"（{unsupported_type}）" if unsupported_type else "",
+                    f" {item.get('name', '')}" if isinstance(item, dict) else "",
+                    exc,
+                )
+                continue
             self._stored_connections[stored.connection_id] = stored
             info = self._connection_info(stored.connection_id, self._request_from_stored(stored), stored, is_open=False)
             self._connections[stored.connection_id] = info
@@ -920,6 +947,10 @@ class ConnectionManager:
             driver_path=_manual_driver_path(stored),
             dm_driver_id=stored.dm_driver_id,
             dm_driver_path=stored.dm_driver_path,
+            es_auth_type=stored.es_auth_type if stored.es_auth_type in {"basic", "api_key", "none"} else "basic",
+            es_api_key=self._decrypt_stored_secret(stored, "es_api_key", stored.encrypted_es_api_key),
+            es_use_ssl=stored.es_use_ssl,
+            es_verify_certs=stored.es_verify_certs,
             ssh_enabled=stored.ssh_enabled,
             ssh_host=stored.ssh_host,
             ssh_port=stored.ssh_port,
@@ -987,7 +1018,7 @@ class ConnectionManager:
             raise ValueError("连接不存在")
 
         request = self._request_from_stored(stored)
-        engine: Engine | MongoClient | Redis | None = None
+        engine: Engine | MongoClient | Redis | ElasticsearchClient | None = None
         tunnel: SshTunnelHandle | None = None
         if open_attempt_id:
             with self._connection_open_lock:
@@ -1059,7 +1090,10 @@ class ConnectionManager:
         data = {"connections": [connection.model_dump() for connection in self._stored_connections.values()]}
         CONNECTION_STORE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def _ping_engine(self, engine: Engine | MongoClient | Redis) -> None:
+    def _ping_engine(self, engine: Engine | MongoClient | Redis | ElasticsearchClient) -> None:
+        if is_elasticsearch_client(engine):
+            engine.info()
+            return
         if is_mongo_client(engine):
             engine.admin.command("ping")
             return
@@ -1071,8 +1105,8 @@ class ConnectionManager:
         with engine.connect() as connection:
             connection.execute(text("SELECT 1 FROM DUAL" if engine.dialect.name in {"dm", "dmPython", "oracle"} else "SELECT 1"))
 
-    def _dispose_engine(self, engine: Engine | MongoClient | Redis) -> None:
-        if is_mongo_client(engine) or is_redis_client(engine):
+    def _dispose_engine(self, engine: Engine | MongoClient | Redis | ElasticsearchClient) -> None:
+        if is_mongo_client(engine) or is_redis_client(engine) or is_elasticsearch_client(engine):
             engine.close()
             return
 
@@ -1087,12 +1121,12 @@ class ConnectionManager:
         except Exception:
             pass
 
-    def _dispose_connection_resources(self, engine: Engine | MongoClient | Redis | None, tunnel: SshTunnelHandle | None) -> None:
+    def _dispose_connection_resources(self, engine: Engine | MongoClient | Redis | ElasticsearchClient | None, tunnel: SshTunnelHandle | None) -> None:
         if engine is not None:
             self._dispose_engine(engine)
         self._dispose_tunnel(tunnel)
 
-    def _open_runtime_engine(self, request: ConnectionRequest) -> tuple[Engine | MongoClient | Redis, SshTunnelHandle | None]:
+    def _open_runtime_engine(self, request: ConnectionRequest) -> tuple[Engine | MongoClient | Redis | ElasticsearchClient, SshTunnelHandle | None]:
         runtime_request = request.model_copy(deep=True)
         tunnel: SshTunnelHandle | None = None
 
@@ -1247,7 +1281,7 @@ class ConnectionManager:
             if gateway_socket is not None:
                 gateway_socket.close()
 
-    def _create_engine(self, request: ConnectionRequest) -> Engine | MongoClient | Redis:
+    def _create_engine(self, request: ConnectionRequest) -> Engine | MongoClient | Redis | ElasticsearchClient:
         if request.database_type == "sqlite":
             return self._create_sqlite_engine(request)
 
@@ -1274,6 +1308,9 @@ class ConnectionManager:
 
         if request.database_type == "clickhouse":
             return self._create_clickhouse_engine(request)
+
+        if request.database_type == "elasticsearch":
+            return self._create_elasticsearch_client(request)
 
         raise ValueError("不支持的数据库类型")
 
@@ -1386,6 +1423,42 @@ class ConnectionManager:
             retry_on_timeout=False,
             health_check_interval=0,
         )
+
+    def _create_elasticsearch_client(self, request: ConnectionRequest) -> ElasticsearchClient:
+        if not request.host:
+            raise ValueError("Elasticsearch 主机不能为空")
+        if not request.port:
+            raise ValueError("Elasticsearch 端口不能为空")
+
+        try:
+            from elasticsearch import Elasticsearch
+        except ImportError as exc:
+            raise RuntimeError("缺少 Elasticsearch Python 驱动，请安装后重试") from exc
+
+        disable_elasticsearch_compatibility_headers()
+
+        auth_type = request.es_auth_type or "basic"
+        options: dict[str, Any] = {
+            "hosts": [{
+                "host": request.host,
+                "port": int(request.port),
+                "scheme": "https" if request.es_use_ssl else "http",
+            }],
+            "request_timeout": DATABASE_CONNECT_TIMEOUT_SECONDS,
+            "verify_certs": bool(request.es_verify_certs),
+        }
+        if auth_type == "api_key":
+            if not request.es_api_key:
+                raise ValueError("Elasticsearch API Key 不能为空")
+            options["api_key"] = request.es_api_key
+        elif auth_type == "basic":
+            if not request.username:
+                raise ValueError("Elasticsearch 用户名不能为空")
+            options["basic_auth"] = (request.username, request.password or "")
+        elif auth_type != "none":
+            raise ValueError("Elasticsearch 认证方式无效")
+
+        return ElasticsearchClient(Elasticsearch(**options))
 
     def _create_clickhouse_engine(self, request: ConnectionRequest) -> Engine:
         if not request.host:
@@ -1605,7 +1678,16 @@ class ConnectionManager:
         )
         return create_engine(url, creator=connect, pool_pre_ping=True)
 
-    def _detect_server_version(self, engine: Engine | MongoClient | Redis) -> str | None:
+    def _detect_server_version(self, engine: Engine | MongoClient | Redis | ElasticsearchClient) -> str | None:
+        if is_elasticsearch_client(engine):
+            try:
+                info = engine.info()
+                body = getattr(info, "body", info)
+                version = body.get("version", {}).get("number") if isinstance(body, dict) else None
+                return str(version) if version else None
+            except Exception:
+                return None
+
         if is_redis_client(engine):
             try:
                 info = engine.info("server")
@@ -1669,6 +1751,7 @@ class ConnectionManager:
             host=request.host,
             port=request.port,
             database=self._display_database(request),
+            es_auth_type=request.es_auth_type,
             has_password=bool(request.password) or bool(
                 stored
                 and stored.encrypted_password
@@ -1698,6 +1781,10 @@ class ConnectionManager:
             driver_path=_manual_driver_path(request),
             dm_driver_id=request.dm_driver_id,
             dm_driver_path=request.dm_driver_path,
+            es_auth_type=request.es_auth_type,
+            encrypted_es_api_key=_encrypt_password(request.es_api_key),
+            es_use_ssl=bool(request.es_use_ssl),
+            es_verify_certs=bool(request.es_verify_certs),
             ssh_enabled=bool(request.ssh_enabled),
             ssh_host=request.ssh_host,
             ssh_port=(request.ssh_port or 22) if request.ssh_enabled else None,
@@ -1734,6 +1821,9 @@ class ConnectionManager:
 
         if request.database_type == "clickhouse":
             return f"{request.database or 'default'}@{request.host}:{request.port}"
+
+        if request.database_type == "elasticsearch":
+            return f"{request.host}:{request.port}"
 
         return request.database or f"{request.host}:{request.port}"
 

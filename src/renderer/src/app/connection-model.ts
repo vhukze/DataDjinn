@@ -14,6 +14,7 @@ export type ConnectionInfo = {
   host?: string
   port?: number | string
   database: string
+  es_auth_type?: 'basic' | 'api_key' | 'none'
   has_password: boolean
   is_open: boolean
   server_version?: string | null

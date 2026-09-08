@@ -101,6 +101,8 @@ test('main app update feed should ignore extension-only releases @smoke', () => 
   expect(mainSource).toContain('没有找到主程序正式版本发布')
   expect(mainSource).toContain('configureInstallerUpdateFeed(release)')
   expect(mainSource).toContain('/^v\\d+(?:\\.\\d+){2,3}')
+  expect(mainSource).toContain('normalizeUpdateCheckError')
+  expect(mainSource).toContain('当前网络无法连接 GitHub')
 })
 
 test('a transient API fetch failure should not restart a healthy backend @smoke', () => {
@@ -163,7 +165,7 @@ test('AI should be an optional local module and the core backend should not moun
     'utf-8'
   )
 
-  expect(mainSource).toContain("type OptionalModuleId = 'mcp' | 'ai' | 'jdbc'")
+  expect(mainSource).toMatch(/type OptionalModuleId =\s*\n\s*\| 'mcp'/)
   expect(mainSource).toContain("const isAiApiPath = (path: string): boolean")
   expect(mainSource).toContain('await ensureAiModuleForRequest()')
   expect(mainSource).toContain('await aiModuleManager.stop()')
@@ -171,6 +173,9 @@ test('AI should be an optional local module and the core backend should not moun
   expect(mainSource).toContain('downloadOptionalModuleArchive')
   expect(mainSource).toContain('const MAX_OPTIONAL_MODULE_REPLACE_ATTEMPTS = 8')
   expect(mainSource).toContain('replaceOptionalModuleInstall')
+  expect(mainSource).toContain('Get-CimInstance Win32_Process')
+  expect(mainSource).toContain('terminateMcpProcesses')
+  expect(mainSource).toContain("optional-modules:install-force")
   expect(managerSource).toContain('DATADJINN_AI_MODULE_PORT')
   expect(managerSource).toContain('DATADJINN_DATA_DIR')
   expect(managerSource).toContain('X-DataDjinn-Api-Token')
@@ -192,9 +197,17 @@ test('optional modules should expose independent update status and action @smoke
   expect(mainSource).toContain('OPTIONAL_MODULE_CATALOG_CACHE_MS')
   expect(catalog.modules.find((module) => module.id === 'mcp')).toMatchObject({ version: '1.0.2' })
   expect(catalog.modules.every((module) => /^[a-f0-9]{64}$/i.test(module.sha256))).toBe(true)
+  expect(catalog.modules.find((module) => module.id === 'clickhouse')).toMatchObject({ version: '1.0.0' })
+  expect(catalog.modules.find((module) => module.id === 'elasticsearch')).toMatchObject({ version: '1.0.0' })
+  expect(mainSource).toContain("id: 'clickhouse'")
+  expect(mainSource).toContain("id: 'elasticsearch'")
   expect(appSource).toContain('module.updateAvailable')
   expect(appSource).toContain('module.pendingRestartRequired')
   expect(appSource).toContain('重启 MCP 调用方后生效')
+  expect(appSource).toContain('MCP 正在被占用')
+  expect(appSource).toContain('forceInstallOptionalModule')
+  expect(appSource).toContain("'es_auth_type'")
+  expect(appSource).toContain('connection_folder_assignments: nextConnectionFolderAssignments')
   expect(appSource).toContain('git-background-task-menu')
   expect(appSource).toContain('/git-versioning/tasks/${taskId}/cancel')
   expect(appSource).toContain("? '有更新'")
@@ -271,6 +284,34 @@ test('JDBC bridge should be optional and excluded from the core backend package 
   expect(runtimeBuildSource).toContain('jaydebeapi==1.2.3')
   expect(runtimeBuildSource).toContain('"id": "jdbc-runtime"')
   expect(launcherSource).toContain('_configure_optional_jdbc_runtime')
+})
+
+test('database client extensions should stay outside the core backend package @smoke', () => {
+  const projectRoot = path.resolve(__dirname, '..', '..')
+  const backendBuildSource = fs.readFileSync(
+    path.join(projectRoot, 'backend', 'scripts', 'build_backend.py'),
+    'utf-8'
+  )
+  const runtimeBuildSource = fs.readFileSync(
+    path.join(projectRoot, 'backend', 'scripts', 'build_database_runtime_module.py'),
+    'utf-8'
+  )
+  const packageValidationSource = fs.readFileSync(
+    path.join(projectRoot, 'scripts', 'validate-package-contents.cjs'),
+    'utf-8'
+  )
+  const launcherSource = fs.readFileSync(path.join(projectRoot, 'backend', 'run.py'), 'utf-8')
+
+  expect(backendBuildSource).toContain('"--exclude-module",\n        "clickhouse_connect"')
+  expect(backendBuildSource).toContain('"--exclude-module",\n        "elasticsearch"')
+  expect(backendBuildSource).toContain('"--exclude-module",\n        "oracledb"')
+  expect(runtimeBuildSource).toContain('"clickhouse-connect==0.10.0"')
+  expect(runtimeBuildSource).toContain('"elasticsearch==8.18.1"')
+  expect(runtimeBuildSource).not.toContain('target.glob("*.dist-info")')
+  expect(packageValidationSource).toContain("'backend/_internal/clickhouse_connect'")
+  expect(packageValidationSource).toContain("'backend/_internal/elasticsearch'")
+  expect(packageValidationSource).toContain("'backend/_internal/oracledb'")
+  expect(launcherSource).toContain('_configure_optional_database_runtimes')
 })
 
 test('renderer production config should keep only the SQL editor worker and remove perf info logs @smoke', () => {
