@@ -12,6 +12,7 @@ import icon from '../../resources/icon.ico?asset'
 import { backendManager } from './backend'
 import { AiModuleManager } from './ai-module'
 import { buildConnectionTransferImportDialogOptions } from './connection-transfer-dialog'
+import { extractLatestMainReleaseFromAtom } from './github-release'
 
 type AIConfig = {
   provider?: 'openai-compatible' | 'anthropic'
@@ -320,7 +321,9 @@ const GITHUB_RELEASES_ATOM_URL = `${GITHUB_PROJECT_URL}/releases.atom`
 const GITHUB_RELEASE_DOWNLOAD_URL = 'https://github.com/vhukze/DataDjinn/releases/download'
 const appUpdateMode = process.env.PORTABLE_EXECUTABLE_DIR ? 'portable' : 'installer'
 let latestPortableUpdate: UpdateInfo | null = null
+let latestInstallerUpdate: UpdateInfo | null = null
 let installerUpdateDownloaded = false
+let installerUpdatePath: string | null = null
 let isQuittingForUpdate = false
 let lastInstallerUpdateInfo: UpdateInfo | null = null
 let backgroundUpdateCheckRunning = false
@@ -1264,27 +1267,24 @@ const fetchLatestRelease = async (): Promise<GitHubRelease> => {
   }
 
   const feed = await response.text()
-  const tags = Array.from(
-    feed.matchAll(/\/releases\/tag\/(v\d+(?:\.\d+){2,3}(?:[-+][^"<\s]*)?)/gi),
-    (match) => match[1]
-  )
-  const tagName = tags.find((tag) => /^v\d+(?:\.\d+){2,3}(?:[-+].*)?$/i.test(tag))
-  if (!tagName) {
+  const release = extractLatestMainReleaseFromAtom(feed)
+  if (!release) {
     throw new Error('检查更新失败：没有找到主程序正式版本发布')
   }
-  const version = normalizeVersion(tagName)
+  const version = normalizeVersion(release.tagName)
   return {
-    tag_name: tagName,
-    name: `DataDjinn ${tagName}`,
-    html_url: `${GITHUB_PROJECT_URL}/releases/tag/${tagName}`,
+    tag_name: release.tagName,
+    name: release.name,
+    body: release.body,
+    html_url: `${GITHUB_PROJECT_URL}/releases/tag/${release.tagName}`,
     assets: [
       {
         name: `DataDjinn-${version}-setup.exe`,
-        browser_download_url: `${GITHUB_RELEASE_DOWNLOAD_URL}/${tagName}/DataDjinn-${version}-setup.exe`
+        browser_download_url: `${GITHUB_RELEASE_DOWNLOAD_URL}/${release.tagName}/DataDjinn-${version}-setup.exe`
       },
       {
         name: `DataDjinn-${version}-win.zip`,
-        browser_download_url: `${GITHUB_RELEASE_DOWNLOAD_URL}/${tagName}/DataDjinn-${version}-win.zip`
+        browser_download_url: `${GITHUB_RELEASE_DOWNLOAD_URL}/${release.tagName}/DataDjinn-${version}-win.zip`
       }
     ]
   }
@@ -1340,6 +1340,7 @@ const checkForUpdatesInBackground = async (): Promise<void> => {
     }
 
     const release = await fetchLatestRelease()
+    latestInstallerUpdate = releaseToUpdateInfo(release)
     configureInstallerUpdateFeed(release)
     await autoUpdater.checkForUpdates()
   } catch {
@@ -1454,18 +1455,79 @@ const downloadPortableUpdate = async (): Promise<{ filePath: string }> => {
   return { filePath }
 }
 
+const downloadInstallerUpdate = async (): Promise<void> => {
+  const updateInfo = latestInstallerUpdate ?? releaseToUpdateInfo(await fetchLatestRelease())
+  if (!updateInfo.available || !updateInfo.installerUrl || !updateInfo.latestVersion) {
+    throw new Error('暂无可下载的安装包更新')
+  }
+
+  const tagName = `v${normalizeVersion(updateInfo.latestVersion)}`
+  const metadataResponse = await fetch(`${GITHUB_RELEASE_DOWNLOAD_URL}/${tagName}/latest.yml`, {
+    headers: githubHeaders,
+    cache: 'no-store'
+  })
+  if (!metadataResponse.ok) {
+    throw new Error(`下载更新元数据失败：HTTP ${metadataResponse.status}`)
+  }
+  const metadata = await metadataResponse.text()
+  const expectedSha512 = metadata.match(/^sha512:\s*(\S+)\s*$/m)?.[1]
+  if (!expectedSha512) {
+    throw new Error('下载更新元数据无效：缺少 SHA-512 校验值')
+  }
+
+  const updatesDir = join(app.getPath('downloads'), 'DataDjinn Updates')
+  await mkdir(updatesDir, { recursive: true })
+  const filePath = join(
+    updatesDir,
+    `DataDjinn-${updateInfo.latestVersion}-setup-${Date.now()}.exe`
+  )
+  const response = await fetch(updateInfo.installerUrl, { headers: githubHeaders })
+  if (!response.ok || !response.body) {
+    throw new Error(`下载更新失败：HTTP ${response.status}`)
+  }
+
+  const total = Number(response.headers.get('content-length') ?? 0) || undefined
+  let transferred = 0
+  const hash = createHash('sha512')
+  const source = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      transferred += chunk.byteLength
+      hash.update(chunk)
+      sendUpdateEvent('update:download-progress', {
+        percent: total ? Math.round((transferred / total) * 100) : 0,
+        transferred,
+        total
+      } satisfies UpdateProgress)
+      controller.enqueue(chunk)
+    }
+  })
+
+  await pipeline(response.body.pipeThrough(source), createWriteStream(filePath))
+  if (hash.digest('base64') !== expectedSha512) {
+    throw new Error('下载更新校验失败，请检查网络后重试')
+  }
+
+  installerUpdatePath = filePath
+  installerUpdateDownloaded = true
+  lastInstallerUpdateInfo = { ...updateInfo, installerDownloaded: true }
+  sendUpdateEvent('update:downloaded', lastInstallerUpdateInfo)
+}
+
 autoUpdater.autoDownload = false
 autoUpdater.autoInstallOnAppQuit = false
 
 autoUpdater.on('update-available', (info) => {
   installerUpdateDownloaded = false
+  installerUpdatePath = null
   lastInstallerUpdateInfo = {
+    ...(latestInstallerUpdate?.latestVersion === info.version ? latestInstallerUpdate : {}),
     currentVersion: app.getVersion(),
     latestVersion: info.version,
     available: true,
     mode: 'installer',
-    releaseName: info.releaseName ?? undefined,
-    releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes : undefined,
+    releaseName: info.releaseName ?? latestInstallerUpdate?.releaseName,
+    releaseNotes:
+      typeof info.releaseNotes === 'string' ? info.releaseNotes : latestInstallerUpdate?.releaseNotes,
     releaseUrl: `https://github.com/vhukze/DataDjinn/releases/tag/v${info.version}`,
     installerDownloaded: false
   } satisfies UpdateInfo
@@ -2264,18 +2326,21 @@ app.whenReady().then(async () => {
       }
 
       const release = await fetchLatestRelease()
+      const releaseInfo = releaseToUpdateInfo(release)
+      latestInstallerUpdate = releaseInfo
       configureInstallerUpdateFeed(release)
       const result = await autoUpdater.checkForUpdates()
       const nextInfo = {
+        ...releaseInfo,
         currentVersion: app.getVersion(),
         latestVersion: result?.updateInfo.version,
         available: result ? compareVersion(result.updateInfo.version, app.getVersion()) > 0 : false,
         mode: 'installer',
-        releaseName: result?.updateInfo.releaseName ?? undefined,
+        releaseName: result?.updateInfo.releaseName ?? releaseInfo.releaseName,
         releaseNotes:
           typeof result?.updateInfo.releaseNotes === 'string'
             ? result.updateInfo.releaseNotes
-            : undefined,
+            : releaseInfo.releaseNotes,
         releaseUrl: result?.updateInfo.version
           ? `https://github.com/vhukze/DataDjinn/releases/tag/v${result.updateInfo.version}`
           : undefined,
@@ -2293,7 +2358,7 @@ app.whenReady().then(async () => {
       return await downloadPortableUpdate()
     }
 
-    await autoUpdater.downloadUpdate()
+    await downloadInstallerUpdate()
     return null
   })
 
@@ -2305,13 +2370,21 @@ app.whenReady().then(async () => {
       return
     }
 
-    if (!installerUpdateDownloaded) {
+    if (!installerUpdateDownloaded || !installerUpdatePath) {
       throw new Error('更新尚未下载完成')
     }
 
+    const installerPath = installerUpdatePath
     isQuittingForUpdate = true
     await backendManager.stop()
-    autoUpdater.quitAndInstall(false, true)
+    const command = `timeout /t 1 /nobreak >nul & start "" "${installerPath}"`
+    const installerProcess = spawn(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', command], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true
+    })
+    installerProcess.unref()
+    app.quit()
   })
 
   ipcMain.handle('update:open-release', async (_, url?: string) => {

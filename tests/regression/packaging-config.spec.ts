@@ -94,15 +94,41 @@ test('release workflow should publish installer and portable packages after pack
 test('main app update feed should ignore extension-only releases @smoke', () => {
   const projectRoot = path.resolve(__dirname, '..', '..')
   const mainSource = fs.readFileSync(path.join(projectRoot, 'src', 'main', 'index.ts'), 'utf-8')
+  const atomParserSource = fs.readFileSync(
+    path.join(projectRoot, 'src', 'main', 'github-release.ts'),
+    'utf-8'
+  )
 
   expect(mainSource).toContain('const GITHUB_RELEASES_ATOM_URL')
   expect(mainSource).toContain('releases.atom')
-  expect(mainSource).toContain('feed.matchAll')
+  expect(mainSource).toContain('extractLatestMainReleaseFromAtom(feed)')
+  expect(mainSource).toContain("from './github-release'")
   expect(mainSource).toContain('没有找到主程序正式版本发布')
   expect(mainSource).toContain('configureInstallerUpdateFeed(release)')
-  expect(mainSource).toContain('/^v\\d+(?:\\.\\d+){2,3}')
+  expect(atomParserSource).toContain('MAIN_RELEASE_TAG_PATTERN')
+  expect(atomParserSource).toContain("body = extractXmlText(entry, 'content')")
   expect(mainSource).toContain('normalizeUpdateCheckError')
   expect(mainSource).toContain('当前网络无法连接 GitHub')
+  expect(mainSource).toContain('const downloadInstallerUpdate')
+  expect(mainSource).toContain("latest.yml")
+  expect(mainSource).toContain("hash.digest('base64') !== expectedSha512")
+  expect(mainSource).toContain('await downloadInstallerUpdate()')
+  expect(mainSource).toContain('releaseInfo.releaseNotes')
+  expect(mainSource).not.toContain('await autoUpdater.downloadUpdate()')
+})
+
+test('GitHub release atom parser keeps main release notes and skips module releases @smoke', async () => {
+  const { extractLatestMainReleaseFromAtom } = await import('../../src/main/github-release')
+  const feed = `<?xml version="1.0"?><feed>
+    <entry><title>DataDjinn modules v1.3.0</title><link href="https://github.com/vhukze/DataDjinn/releases/tag/modules-v1.3.0"/><content type="html">&lt;h1&gt;Modules&lt;/h1&gt;</content></entry>
+    <entry><title>DataDjinn v0.3.12</title><link href="https://github.com/vhukze/DataDjinn/releases/tag/v0.3.12"/><content type="html">&lt;h1&gt;DataDjinn v0.3.12&lt;/h1&gt;\n&lt;ul&gt;\n&lt;li&gt;修复在线更新&lt;/li&gt;\n&lt;/ul&gt;</content></entry>
+  </feed>`
+
+  expect(extractLatestMainReleaseFromAtom(feed)).toEqual({
+    tagName: 'v0.3.12',
+    name: 'DataDjinn v0.3.12',
+    body: '<h1>DataDjinn v0.3.12</h1>\n<ul>\n<li>修复在线更新</li>\n</ul>'
+  })
 })
 
 test('a transient API fetch failure should not restart a healthy backend @smoke', () => {
