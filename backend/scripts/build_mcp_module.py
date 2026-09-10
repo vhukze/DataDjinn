@@ -35,6 +35,9 @@ def _app_version() -> str:
     return str(package["version"])
 
 
+MIN_APP_VERSION = os.environ.get("DATADJINN_MCP_MIN_APP_VERSION", _app_version())
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -135,7 +138,7 @@ def main() -> None:
         "version": MODULE_VERSION,
         "platform": "win32",
         "arch": "x64",
-        "minAppVersion": _app_version(),
+        "minAppVersion": MIN_APP_VERSION,
         "entryPoint": executable.name,
     }
     (MODULE_ROOT / "module.json").write_text(
