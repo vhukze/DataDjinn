@@ -115,6 +115,11 @@ class DataDjinnMcpServerTests(unittest.TestCase):
 
         self.assertEqual(ping["result"], {})
         self.assertEqual(initialize["result"]["protocolVersion"], "2024-11-05")
+        instructions = initialize["result"]["instructions"]
+        self.assertIn("open_connection 是可选的显式预热步骤", instructions)
+        self.assertIn("完成一组操作后再调用 close_connection", instructions)
+        self.assertIn("支持 SQLite、MySQL、PostgreSQL、GaussDB、达梦 DM、Oracle、ClickHouse、Elasticsearch、MongoDB 和 Redis", instructions)
+        self.assertIn("confirm_write=true", instructions)
 
     def test_tools_list_exposes_connection_scoped_operations(self) -> None:
         response = handle_request({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
@@ -123,6 +128,8 @@ class DataDjinnMcpServerTests(unittest.TestCase):
         self.assertTrue({"list_connections", "open_connection", "list_databases", "list_tables", "describe_table", "get_sample_data", "execute_query"}.issubset(tools))
         self.assertIn("connection_id", tools["execute_query"]["inputSchema"]["properties"])
         self.assertIn("confirm_write", tools["execute_query"]["inputSchema"]["properties"])
+        self.assertIn("opened automatically", tools["list_tables"]["description"])
+        self.assertIn("JSON Query DSL", tools["execute_query"]["description"])
 
     def test_list_connections_never_returns_password_or_ssh_secrets(self) -> None:
         connection = type(
