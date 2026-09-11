@@ -13,6 +13,7 @@ import { backendManager } from './backend'
 import { AiModuleManager } from './ai-module'
 import { buildConnectionTransferImportDialogOptions } from './connection-transfer-dialog'
 import { extractLatestMainReleaseFromAtom } from './github-release'
+import { launchInstallerAfterProcessExit } from './installer-update-launcher'
 import {
   movePendingOptionalModuleDirectory,
   replaceOptionalModuleDirectory,
@@ -2380,16 +2381,13 @@ app.whenReady().then(async () => {
       throw new Error('更新尚未下载完成')
     }
 
-    const installerPath = installerUpdatePath
     isQuittingForUpdate = true
     await backendManager.stop()
-    const command = `timeout /t 1 /nobreak >nul & start "" "${installerPath}"`
-    const installerProcess = spawn(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', command], {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true
+    await launchInstallerAfterProcessExit({
+      installerPath: installerUpdatePath,
+      targetPid: process.pid,
+      launcherPath: join(app.getPath('temp'), `datadjinn-update-${process.pid}-${Date.now()}.ps1`)
     })
-    installerProcess.unref()
     app.quit()
   })
 
