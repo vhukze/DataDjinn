@@ -1,28 +1,26 @@
-# DataDjinn v0.3.16
+# DataDjinn v0.3.13
 
-本版本用于验证从 `v0.3.15` 到新版本的在线更新流程，功能代码与 `v0.3.15` 保持一致。
+## What's Changed
 
-在 `v0.3.15` 中检查更新、下载完成后点击“重启并更新”，即可验证自动安装与重新打开。
+### MCP 扩展更新稳定性
 
-**Full Changelog**: https://github.com/vhukze/DataDjinn/compare/v0.3.15...v0.3.16
+- 修复 MCP 扩展更新时 Windows 偶发 `EPERM` 导致暂存失败的问题。
+- 串行化后台重试与立即替换，避免并发移动同一扩展目录导致 `ENOENT`。
+- 替换失败时自动恢复旧版本 `current` 目录，避免 MCP 服务不可用。
+- 扩展页面正确显示待重启状态和立即替换操作。
 
----
+## Notes
 
-# DataDjinn v0.3.15
+- MCP 扩展已更新至 `1.0.4`，主程序升级后可在“设置 -> 扩展”中检测更新。
+- Git 表数据版本管理仍处于试验阶段，建议先在测试数据验证后再用于生产数据回退或审计。
+- 当前版本号：`v0.3.13`
+- 支持从 `v0.3.12` 直接升级。
 
-## 安装版在线更新修复
-
-- 修复点击“更新并重启”后应用退出、安装没有继续的问题，恢复标准 NSIS 安装与自动重新打开流程，移除应用更新入口的 CMD/PowerShell 启动脚本。
-- 更新退出时同时停止数据库后端与独立 AI 进程，避免遗留进程占用文件。
-- 保留安装包下载兼容处理与 SHA-512 校验。发布前新增真实安装升级门禁，验证下载、安装目录版本替换、自动重启、设置保留和后端启动。
-
-已受旧版更新启动故障影响的用户，可直接运行“下载/DataDjinn Updates”内已下载的新版本安装包完成这一次升级，无需重复下载；本修复在安装新版本后生效。
-
-**Full Changelog**: https://github.com/vhukze/DataDjinn/compare/v0.3.14...v0.3.15
+**Full Changelog**: https://github.com/vhukze/DataDjinn/compare/v0.3.12...v0.3.13
 
 ---
 
-# DataDjinn v0.3.14
+# DataDjinn v0.3.12
 
 ## What's Changed
 

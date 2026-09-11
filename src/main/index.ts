@@ -13,7 +13,6 @@ import { backendManager } from './backend'
 import { AiModuleManager } from './ai-module'
 import { buildConnectionTransferImportDialogOptions } from './connection-transfer-dialog'
 import { extractLatestMainReleaseFromAtom } from './github-release'
-import { InstallerUpdater } from './installer-update-launcher'
 import {
   movePendingOptionalModuleDirectory,
   replaceOptionalModuleDirectory,
