@@ -117,6 +117,15 @@ test('main app update feed should ignore extension-only releases @smoke', () => 
   expect(mainSource).not.toContain('await autoUpdater.downloadUpdate()')
 })
 
+test('installer update uses the process-aware launcher @smoke', () => {
+  const projectRoot = path.resolve(__dirname, '..', '..')
+  const mainSource = fs.readFileSync(path.join(projectRoot, 'src', 'main', 'index.ts'), 'utf-8')
+
+  expect(mainSource).toContain("from './installer-update-launcher'")
+  expect(mainSource).toContain('await launchInstallerAfterProcessExit({')
+  expect(mainSource).toContain('targetPid: process.pid')
+})
+
 test('GitHub release atom parser keeps main release notes and skips module releases @smoke', async () => {
   const { extractLatestMainReleaseFromAtom } = await import('../../src/main/github-release')
   const feed = `<?xml version="1.0"?><feed>
@@ -226,7 +235,7 @@ test('optional modules should expose independent update status and action @smoke
   expect(mainSource).toContain('OPTIONAL_MODULE_CATALOG_URL')
   expect(mainSource).toContain('getOptionalModuleArtifacts')
   expect(mainSource).toContain('OPTIONAL_MODULE_CATALOG_CACHE_MS')
-  expect(catalog.modules.find((module) => module.id === 'mcp')).toMatchObject({ version: '1.0.4' })
+  expect(catalog.modules.find((module) => module.id === 'mcp')).toMatchObject({ version: '1.0.5' })
   expect(catalog.modules.every((module) => /^[a-f0-9]{64}$/i.test(module.sha256))).toBe(true)
   expect(catalog.modules.find((module) => module.id === 'clickhouse')).toMatchObject({ version: '1.0.0' })
   expect(catalog.modules.find((module) => module.id === 'elasticsearch')).toMatchObject({ version: '1.0.0' })
@@ -257,10 +266,10 @@ test('MCP artifact metadata should match the published module version @smoke', (
   const mcp = catalog.modules.find((module) => module.id === 'mcp')
 
   expect(mcp).toMatchObject({
-    version: '1.0.4',
-    url: 'https://github.com/vhukze/DataDjinn/releases/download/modules-v1.0.4/datadjinn-mcp-1.0.4-win-x64.zip'
+    version: '1.0.5',
+    url: 'https://github.com/vhukze/DataDjinn/releases/download/modules-v1.0.5/datadjinn-mcp-1.0.5-win-x64.zip'
   })
-  expect(mcp?.sha256).toBe('44bef11bedd1a39ca296a608214784b81b3462701ff8ad9caf59b59048356ae5')
+  expect(mcp?.sha256).toBe('d341097bfc12985a11ab1759cb09f5bdb08c2cf3f10f2dd9caa4eec4cbebf999')
   expect(mainSource).toContain('OPTIONAL_MODULE_ARTIFACT_CATALOG')
 })
 
