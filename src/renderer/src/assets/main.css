@@ -3965,11 +3965,6 @@ body[data-theme='dark'] .ant-popover-message {
   min-width: 0;
 }
 
-.connection-tree-title.is-closed .connection-tree-name,
-.connection-tree-title.is-closed .connection-tree-address {
-  color: var(--dj-text-secondary) !important;
-}
-
 .connection-tree-address::before {
   content: '·';
   margin-right: 6px;
@@ -4588,13 +4583,6 @@ body:not([data-theme='dark']) .tree-selector-toggle-btn.ant-btn.ant-btn-link {
 
 .result-cell-context-menu-panel .ant-menu {
   border-inline-end: 0 !important;
-}
-
-/* ===== Closed Tree Nodes ===== */
-.tree-node-closed .ant-tree-title,
-.tree-node-closed .ant-tree-iconEle {
-  color: var(--dj-text-tertiary) !important;
-  opacity: 0.5;
 }
 
 /* ===== Main Panel ===== */
