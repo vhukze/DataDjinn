@@ -226,6 +226,7 @@ class DatabaseAgentStreamingTests(unittest.TestCase):
         self.assertIn("confirm_write=true", prompt)
         self.assertIn("设置 -> AI", prompt)
         self.assertIn("右上角更新图标显示红点", prompt)
+        self.assertIn("独立启动器等待主程序完全退出后再开始安装", prompt)
 
     def test_openai_stream_chat_emits_incremental_reasoning_and_tokens(self) -> None:
         config = AIConfig(provider="openai-compatible", base_url="https://example.com/v1", api_key="test", model="demo", max_context_tokens=200_000)
