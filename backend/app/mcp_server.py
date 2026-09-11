@@ -108,6 +108,16 @@ _tool_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="datadjinn
 
 SERVER_INFO = {"name": "datadjinn-local", "version": "0.1.0"}
 PROTOCOL_VERSION = "2025-03-26"
+MCP_INSTRUCTIONS = (
+    "DataDjinn 本机 MCP 使用说明：先调用 list_connections 获取已保存且获授权的连接及其 database_type，"
+    "再使用 connection_id 调用数据库工具。open_connection 是可选的显式预热步骤；list_databases、list_schemas、"
+    "list_tables、describe_table、get_sample_data 和 execute_query 在连接关闭时会自动打开连接。完成一组操作后再调用 "
+    "close_connection 释放连接，不要在每次工具调用之间关闭。支持 SQLite、MySQL、PostgreSQL、GaussDB、达梦 DM、"
+    "Oracle、ClickHouse、Elasticsearch、MongoDB 和 Redis；关系型数据库使用 SQL，Elasticsearch 使用 JSON Query DSL，"
+    "MongoDB 使用 shell 语法，Redis 使用 Redis 命令。PostgreSQL/GaussDB 的跨数据库操作需要通过 pg_database 指定物理数据库，"
+    "其他数据库按 database 参数选择目标。默认只读；写操作必须在 DataDjinn 设置中启用，并在同一次 execute_query 调用中传入 "
+    "confirm_write=true。"
+)
 MAX_QUERY_ROWS = 1_000
 MAX_SAMPLE_ROWS = 100
 MCP_TOOL_TIMEOUT_SECONDS = 45
@@ -210,37 +220,37 @@ def _tool(name: str, description: str, properties: dict[str, Any], required: lis
 
 
 TOOLS = [
-    _tool("list_connections", "List all locally saved DataDjinn connections. Passwords and SSH secrets are never returned.", {}),
-    _tool("open_connection", "Open one saved connection for this local MCP process. Use connection_id returned by list_connections.", {"connection_id": {"type": "string"}}, ["connection_id"]),
-    _tool("close_connection", "Close one connection opened by this MCP process.", {"connection_id": {"type": "string"}}, ["connection_id"]),
-    _tool("list_databases", "List databases available on an opened saved connection.", {"connection_id": {"type": "string"}}, ["connection_id"]),
+    _tool("list_connections", "List all locally saved DataDjinn connections. Passwords and SSH secrets are never returned. Use the returned connection_id for later calls.", {}),
+    _tool("open_connection", "Explicitly open one saved connection. This is optional because database tools automatically open a closed connection; use connection_id returned by list_connections.", {"connection_id": {"type": "string"}}, ["connection_id"]),
+    _tool("close_connection", "Close one saved connection after finishing a group of operations. Do not call this between normal database operations; a later database tool may open it again automatically.", {"connection_id": {"type": "string"}}, ["connection_id"]),
+    _tool("list_databases", "List databases on a saved connection. The connection is opened automatically if needed.", {"connection_id": {"type": "string"}}, ["connection_id"]),
     _tool(
         "list_schemas",
-        "List schemas in a PostgreSQL or GaussDB physical database on an opened connection.",
+        "List schemas in a PostgreSQL or GaussDB physical database. The connection is opened automatically if needed.",
         {"connection_id": {"type": "string"}, "pg_database": {"type": "string", "description": "Physical PostgreSQL/GaussDB database; defaults to the saved connection database."}},
         ["connection_id"],
     ),
     _tool(
         "list_tables",
-        "List tables or collections in a database/schema on an opened connection.",
+        "List tables, collections, Elasticsearch indexes, or Redis keys in a database/schema. The connection is opened automatically if needed.",
         {"connection_id": {"type": "string"}, "database": {"type": "string"}, "pg_database": {"type": "string"}},
         ["connection_id"],
     ),
     _tool(
         "describe_table",
-        "Describe columns for one table or collection on an opened connection.",
+        "Describe columns or fields for one table, collection, or Elasticsearch index. The connection is opened automatically if needed.",
         {"connection_id": {"type": "string"}, "table_name": {"type": "string"}, "database": {"type": "string"}, "pg_database": {"type": "string"}},
         ["connection_id", "table_name"],
     ),
     _tool(
         "get_sample_data",
-        "Read a limited sample from one table or collection on an opened connection.",
+        "Read a limited sample from one table, collection, or Elasticsearch index. The connection is opened automatically if needed.",
         {"connection_id": {"type": "string"}, "table_name": {"type": "string"}, "database": {"type": "string"}, "pg_database": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": MAX_SAMPLE_ROWS, "default": 20}},
         ["connection_id", "table_name"],
     ),
     _tool(
         "execute_query",
-        "Execute SQL, MongoDB shell syntax, or Redis commands. Read-only execution is the default. A write operation requires confirm_write=true in this same tool call.",
+        "Execute SQL, Elasticsearch JSON Query DSL, MongoDB shell syntax, or Redis commands. The connection is opened automatically if needed. Read-only execution is the default. A write operation requires confirm_write=true in this same tool call.",
         {"connection_id": {"type": "string"}, "sql": {"type": "string"}, "database": {"type": "string"}, "pg_database": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": MAX_QUERY_ROWS, "default": 200}, "confirm_write": {"type": "boolean", "default": False, "description": "Must be true to execute non-read-only SQL."}},
         ["connection_id", "sql"],
     ),
@@ -379,7 +389,12 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any] | None:
     if method == "initialize":
         requested_version = params.get("protocolVersion")
         protocol_version = requested_version if requested_version in {"2024-11-05", PROTOCOL_VERSION} else PROTOCOL_VERSION
-        result = {"protocolVersion": protocol_version, "capabilities": {"tools": {}}, "serverInfo": SERVER_INFO}
+        result = {
+            "protocolVersion": protocol_version,
+            "capabilities": {"tools": {}},
+            "serverInfo": SERVER_INFO,
+            "instructions": MCP_INSTRUCTIONS,
+        }
     elif method == "ping":
         result = {}
     elif method == "tools/list":
