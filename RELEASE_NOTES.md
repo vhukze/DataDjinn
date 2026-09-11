@@ -1,3 +1,25 @@
+# DataDjinn v0.3.13
+
+## What's Changed
+
+### MCP 扩展更新稳定性
+
+- 修复 MCP 扩展更新时 Windows 偶发 `EPERM` 导致暂存失败的问题。
+- 串行化后台重试与立即替换，避免并发移动同一扩展目录导致 `ENOENT`。
+- 替换失败时自动恢复旧版本 `current` 目录，避免 MCP 服务不可用。
+- 扩展页面正确显示待重启状态和立即替换操作。
+
+## Notes
+
+- MCP 扩展已更新至 `1.0.4`，主程序升级后可在“设置 -> 扩展”中检测更新。
+- Git 表数据版本管理仍处于试验阶段，建议先在测试数据验证后再用于生产数据回退或审计。
+- 当前版本号：`v0.3.13`
+- 支持从 `v0.3.12` 直接升级。
+
+**Full Changelog**: https://github.com/vhukze/DataDjinn/compare/v0.3.12...v0.3.13
+
+---
+
 # DataDjinn v0.3.12
 
 ## What's Changed

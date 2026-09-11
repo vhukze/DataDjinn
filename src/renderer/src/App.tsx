@@ -12742,37 +12742,37 @@ function App(): React.JSX.Element {
                                       : 'default'
                                 }
                               >
-                                {module.installed
-                                  ? module.pendingRestartRequired
-                                    ? '待重启生效'
-                                    : module.updateAvailable
-                                    ? '有更新'
-                                    : '已安装'
-                                  : installingOptionalModuleId === module.id
-                                    ? '安装中'
-                                    : '未安装'}
+                                {module.pendingRestartRequired
+                                  ? '待重启生效'
+                                  : module.installed
+                                    ? module.updateAvailable
+                                      ? '有更新'
+                                      : '已安装'
+                                    : installingOptionalModuleId === module.id
+                                      ? '安装中'
+                                      : '未安装'}
                               </Tag>
-                              {module.installed ? (
+                              {module.pendingRestartRequired ? (
+                                <Button
+                                  type="primary"
+                                  className="optional-module-update-btn"
+                                  loading={installingOptionalModuleId === module.id}
+                                  disabled={installingOptionalModuleId !== null}
+                                  onClick={() => {
+                                    Modal.confirm({
+                                      title: 'MCP 正在被占用',
+                                      content: 'MCP 调用方当前正在使用旧版本。强制更新会中断当前调用并替换旧文件，是否继续？',
+                                      okText: '关闭进程并更新',
+                                      cancelText: '稍后处理',
+                                      onOk: forceInstallMcp
+                                    })
+                                  }}
+                                >
+                                  {installingOptionalModuleId === module.id ? '更新中' : '立即替换'}
+                                </Button>
+                              ) : module.installed ? (
                                 <Space>
-                                  {module.pendingRestartRequired ? (
-                                    <Button
-                                      type="primary"
-                                      className="optional-module-update-btn"
-                                      loading={installingOptionalModuleId === module.id}
-                                      disabled={installingOptionalModuleId !== null}
-                                      onClick={() => {
-                                        Modal.confirm({
-                                          title: 'MCP 正在被占用',
-                                          content: 'MCP 调用方当前正在使用旧版本。强制更新会中断当前调用并替换旧文件，是否继续？',
-                                          okText: '关闭进程并更新',
-                                          cancelText: '稍后处理',
-                                          onOk: forceInstallMcp
-                                        })
-                                      }}
-                                    >
-                                      {installingOptionalModuleId === module.id ? '更新中' : '立即替换'}
-                                    </Button>
-                                  ) : module.updateAvailable && (
+                                  {module.updateAvailable && (
                                     <Button
                                       type="primary"
                                       className="optional-module-update-btn"

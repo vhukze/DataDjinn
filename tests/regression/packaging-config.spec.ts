@@ -185,6 +185,10 @@ test('AI should be an optional local module and the core backend should not moun
   const projectRoot = path.resolve(__dirname, '..', '..')
   const mainSource = fs.readFileSync(path.join(projectRoot, 'src', 'main', 'index.ts'), 'utf-8')
   const managerSource = fs.readFileSync(path.join(projectRoot, 'src', 'main', 'ai-module.ts'), 'utf-8')
+  const replacementSource = fs.readFileSync(
+    path.join(projectRoot, 'src', 'main', 'optional-module-replacement.ts'),
+    'utf-8'
+  )
   const backendSource = fs.readFileSync(path.join(projectRoot, 'backend', 'app', 'main.py'), 'utf-8')
   const moduleEntrySource = fs.readFileSync(
     path.join(projectRoot, 'backend', 'run_ai_module.py'),
@@ -197,8 +201,9 @@ test('AI should be an optional local module and the core backend should not moun
   expect(mainSource).toContain('await aiModuleManager.stop()')
   expect(mainSource).toContain('const MAX_OPTIONAL_MODULE_DOWNLOAD_ATTEMPTS = 3')
   expect(mainSource).toContain('downloadOptionalModuleArchive')
-  expect(mainSource).toContain('const MAX_OPTIONAL_MODULE_REPLACE_ATTEMPTS = 8')
-  expect(mainSource).toContain('replaceOptionalModuleInstall')
+  expect(replacementSource).toContain('const MAX_REPLACE_ATTEMPTS = 8')
+  expect(replacementSource).toContain('movePendingOptionalModuleDirectory')
+  expect(mainSource).toContain('replaceOptionalModuleDirectory')
   expect(mainSource).toContain('Get-CimInstance Win32_Process')
   expect(mainSource).toContain('terminateMcpProcesses')
   expect(mainSource).toContain("optional-modules:install-force")
@@ -221,7 +226,7 @@ test('optional modules should expose independent update status and action @smoke
   expect(mainSource).toContain('OPTIONAL_MODULE_CATALOG_URL')
   expect(mainSource).toContain('getOptionalModuleArtifacts')
   expect(mainSource).toContain('OPTIONAL_MODULE_CATALOG_CACHE_MS')
-  expect(catalog.modules.find((module) => module.id === 'mcp')).toMatchObject({ version: '1.0.3' })
+  expect(catalog.modules.find((module) => module.id === 'mcp')).toMatchObject({ version: '1.0.4' })
   expect(catalog.modules.every((module) => /^[a-f0-9]{64}$/i.test(module.sha256))).toBe(true)
   expect(catalog.modules.find((module) => module.id === 'clickhouse')).toMatchObject({ version: '1.0.0' })
   expect(catalog.modules.find((module) => module.id === 'elasticsearch')).toMatchObject({ version: '1.0.0' })
@@ -240,6 +245,7 @@ test('optional modules should expose independent update status and action @smoke
   expect(appSource).toContain(": '已安装'")
   expect(appSource).toContain(": '更新'}")
   expect(appSource).toContain(": '安装'}")
+  expect(appSource).toContain("module.pendingRestartRequired\n                                  ? '待重启生效'")
 })
 
 test('MCP artifact metadata should match the published module version @smoke', () => {
@@ -251,10 +257,10 @@ test('MCP artifact metadata should match the published module version @smoke', (
   const mcp = catalog.modules.find((module) => module.id === 'mcp')
 
   expect(mcp).toMatchObject({
-    version: '1.0.3',
-    url: 'https://github.com/vhukze/DataDjinn/releases/download/modules-v1.0.3/datadjinn-mcp-1.0.3-win-x64.zip'
+    version: '1.0.4',
+    url: 'https://github.com/vhukze/DataDjinn/releases/download/modules-v1.0.4/datadjinn-mcp-1.0.4-win-x64.zip'
   })
-  expect(mcp?.sha256).toBe('73883df421059688645b59906edbed270567b5169872cfd94939d8883e252152')
+  expect(mcp?.sha256).toBe('44bef11bedd1a39ca296a608214784b81b3462701ff8ad9caf59b59048356ae5')
   expect(mainSource).toContain('OPTIONAL_MODULE_ARTIFACT_CATALOG')
 })
 
@@ -276,12 +282,21 @@ test('AI artifact metadata should match the published module version @smoke', ()
 test('optional module installs should preserve the stable MCP path @smoke', () => {
   const projectRoot = path.resolve(__dirname, '..', '..')
   const mainSource = fs.readFileSync(path.join(projectRoot, 'src', 'main', 'index.ts'), 'utf-8')
+  const replacementSource = fs.readFileSync(
+    path.join(projectRoot, 'src', 'main', 'optional-module-replacement.ts'),
+    'utf-8'
+  )
 
   expect(mainSource).toContain("join(app.getPath('userData'), 'modules', moduleId, 'current')")
   expect(mainSource).toContain('const installPath = getStableOptionalModuleInstallPath(moduleId)')
   expect(mainSource).toContain('const pendingPath = join(moduleRoot, `.pending-')
   expect(mainSource).toContain('retryPendingOptionalModuleInstalls')
-  expect(mainSource).toContain('const backupPath = `${installPath}.old-')
+  expect(mainSource).toContain('withOptionalModuleReplacementLock')
+  expect(mainSource).toContain('isCurrentPendingOptionalModule')
+  expect(replacementSource).toContain('const replacementLocks')
+  expect(replacementSource).toContain('待替换的扩展目录不存在')
+  expect(replacementSource).toContain('movedCurrentToBackup && !existsSync(installPath)')
+  expect(replacementSource).toContain('const backupPath = `${installPath}.old-')
   expect(mainSource).toContain('await migrateInstalledOptionalModulePaths()')
   expect(mainSource).toContain('const currentModules = installedModules.filter')
   expect(mainSource).not.toContain('legacyInstallPaths')

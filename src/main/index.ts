@@ -1,7 +1,7 @@
 import { app, dialog, shell, BrowserWindow, ipcMain, safeStorage, screen, webContents } from 'electron'
 import { join, resolve } from 'path'
 import { createWriteStream, existsSync, readFileSync } from 'fs'
-import { mkdir, readFile, readdir, rename, rm, writeFile } from 'fs/promises'
+import { mkdir, readFile, readdir, rm, writeFile } from 'fs/promises'
 import { pipeline } from 'stream/promises'
 import { createHash, randomBytes } from 'crypto'
 import { spawn } from 'child_process'
@@ -13,6 +13,11 @@ import { backendManager } from './backend'
 import { AiModuleManager } from './ai-module'
 import { buildConnectionTransferImportDialogOptions } from './connection-transfer-dialog'
 import { extractLatestMainReleaseFromAtom } from './github-release'
+import {
+  movePendingOptionalModuleDirectory,
+  replaceOptionalModuleDirectory,
+  withOptionalModuleReplacementLock
+} from './optional-module-replacement'
 
 type AIConfig = {
   provider?: 'openai-compatible' | 'anthropic'
@@ -308,7 +313,6 @@ const store = new Store<AppStore>()
 const streamControllers = new Map<string, AbortController>()
 const aiModuleManager = new AiModuleManager()
 const MAX_OPTIONAL_MODULE_DOWNLOAD_ATTEMPTS = 3
-const MAX_OPTIONAL_MODULE_REPLACE_ATTEMPTS = 8
 const OPTIONAL_MODULE_CATALOG_CACHE_MS = 5 * 60 * 1000
 const approvedTextFilePaths = new Set<string>()
 const DEFAULT_QUERY_TIMEOUT_MINUTES = 15
@@ -681,33 +685,6 @@ const downloadOptionalModuleArchive = async (
   throw lastError instanceof Error ? lastError : new Error('下载扩展模块失败')
 }
 
-const replaceOptionalModuleInstall = async (
-  temporaryPath: string,
-  installPath: string
-): Promise<void> => {
-  let lastError: unknown
-  for (let attempt = 1; attempt <= MAX_OPTIONAL_MODULE_REPLACE_ATTEMPTS; attempt += 1) {
-    try {
-      const backupPath = `${installPath}.old-${randomBytes(6).toString('hex')}`
-      if (existsSync(installPath)) {
-        // Rename the complete directory first. This keeps the stable current
-        // path and never deletes a locked executable before replacement.
-        await rename(installPath, backupPath)
-      }
-      await rename(temporaryPath, installPath)
-      await rm(backupPath, { recursive: true, force: true }).catch(() => undefined)
-      return
-    } catch (error) {
-      lastError = error
-      if (attempt < MAX_OPTIONAL_MODULE_REPLACE_ATTEMPTS) {
-        await new Promise((resolve) => setTimeout(resolve, attempt * 250))
-      }
-    }
-  }
-  const detail = lastError instanceof Error ? lastError.message : String(lastError ?? '')
-  throw new Error(`替换扩展模块文件失败，请关闭占用该模块的程序后重试：${detail}`)
-}
-
 type WindowsProcessInfo = {
   ProcessId?: number
   ExecutablePath?: string
@@ -809,26 +786,47 @@ const setPendingOptionalModules = (pending: PendingOptionalModuleState[]): void 
   }
 }
 
+const isCurrentPendingOptionalModule = (pending: PendingOptionalModuleState): boolean =>
+  getPendingOptionalModules().some(
+    (item) => item.id === pending.id && item.temporaryPath === pending.temporaryPath
+  )
+
 const retryPendingOptionalModuleInstall = async (pending: PendingOptionalModuleState): Promise<void> => {
-  if (!existsSync(pending.temporaryPath)) {
-    setPendingOptionalModules(getPendingOptionalModules().filter((item) => item.id !== pending.id))
-    return
-  }
-  try {
-    await replaceOptionalModuleInstall(pending.temporaryPath, getStableOptionalModuleInstallPath(pending.id))
-    const installedModules = getInstalledOptionalModules().filter((item) => item.id !== pending.id)
-    installedModules.push({
-      id: pending.id,
-      version: pending.version,
-      installedAt: Date.now(),
-      installPath: getStableOptionalModuleInstallPath(pending.id),
-      entryPoint: pending.entryPoint
-    })
-    store.set('optionalModules', installedModules)
-    setPendingOptionalModules(getPendingOptionalModules().filter((item) => item.id !== pending.id))
-  } catch {
-    setTimeout(() => void retryPendingOptionalModuleInstall(pending), 2_000)
-  }
+  await withOptionalModuleReplacementLock(pending.id, async () => {
+    // Another replacement may already have consumed this pending directory.
+    if (!isCurrentPendingOptionalModule(pending)) {
+      return
+    }
+    if (!existsSync(pending.temporaryPath)) {
+      setPendingOptionalModules(
+        getPendingOptionalModules().filter(
+          (item) => item.id !== pending.id || item.temporaryPath !== pending.temporaryPath
+        )
+      )
+      return
+    }
+    try {
+      await replaceOptionalModuleDirectory(pending.temporaryPath, getStableOptionalModuleInstallPath(pending.id))
+      const installedModules = getInstalledOptionalModules().filter((item) => item.id !== pending.id)
+      installedModules.push({
+        id: pending.id,
+        version: pending.version,
+        installedAt: Date.now(),
+        installPath: getStableOptionalModuleInstallPath(pending.id),
+        entryPoint: pending.entryPoint
+      })
+      store.set('optionalModules', installedModules)
+      setPendingOptionalModules(
+        getPendingOptionalModules().filter(
+          (item) => item.id !== pending.id || item.temporaryPath !== pending.temporaryPath
+        )
+      )
+    } catch {
+      if (isCurrentPendingOptionalModule(pending)) {
+        setTimeout(() => void retryPendingOptionalModuleInstall(pending), 2_000)
+      }
+    }
+  })
 }
 
 const retryPendingOptionalModuleInstalls = async (): Promise<void> => {
@@ -888,13 +886,15 @@ const installOptionalModuleArtifact = async (
       throw new Error('扩展模块内容或版本不兼容，已拒绝安装')
     }
     try {
-      await replaceOptionalModuleInstall(temporaryPath, installPath)
+      await withOptionalModuleReplacementLock(moduleId, () =>
+        replaceOptionalModuleDirectory(temporaryPath, installPath)
+      )
     } catch (error) {
       if (moduleId !== 'mcp' || forceReplace) {
         throw error
       }
       const pendingPath = join(moduleRoot, `.pending-${module.version}-${randomBytes(8).toString('hex')}`)
-      await rename(temporaryPath, pendingPath)
+      await movePendingOptionalModuleDirectory(temporaryPath, pendingPath)
       preserveTemporaryPath = true
       const pending = getPendingOptionalModules().filter((item) => item.id !== moduleId)
       pending.push({
@@ -928,14 +928,12 @@ const installOptionalModuleArtifact = async (
 }
 
 const forceInstallMcpModule = async (): Promise<OptionalModuleInfo[]> => {
-  const pending = getPendingOptionalModules().find((item) => item.id === 'mcp')
-  const installPath = getStableOptionalModuleInstallPath('mcp')
-  const pendingWithoutMcp = getPendingOptionalModules().filter((item) => item.id !== 'mcp')
-  if (pending?.temporaryPath && existsSync(pending.temporaryPath)) {
-    setPendingOptionalModules(pendingWithoutMcp)
-    try {
+  return await withOptionalModuleReplacementLock('mcp', async () => {
+    const pending = getPendingOptionalModules().find((item) => item.id === 'mcp')
+    const installPath = getStableOptionalModuleInstallPath('mcp')
+    if (pending?.temporaryPath && existsSync(pending.temporaryPath)) {
       await terminateMcpProcesses()
-      await replaceOptionalModuleInstall(pending.temporaryPath, installPath)
+      await replaceOptionalModuleDirectory(pending.temporaryPath, installPath)
       const installedModules = getInstalledOptionalModules().filter((item) => item.id !== 'mcp')
       installedModules.push({
         id: 'mcp',
@@ -945,15 +943,23 @@ const forceInstallMcpModule = async (): Promise<OptionalModuleInfo[]> => {
         entryPoint: pending.entryPoint
       })
       store.set('optionalModules', installedModules)
+      setPendingOptionalModules(
+        getPendingOptionalModules().filter(
+          (item) => item.id !== 'mcp' || item.temporaryPath !== pending.temporaryPath
+        )
+      )
       return await getOptionalModules()
-    } catch (error) {
-      setPendingOptionalModules([...pendingWithoutMcp, pending])
-      throw error
     }
-  }
-  await terminateMcpProcesses()
-  await installOptionalModuleArtifact('mcp', true, true)
-  return await getOptionalModules()
+    if (pending) {
+      // The background retry already consumed or discarded the pending directory.
+      setPendingOptionalModules(
+        getPendingOptionalModules().filter(
+          (item) => item.id !== 'mcp' || item.temporaryPath !== pending.temporaryPath
+        )
+      )
+    }
+    return await getOptionalModules()
+  })
 }
 
 type DetectedJavaRuntime = {
