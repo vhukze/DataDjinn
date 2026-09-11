@@ -7,6 +7,18 @@ const projectRoot = path.resolve(__dirname, '..', '..')
 const electronEntry = path.join(projectRoot, 'out', 'main', 'index.js')
 const regressionRootDir = path.join(projectRoot, '.tmp', 'regression-user-data')
 
+test('closed connection rows keep normal text and database icon brightness @smoke', () => {
+  const styles = fs.readFileSync(
+    path.join(projectRoot, 'src', 'renderer', 'src', 'assets', 'main.css'),
+    'utf-8'
+  )
+
+  expect(styles).toContain('.connection-tree-title::before')
+  expect(styles).toContain('.connection-tree-title.is-open::before')
+  expect(styles).not.toContain('.connection-tree-title.is-closed .connection-tree-name')
+  expect(styles).not.toContain('.tree-node-closed .ant-tree-title')
+})
+
 function readFixtureUserDataDir() {
   const pointerPath = path.join(regressionRootDir, 'current.json')
   const pointer = JSON.parse(fs.readFileSync(pointerPath, 'utf-8'))
