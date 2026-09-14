@@ -1,3 +1,13 @@
+# DataDjinn v0.3.16
+
+本版本用于验证从 `v0.3.15` 到新版本的在线更新流程，功能代码与 `v0.3.15` 保持一致。
+
+在 `v0.3.15` 中检查更新、下载完成后点击“重启并更新”，即可验证自动安装与重新打开。
+
+**Full Changelog**: https://github.com/vhukze/DataDjinn/compare/v0.3.15...v0.3.16
+
+---
+
 # DataDjinn v0.3.15
 
 ## 安装版在线更新修复
