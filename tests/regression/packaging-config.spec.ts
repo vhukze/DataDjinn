@@ -89,6 +89,9 @@ test('release workflow should publish installer and portable packages after pack
       run: expect.stringContaining('packaged-build-smoke.spec.ts')
     })
   )
+  expect(workflow.jobs.build.steps).toContainEqual(
+    expect.objectContaining({ run: 'npm run test:update:installed' })
+  )
 })
 
 test('main app update feed should ignore extension-only releases @smoke', () => {
@@ -117,13 +120,16 @@ test('main app update feed should ignore extension-only releases @smoke', () => 
   expect(mainSource).not.toContain('await autoUpdater.downloadUpdate()')
 })
 
-test('installer update uses the process-aware launcher @smoke', () => {
+test('installer update uses standard NSIS quit and install without console scripts @smoke', () => {
   const projectRoot = path.resolve(__dirname, '..', '..')
   const mainSource = fs.readFileSync(path.join(projectRoot, 'src', 'main', 'index.ts'), 'utf-8')
 
   expect(mainSource).toContain("from './installer-update-launcher'")
-  expect(mainSource).toContain('await launchInstallerAfterProcessExit({')
-  expect(mainSource).toContain('targetPid: process.pid')
+  expect(mainSource).toContain('autoUpdater.prepareDownloadedInstaller(filePath)')
+  expect(mainSource).toContain('autoUpdater.quitAndInstall(true, true)')
+  expect(mainSource).toContain('await Promise.all([backendManager.stop(), aiModuleManager.stop()])')
+  expect(mainSource).not.toContain('launchInstallerAfterProcessExit')
+  expect(mainSource).not.toContain('timeout /t 1 /nobreak')
 })
 
 test('GitHub release atom parser keeps main release notes and skips module releases @smoke', async () => {

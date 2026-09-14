@@ -77,6 +77,9 @@ jobs:
       - name: Run packaged build smoke test
         run: npx playwright test -c playwright.regression.config.js tests/regression/packaged-build-smoke.spec.ts
 
+      - name: Verify real installed update and relaunch
+        run: npm run test:update:installed
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:

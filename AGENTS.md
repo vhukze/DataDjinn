@@ -556,6 +556,7 @@ cd backend
 - 正式发版不要求运行历史 bug 用例，除非本次改动直接涉及该 bug 用例对应的模块
 - 所有改动仍必须先通过对应测试，再向用户说明已解决或进入打包、发版流程
 - Electron 发版回归固定使用 `npm run test:regression:smoke -- --grep-invert=@bug`；除非用户明确要求，不得执行 `npm run test:regression`，历史 `@bug` 用例不属于发版门禁。
+- Windows 正式发版还必须在最终安装包生成后执行 `npm run test:update:installed`，验证真实 NSIS 安装升级、自动重新启动、设置保留和新版本后端正常启动；仅启动解包 exe 或模拟安装器不算在线更新验证。该门禁未通过不得发布。测试会检查现有安装位置，禁止覆盖开发者正常安装目录。
 
 ## 19. UTF-8 编辑硬规则
 - 所有源码文件必须保持 UTF-8 编码

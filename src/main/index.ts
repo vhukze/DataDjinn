@@ -7,18 +7,20 @@ import { createHash, randomBytes } from 'crypto'
 import { spawn } from 'child_process'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import StoreModule from 'electron-store'
-import { autoUpdater } from 'electron-updater'
+import { autoUpdater as platformAutoUpdater } from 'electron-updater'
 import icon from '../../resources/icon.ico?asset'
 import { backendManager } from './backend'
 import { AiModuleManager } from './ai-module'
 import { buildConnectionTransferImportDialogOptions } from './connection-transfer-dialog'
 import { extractLatestMainReleaseFromAtom } from './github-release'
-import { launchInstallerAfterProcessExit } from './installer-update-launcher'
+import { InstallerUpdater } from './installer-update-launcher'
 import {
   movePendingOptionalModuleDirectory,
   replaceOptionalModuleDirectory,
   withOptionalModuleReplacementLock
 } from './optional-module-replacement'
+
+const autoUpdater = process.platform === 'win32' ? new InstallerUpdater() : platformAutoUpdater
 
 type AIConfig = {
   provider?: 'openai-compatible' | 'anthropic'
@@ -1514,6 +1516,9 @@ const downloadInstallerUpdate = async (): Promise<void> => {
     throw new Error('下载更新校验失败，请检查网络后重试')
   }
 
+  if (autoUpdater instanceof InstallerUpdater) {
+    await autoUpdater.prepareDownloadedInstaller(filePath)
+  }
   installerUpdatePath = filePath
   installerUpdateDownloaded = true
   lastInstallerUpdateInfo = { ...updateInfo, installerDownloaded: true }
@@ -2381,14 +2386,9 @@ app.whenReady().then(async () => {
       throw new Error('更新尚未下载完成')
     }
 
+    await Promise.all([backendManager.stop(), aiModuleManager.stop()])
     isQuittingForUpdate = true
-    await backendManager.stop()
-    await launchInstallerAfterProcessExit({
-      installerPath: installerUpdatePath,
-      targetPid: process.pid,
-      launcherPath: join(app.getPath('temp'), `datadjinn-update-${process.pid}-${Date.now()}.ps1`)
-    })
-    app.quit()
+    autoUpdater.quitAndInstall(true, true)
   })
 
   ipcMain.handle('update:open-release', async (_, url?: string) => {
