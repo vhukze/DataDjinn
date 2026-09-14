@@ -27,7 +27,7 @@ test('installed application downloads, installs, relaunches and preserves settin
 
   // Never replace an unrelated installation when this gate runs on a developer PC.
   const registered = await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-    "[Console]::OutputEncoding = [Text.UTF8Encoding]::new(); Get-ItemProperty 'HKCU:/Software/Microsoft/Windows/CurrentVersion/Uninstall/*','HKLM:/Software/Microsoft/Windows/CurrentVersion/Uninstall/*' -ErrorAction SilentlyContinue | Where-Object DisplayName -eq 'DataDjinn' | ForEach-Object { $_.DisplayIcon -replace ',0$', '' }"], { windowsHide: true })
+    "[Console]::OutputEncoding = [Text.UTF8Encoding]::new(); $ErrorActionPreference = 'SilentlyContinue'; Get-ItemProperty 'HKCU:/Software/Microsoft/Windows/CurrentVersion/Uninstall/*','HKLM:/Software/Microsoft/Windows/CurrentVersion/Uninstall/*' -ErrorAction SilentlyContinue | Where-Object DisplayName -eq 'DataDjinn' | ForEach-Object { $_.DisplayIcon -replace ',0$', '' }; exit 0"], { windowsHide: true })
   for (const location of registered.stdout.trim().split(/\r?\n/).filter(Boolean)) {
     expect(path.dirname(path.resolve(location)).toLowerCase()).toBe(installDir.toLowerCase())
   }
