@@ -112,11 +112,27 @@ test('installed application downloads, installs, relaunches and preserves settin
       await page.waitForSelector('.app-shell[data-startup-ready="true"]', { timeout: 60000 })
       expect((await page.evaluate(() => window.api.getUpdateSettings())).autoCheckUpdates).toBe(false)
       expect(await reopened.evaluate(({ app }) => app.getVersion())).toBe(version)
-      expect((await page.evaluate(() => window.api.getBackendStatus())).state).toBe('online')
-      await page.screenshot({ path: path.join(dir, 'updated-app.png') })
+    expect((await page.evaluate(() => window.api.getBackendStatus())).state).toBe('online')
+    await page.screenshot({ path: path.join(dir, 'updated-app.png') })
     } finally { await reopened.close() }
-    await writeFile(path.join(dir, 'passed.json'), JSON.stringify({ baselineVersion, version, oldPid: oldProcess.pid, newPid, settingsPreserved: true, backendOnline: true, requested, verifiedAt: new Date().toISOString() }, null, 2), 'utf8')
-    console.log(`真实安装升级通过：${baselineVersion} -> ${version}，重启 PID ${newPid}，配置保留，后端正常`)
+    const runningApp = await electron.launch({ executablePath: exe, env: {
+      ...process.env, DATADJINN_TEST_USER_DATA_DIR: profile, DATADJINN_SKIP_SPLASH: '1'
+    } })
+    const runningProcess = runningApp.process()
+    let runningAppExited = false
+    runningProcess.once('exit', () => { runningAppExited = true })
+    try {
+      await new Promise((resolve, reject) => {
+        const child = spawn(target, ['/S', `/D=${installDir}`], { windowsHide: true, stdio: 'ignore' })
+        child.once('error', reject)
+        child.once('exit', code => code === 0 ? resolve() : reject(new Error(`运行中覆盖安装失败：${code}`)))
+      })
+      await expect.poll(() => runningAppExited, { timeout: 30000 }).toBe(true)
+    } finally {
+      if (!runningAppExited) await runningApp.close()
+    }
+    await writeFile(path.join(dir, 'passed.json'), JSON.stringify({ baselineVersion, version, oldPid: oldProcess.pid, newPid, settingsPreserved: true, backendOnline: true, runningAppInstallStopVerified: true, requested, verifiedAt: new Date().toISOString() }, null, 2), 'utf8')
+    console.log(`真实安装升级通过：${baselineVersion} -> ${version}，重启 PID ${newPid}，配置保留，后端正常，运行中覆盖安装可自动停止应用`)
   } finally {
     if (!appExited) await app.close()
     await new Promise(resolve => server.close(resolve))

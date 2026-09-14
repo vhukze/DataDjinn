@@ -13,6 +13,7 @@ import { backendManager } from './backend'
 import { AiModuleManager } from './ai-module'
 import { buildConnectionTransferImportDialogOptions } from './connection-transfer-dialog'
 import { extractLatestMainReleaseFromAtom } from './github-release'
+import { InstallerUpdater } from './installer-update-launcher'
 import {
   movePendingOptionalModuleDirectory,
   replaceOptionalModuleDirectory,
@@ -2387,7 +2388,12 @@ app.whenReady().then(async () => {
 
     await Promise.all([backendManager.stop(), aiModuleManager.stop()])
     isQuittingForUpdate = true
-    autoUpdater.quitAndInstall(true, true)
+    // Keep the standard NSIS wizard visible during an online update.
+    // Users can confirm the install step and see the actual installation progress.
+    const installSilentlyForTest = Boolean(
+      testUserDataDir && process.env.DATADJINN_TEST_SILENT_UPDATE === '1'
+    )
+    autoUpdater.quitAndInstall(installSilentlyForTest, true)
   })
 
   ipcMain.handle('update:open-release', async (_, url?: string) => {

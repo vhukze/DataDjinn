@@ -16,5 +16,8 @@ if (!baseline) {
   baseline = path.join(baselineDir, 'DataDjinn-0.0.0-setup.exe')
 }
 run('@playwright/test/cli', ['test', '-c', 'playwright.regression.config.js', 'tests/regression/installed-update.spec.ts'], {
-  ...process.env, DATADJINN_RUN_INSTALLED_UPDATE: '1', DATADJINN_UPDATE_BASE_INSTALLER: baseline
+  ...process.env,
+  DATADJINN_RUN_INSTALLED_UPDATE: '1',
+  DATADJINN_TEST_SILENT_UPDATE: '1',
+  DATADJINN_UPDATE_BASE_INSTALLER: baseline
 })
