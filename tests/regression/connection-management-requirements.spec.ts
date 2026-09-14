@@ -428,7 +428,7 @@ test('database selector should use the same current selection as tree rendering 
   expect(appSource).toContain(
     'selectedDatabasesRef.current[connectionId] ?? selectedDatabases[connectionId] ?? dbList'
   )
-  expect(appSource).toContain('timeoutMs: DATABASE_CONNECTION_REQUEST_TIMEOUT_MS')
+  expect(appSource).toContain('getDatabaseConnectionRequestTimeoutMs(currentConnection?.database_type')
   expect(runtimeSource).toContain('export const DATABASE_CONNECTION_REQUEST_TIMEOUT_MS = 10_000')
 })
 

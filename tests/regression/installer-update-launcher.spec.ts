@@ -55,10 +55,10 @@ test('downloaded installer enters the standard updater cache and NSIS lifecycle 
     const downloaded = await app.evaluate(() => global.events[0])
     expect(downloaded.version).toBe('0.3.15')
     expect(await readFile(downloaded.downloadedFile)).toEqual(payload)
-    expect(await app.evaluate(() => global.updater.install(true, true))).toBe(true)
+    expect(await app.evaluate(() => global.updater.install(false, true))).toBe(true)
     const calls = await app.evaluate(() => global.spawnCalls)
-    expect(calls).toEqual([{ command: downloaded.downloadedFile, args: ['--updated', '/S', '--force-run'] }])
-    expect(await app.evaluate(() => global.updater.install(true, true))).toBe(false)
+    expect(calls).toEqual([{ command: downloaded.downloadedFile, args: ['--updated', '--force-run'] }])
+    expect(await app.evaluate(() => global.updater.install(false, true))).toBe(false)
   } finally {
     await app.close()
     await new Promise(resolve => server.close(resolve))

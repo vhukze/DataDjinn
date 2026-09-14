@@ -24,6 +24,7 @@ win:
     - zip
   executableName: DataDjinn
 nsis:
+  include: build/installer.nsh
   artifactName: DataDjinn-${version}-setup.${ext}
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}

@@ -635,6 +635,7 @@ function App(): React.JSX.Element {
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [downloadingUpdate, setDownloadingUpdate] = useState(false)
+  const [installingUpdate, setInstallingUpdate] = useState(false)
   const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null)
   const [drivers, setDrivers] = useState<DriverInfo[]>([])
   const [javaRuntimes, setJavaRuntimes] = useState<JavaRuntimeInfo[]>([])
@@ -1847,9 +1848,17 @@ function App(): React.JSX.Element {
   }
 
   const installUpdate = async (): Promise<void> => {
+    if (installingUpdate) {
+      return
+    }
+    const isInstallerUpdate = updateInfo?.mode !== 'portable'
+    if (isInstallerUpdate) {
+      setInstallingUpdate(true)
+    }
     try {
       await window.api.installUpdate()
     } catch (err) {
+      setInstallingUpdate(false)
       showError(err instanceof Error ? err.message : '安装更新失败')
     }
   }
@@ -12104,8 +12113,17 @@ function App(): React.JSX.Element {
                     </Button>
                   )}
                   {updateDownloaded && (
-                    <Button type="primary" onClick={() => void installUpdate()}>
-                      {updateMode === 'installer' ? '重启并安装' : '打开下载位置'}
+                    <Button
+                      type="primary"
+                      loading={installingUpdate}
+                      disabled={installingUpdate}
+                      onClick={() => void installUpdate()}
+                    >
+                      {updateMode === 'installer'
+                        ? installingUpdate
+                          ? '正在退出并启动安装…'
+                          : '重启并安装'
+                        : '打开下载位置'}
                     </Button>
                   )}
                 </Flex>
