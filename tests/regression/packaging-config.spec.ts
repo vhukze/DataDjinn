@@ -1,7 +1,9 @@
 import { expect, test } from '@playwright/test'
 import fs from 'node:fs'
+import Module from 'node:module'
 import path from 'node:path'
 import yaml from 'js-yaml'
+import ts from 'typescript'
 
 type BuilderConfig = {
   compression?: string
@@ -163,7 +165,15 @@ test('installer update shows an immediate handoff state before the app exits @sm
 })
 
 test('GitHub release atom parser keeps main release notes and skips module releases @smoke', async () => {
-  const { extractLatestMainReleaseFromAtom } = await import('../../src/main/github-release')
+  const source = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'main', 'github-release.ts'), 'utf-8')
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 }
+  }).outputText
+  const parserModule = new Module(path.join(__dirname, '..', '..', 'src', 'main', 'github-release.ts'))
+  parserModule.filename = path.join(__dirname, '..', '..', 'src', 'main', 'github-release.ts')
+  parserModule.paths = Module['_nodeModulePaths'](path.dirname(parserModule.filename))
+  parserModule._compile(compiled, parserModule.filename)
+  const { extractLatestMainReleaseFromAtom } = parserModule.exports as typeof import('../../src/main/github-release')
   const feed = `<?xml version="1.0"?><feed>
     <entry><title>DataDjinn modules v1.3.0</title><link href="https://github.com/vhukze/DataDjinn/releases/tag/modules-v1.3.0"/><content type="html">&lt;h1&gt;Modules&lt;/h1&gt;</content></entry>
     <entry><title>DataDjinn v0.3.12</title><link href="https://github.com/vhukze/DataDjinn/releases/tag/v0.3.12"/><content type="html">&lt;h1&gt;DataDjinn v0.3.12&lt;/h1&gt;\n&lt;ul&gt;\n&lt;li&gt;修复在线更新&lt;/li&gt;\n&lt;/ul&gt;</content></entry>
@@ -389,9 +399,9 @@ test('database client extensions should stay outside the core backend package @s
   )
   const launcherSource = fs.readFileSync(path.join(projectRoot, 'backend', 'run.py'), 'utf-8')
 
-  expect(backendBuildSource).toContain('"--exclude-module",\n        "clickhouse_connect"')
-  expect(backendBuildSource).toContain('"--exclude-module",\n        "elasticsearch"')
-  expect(backendBuildSource).toContain('"--exclude-module",\n        "oracledb"')
+  expect(backendBuildSource).toMatch(/"--exclude-module",\s*"clickhouse_connect"/)
+  expect(backendBuildSource).toMatch(/"--exclude-module",\s*"elasticsearch"/)
+  expect(backendBuildSource).toMatch(/"--exclude-module",\s*"oracledb"/)
   expect(runtimeBuildSource).toContain('"clickhouse-connect==0.10.0"')
   expect(runtimeBuildSource).toContain('"elasticsearch==8.18.1"')
   expect(runtimeBuildSource).not.toContain('target.glob("*.dist-info")')
