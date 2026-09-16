@@ -8,6 +8,7 @@ from unittest.mock import patch
 from app.mcp_server import (
     MAX_QUERY_ROWS,
     _configure_data_directory,
+    _configure_optional_jdbc_runtime,
     _configure_stdio_encoding,
     _is_readonly_sql,
     handle_request,
@@ -85,6 +86,61 @@ class DataDjinnMcpServerTests(unittest.TestCase):
             ):
                 _configure_data_directory()
                 self.assertEqual(os.environ["DATADJINN_DATA_DIR"], data_dir)
+
+    def test_mcp_finds_installed_jdbc_runtime_from_saved_modules(self) -> None:
+        with tempfile.TemporaryDirectory() as data_root:
+            data_dir = os.path.join(data_root, "datadjinn")
+            runtime_dir = os.path.join(data_root, "jdbc-runtime")
+            for marker in (
+                os.path.join(runtime_dir, "python", "jpype", "__init__.py"),
+                os.path.join(runtime_dir, "python", "jaydebeapi", "__init__.py"),
+                os.path.join(runtime_dir, "python", "org.jpype.jar"),
+            ):
+                os.makedirs(os.path.dirname(marker), exist_ok=True)
+                with open(marker, "w", encoding="utf-8"):
+                    pass
+            os.makedirs(data_dir)
+            with open(os.path.join(data_dir, "config.json"), "w", encoding="utf-8") as stream:
+                json.dump({"optionalModules": [{"id": "jdbc-runtime", "installPath": runtime_dir}]}, stream)
+
+            with patch.dict(
+                os.environ,
+                {"DATADJINN_DATA_DIR": data_dir, "DATADJINN_JDBC_RUNTIME_PATH": ""},
+                clear=False,
+            ):
+                _configure_optional_jdbc_runtime()
+                self.assertEqual(os.environ["DATADJINN_JDBC_RUNTIME_PATH"], runtime_dir)
+
+    def test_mcp_falls_back_to_stable_jdbc_runtime_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as data_root:
+            data_dir = os.path.join(data_root, "datadjinn")
+            runtime_dir = os.path.join(data_dir, "modules", "jdbc-runtime", "current")
+            for marker in (
+                os.path.join(runtime_dir, "python", "jpype", "__init__.py"),
+                os.path.join(runtime_dir, "python", "jaydebeapi", "__init__.py"),
+                os.path.join(runtime_dir, "python", "org.jpype.jar"),
+            ):
+                os.makedirs(os.path.dirname(marker), exist_ok=True)
+                with open(marker, "w", encoding="utf-8"):
+                    pass
+            os.makedirs(data_dir, exist_ok=True)
+
+            with patch.dict(
+                os.environ,
+                {"DATADJINN_DATA_DIR": data_dir, "DATADJINN_JDBC_RUNTIME_PATH": ""},
+                clear=False,
+            ):
+                _configure_optional_jdbc_runtime()
+                self.assertEqual(os.environ["DATADJINN_JDBC_RUNTIME_PATH"], runtime_dir)
+
+    def test_mcp_preserves_explicit_jdbc_runtime_path(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"DATADJINN_DATA_DIR": "C:/DataDjinn", "DATADJINN_JDBC_RUNTIME_PATH": "C:/custom-jdbc"},
+            clear=False,
+        ):
+            _configure_optional_jdbc_runtime()
+            self.assertEqual(os.environ["DATADJINN_JDBC_RUNTIME_PATH"], "C:/custom-jdbc")
 
     def test_mcp_stdio_is_configured_for_utf8_json_rpc(self) -> None:
         input_stream = io.TextIOWrapper(io.BytesIO(), encoding="cp936")

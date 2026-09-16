@@ -20,6 +20,9 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+JDBC_RUNTIME_ENV = "DATADJINN_JDBC_RUNTIME_PATH"
+JDBC_RUNTIME_MODULE_ID = "jdbc-runtime"
+
 
 def _configure_stdio_encoding() -> None:
     """MCP stdio is a UTF-8 JSON-RPC stream, including on Chinese Windows."""
@@ -59,9 +62,55 @@ def _configure_data_directory() -> None:
             return
 
 
+def _is_complete_jdbc_runtime(runtime_path: Path) -> bool:
+    python_path = runtime_path / "python"
+    return all(
+        path.exists()
+        for path in (
+            python_path / "jpype" / "__init__.py",
+            python_path / "jaydebeapi" / "__init__.py",
+            python_path / "org.jpype.jar",
+        )
+    )
+
+
+def _configure_optional_jdbc_runtime() -> None:
+    """Locate the JDBC module when an external MCP client launches this executable."""
+    if os.environ.get(JDBC_RUNTIME_ENV, "").strip():
+        return
+
+    data_dir = os.environ.get("DATADJINN_DATA_DIR", "").strip()
+    if not data_dir:
+        return
+
+    data_path = Path(data_dir).expanduser()
+    candidates: list[Path] = []
+    try:
+        config = json.loads((data_path / "config.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        config = {}
+
+    modules = config.get("optionalModules") if isinstance(config, dict) else None
+    if isinstance(modules, list):
+        for module in modules:
+            if not isinstance(module, dict) or module.get("id") != JDBC_RUNTIME_MODULE_ID:
+                continue
+            install_path = module.get("installPath")
+            if isinstance(install_path, str) and install_path.strip():
+                candidates.append(Path(install_path).expanduser())
+
+    # Current is stable across JDBC module updates and works with older config files.
+    candidates.append(data_path / "modules" / JDBC_RUNTIME_MODULE_ID / "current")
+    for runtime_path in candidates:
+        if _is_complete_jdbc_runtime(runtime_path):
+            os.environ[JDBC_RUNTIME_ENV] = str(runtime_path)
+            return
+
+
 # The desktop app stores saved connections under Electron userData. When an MCP
 # client starts this script directly it does not inherit that environment.
 _configure_data_directory()
+_configure_optional_jdbc_runtime()
 
 # Database drivers are intentionally loaded after the MCP handshake. Importing
 # every optional driver before reading stdin can make an MCP client wait forever
