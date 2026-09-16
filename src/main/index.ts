@@ -19,6 +19,10 @@ import {
   replaceOptionalModuleDirectory,
   withOptionalModuleReplacementLock
 } from './optional-module-replacement'
+import {
+  compareOptionalModuleVersion as compareVersion,
+  isOptionalModuleUpdateAvailable
+} from './optional-module-version'
 
 const autoUpdater = process.platform === 'win32' ? new InstallerUpdater() : platformAutoUpdater
 
@@ -629,7 +633,7 @@ const getOptionalModules = async (): Promise<OptionalModuleInfo[]> => {
       pendingRestartRequired: Boolean(pending),
       version: artifact?.version ?? module.version,
       updateAvailable: Boolean(
-        installed && artifact && compareVersion(artifact.version, installed.version) > 0
+        artifact && isOptionalModuleUpdateAvailable(installed?.version, pending?.version, artifact.version)
       )
     }
   })
@@ -1193,25 +1197,6 @@ const openSafeExternalUrl = async (rawUrl: string): Promise<void> => {
     throw new Error('仅允许打开 HTTP 或 HTTPS 链接')
   }
   await shell.openExternal(url.toString())
-}
-
-const compareVersion = (left: string, right: string): number => {
-  const leftParts = normalizeVersion(left)
-    .split('.')
-    .map((part) => Number.parseInt(part, 10) || 0)
-  const rightParts = normalizeVersion(right)
-    .split('.')
-    .map((part) => Number.parseInt(part, 10) || 0)
-  const length = Math.max(leftParts.length, rightParts.length)
-
-  for (let index = 0; index < length; index += 1) {
-    const diff = (leftParts[index] ?? 0) - (rightParts[index] ?? 0)
-    if (diff !== 0) {
-      return diff > 0 ? 1 : -1
-    }
-  }
-
-  return 0
 }
 
 const githubHeaders = { 'User-Agent': `DataDjinn/${app.getVersion()}` }

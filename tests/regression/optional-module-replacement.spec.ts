@@ -8,6 +8,12 @@ import {
   movePendingOptionalModuleDirectory,
   withOptionalModuleReplacementLock
 } from '../../src/main/optional-module-replacement'
+import { isOptionalModuleUpdateAvailable } from '../../src/main/optional-module-version'
+
+test('待替换版本已等于线上版本时不应继续提示 MCP 更新 @bug', () => {
+  expect(isOptionalModuleUpdateAvailable('1.0.4', '1.0.6', '1.0.6')).toBe(false)
+  expect(isOptionalModuleUpdateAvailable('1.0.4', '1.0.5', '1.0.6')).toBe(true)
+})
 
 test('MCP 待替换目录不存在时必须保留旧 current 目录 @bug', async () => {
   const moduleRoot = await mkdtemp(join(tmpdir(), 'datadjinn-module-replacement-'))
