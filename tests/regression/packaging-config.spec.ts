@@ -277,7 +277,7 @@ test('optional modules should expose independent update status and action @smoke
     fs.readFileSync(path.join(projectRoot, 'module-catalog.json'), 'utf-8')
   ) as { modules: Array<{ id: string; version: string; sha256: string }> }
 
-  expect(mainSource).toContain("version: '1.0.2'")
+  expect(mainSource).toContain("version: '1.0.6'")
   expect(mainSource).toContain('OPTIONAL_MODULE_CATALOG_URL')
   expect(mainSource).toContain('getOptionalModuleArtifacts')
   expect(mainSource).toContain('OPTIONAL_MODULE_CATALOG_CACHE_MS')
@@ -289,6 +289,8 @@ test('optional modules should expose independent update status and action @smoke
   expect(mainSource).toContain("id: 'elasticsearch'")
   expect(appSource).toContain('module.updateAvailable')
   expect(appSource).toContain('module.pendingRestartRequired')
+  expect(appSource).toContain("'待替换，有更新'")
+  expect(appSource).toContain('`更新到 ${module.version}`')
   expect(appSource).toContain('重启 MCP 调用方后生效')
   expect(appSource).toContain('MCP 正在被占用')
   expect(appSource).toContain('forceInstallOptionalModule')
@@ -300,7 +302,7 @@ test('optional modules should expose independent update status and action @smoke
   expect(appSource).toContain(": '已安装'")
   expect(appSource).toContain(": '更新'}")
   expect(appSource).toContain(": '安装'}")
-  expect(appSource).toContain("? '待重启生效'")
+  expect(appSource).toContain(": '待重启生效'")
 })
 
 test('MCP artifact metadata should match the published module version @smoke', () => {
@@ -348,6 +350,8 @@ test('optional module installs should preserve the stable MCP path @smoke', () =
   expect(mainSource).toContain('retryPendingOptionalModuleInstalls')
   expect(mainSource).toContain('withOptionalModuleReplacementLock')
   expect(mainSource).toContain('isCurrentPendingOptionalModule')
+  expect(mainSource).toContain('const previousPending = getPendingOptionalModules().find')
+  expect(mainSource).toContain('await rm(previousPending.temporaryPath, { recursive: true, force: true })')
   expect(replacementSource).toContain('const replacementLocks')
   expect(replacementSource).toContain('待替换的扩展目录不存在')
   expect(replacementSource).toContain('movedCurrentToBackup && !existsSync(installPath)')

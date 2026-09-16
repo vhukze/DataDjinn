@@ -189,10 +189,10 @@ const OPTIONAL_MODULE_CATALOG = [
 const OPTIONAL_MODULE_ARTIFACT_CATALOG: readonly OptionalModuleArtifact[] = [
   {
     id: 'mcp',
-    version: '1.0.2',
+    version: '1.0.6',
     artifact: {
-      url: 'https://github.com/vhukze/DataDjinn/releases/download/modules-v1.0.2/datadjinn-mcp-1.0.2-win-x64.zip',
-      sha256: '3f49be5946b85da15a5c6d1fc11a3ebe683b9ce577a0499fae6b4b410f68035b'
+      url: 'https://github.com/vhukze/DataDjinn/releases/download/modules-v1.0.6/datadjinn-mcp-1.0.6-win-x64.zip',
+      sha256: 'ee8a8fd25e49f2a80c64c4955507abd1cca5e58a0209aa4649c69cce93da6987'
     }
   },
   {
@@ -629,7 +629,7 @@ const getOptionalModules = async (): Promise<OptionalModuleInfo[]> => {
       pendingRestartRequired: Boolean(pending),
       version: artifact?.version ?? module.version,
       updateAvailable: Boolean(
-        installed && artifact && !pending && compareVersion(artifact.version, installed.version) > 0
+        installed && artifact && compareVersion(artifact.version, installed.version) > 0
       )
     }
   })
@@ -899,6 +899,7 @@ const installOptionalModuleArtifact = async (
       const pendingPath = join(moduleRoot, `.pending-${module.version}-${randomBytes(8).toString('hex')}`)
       await movePendingOptionalModuleDirectory(temporaryPath, pendingPath)
       preserveTemporaryPath = true
+      const previousPending = getPendingOptionalModules().find((item) => item.id === moduleId)
       const pending = getPendingOptionalModules().filter((item) => item.id !== moduleId)
       pending.push({
         id: moduleId,
@@ -907,6 +908,9 @@ const installOptionalModuleArtifact = async (
         entryPoint: manifest.entryPoint
       })
       setPendingOptionalModules(pending)
+      if (previousPending && previousPending.temporaryPath !== pendingPath) {
+        await rm(previousPending.temporaryPath, { recursive: true, force: true }).catch(() => undefined)
+      }
       void retryPendingOptionalModuleInstall(pending[pending.length - 1])
       throw new Error('MCP 模块正在被外部调用方占用，新版本已下载。请确认后关闭占用进程并立即更新。')
     }
