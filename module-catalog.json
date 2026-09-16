@@ -3,9 +3,9 @@
   "modules": [
     {
       "id": "mcp",
-      "version": "1.0.5",
-      "url": "https://github.com/vhukze/DataDjinn/releases/download/modules-v1.0.5/datadjinn-mcp-1.0.5-win-x64.zip",
-      "sha256": "d341097bfc12985a11ab1759cb09f5bdb08c2cf3f10f2dd9caa4eec4cbebf999"
+      "version": "1.0.6",
+      "url": "https://github.com/vhukze/DataDjinn/releases/download/modules-v1.0.6/datadjinn-mcp-1.0.6-win-x64.zip",
+      "sha256": "ee8a8fd25e49f2a80c64c4955507abd1cca5e58a0209aa4649c69cce93da6987"
     },
     {
       "id": "ai",

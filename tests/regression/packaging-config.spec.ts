@@ -281,7 +281,7 @@ test('optional modules should expose independent update status and action @smoke
   expect(mainSource).toContain('OPTIONAL_MODULE_CATALOG_URL')
   expect(mainSource).toContain('getOptionalModuleArtifacts')
   expect(mainSource).toContain('OPTIONAL_MODULE_CATALOG_CACHE_MS')
-  expect(catalog.modules.find((module) => module.id === 'mcp')).toMatchObject({ version: '1.0.5' })
+  expect(catalog.modules.find((module) => module.id === 'mcp')).toMatchObject({ version: '1.0.6' })
   expect(catalog.modules.every((module) => /^[a-f0-9]{64}$/i.test(module.sha256))).toBe(true)
   expect(catalog.modules.find((module) => module.id === 'clickhouse')).toMatchObject({ version: '1.0.0' })
   expect(catalog.modules.find((module) => module.id === 'elasticsearch')).toMatchObject({ version: '1.0.0' })
@@ -312,10 +312,10 @@ test('MCP artifact metadata should match the published module version @smoke', (
   const mcp = catalog.modules.find((module) => module.id === 'mcp')
 
   expect(mcp).toMatchObject({
-    version: '1.0.5',
-    url: 'https://github.com/vhukze/DataDjinn/releases/download/modules-v1.0.5/datadjinn-mcp-1.0.5-win-x64.zip'
+    version: '1.0.6',
+    url: 'https://github.com/vhukze/DataDjinn/releases/download/modules-v1.0.6/datadjinn-mcp-1.0.6-win-x64.zip'
   })
-  expect(mcp?.sha256).toBe('d341097bfc12985a11ab1759cb09f5bdb08c2cf3f10f2dd9caa4eec4cbebf999')
+  expect(mcp?.sha256).toBe('ee8a8fd25e49f2a80c64c4955507abd1cca5e58a0209aa4649c69cce93da6987')
   expect(mainSource).toContain('OPTIONAL_MODULE_ARTIFACT_CATALOG')
 })
 
