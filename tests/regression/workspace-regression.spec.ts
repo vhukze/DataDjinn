@@ -3318,8 +3318,13 @@ test.describe('workspace regression', () => {
         `.resource-tree-node-title[data-tree-node-key="folder:${folderId}"]`
       )
       await expect(folderTitle).toContainText(folderName, { timeout: 15000 })
+      const firstFolderToggleStartedAt = Date.now()
       await folderTitle.dblclick()
       await expect(treeNode(page, `connection:${fixtureConnectionId}`)).toBeVisible({ timeout: 15000 })
+      expect(
+        Date.now() - firstFolderToggleStartedAt,
+        '空闲恢复后的首次双击分组必须立即展开，不能等待第二次操作'
+      ).toBeLessThan(1500)
       await expect
         .poll(() =>
           page.evaluate((connectionId) => {
@@ -10368,15 +10373,41 @@ test.describe('workspace regression', () => {
     ]
     let page
     let storageSnapshot
+    let originalPreferences
 
     try {
       page = await electronApp.firstWindow()
       attachPageConsole(page)
       await waitForAppReady(page)
       await ensureWindowSize(page)
+      originalPreferences = await page.evaluate(() =>
+        window.api.requestJson('/preferences/connection-tree')
+      )
       storageSnapshot = await page.evaluate((keys) => {
         return Object.fromEntries(keys.map((key) => [key, localStorage.getItem(key)]))
       }, storageKeys)
+      await page.evaluate(async (connectionId) => {
+        await window.api.requestJson('/preferences/connection-tree', {
+          method: 'PUT',
+          body: JSON.stringify({
+            preferences: {
+              connection_folders: [],
+              connection_folder_assignments: {},
+              connection_folder_order: [],
+              root_connection_order: [connectionId],
+              root_item_order: [`connection:${connectionId}`],
+              root_item_order_customized: true,
+              pinned_root_item_ids: [],
+              folder_connection_order: {},
+              selected_databases: { [connectionId]: ['default'] },
+              selected_schemas: {}
+            }
+          })
+        })
+      }, fixtureConnectionId)
+      await page.reload()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
 
       const folderName = `Regression group ${crypto.randomUUID().slice(0, 8)}`
       await page.locator('.resource-add').click()
@@ -10586,7 +10617,26 @@ test.describe('workspace regression', () => {
       await expect(inlineFolderInput).toBeHidden()
 
       await page.evaluate(
-        ({ connectionId, targetFolderId }) => {
+        async ({ connectionId, targetFolderId, parentFolderName, childFolderId, childFolderName }) => {
+          const preferences = {
+            connection_folders: [
+              { id: targetFolderId, name: parentFolderName },
+              { id: childFolderId, name: childFolderName, parentId: targetFolderId }
+            ],
+            connection_folder_assignments: { [connectionId]: targetFolderId },
+            connection_folder_order: [targetFolderId],
+            root_connection_order: [],
+            root_item_order: [`folder:${targetFolderId}`],
+            root_item_order_customized: true,
+            pinned_root_item_ids: [],
+            folder_connection_order: { [targetFolderId]: [connectionId] },
+            selected_databases: { [connectionId]: ['default'] },
+            selected_schemas: {}
+          }
+          await window.api.requestJson('/preferences/connection-tree', {
+            method: 'PUT',
+            body: JSON.stringify({ preferences })
+          })
           localStorage.setItem(
             'datadjinn-connection-folder-assignments',
             JSON.stringify({ [connectionId]: targetFolderId })
@@ -10596,7 +10646,13 @@ test.describe('workspace regression', () => {
             JSON.stringify({ [targetFolderId]: [connectionId] })
           )
         },
-        { connectionId: fixtureConnectionId, targetFolderId: folderId }
+        {
+          connectionId: fixtureConnectionId,
+          targetFolderId: folderId,
+          parentFolderName: folderName,
+          childFolderId,
+          childFolderName
+        }
       )
       await page.reload()
       await waitForAppReady(page)
@@ -10661,6 +10717,14 @@ test.describe('workspace regression', () => {
       expect(groupedTableMetrics.contentLeft - groupedTableGroupMetrics.contentLeft).toBeGreaterThanOrEqual(22)
       expect(groupedTableMetrics.contentLeft - groupedTableGroupMetrics.contentLeft).toBeLessThanOrEqual(26)
     } finally {
+      if (page && originalPreferences) {
+        await page.evaluate(async (preferences) => {
+          await window.api.requestJson('/preferences/connection-tree', {
+            method: 'PUT',
+            body: JSON.stringify({ preferences: preferences.preferences ?? {} })
+          })
+        }, originalPreferences)
+      }
       if (page && storageSnapshot) {
         await page.evaluate(({ snapshot }) => {
           Object.entries(snapshot).forEach(([key, value]) => {
