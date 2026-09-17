@@ -354,7 +354,18 @@ function App(): React.JSX.Element {
   const [selectedTreeKeys, setSelectedTreeKeys] = useState<React.Key[]>([])
   const [connectionSelectionAnchorId, setConnectionSelectionAnchorId] = useState<string>()
   const [treeData, setTreeData] = useState<DatabaseTreeNode[]>([])
-  const [expandedKeys, setExpandedKeys] = useState<React.Key[]>([])
+  const expandedKeysRef = useRef<React.Key[]>([])
+  const [expandedKeys, setExpandedKeysState] = useState<React.Key[]>([])
+  const setExpandedKeys = useCallback(
+    (value: React.SetStateAction<React.Key[]>) => {
+      setExpandedKeysState((current) => {
+        const next = typeof value === 'function' ? value(current) : value
+        expandedKeysRef.current = next
+        return next
+      })
+    },
+    []
+  )
   const [connectionTreeLoading, setConnectionTreeLoading] = useState<Record<string, string>>({})
   const [treeLoadingVersion, setTreeLoadingVersion] = useState(0)
   const [connectionModalOpen, setConnectionModalOpen] = useState(false)
@@ -1026,7 +1037,6 @@ function App(): React.JSX.Element {
   const persistQueryWorkspaceRef = useRef<(tab: WorkspaceTab) => void>(() => undefined)
   const querySqlDraftTimersRef = useRef<Record<string, number | undefined>>({})
   const treeDataRef = useRef<DatabaseTreeNode[]>([])
-  const expandedKeysRef = useRef<React.Key[]>([])
   const resourceTreeRef = useRef<unknown>(null)
   const tableComponentRefs = useRef<Record<string, HorizontalScrollTableRef | null>>({})
   const tableBodyRefs = useRef<Record<string, HTMLDivElement | null>>({})

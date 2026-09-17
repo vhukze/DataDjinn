@@ -257,9 +257,14 @@ const ResourceTreePanel = memo(
 
     const commitTreeSelection = useCallback(
       (node: DatabaseTreeNode, nativeEvent?: MouseEvent) => {
+        // 分组不是可操作资源，避免仅为选中分组而触发 App 级焦点和 AI 上下文重算。
+        if (node.kind === 'folder') {
+          setSelectedTreeKeys([node.key as Key])
+          return
+        }
         handleTreeSelection(node, nativeEvent)
       },
-      [handleTreeSelection]
+      [handleTreeSelection, setSelectedTreeKeys]
     )
 
     const scheduleTreeSelection = useCallback(
