@@ -117,6 +117,7 @@ type TreeRuntimeDeps = {
 }
 
 export type TreeRuntimeApi = {
+  invalidateObjectGroupCache: (connectionId: string) => void
   objectNodesForGroup: (
     connectionId: string,
     objectType: DbObjectType,
@@ -189,6 +190,24 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
   const objectGroupChildrenCache = new Map<string, DatabaseTreeNode[]>()
   const objectGroupChildrenPromiseCache = new Map<string, Promise<DatabaseTreeNode[]>>()
   const tableStatsPromiseCache = new Map<string, Promise<void>>()
+  const objectGroupCacheGeneration = new Map<string, number>()
+  const getObjectGroupCacheGeneration = (connectionId: string): number =>
+    objectGroupCacheGeneration.get(connectionId) ?? 0
+  const invalidateObjectGroupCache = (connectionId: string): void => {
+    objectGroupCacheGeneration.set(connectionId, getObjectGroupCacheGeneration(connectionId) + 1)
+    const cachePrefix = `${connectionId}:`
+    for (const cache of [
+      objectGroupChildrenCache,
+      objectGroupChildrenPromiseCache,
+      tableStatsPromiseCache
+    ]) {
+      for (const key of cache.keys()) {
+        if (key.startsWith(cachePrefix)) {
+          cache.delete(key)
+        }
+      }
+    }
+  }
   const TABLE_STATS_DATABASE_TYPES = new Set<DatabaseType>([
     'mysql',
     'postgresql',
@@ -229,11 +248,16 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
       children.map((child) =>
         child.kind === 'table' ? { ...child, sizeLoading: false } : child
       )
-    const statsPromise = deps
+    const cacheGeneration = getObjectGroupCacheGeneration(connectionId)
+    let statsPromise: Promise<void>
+    statsPromise = deps
       .requestJson<{ objects: DbObjectInfo[] }>(
         `${tableObjectRequestPath(connectionId, databaseName, pgDatabaseName)}&include_stats=true`
       )
       .then(({ objects }) => {
+        if (getObjectGroupCacheGeneration(connectionId) !== cacheGeneration) {
+          return
+        }
         const statsByName = new Map(objects.map((object) => [object.name, object]))
         const nextChildren = initialChildren.map((child) => {
           if (child.kind !== 'table' || !child.tableName) {
@@ -258,6 +282,9 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
         })
       })
       .catch(() => {
+        if (getObjectGroupCacheGeneration(connectionId) !== cacheGeneration) {
+          return
+        }
         const nextChildren = clearLoadingState(initialChildren)
         objectGroupChildrenCache.set(cacheKey, nextChildren)
         deps.setTreeData((current) => {
@@ -267,7 +294,9 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
         })
       })
       .finally(() => {
-        tableStatsPromiseCache.delete(cacheKey)
+        if (tableStatsPromiseCache.get(cacheKey) === statsPromise) {
+          tableStatsPromiseCache.delete(cacheKey)
+        }
       })
 
     tableStatsPromiseCache.set(cacheKey, statsPromise)
@@ -310,6 +339,7 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
   ): Promise<DatabaseTreeNode[]> => {
     const startedAt = performance.now()
     const cacheKey = objectGroupCacheKey(connectionId, objectType, databaseName, pgDatabaseName)
+    const cacheGeneration = getObjectGroupCacheGeneration(connectionId)
     const cachedChildren = objectGroupChildrenCache.get(cacheKey)
     if (cachedChildren) {
       console.info('[perf][tree-runtime] object-group-cache-hit', {
@@ -373,7 +403,9 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
           isLeaf: resolvedType !== 'table'
         }
       })
-      objectGroupChildrenCache.set(cacheKey, nextChildren)
+      if (getObjectGroupCacheGeneration(connectionId) === cacheGeneration) {
+        objectGroupChildrenCache.set(cacheKey, nextChildren)
+      }
       console.info('[perf][tree-runtime] object-group-mapped', {
         cacheKey,
         objectType,
@@ -387,7 +419,9 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
     try {
       return await requestPromise
     } finally {
-      objectGroupChildrenPromiseCache.delete(cacheKey)
+      if (objectGroupChildrenPromiseCache.get(cacheKey) === requestPromise) {
+        objectGroupChildrenPromiseCache.delete(cacheKey)
+      }
     }
   }
 
@@ -793,6 +827,7 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
   }
 
   return {
+    invalidateObjectGroupCache,
     objectNodesForGroup,
     preloadObjectGroupNodes,
     preloadDatabaseChildren,

@@ -205,6 +205,63 @@ class GitHubOAuthTests(unittest.TestCase):
         stored = json.loads((self.data_dir / "github-sync.json").read_text(encoding="utf-8"))
         self.assertEqual(stored["repository_full_name"], repository.full_name)
 
+    def test_find_repository_returns_none_without_creating_repository(self) -> None:
+        (self.data_dir / "github-sync.json").write_text(
+            json.dumps({"encrypted_access_token": "encrypted:token"}), encoding="utf-8"
+        )
+        with patch.object(github_oauth_module, "_decrypt_password", return_value="token"), patch.object(
+            self.service, "_github_request", return_value=[]
+        ) as github_request:
+            repository = self.service.find_sync_repository()
+
+        self.assertIsNone(repository)
+        self.assertNotIn("POST", [call.args[0] for call in github_request.call_args_list])
+
+    def test_saved_missing_repository_is_not_replaced_automatically(self) -> None:
+        self._store_authorized_repository()
+        missing = HTTPError(
+            "https://api.github.com/repos/vhukze/datadjinn-sync-a1b2c3d4",
+            404,
+            "Not Found",
+            hdrs=None,
+            fp=io.BytesIO(b"{}"),
+        )
+        with patch.object(github_oauth_module, "_decrypt_password", return_value="token"), patch.object(
+            self.service, "_github_request", side_effect=missing
+        ) as github_request, self.assertRaisesRegex(ValueError, "已保存的 GitHub 同步仓库"):
+            self.service.find_sync_repository()
+
+        self.assertNotIn("POST", [call.args[0] for call in github_request.call_args_list])
+
+    def test_discovers_pointer_after_the_first_gist_page(self) -> None:
+        (self.data_dir / "github-sync.json").write_text(
+            json.dumps({"encrypted_access_token": "encrypted:token"}), encoding="utf-8"
+        )
+        first_page = [{"id": f"unrelated-{index}", "description": "other"} for index in range(100)]
+        with patch.object(github_oauth_module, "_decrypt_password", return_value="token"), patch.object(
+            self.service,
+            "_github_request",
+            side_effect=[
+                first_page,
+                [{"id": "pointer-2", "description": github_oauth_module.SYNC_POINTER_DESCRIPTION}],
+                {
+                    "files": {
+                        github_oauth_module.SYNC_POINTER_FILE: {
+                            "content": json.dumps({"repository": "vhukze/datadjinn-sync-page-2"})
+                        }
+                    }
+                },
+                {
+                    "full_name": "vhukze/datadjinn-sync-page-2",
+                    "html_url": "https://github.com/vhukze/datadjinn-sync-page-2",
+                },
+            ],
+        ) as github_request:
+            repository = self.service.find_sync_repository()
+
+        self.assertEqual(repository.full_name, "vhukze/datadjinn-sync-page-2")
+        self.assertEqual(github_request.call_args_list[1].args[1], "/gists?per_page=100&page=2")
+
     def test_discovers_existing_repository_from_private_pointer_on_new_device(self) -> None:
         (self.data_dir / "github-sync.json").write_text(
             json.dumps({"encrypted_access_token": "encrypted:token"}), encoding="utf-8"
@@ -302,6 +359,17 @@ class GitHubOAuthTests(unittest.TestCase):
             self.service, "_github_request", side_effect=[self._repository_response(), missing]
         ):
             self.assertIsNone(self.service.read_repository_file("sync/config.json"))
+
+    def test_reading_without_a_repository_does_not_create_one(self) -> None:
+        (self.data_dir / "github-sync.json").write_text(
+            json.dumps({"encrypted_access_token": "encrypted:token"}), encoding="utf-8"
+        )
+        with patch.object(github_oauth_module, "_decrypt_password", return_value="token"), patch.object(
+            self.service, "_github_request", return_value=[]
+        ) as github_request:
+            self.assertIsNone(self.service.read_repository_file("sync/config.json"))
+
+        self.assertNotIn("POST", [call.args[0] for call in github_request.call_args_list])
 
     def test_lists_repository_commits_for_a_versioned_file(self) -> None:
         self._store_authorized_repository()

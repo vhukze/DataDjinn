@@ -5,20 +5,30 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import nullcontext
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 
+from fastapi import HTTPException
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import StaticPool
 
-from app.db.backup_manager import BackupManager
-from app.db.data_export import write_tabular_export
-from app.db.metadata import ensure_ddl_terminator
+from app.api.metadata import execute_routine_endpoint
+from app.api.backup import create_backup as create_backup_api
+from app.db.backup_manager import BackupManager, _generate_postgresql_backup_internal
+from app.db.data_export import parse_csv_text_value, write_tabular_export
+from app.db.metadata import (
+    _build_pg_table_ddl,
+    _update_sqlite_table_columns_v2,
+    build_mysql_update_statements,
+    ensure_ddl_terminator,
+    list_columns,
+)
 from app.db.routine_executor import coerce_routine_value, execute_routine, list_routine_parameters
-from app.schemas.backup import ResultExportRequest
+from app.schemas.backup import BackupCreateRequest, BackupRecord, ResultExportRequest
 from app.schemas.connection import ConnectionRequest
-from app.schemas.metadata import RoutineArgumentValue, RoutineParameterInfo
+from app.schemas.metadata import ColumnInfo, RoutineArgumentValue, RoutineExecuteRequest, RoutineParameterInfo, TableUpdateColumn
 
 
 class DataExportTests(unittest.TestCase):
@@ -32,6 +42,220 @@ class DataExportTests(unittest.TestCase):
             {"id": 2, "name": "beta", "note": "a|b"},
         ]
 
+    def test_postgresql_backup_keeps_physical_database_and_schema_separate(self) -> None:
+        request = ConnectionRequest(
+            name="PostgreSQL",
+            database_type="postgresql",
+            host="localhost",
+            port=5432,
+            username="user",
+            database="default_db",
+        )
+        engine = object()
+        output_path = self.root / "postgres.sql"
+        manager = BackupManager()
+        with (
+            patch("app.db.backup_manager.connection_manager.get_connection_request", return_value=request),
+            patch("app.db.backup_manager.connection_manager.get_engine", return_value=engine),
+            patch("app.db.backup_manager.connection_manager._connections", {"pg": SimpleNamespace(name="PostgreSQL")}),
+            patch("app.db.backup_manager._generate_postgresql_backup", return_value="-- backup") as generate_backup,
+            patch.object(manager, "_save"),
+        ):
+            record = manager.create_backup(
+                "pg", database="sales", pg_database="analytics", output_path=str(output_path)
+            )
+
+        generate_backup.assert_called_once_with(engine, "analytics", "sales")
+        self.assertEqual("analytics", record.database)
+        self.assertEqual("analytics", record.pg_database)
+        self.assertEqual("sales", record.schema_name)
+        self.assertEqual("-- backup", output_path.read_text(encoding="utf-8"))
+        with (
+            patch("app.db.backup_manager.connection_manager.get_engine", return_value=engine),
+            patch(
+                "app.db.backup_manager.execute_sql_file",
+                return_value=SimpleNamespace(failed_count=0),
+            ) as execute_file,
+        ):
+            manager.restore_backup(record.id)
+        execute_file.assert_called_once_with(engine, "-- backup", None, "analytics")
+
+    def test_postgresql_backup_api_forwards_database_and_schema_separately(self) -> None:
+        backup = BackupRecord(
+            id="backup-1",
+            connection_id="pg",
+            connection_name="PostgreSQL",
+            database_type="postgresql",
+            database="analytics",
+            pg_database="analytics",
+            schema_name="sales",
+            file_path="C:/backup.sql",
+            created_at=datetime.now(),
+            status="completed",
+        )
+        request = BackupCreateRequest(
+            connection_id="pg",
+            database="sales",
+            pg_database="analytics",
+        )
+
+        with patch("app.api.backup.backup_manager.create_backup", return_value=backup) as create_backup:
+            result = create_backup_api(request)
+
+        create_backup.assert_called_once_with("pg", "sales", None, pg_database="analytics")
+        self.assertTrue(result.success)
+
+    def test_postgresql_database_backup_covers_user_schemas(self) -> None:
+        sqlite_engine = create_engine("sqlite://")
+        connection = MagicMock()
+        connection_context = MagicMock()
+        connection_context.__enter__.return_value = connection
+        engine = SimpleNamespace(
+            dialect=sqlite_engine.dialect,
+            connect=MagicMock(return_value=connection_context),
+        )
+        inspector = MagicMock()
+        inspector.get_schema_names.return_value = ["public", "reporting", "pg_catalog", "information_schema"]
+        inspector.get_table_names.side_effect = lambda schema: ["items"]
+        inspector.get_columns.return_value = [
+            {"name": "id", "type": "INTEGER", "nullable": False, "primary_key": True}
+        ]
+        try:
+            with (
+                patch("app.db.backup_manager.inspect", return_value=inspector),
+                patch(
+                    "app.db.backup_manager._build_pg_table_ddl",
+                    side_effect=lambda _engine, table, schema, include_foreign_keys: (
+                        f"CREATE TABLE {schema}.{table} (id INTEGER);"
+                    ),
+                ),
+                patch(
+                    "app.db.backup_manager._pg_table_constraints",
+                    side_effect=lambda _engine, _table, schema: (
+                        [("fk_items", "f", "FOREIGN KEY (id) REFERENCES public.items (id)")]
+                        if schema == "reporting"
+                        else []
+                    ),
+                ),
+                patch("app.db.backup_manager.list_columns", return_value=[]),
+            ):
+                sql = _generate_postgresql_backup_internal(engine)
+        finally:
+            sqlite_engine.dispose()
+
+        self.assertIn("CREATE SCHEMA IF NOT EXISTS public;", sql)
+        self.assertIn("CREATE SCHEMA IF NOT EXISTS reporting;", sql)
+        self.assertIn("CREATE TABLE public.items", sql)
+        self.assertIn("CREATE TABLE reporting.items", sql)
+        self.assertIn(
+            "ALTER TABLE reporting.items ADD CONSTRAINT fk_items "
+            "FOREIGN KEY (id) REFERENCES public.items (id);",
+            sql,
+        )
+        self.assertLess(sql.index("CREATE TABLE reporting.items"), sql.index("ALTER TABLE reporting.items"))
+        self.assertNotIn("pg_catalog", sql)
+
+    def test_postgresql_table_ddl_recreates_identity_columns(self) -> None:
+        engine = create_engine("sqlite://")
+        try:
+            with (
+                patch(
+                    "app.db.metadata.list_columns",
+                    return_value=[
+                        ColumnInfo(
+                            name="id",
+                            type="INTEGER",
+                            nullable=False,
+                            primary_key=True,
+                            auto_increment=True,
+                            auto_increment_step=5,
+                        )
+                    ],
+                ),
+                patch("app.db.metadata._pg_table_constraints", return_value=[]),
+                patch("app.db.metadata._pg_non_constraint_indexes", return_value=[]),
+                patch("app.db.metadata.get_table_comment", return_value=None),
+            ):
+                ddl = _build_pg_table_ddl(engine, "items", "public")
+        finally:
+            engine.dispose()
+
+        self.assertIn("GENERATED BY DEFAULT AS IDENTITY (INCREMENT BY 5)", ddl)
+
+    def test_sqlite_table_rebuild_preserves_defaults_indexes_and_triggers(self) -> None:
+        engine = create_engine("sqlite://")
+        try:
+            with engine.begin() as connection:
+                connection.execute(text("CREATE TABLE items (id INTEGER PRIMARY KEY, value TEXT DEFAULT 'legacy')"))
+                connection.execute(text("CREATE INDEX idx_items_value ON items (value)"))
+                connection.execute(text("CREATE TABLE audit (value TEXT)"))
+                connection.execute(
+                    text(
+                        "CREATE TRIGGER items_update_audit AFTER UPDATE ON items "
+                        "BEGIN INSERT INTO audit VALUES (NEW.value); END"
+                    )
+                )
+                connection.execute(text("INSERT INTO items (id, value) VALUES (1, 'before')"))
+
+            _update_sqlite_table_columns_v2(
+                engine,
+                "items",
+                [
+                    TableUpdateColumn(name="id", type="INTEGER", nullable=False, primary_key=True),
+                    TableUpdateColumn(name="value", type="TEXT", nullable=True, primary_key=False),
+                ],
+            )
+
+            columns = list_columns(engine, "items")
+            with engine.begin() as connection:
+                index_sql = connection.execute(
+                    text("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_items_value'")
+                ).scalar_one()
+                trigger_sql = connection.execute(
+                    text("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='items_update_audit'")
+                ).scalar_one()
+                connection.execute(text("UPDATE items SET value='after' WHERE id=1"))
+                audit_value = connection.execute(text("SELECT value FROM audit")).scalar_one()
+                connection.execute(text("INSERT INTO items (id) VALUES (2)"))
+                default_value = connection.execute(text("SELECT value FROM items WHERE id=2")).scalar_one()
+
+            self.assertEqual("'legacy'", next(column for column in columns if column.name == "value").default_value)
+            self.assertIn("CREATE INDEX", index_sql)
+            self.assertIn("CREATE TRIGGER", trigger_sql)
+            self.assertEqual("after", audit_value)
+            self.assertEqual("legacy", default_value)
+        finally:
+            engine.dispose()
+
+    def test_mysql_update_definition_retains_existing_column_default(self) -> None:
+        engine = create_engine("sqlite://")
+        mysql_engine = SimpleNamespace(
+            dialect=SimpleNamespace(
+                name="mysql",
+                identifier_preparer=engine.dialect.identifier_preparer,
+            )
+        )
+        current_column = ColumnInfo(
+            name="value",
+            type="VARCHAR(20)",
+            nullable=True,
+            primary_key=False,
+            default_value="'legacy'",
+        )
+        try:
+            with (
+                patch("app.db.metadata.list_columns", return_value=[current_column]),
+                patch("app.db.metadata._mysql_single_column_unique_indexes", return_value={}),
+            ):
+                statements = build_mysql_update_statements(
+                    mysql_engine,
+                    "items",
+                    [TableUpdateColumn(name="value", type="VARCHAR(40)", nullable=True, primary_key=False)],
+                )
+            self.assertIn("DEFAULT 'legacy'", statements[0])
+        finally:
+            engine.dispose()
+
     def test_csv_json_and_markdown_exports_keep_selected_columns(self) -> None:
         csv_path = self.root / "rows.csv"
         json_path = self.root / "rows.json"
@@ -41,7 +265,9 @@ class DataExportTests(unittest.TestCase):
         write_tabular_export(json_path, "json", ["name"], self.rows)
         write_tabular_export(markdown_path, "markdown", ["name", "note"], self.rows)
 
-        self.assertEqual(csv_path.read_text(encoding="utf-8-sig"), "name,note\nalpha,\nbeta,a|b\n")
+        self.assertEqual(csv_path.read_text(encoding="utf-8-sig"), "name,note\nalpha,\\N\nbeta,a|b\n")
+        self.assertIsNone(parse_csv_text_value(r"\N"))
+        self.assertEqual(parse_csv_text_value(""), "")
         self.assertEqual(
             json.loads(json_path.read_text(encoding="utf-8")),
             [{"name": "alpha"}, {"name": "beta"}],
@@ -49,6 +275,28 @@ class DataExportTests(unittest.TestCase):
         markdown = markdown_path.read_text(encoding="utf-8")
         self.assertIn("| name | note |", markdown)
         self.assertIn("| beta | a\\|b |", markdown)
+
+    def test_csv_import_preserves_null_empty_and_literal_null_marker(self) -> None:
+        from app.db.backup_manager import BackupManager
+
+        csv_path = self.root / "null-values.csv"
+        csv_path.write_text(
+            'id,note\n1,\\N\n2,""\n3,\\\\N\n', encoding="utf-8"
+        )
+        engine = create_engine("sqlite://")
+        try:
+            with engine.begin() as connection:
+                connection.execute(text("CREATE TABLE values_table (id INTEGER, note TEXT)"))
+
+            BackupManager()._import_csv_with_engine(engine, csv_path, None, "values_table")
+
+            with engine.connect() as connection:
+                values = connection.execute(
+                    text("SELECT id, note FROM values_table ORDER BY id")
+                ).all()
+            self.assertEqual(values, [(1, None), (2, ""), (3, r"\N")])
+        finally:
+            engine.dispose()
 
     def test_sql_export_contains_only_selected_data_columns(self) -> None:
         sql_path = self.root / "rows.sql"
@@ -129,6 +377,53 @@ class DataExportTests(unittest.TestCase):
         all_rows = all_rows_path.read_text(encoding="utf-8")
         self.assertLess(all_rows.index("beta"), all_rows.index("alpha"))
         self.assertNotIn("gamma", all_rows)
+
+    def test_structured_table_export_streams_all_rows_across_pages(self) -> None:
+        engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+        self.addCleanup(engine.dispose)
+        with engine.begin() as connection:
+            connection.execute(text("CREATE TABLE items (id INTEGER PRIMARY KEY, value TEXT)"))
+            connection.execute(
+                text("INSERT INTO items (id, value) VALUES (:id, :value)"),
+                [{"id": index, "value": f"row-{index}"} for index in range(1205)],
+            )
+
+        json_path = self.root / "streamed.json"
+        markdown_path = self.root / "streamed.md"
+        manager = BackupManager()
+        with patch("app.db.backup_manager.connection_manager.get_engine", return_value=engine):
+            manager._export_structured_tables(
+                "sqlite-test", json_path, "json", None, None, "items", "table", None
+            )
+            manager._export_structured_tables(
+                "sqlite-test", markdown_path, "markdown", None, None, "items", "table", None
+            )
+
+        rows = json.loads(json_path.read_text(encoding="utf-8"))
+        self.assertEqual(1205, len(rows))
+        self.assertEqual({"id": 1204, "value": "row-1204"}, rows[-1])
+        markdown = markdown_path.read_text(encoding="utf-8")
+        self.assertEqual(1209, len(markdown.splitlines()))
+        self.assertIn("| 1204 | row-1204 |", markdown)
+
+    def test_redis_json_export_does_not_truncate_after_one_hundred_thousand_keys(self) -> None:
+        client = MagicMock()
+        client.scan_iter.return_value = (f"key-{index}".encode() for index in range(100_005))
+        client.type.return_value = b"string"
+        client.get.return_value = b"value"
+        client.ttl.return_value = -1
+        output_path = self.root / "redis.json"
+
+        with (
+            patch("app.db.backup_manager.connection_manager.get_engine", return_value=client),
+            patch("app.db.backup_manager.is_redis_client", return_value=True),
+            patch("app.db.backup_manager.redis_client_for_database", return_value=client),
+        ):
+            BackupManager()._export_redis("redis-test", output_path, None, None, "database")
+
+        exported = json.loads(output_path.read_text(encoding="utf-8"))
+        self.assertEqual(100_005, len(exported["keys"]))
+        self.assertEqual("value", exported["keys"]["key-100004"]["value"])
 
     def test_table_result_sql_export_keeps_full_ddl_and_filters_only_insert_columns(self) -> None:
         engine = create_engine(
@@ -251,6 +546,22 @@ class DataExportTests(unittest.TestCase):
 
 
 class RoutineTests(unittest.TestCase):
+    def test_invalid_routine_argument_returns_a_client_error_without_a_snapshot(self) -> None:
+        request = RoutineExecuteRequest(
+            arguments=[RoutineArgumentValue(name="missing", value="1")]
+        )
+        with (
+            patch("app.api.metadata.connection_manager.get_engine", return_value=object()),
+            patch("app.api.metadata.list_routine_parameters", return_value=[]),
+            patch("app.api.metadata.database_versioning_service.complete_write_snapshot") as complete_snapshot,
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                execute_routine_endpoint("connection-1", "refresh_total", request)
+
+        self.assertEqual(400, raised.exception.status_code)
+        self.assertIn("参数不存在", raised.exception.detail)
+        complete_snapshot.assert_called_once_with("connection-1", None, False)
+
     def test_routine_ddl_always_has_a_trailing_semicolon(self) -> None:
         self.assertEqual(
             ensure_ddl_terminator("CREATE PROCEDURE demo()\nBEGIN\n  SELECT 1;\nEND", "procedure"),

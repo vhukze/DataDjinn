@@ -89,9 +89,14 @@ def start_device_authorization() -> DeviceAuthorization:
 @router.post("/auth/device/poll", response_model=DeviceAuthorizationPollResponse)
 def poll_device_authorization(request: DeviceAuthorizationPollRequest) -> DeviceAuthorizationPollResponse:
     try:
-        return DeviceAuthorizationPollResponse.model_validate(
+        result = DeviceAuthorizationPollResponse.model_validate(
             github_oauth_service.poll_device_authorization(request.session_id)
         )
+        if result.status == "authorized":
+            from app.git_versioning.database_history import database_versioning_service
+
+            database_versioning_service.resume_pending_local_syncs()
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -137,7 +142,9 @@ def pull_sync_file(request: SyncFilePullRequest) -> SyncFilePullResponse:
 @router.get("/file/status", response_model=SyncFileStatusResponse)
 def get_sync_file_status() -> SyncFileStatusResponse:
     try:
-        repository = github_oauth_service.ensure_sync_repository()
+        repository = github_oauth_service.find_sync_repository()
+        if repository is None:
+            return SyncFileStatusResponse(repository=None, exists=False)
         repository_file = github_oauth_service.read_repository_file(SYNC_PAYLOAD_PATH)
         return SyncFileStatusResponse(
             repository=repository,

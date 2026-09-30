@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from concurrent.futures import CancelledError, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from collections.abc import Callable
 from pathlib import Path
+from threading import Lock
+from time import monotonic
 from typing import Any
 
 # MCP clients commonly launch this file by absolute path from their own working
@@ -144,15 +147,48 @@ class _LazyRuntimeObject:
 
 
 connection_manager: Any = _LazyRuntimeObject("connection_manager")
-list_columns: Any = None
-list_databases: Any = None
-list_schemas: Any = None
-list_tables: Any = None
-execute_query: Any = None
-execute_readonly_query: Any = None
-preview_table: Any = None
+_metadata_list_columns: Any = None
+_metadata_list_databases: Any = None
+_metadata_list_schemas: Any = None
+_metadata_list_tables: Any = None
+_db_execute_query: Any = None
+_db_execute_readonly_query: Any = None
+_db_preview_table: Any = None
 _runtime_loaded = False
 _tool_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="datadjinn-mcp-tool")
+_connection_tool_locks: dict[str, Lock] = {}
+_connection_tool_locks_guard = Lock()
+_connections_pending_reset: set[str] = set()
+
+
+class _ToolCallControl:
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._cancelled = False
+        self._started = False
+        self._finished = False
+
+    def try_start(self) -> bool:
+        with self._lock:
+            if self._cancelled:
+                return False
+            self._started = True
+            return True
+
+    def cancel(self) -> str:
+        with self._lock:
+            if self._finished:
+                return "finished"
+            self._cancelled = True
+            return "running" if self._started else "queued"
+
+    def finish(self) -> None:
+        with self._lock:
+            self._finished = True
+
+    def is_cancelled(self) -> bool:
+        with self._lock:
+            return self._cancelled
 
 
 SERVER_INFO = {"name": "datadjinn-local", "version": "0.1.0"}
@@ -169,14 +205,17 @@ MCP_INSTRUCTIONS = (
 )
 MAX_QUERY_ROWS = 1_000
 MAX_SAMPLE_ROWS = 100
-MCP_TOOL_TIMEOUT_SECONDS = 45
+MCP_TOOL_TIMEOUT_SECONDS = 60
+MCP_QUERY_TIMEOUT_SECONDS = 30
+MCP_CONNECTION_LOCK_WAIT_SECONDS = 1
 READONLY_PREFIXES = ("SELECT", "WITH", "SHOW", "EXPLAIN", "DESCRIBE", "DESC", "PRAGMA")
 REDIS_READONLY_COMMANDS = {"SCAN", "KEYS", "GET", "HGETALL", "LRANGE", "SMEMBERS", "ZRANGE", "XRANGE", "TYPE", "TTL"}
 
 
 def _load_database_runtime() -> None:
-    global _runtime_loaded, connection_manager, list_columns, list_databases, list_schemas, list_tables
-    global execute_query, execute_readonly_query, preview_table
+    global _runtime_loaded, connection_manager
+    global _metadata_list_columns, _metadata_list_databases, _metadata_list_schemas, _metadata_list_tables
+    global _db_execute_query, _db_execute_readonly_query, _db_preview_table
     if _runtime_loaded:
         return
     deferred_connection_manager = connection_manager
@@ -198,13 +237,13 @@ def _load_database_runtime() -> None:
             if name != "_global_name":
                 setattr(loaded_connection_manager, name, value)
     connection_manager = loaded_connection_manager
-    list_columns = loaded_list_columns
-    list_databases = loaded_list_databases
-    list_schemas = loaded_list_schemas
-    list_tables = loaded_list_tables
-    execute_query = loaded_execute_query
-    execute_readonly_query = loaded_execute_readonly_query
-    preview_table = loaded_preview_table
+    _metadata_list_columns = loaded_list_columns
+    _metadata_list_databases = loaded_list_databases
+    _metadata_list_schemas = loaded_list_schemas
+    _metadata_list_tables = loaded_list_tables
+    _db_execute_query = loaded_execute_query
+    _db_execute_readonly_query = loaded_execute_readonly_query
+    _db_preview_table = loaded_preview_table
     _runtime_loaded = True
 
 
@@ -349,11 +388,28 @@ def _connection_summary(connection: Any) -> dict[str, Any]:
 
 def _is_readonly_sql(sql: str) -> bool:
     normalized = sql.lstrip().upper()
-    if normalized.startswith(READONLY_PREFIXES):
-        return True
+    first_keyword = normalized.split(maxsplit=1)[0] if normalized else ""
     if normalized.startswith("DB."):
-        return ".FIND" in normalized
-    return bool(normalized.split(maxsplit=1) and normalized.split(maxsplit=1)[0] in REDIS_READONLY_COMMANDS)
+        from app.db.readonly_query import _split_mongo_statements
+
+        try:
+            statements = _split_mongo_statements(sql)
+        except ValueError:
+            return False
+        return len(statements) == 1 and bool(
+            re.fullmatch(r"db\.[A-Za-z0-9_$.-]+\.find\s*\(.*\)", statements[0], re.DOTALL)
+        )
+    if first_keyword in REDIS_READONLY_COMMANDS:
+        return True
+    if first_keyword in READONLY_PREFIXES:
+        from app.db.readonly_query import _validate_readonly_sql
+
+        try:
+            _validate_readonly_sql(sql)
+            return True
+        except ValueError:
+            return False
+    return False
 
 
 def list_connections() -> dict[str, Any]:
@@ -379,37 +435,62 @@ def close_connection(connection_id: str) -> dict[str, Any]:
 
 
 def list_databases(connection_id: str) -> dict[str, Any]:
-    return {"databases": [_jsonable(item) for item in list_databases(_connection(connection_id))]}
+    return {
+        "databases": [
+            _jsonable(item) for item in _metadata_list_databases(_connection(connection_id), include_stats=False)
+        ]
+    }
 
 
 def list_schemas(connection_id: str, pg_database: str | None = None) -> dict[str, Any]:
     engine = _connection(connection_id)
-    return {"schemas": [_jsonable(item) for item in list_schemas(engine, pg_database)]}
+    return {"schemas": [_jsonable(item) for item in _metadata_list_schemas(engine, pg_database)]}
 
 
 def list_tables(connection_id: str, database: str | None = None, pg_database: str | None = None) -> dict[str, Any]:
-    return {"tables": [_jsonable(item) for item in list_tables(_connection(connection_id), database, pg_database)]}
+    return {
+        "tables": [
+            _jsonable(item)
+            for item in _metadata_list_tables(
+                _connection(connection_id), database, pg_database, include_stats=False
+            )
+        ]
+    }
 
 
 def describe_table(connection_id: str, table_name: str, database: str | None = None, pg_database: str | None = None) -> dict[str, Any]:
-    return {"columns": [_jsonable(item) for item in list_columns(_connection(connection_id), table_name, database, pg_database)]}
+    return {"columns": [_jsonable(item) for item in _metadata_list_columns(_connection(connection_id), table_name, database, pg_database)]}
 
 
 def get_sample_data(connection_id: str, table_name: str, database: str | None = None, pg_database: str | None = None, limit: int = 20) -> dict[str, Any]:
-    response = preview_table(_connection(connection_id), table_name, min(max(limit, 1), MAX_SAMPLE_ROWS), 0, database, pg_database)
+    response = _db_preview_table(_connection(connection_id), table_name, min(max(limit, 1), MAX_SAMPLE_ROWS), 0, database, pg_database)
     return _jsonable(response)
 
 
 def execute_query(connection_id: str, sql: str, database: str | None = None, pg_database: str | None = None, limit: int = 200, confirm_write: bool = False) -> dict[str, Any]:
+    from app.git_versioning.database_history import database_versioning_service
+    from app.git_versioning.schema_history import contains_write_statement
+
     engine = _connection(connection_id)
     safe_limit = min(max(limit, 1), MAX_QUERY_ROWS)
     if _is_readonly_sql(sql):
-        return _jsonable(execute_readonly_query(engine, sql, safe_limit, 0, database, pg_database))
+        return _jsonable(_db_execute_readonly_query(engine, sql, safe_limit, 0, database, pg_database))
     if not _mcp_settings()["allowWrite"]:
         raise PermissionError("MCP 写操作未启用。请先在 DataDjinn 的“设置 -> MCP”中允许 MCP 执行写操作。")
     if not confirm_write:
         raise ValueError("写操作未执行。请核对 connection_id、数据库和 SQL 后，使用 confirm_write=true 重新调用 execute_query。")
-    return _jsonable(execute_query(engine, sql, safe_limit, 0, database, pg_database))
+    snapshot_id = None
+    if contains_write_statement(sql):
+        snapshot_id = database_versioning_service.prepare_write_snapshot(
+            connection_id, "MCP 写入前快照"
+        )
+    try:
+        result = _db_execute_query(engine, sql, safe_limit, 0, database, pg_database)
+    except Exception:
+        database_versioning_service.complete_write_snapshot(connection_id, snapshot_id, False)
+        raise
+    database_versioning_service.complete_write_snapshot(connection_id, snapshot_id, True)
+    return _jsonable(result)
 
 
 TOOL_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
@@ -423,6 +504,94 @@ TOOL_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     "get_sample_data": get_sample_data,
     "execute_query": execute_query,
 }
+
+
+def _connection_tool_lock(connection_id: str) -> Lock:
+    with _connection_tool_locks_guard:
+        lock = _connection_tool_locks.get(connection_id)
+        if lock is None:
+            lock = Lock()
+            _connection_tool_locks[connection_id] = lock
+        return lock
+
+
+def _connection_reset_pending(connection_id: str) -> bool:
+    with _connection_tool_locks_guard:
+        return connection_id in _connections_pending_reset
+
+
+def _acquire_connection_tool_lock(
+    connection_id: str, control: _ToolCallControl | None = None
+) -> Lock:
+    if _connection_reset_pending(connection_id):
+        raise RuntimeError("该连接正在释放上一次超时操作，暂时不能复用；请稍后重试。")
+
+    lock = _connection_tool_lock(connection_id)
+    deadline = monotonic() + MCP_CONNECTION_LOCK_WAIT_SECONDS
+    while True:
+        if control is not None and control.is_cancelled():
+            raise CancelledError()
+        if _connection_reset_pending(connection_id):
+            raise RuntimeError("该连接正在释放上一次超时操作，暂时不能复用；请稍后重试。")
+
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise RuntimeError(
+                f"该连接正在执行上一条操作，已避免并发复用数据库会话；请稍后重试（等待超过 {MCP_CONNECTION_LOCK_WAIT_SECONDS} 秒）。"
+            )
+        if lock.acquire(timeout=min(0.1, remaining)):
+            return lock
+
+
+def _reset_timed_out_connection(connection_id: str) -> None:
+    """Close a timed-out connection while its per-connection lock is held."""
+    try:
+        _load_database_runtime()
+        connection_manager.close_connection(connection_id)
+    except Exception:
+        pass
+
+
+def _mark_connection_for_reset(connection_id: str) -> None:
+    with _connection_tool_locks_guard:
+        _connections_pending_reset.add(connection_id)
+
+
+def _reset_connection_if_pending(connection_id: str) -> None:
+    with _connection_tool_locks_guard:
+        pending = connection_id in _connections_pending_reset
+        _connections_pending_reset.discard(connection_id)
+    if pending:
+        _reset_timed_out_connection(connection_id)
+
+
+def _run_tool(
+    name: str,
+    arguments: dict[str, Any],
+    control: _ToolCallControl | None = None,
+) -> dict[str, Any]:
+    handler = TOOL_HANDLERS[name]
+    connection_id = arguments.get("connection_id")
+    if not isinstance(connection_id, str) or not connection_id.strip():
+        return handler(**arguments)
+
+    from app.request_context import reset_query_timeout_seconds, set_query_timeout_seconds
+
+    lock = _acquire_connection_tool_lock(connection_id, control)
+    try:
+        _reset_connection_if_pending(connection_id)
+        if control is not None and not control.try_start():
+            raise CancelledError()
+        timeout_token = set_query_timeout_seconds(MCP_QUERY_TIMEOUT_SECONDS)
+        try:
+            return handler(**arguments)
+        finally:
+            reset_query_timeout_seconds(timeout_token)
+            if control is not None:
+                control.finish()
+            _reset_connection_if_pending(connection_id)
+    finally:
+        lock.release()
 
 
 def handle_request(request: dict[str, Any]) -> dict[str, Any] | None:
@@ -457,12 +626,33 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any] | None:
             handler = TOOL_HANDLERS.get(name)
             if handler is None:
                 raise ValueError(f"未知工具：{name}")
-            future = _tool_executor.submit(handler, **arguments)
+            control = _ToolCallControl()
+            future = _tool_executor.submit(_run_tool, name, arguments, control)
             try:
                 result = _tool_result(future.result(timeout=MCP_TOOL_TIMEOUT_SECONDS))
             except FutureTimeoutError:
+                call_state = control.cancel()
+                future.cancel()
+                connection_id = arguments.get("connection_id")
+                if call_state == "running" and isinstance(connection_id, str):
+                    _mark_connection_for_reset(connection_id)
+                if call_state == "running":
+                    timeout_message = (
+                        f"MCP 工具调用超过 {MCP_TOOL_TIMEOUT_SECONDS} 秒仍未返回；"
+                        "正在运行的数据库操作无法强制中断，结束后会重置连接。"
+                    )
+                elif call_state == "queued":
+                    timeout_message = (
+                        f"MCP 工具调用超过 {MCP_TOOL_TIMEOUT_SECONDS} 秒仍未返回；"
+                        "尚未开始的排队调用已取消，不会重置连接。"
+                    )
+                else:
+                    timeout_message = (
+                        f"MCP 工具调用超过 {MCP_TOOL_TIMEOUT_SECONDS} 秒仍未返回；"
+                        "数据库操作刚在超时边界结束，未重置连接。请先确认数据状态再重试。"
+                    )
                 result = _tool_error(
-                    f"MCP 工具调用超过 {MCP_TOOL_TIMEOUT_SECONDS} 秒仍未返回，已中止等待；请检查数据库连接或重新启动 MCP 进程。"
+                    timeout_message
                 )
         except Exception as exc:
             result = _tool_error(str(exc))

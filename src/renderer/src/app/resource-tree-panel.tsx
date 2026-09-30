@@ -472,7 +472,11 @@ const ResourceTreePanel = memo(
                 itemHeight={itemHeight}
                 motion={false}
                 switcherIcon={(nodeProps) => {
-                  if (String(nodeProps.eventKey).startsWith('folder:')) {
+                  const nodeKind = getTreeNodeKindFromKey(
+                    { key: nodeProps.eventKey },
+                    folderDropPlaceholderKeyPrefix
+                  )
+                  if (nodeKind === 'folder' || nodeKind === 'connection') {
                     return null
                   }
                   if (
@@ -565,6 +569,33 @@ const ResourceTreePanel = memo(
                   clearPendingTreeSelection()
                   const startedAt = performance.now()
                   const treeNode = node as DatabaseTreeNode
+                  if (treeNode.kind === 'connection' && treeNode.connectionId) {
+                    const connection = getConnection(treeNode.connectionId)
+                    if (connection && !connection.is_open) {
+                      console.info('[perf][tree] open-connection-request', {
+                        key: treeNode.key,
+                        duration: Number((performance.now() - startedAt).toFixed(2))
+                      })
+                      void openConnectionById(treeNode.connectionId).then((openedConnection) => {
+                        if (
+                          openedConnection?.is_open &&
+                          openedConnection.database_type !== 'sqlite'
+                        ) {
+                          toggleOrLoadTreeNode({
+                            ...treeNode,
+                            closed: false,
+                            childrenLoaded: false,
+                            isLeaf: false
+                          })
+                        }
+                      })
+                      window.requestAnimationFrame(() => {
+                        commitTreeSelection(treeNode, event.nativeEvent)
+                      })
+                      return
+                    }
+                  }
+
                   commitTreeSelection(treeNode, event.nativeEvent)
                   if (treeNode.kind === 'database' || treeNode.kind === 'pg-schema') {
                     activateAIContextFromNode(treeNode)
@@ -622,27 +653,6 @@ const ResourceTreePanel = memo(
                     return
                   }
                   if (treeNode.kind === 'connection' && treeNode.connectionId) {
-                    const connection = getConnection(treeNode.connectionId)
-                    if (connection && !connection.is_open) {
-                      console.info('[perf][tree] open-connection-request', {
-                        key: treeNode.key,
-                        duration: Number((performance.now() - startedAt).toFixed(2))
-                      })
-                      void openConnectionById(treeNode.connectionId).then((openedConnection) => {
-                        if (
-                          openedConnection?.is_open &&
-                          openedConnection.database_type !== 'sqlite'
-                        ) {
-                          toggleOrLoadTreeNode({
-                            ...treeNode,
-                            closed: false,
-                            childrenLoaded: false,
-                            isLeaf: false
-                          })
-                        }
-                      })
-                      return
-                    }
                     console.info('[perf][tree] toggle-connection', {
                       key: treeNode.key,
                       duration: Number((performance.now() - startedAt).toFixed(2))

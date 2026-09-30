@@ -35,7 +35,7 @@ from app.api.git_versioning import (
     restore_table_structure,
 )
 from app.schemas.query import QueryResponse
-from app.schemas.metadata import TableDataChangeRequest
+from app.schemas.metadata import TableCreateRequest, TableDataChangeRequest
 
 
 class DataVersioningServiceTests(unittest.TestCase):
@@ -54,6 +54,31 @@ class DataVersioningServiceTests(unittest.TestCase):
             if previous is not None:
                 os.environ[DATA_VERSIONING_MODULE_ENV] = previous
             _load_data_versioning_module.cache_clear()
+
+    def test_create_table_schedules_a_targeted_post_change_snapshot(self) -> None:
+        engine = object()
+        background_tasks = BackgroundTasks()
+        request = TableCreateRequest(name="items", columns=[])
+        with (
+            patch.object(metadata_api.connection_manager, "get_engine", return_value=engine),
+            patch.object(metadata_api, "create_table") as create_table,
+            patch.object(metadata_api.database_versioning_service, "schedule_table_snapshot") as schedule_snapshot,
+        ):
+            response = metadata_api.create_table_endpoint(
+                self.connection_id, request, background_tasks
+            )
+
+        self.assertEqual("items", response.name)
+        create_table.assert_called_once_with(engine, request)
+        schedule_snapshot.assert_called_once_with(
+            background_tasks,
+            self.connection_id,
+            "items",
+            None,
+            None,
+            "创建表后快照",
+            capture_schema=True,
+        )
 
     @patch("app.git_versioning.data_history.github_oauth_service")
     @patch("app.git_versioning.data_history.connection_manager")
@@ -288,26 +313,33 @@ class DataVersioningServiceTests(unittest.TestCase):
             self.connection_id, "items", "main", "business", "保存表格数据"
         )
 
-    @patch("app.api.metadata.schedule_data_snapshot")
+    @patch("app.api.metadata.database_versioning_service.complete_write_snapshot")
+    @patch("app.api.metadata.database_versioning_service.prepare_write_snapshot")
     @patch.object(metadata_api, "preview_table")
     @patch.object(metadata_api, "apply_table_data_changes")
     @patch.object(metadata_api.connection_manager, "get_engine")
     def test_table_preview_save_schedules_data_snapshot(
-        self, get_engine, apply_changes, preview, schedule_snapshot
+        self, get_engine, apply_changes, preview, prepare_snapshot, complete_snapshot
     ) -> None:
         engine = object()
         get_engine.return_value = engine
+        prepare_snapshot.return_value = "snapshot-1"
         preview.return_value = QueryResponse(columns=["id"], rows=[{"id": 1}], row_count=1, limited=False)
         background_tasks = BackgroundTasks()
 
-        response = metadata_api.update_table_data(
-            self.connection_id,
-            "items",
-            TableDataChangeRequest(updated=[{"original": {"id": 1}, "values": {"id": 1}}]),
-            background_tasks,
-            database="main",
-            pg_database="business",
-        )
+        with patch.object(
+            metadata_api.database_versioning_service,
+            "table_snapshot_target",
+            return_value=("main", "items", "main", "business"),
+        ) as table_target:
+            response = metadata_api.update_table_data(
+                self.connection_id,
+                "items",
+                TableDataChangeRequest(updated=[{"original": {"id": 1}, "values": {"id": 1}}]),
+                background_tasks,
+                database="main",
+                pg_database="business",
+            )
 
         self.assertEqual(response.rows, [{"id": 1}])
         apply_changes.assert_called_once_with(
@@ -317,14 +349,13 @@ class DataVersioningServiceTests(unittest.TestCase):
             "main",
             "business",
         )
-        schedule_snapshot.assert_called_once_with(
-            background_tasks,
+        prepare_snapshot.assert_called_once_with(
             self.connection_id,
-            "items",
-            "main",
-            "business",
-            "保存表格数据",
+            "保存表格 items 前快照",
+            affected_tables=[("main", "items", "main", "business")],
         )
+        table_target.assert_called_once_with(self.connection_id, "items", "main", "business")
+        complete_snapshot.assert_called_once_with(self.connection_id, "snapshot-1", True)
 
     @patch("app.api.git_versioning.get_data_versioning_service")
     def test_data_snapshot_api_forwards_table_scope_and_reason(self, service) -> None:

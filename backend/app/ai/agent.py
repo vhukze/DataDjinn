@@ -10,6 +10,8 @@ from urllib.request import Request, urlopen
 from uuid import uuid4
 
 import sqlparse
+from threading import Lock
+from time import time
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Engine
@@ -135,6 +137,7 @@ class AgentConfirmation(BaseModel):
 class PendingConfirmation(BaseModel):
     id: str
     connection_id: str
+    expires_at: float = Field(default_factory=lambda: time() + PENDING_CONFIRMATION_TTL_SECONDS)
     database: str | None = None
     pg_database: str | None = None
     sql: str | None = None
@@ -204,7 +207,50 @@ MAX_CELL_CHARS_IN_TOOL_RESULT = 500
 WRITE_SQL_TYPES = {"INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP", "TRUNCATE", "REPLACE", "MERGE"}
 READONLY_SQL_TYPES = {"SELECT", "WITH"}
 PENDING_CONFIRMATIONS: dict[str, PendingConfirmation] = {}
+PENDING_CONFIRMATION_TTL_SECONDS = 30 * 60
+MAX_PENDING_CONFIRMATIONS = 256
+_PENDING_CONFIRMATIONS_LOCK = Lock()
 ANTHROPIC_VERSION = "2023-06-01"
+
+
+def store_pending_confirmation(pending: PendingConfirmation) -> None:
+    now = time()
+    with _PENDING_CONFIRMATIONS_LOCK:
+        for confirmation_id, current in list(PENDING_CONFIRMATIONS.items()):
+            if current.expires_at <= now:
+                PENDING_CONFIRMATIONS.pop(confirmation_id, None)
+        while len(PENDING_CONFIRMATIONS) >= MAX_PENDING_CONFIRMATIONS:
+            oldest_id = min(
+                PENDING_CONFIRMATIONS,
+                key=lambda confirmation_id: PENDING_CONFIRMATIONS[confirmation_id].expires_at,
+            )
+            PENDING_CONFIRMATIONS.pop(oldest_id, None)
+        PENDING_CONFIRMATIONS[pending.id] = pending
+
+
+def get_pending_confirmation(confirmation_id: str) -> PendingConfirmation | None:
+    with _PENDING_CONFIRMATIONS_LOCK:
+        pending = PENDING_CONFIRMATIONS.get(confirmation_id)
+        if pending is not None and pending.expires_at <= time():
+            PENDING_CONFIRMATIONS.pop(confirmation_id, None)
+            return None
+        return pending
+
+
+def claim_pending_confirmation(confirmation_id: str) -> PendingConfirmation | None:
+    with _PENDING_CONFIRMATIONS_LOCK:
+        pending = PENDING_CONFIRMATIONS.get(confirmation_id)
+        if pending is None:
+            return None
+        if pending.expires_at <= time():
+            PENDING_CONFIRMATIONS.pop(confirmation_id, None)
+            return None
+        return PENDING_CONFIRMATIONS.pop(confirmation_id)
+
+
+def remove_pending_confirmation(confirmation_id: str) -> None:
+    with _PENDING_CONFIRMATIONS_LOCK:
+        PENDING_CONFIRMATIONS.pop(confirmation_id, None)
 
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 
@@ -1308,7 +1354,7 @@ class DatabaseAgent:
         pg_database: str | None = None,
     ) -> dict[str, Any]:
         confirmation_id = f"confirm_{uuid4().hex}"
-        PENDING_CONFIRMATIONS[confirmation_id] = PendingConfirmation(
+        store_pending_confirmation(PendingConfirmation(
             id=confirmation_id,
             connection_id=self.connection_id,
             database=database if database is not None else self.database,
@@ -1317,7 +1363,7 @@ class DatabaseAgent:
             sql_hash=sql_hash(sql),
             statement_type=validation["statement_type"],
             risk_level="dangerous",
-        )
+        ))
         confirmation = AgentConfirmation(
             id=confirmation_id,
             title="需要确认数据库写操作",
@@ -1334,7 +1380,7 @@ class DatabaseAgent:
             raise ValueError("备份记录不存在或不属于当前连接")
 
         confirmation_id = f"confirm_{uuid4().hex}"
-        PENDING_CONFIRMATIONS[confirmation_id] = PendingConfirmation(
+        store_pending_confirmation(PendingConfirmation(
             id=confirmation_id,
             connection_id=self.connection_id,
             database=record.database,
@@ -1343,7 +1389,7 @@ class DatabaseAgent:
             risk_level="dangerous",
             action="restore_backup",
             backup_id=backup_id,
-        )
+        ))
         confirmation = AgentConfirmation(
             id=confirmation_id,
             title="需要确认恢复备份",

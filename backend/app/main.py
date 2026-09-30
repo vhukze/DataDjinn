@@ -5,6 +5,7 @@ from secrets import compare_digest
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from app.api.backup import router as backup_router
 from app.api.connections import router as connections_router
@@ -16,11 +17,18 @@ from app.api.query import router as query_router
 from app.api.git_sync import router as git_sync_router
 from app.api.git_versioning import router as git_versioning_router
 from app.db.connection_manager import connection_manager
+from app.git_versioning.database_history import database_versioning_service
 from app.request_context import normalize_query_timeout_seconds, reset_query_timeout_seconds, set_query_timeout_seconds
 
 logger = logging.getLogger("datadjinn.api")
 app = FastAPI(title="DataDjinn API", version="0.1.7")
 CONNECTION_UNAVAILABLE_ERROR_CODE = "CONNECTION_UNAVAILABLE"
+
+
+@app.on_event("startup")
+def resume_database_snapshot_syncs() -> None:
+    database_versioning_service.resume_pending_local_syncs()
+    database_versioning_service.start_snapshot_scheduler()
 
 
 async def _request_connection_id(request: Request) -> str | None:
@@ -65,16 +73,20 @@ async def protect_local_api(request: Request, call_next):
                 return JSONResponse(status_code=401, content={"detail": "未授权的本地 API 请求"})
 
         connection_id = await _request_connection_id(request)
-        if connection_id and not connection_manager.ensure_connection_available(connection_id):
-            return _connection_unavailable_response()
+        if connection_id:
+            connection_available = await run_in_threadpool(
+                connection_manager.ensure_connection_available, connection_id
+            )
+            if not connection_available:
+                return _connection_unavailable_response()
 
         response = await call_next(request)
-        if (
-            connection_id
-            and response.status_code >= 500
-            and not connection_manager.ensure_connection_available(connection_id, force=True)
-        ):
-            return _connection_unavailable_response()
+        if connection_id and response.status_code >= 500:
+            connection_available = await run_in_threadpool(
+                connection_manager.ensure_connection_available, connection_id, force=True
+            )
+            if not connection_available:
+                return _connection_unavailable_response()
         return response
     finally:
         reset_query_timeout_seconds(timeout_token)

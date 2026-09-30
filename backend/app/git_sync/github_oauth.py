@@ -106,35 +106,9 @@ class GitHubOAuthService:
 
     def ensure_sync_repository(self) -> GitHubSyncRepository:
         token = self._access_token()
-        stored = self._read_store()
-        existing_name = self._string_or_none(stored.get("repository_full_name"))
-        if existing_name:
-            try:
-                repository = self._github_request("GET", f"/repos/{existing_name}", token)
-                return self._remember_repository(repository)
-            except HTTPError:
-                pass
-
-        for gist in self._github_request("GET", "/gists?per_page=100", token):
-            if not isinstance(gist, dict) or gist.get("description") != SYNC_POINTER_DESCRIPTION:
-                continue
-            gist_id = self._string_or_none(gist.get("id"))
-            if not gist_id:
-                continue
-            try:
-                pointer = self._github_request("GET", f"/gists/{gist_id}", token)
-            except HTTPError:
-                continue
-            content = ((pointer.get("files") or {}).get(SYNC_POINTER_FILE) or {}).get("content")
-            try:
-                repository_name = json.loads(content).get("repository") if isinstance(content, str) else None
-            except json.JSONDecodeError:
-                repository_name = None
-            if isinstance(repository_name, str) and repository_name:
-                try:
-                    return self._remember_repository(self._github_request("GET", f"/repos/{repository_name}", token))
-                except HTTPError:
-                    continue
+        repository = self.find_sync_repository()
+        if repository is not None:
+            return repository
 
         repository = self._github_request(
             "POST",
@@ -154,6 +128,59 @@ class GitHubOAuthService:
             },
         )
         return result
+
+    def find_sync_repository(self) -> GitHubSyncRepository | None:
+        """查找已有同步仓库，不创建新仓库。"""
+        token = self._access_token()
+        stored = self._read_store()
+        existing_name = self._string_or_none(stored.get("repository_full_name"))
+        if existing_name:
+            try:
+                repository = self._github_request("GET", f"/repos/{existing_name}", token)
+            except HTTPError as exc:
+                if exc.code == 404:
+                    raise ValueError(
+                        f"已保存的 GitHub 同步仓库 {existing_name} 不存在，请检查仓库或退出授权后重新绑定"
+                    ) from exc
+                raise
+            return self._remember_repository(repository)
+
+        for page in range(1, 101):
+            gist_path = "/gists?per_page=100" if page == 1 else f"/gists?per_page=100&page={page}"
+            gists = self._github_request("GET", gist_path, token)
+            if not isinstance(gists, list):
+                raise ValueError("GitHub 未返回有效的同步仓库指针列表")
+            for gist in gists:
+                if not isinstance(gist, dict) or gist.get("description") != SYNC_POINTER_DESCRIPTION:
+                    continue
+                gist_id = self._string_or_none(gist.get("id"))
+                if not gist_id:
+                    continue
+                try:
+                    pointer = self._github_request("GET", f"/gists/{gist_id}", token)
+                except HTTPError as exc:
+                    if exc.code == 404:
+                        continue
+                    raise
+                content = ((pointer.get("files") or {}).get(SYNC_POINTER_FILE) or {}).get("content")
+                try:
+                    repository_name = json.loads(content).get("repository") if isinstance(content, str) else None
+                except json.JSONDecodeError:
+                    repository_name = None
+                if not isinstance(repository_name, str) or not repository_name.strip():
+                    continue
+                try:
+                    repository = self._github_request("GET", f"/repos/{repository_name}", token)
+                except HTTPError as exc:
+                    if exc.code == 404:
+                        raise ValueError(
+                            f"GitHub 同步仓库指针 {repository_name} 已失效，请检查仓库后再继续"
+                        ) from exc
+                    raise
+                return self._remember_repository(repository)
+            if len(gists) < 100:
+                break
+        return None
 
     def read_repository_file(self, path: str, *, ref: str | None = None) -> GitHubRepositoryFile | None:
         try:
@@ -180,7 +207,9 @@ class GitHubOAuthService:
     ) -> tuple[str, str, bytes] | None:
         """读取仓库文件；超过 Contents API 内嵌内容阈值时改用 Git Blob API。"""
         normalized_path = self._normalize_repository_path(path)
-        repository = self.ensure_sync_repository()
+        repository = self.find_sync_repository()
+        if repository is None:
+            return None
         token = self._access_token()
         query = f"?ref={quote(ref, safe='')}" if ref else ""
         try:

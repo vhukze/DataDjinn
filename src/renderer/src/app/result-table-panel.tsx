@@ -2962,6 +2962,7 @@ const ResultTablePanel = memo(
               </div>
             )}
             <ResultTableBodyView
+              key={`${tab.key}:${tab.tableRenderVersion ?? 0}`}
               tabKey={tab.key}
               tabKind={tab.kind}
               tableRenderVersion={tab.tableRenderVersion}

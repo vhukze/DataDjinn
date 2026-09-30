@@ -86,6 +86,8 @@ type SyncLocalState = {
   remoteSha?: string
   lastSyncedAt?: number
   autoSyncEnabled?: boolean
+  lastSyncAttemptAt?: number
+  lastSyncError?: string | null
 }
 
 type OptionalModuleId =

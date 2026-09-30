@@ -13,6 +13,7 @@ from app.git_versioning.schema_history import (
     schema_versioning_service,
 )
 from app.git_versioning.database_history import (
+    DatabaseSnapshotPreview,
     DatabaseSnapshotResult,
     DatabaseSnapshotTask,
     database_versioning_service,
@@ -37,9 +38,14 @@ class CreateDataSnapshotRequest(BaseModel):
 
 class UpdateVersioningScopesRequest(BaseModel):
     selected_scopes: list[str] = Field(default_factory=list, max_length=200)
+    snapshot_interval_hours: int | None = Field(default=None, ge=0, le=168)
 
 
 class RestoreTableVersionRequest(BaseModel):
+    confirm: bool = False
+
+
+class RestoreDatabaseVersionRequest(BaseModel):
     confirm: bool = False
 
 
@@ -58,7 +64,11 @@ def update_versioning_scopes(
     connection_id: str, request: UpdateVersioningScopesRequest
 ) -> VersioningScopeConfig:
     try:
-        return schema_versioning_service.update_scope_config(connection_id, request.selected_scopes)
+        return schema_versioning_service.update_scope_config(
+            connection_id,
+            request.selected_scopes,
+            request.snapshot_interval_hours,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
     except Exception as exc:
@@ -109,7 +119,38 @@ def list_git_tasks(connection_id: str) -> list[DatabaseSnapshotTask]:
 @router.get("/connections/{connection_id}/tables/{table_name}/versions")
 def list_table_git_versions(connection_id: str, table_name: str, scope: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
     try:
-        return database_versioning_service.list_table_versions(connection_id, scope, table_name, limit)
+        local_versions = database_versioning_service.list_local_table_versions(
+            connection_id, scope, table_name, limit
+        )
+        try:
+            remote_versions = database_versioning_service.list_table_versions(
+                connection_id, scope, table_name, limit
+            )
+        except ValueError as exc:
+            if not local_versions:
+                raise
+            remote_versions = []
+            remote_error = friendly_error(exc)
+        except Exception as exc:
+            if not local_versions:
+                raise
+            remote_versions = []
+            remote_error = friendly_error(exc)
+        else:
+            remote_error = None
+        versions = [*local_versions, *remote_versions]
+        versions.sort(key=lambda item: item.get("committed_at") or "", reverse=True)
+        if remote_error:
+            versions.insert(
+                0,
+                {
+                    "id": "remote-history-unavailable",
+                    "message": "GitHub 历史暂不可用，当前仅显示本机快照",
+                    "status": "remote_error",
+                    "error": remote_error,
+                },
+            )
+        return versions[: max(1, min(limit, 100))]
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
     except Exception as exc:
@@ -195,12 +236,80 @@ def list_schema_versions(connection_id: str, limit: int = 30) -> list[SchemaVers
 
 @router.get("/connections/{connection_id}/database-versions", response_model=list[SchemaVersionInfo])
 def list_database_versions(connection_id: str, limit: int = 30) -> list[SchemaVersionInfo]:
-    """返回库级数据库快照提交，作为新 Git 表数据管理流程的唯一基线来源。"""
+    """返回本机操作前快照及其已同步的 Git 版本。"""
+    local_versions = database_versioning_service.list_local_versions(connection_id, limit)
+    remote_error: str | None = None
     try:
-        return [
+        remote_versions = [
             SchemaVersionInfo(id=item["id"], message=item["message"], committed_at=item.get("committed_at"))
             for item in database_versioning_service.list_versions(connection_id, limit)
         ]
+    except ValueError as exc:
+        if not local_versions:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
+        remote_versions = []
+        remote_error = friendly_error(exc)
+    except Exception as exc:
+        if not local_versions:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=friendly_error(exc)) from exc
+        remote_versions = []
+        remote_error = friendly_error(exc)
+
+    local_commit_ids = {
+        item["remote_commit_id"] for item in local_versions if item.get("remote_commit_id")
+    }
+    versions = [
+        SchemaVersionInfo(
+            id=item["id"],
+            message=item["message"],
+            committed_at=item.get("captured_at"),
+            status=item.get("status"),
+            remote_commit_id=item.get("remote_commit_id"),
+            error=item.get("error"),
+        )
+        for item in local_versions
+    ]
+    versions.extend(item for item in remote_versions if item.id not in local_commit_ids)
+    versions.sort(key=lambda item: item.committed_at or "", reverse=True)
+    if remote_error:
+        versions.insert(
+            0,
+            SchemaVersionInfo(
+                id="remote-history-unavailable",
+                message="GitHub 历史暂不可用，当前仅显示本机快照",
+                status="remote_error",
+                error=remote_error,
+            ),
+        )
+    return versions[: max(1, min(limit, 100))]
+
+
+@router.post(
+    "/connections/{connection_id}/database-versions/{version_id}/restore",
+)
+def restore_database_version(
+    connection_id: str,
+    version_id: str,
+    request: RestoreDatabaseVersionRequest,
+) -> Any:
+    try:
+        if not request.confirm:
+            raise ValueError("恢复数据库数据前必须明确确认 confirm=true")
+        return database_versioning_service.restore_database_version(connection_id, version_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=friendly_error(exc)) from exc
+
+
+@router.post("/connections/{connection_id}/database-versions/{version_id}/retry-sync")
+def retry_database_version_sync(connection_id: str, version_id: str) -> dict[str, bool]:
+    try:
+        return {
+            "accepted": database_versioning_service.retry_local_snapshot_sync(
+                connection_id, version_id
+            )
+        }
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
     except Exception as exc:
@@ -218,6 +327,19 @@ def get_database_baseline(connection_id: str) -> dict[str, bool]:
             )
             is not None
         }
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=friendly_error(exc)) from exc
+
+
+@router.get(
+    "/connections/{connection_id}/database-snapshot-preview",
+    response_model=DatabaseSnapshotPreview,
+)
+def preview_database_snapshot(connection_id: str) -> DatabaseSnapshotPreview:
+    try:
+        return database_versioning_service.preview_snapshot(connection_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
     except Exception as exc:

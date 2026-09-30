@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import unittest
+from contextlib import nullcontext
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from app.db.metadata import create_database, drop_database
 from app.db.readonly_query import execute_query
@@ -54,7 +56,62 @@ class FakeGaussDbEngine:
         raise AssertionError("高斯数据库的 CREATE/DROP DATABASE 不应使用事务执行")
 
 
+class FakeMySqlConnection:
+    def __init__(self) -> None:
+        self.dialect = SimpleNamespace(name="mysql")
+        self.statements: list[str] = []
+        self.commits = 0
+        self.rollbacks = 0
+
+    def __enter__(self) -> "FakeMySqlConnection":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        return None
+
+    def execute(self, statement) -> None:
+        normalized = str(statement)
+        self.statements.append(normalized)
+        if "missing_table" in normalized:
+            raise RuntimeError("table does not exist")
+
+    def commit(self) -> None:
+        self.commits += 1
+
+    def rollback(self) -> None:
+        self.rollbacks += 1
+
+
+class FakeMySqlEngine:
+    def __init__(self) -> None:
+        self.connection = FakeMySqlConnection()
+        self.dialect = SimpleNamespace(
+            name="mysql",
+            identifier_preparer=SimpleNamespace(quote=lambda value: f"`{value}`"),
+        )
+
+    def connect(self) -> FakeMySqlConnection:
+        return self.connection
+
+
 class GaussDbMetadataTests(unittest.TestCase):
+    def test_mysql_sql_file_reports_committed_statements_when_later_statement_fails(self) -> None:
+        engine = FakeMySqlEngine()
+
+        with patch("app.db.sql_executor.apply_query_timeout", return_value=nullcontext()):
+            response = execute_sql_file(
+                engine,
+                "CREATE TABLE first_table (id INT); INSERT INTO missing_table VALUES (1); "
+                "CREATE TABLE skipped_table (id INT)",
+            )
+
+        self.assertEqual(response.success_count, 1)
+        self.assertEqual(response.failed_count, 2)
+        self.assertEqual(response.errors, ["table does not exist"])
+        self.assertEqual(engine.connection.commits, 1)
+        self.assertEqual(engine.connection.rollbacks, 1)
+        self.assertFalse(any("skipped_table" in statement for statement in engine.connection.statements))
+
     def test_create_database_uses_native_jdbc_autocommit_and_restores_it(self) -> None:
         engine = FakeGaussDbEngine()
 

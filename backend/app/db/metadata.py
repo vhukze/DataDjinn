@@ -3,6 +3,7 @@ import re
 
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import Engine, inspect, text
 
@@ -10,6 +11,7 @@ from app.db.gaussdb import execute_gaussdb_database_ddl
 from app.db.mongo_utils import is_mongo_client, mongo_default_database, mongo_value_type
 from app.db.redis_utils import is_redis_client, parse_redis_database_name, redis_client_for_database, redis_current_database, redis_database_count, redis_database_name, redis_key_length, redis_key_type, redis_memory_usage, redis_scan_keys, redis_text, serialize_redis_value
 from app.db.elasticsearch_utils import flatten_mapping_properties, is_elasticsearch_client, response_body
+from app.db.query_timeout import apply_query_timeout
 from app.schemas.metadata import ColumnInfo, DatabaseInfo, DbObjectInfo, RedisDataChangeRequest, RedisKeyUpdate, SequenceDetailResponse, TableDataChangeRequest, TableInfo, TableUpdateColumn
 
 COLUMN_TYPE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_ (),]*$")
@@ -182,7 +184,7 @@ def _pg_engine(engine: Engine, database_name: str) -> Engine:
     return engine
 
 
-def list_databases(engine: Engine) -> list[DatabaseInfo]:
+def list_databases(engine: Engine, include_stats: bool = True) -> list[DatabaseInfo]:
     if is_elasticsearch_client(engine):
         return []
 
@@ -300,14 +302,25 @@ def list_databases(engine: Engine) -> list[DatabaseInfo]:
 
     if _is_clickhouse_engine(engine):
         with engine.connect() as connection:
-            rows = connection.execute(
-                text(
-                    "SELECT d.name, COALESCE(SUM(t.total_bytes), 0) AS storage_size_bytes "
-                    "FROM system.databases d LEFT JOIN system.tables t ON t.database = d.name "
-                    "WHERE d.name NOT IN ('system', 'INFORMATION_SCHEMA', 'information_schema') "
-                    "GROUP BY d.name ORDER BY d.name"
-                )
-            ).fetchall()
+            with apply_query_timeout(connection):
+                if include_stats:
+                    rows = connection.execute(
+                        text(
+                            "SELECT d.name, COALESCE(SUM(t.total_bytes), 0) AS storage_size_bytes "
+                            "FROM system.databases d LEFT JOIN system.tables t ON t.database = d.name "
+                            "WHERE d.name NOT IN ('system', 'INFORMATION_SCHEMA', 'information_schema') "
+                            "GROUP BY d.name ORDER BY d.name"
+                        )
+                    ).fetchall()
+                else:
+                    rows = connection.execute(
+                        text(
+                            "SELECT name FROM system.databases "
+                            "WHERE name NOT IN ('system', 'INFORMATION_SCHEMA', 'information_schema') "
+                            "ORDER BY name"
+                        )
+                    ).fetchall()
+                    return [DatabaseInfo(name=str(row[0])) for row in rows]
         return [
             DatabaseInfo(
                 name=str(row[0]),
@@ -722,22 +735,23 @@ def list_tables(
     if _is_clickhouse_engine(engine):
         target_db = database_name or engine.url.database or "default"
         with engine.connect() as connection:
-            if not include_stats:
+            with apply_query_timeout(connection):
+                if not include_stats:
+                    rows = connection.execute(
+                        text(
+                            "SELECT name FROM system.tables WHERE database = :database_name "
+                            "AND is_temporary = 0 AND engine NOT LIKE '%View' ORDER BY name"
+                        ),
+                        {"database_name": target_db},
+                    ).fetchall()
+                    return [TableInfo(name=str(row[0])) for row in rows]
                 rows = connection.execute(
                     text(
-                        "SELECT name FROM system.tables WHERE database = :database_name "
-                        "AND is_temporary = 0 AND engine NOT LIKE '%View' ORDER BY name"
+                        "SELECT name, COALESCE(total_rows, 0) AS row_count, COALESCE(total_bytes, 0) AS storage_size_bytes "
+                        "FROM system.tables WHERE database = :database_name AND is_temporary = 0 AND engine NOT LIKE '%View' ORDER BY name"
                     ),
                     {"database_name": target_db},
                 ).fetchall()
-                return [TableInfo(name=str(row[0])) for row in rows]
-            rows = connection.execute(
-                text(
-                    "SELECT name, COALESCE(total_rows, 0) AS row_count, COALESCE(total_bytes, 0) AS storage_size_bytes "
-                    "FROM system.tables WHERE database = :database_name AND is_temporary = 0 AND engine NOT LIKE '%View' ORDER BY name"
-                ),
-                {"database_name": target_db},
-            ).fetchall()
         return [
             TableInfo(
                 name=str(row[0]),
@@ -1508,13 +1522,14 @@ def list_columns(engine: Engine, table_name: str, database_name: str | None = No
     if _is_clickhouse_engine(engine):
         target_db = database_name or engine.url.database or "default"
         with engine.connect() as connection:
-            rows = connection.execute(
-                text(
-                    "SELECT name, type, COALESCE(is_in_sorting_key, 0) AS primary_key "
-                    "FROM system.columns WHERE database = :database_name AND table = :table_name ORDER BY position"
-                ),
-                {"database_name": target_db, "table_name": table_name},
-            ).fetchall()
+            with apply_query_timeout(connection):
+                rows = connection.execute(
+                    text(
+                        "SELECT name, type, COALESCE(is_in_sorting_key, 0) AS primary_key "
+                        "FROM system.columns WHERE database = :database_name AND table = :table_name ORDER BY position"
+                    ),
+                    {"database_name": target_db, "table_name": table_name},
+                ).fetchall()
         return [
             ColumnInfo(
                 name=str(row[0]),
@@ -1616,6 +1631,8 @@ def list_columns(engine: Engine, table_name: str, database_name: str | None = No
 
     if _is_schema_scoped_engine(engine):
         schema_name = database_name or "public"
+        identity_columns_supported = engine.dialect.name == "postgresql"
+        identity_metadata = ", c.is_identity, c.identity_increment" if identity_columns_supported else ""
         unique_columns = _pg_single_column_unique_constraints(engine, table_name, schema_name)
         check_constraints = _pg_check_constraints(engine, table_name, schema_name)
         column_comments = _pg_column_comments(engine, table_name, schema_name)
@@ -1624,7 +1641,7 @@ def list_columns(engine: Engine, table_name: str, database_name: str | None = No
                 text(
                     "SELECT c.column_name, c.data_type, c.is_nullable, "
                     "CASE WHEN kcu.column_name IS NULL THEN 0 ELSE 1 END AS primary_key, "
-                    "c.column_default "
+                    f"c.column_default{identity_metadata} "
                     "FROM information_schema.columns c "
                     "LEFT JOIN information_schema.table_constraints tc "
                     "  ON tc.table_schema = c.table_schema AND tc.table_name = c.table_name AND tc.constraint_type = 'PRIMARY KEY' "
@@ -1640,6 +1657,7 @@ def list_columns(engine: Engine, table_name: str, database_name: str | None = No
         for row in rows:
             column_name = str(row[0])
             default_value = _clean_optional_text(_db_text(row[4]))
+            is_identity = identity_columns_supported and str(row[5]).upper() == "YES"
             minimum, maximum = _extract_bounds_from_clause(check_constraints.get(column_name, ""), column_name)
             columns.append(
                 ColumnInfo(
@@ -1650,8 +1668,14 @@ def list_columns(engine: Engine, table_name: str, database_name: str | None = No
                     default_value=default_value,
                     comment=column_comments.get(column_name) or None,
                     unique=column_name in unique_columns,
-                    auto_increment=bool(default_value and ("nextval(" in default_value or "generated" in default_value.lower())),
-                    auto_increment_step=_pg_sequence_increment(engine, table_name, column_name, schema_name) if default_value and ("nextval(" in default_value or "generated" in default_value.lower()) else None,
+                    auto_increment=is_identity or bool(default_value and "nextval(" in default_value),
+                    auto_increment_step=(
+                        int(row[6])
+                        if is_identity and row[6] is not None
+                        else _pg_sequence_increment(engine, table_name, column_name, schema_name)
+                        if default_value and "nextval(" in default_value
+                        else None
+                    ),
                     minimum=minimum,
                     maximum=maximum,
                 )
@@ -2206,22 +2230,70 @@ def apply_redis_data_changes(engine: Engine, changes: RedisDataChangeRequest, da
         raise ValueError("当前连接不是 Redis")
 
     target = redis_client_for_database(engine, database_name)
+    temporary_keys: list[str] = []
     try:
-        for key in changes.deleted:
-            if key:
-                target.delete(key)
+        updates = [(item, True) for item in changes.updated] + [
+            (item, False) for item in changes.inserted
+        ]
+        target_names = [item.key.strip() for item, _ in updates]
+        if len(target_names) != len(set(target_names)):
+            raise ValueError("同一次 Redis 保存不能重复修改同一个 Key")
+        renamed_sources = {
+            item.original_key.strip()
+            for item, replace_existing in updates
+            if replace_existing
+            and item.original_key
+            and item.original_key.strip()
+            != item.key.strip()
+        }
+        if renamed_sources.intersection(target_names):
+            raise ValueError("同一次 Redis 保存不能同时重命名相互关联的 Key")
 
-        for item in changes.updated:
-            _apply_redis_key_update(target, item, True)
+        staged = []
+        for item, replace_existing in updates:
+            staged_item = _stage_redis_key_update(target, item, replace_existing)
+            staged.append(staged_item)
+            temporary_keys.append(staged_item[0])
 
-        for item in changes.inserted:
-            _apply_redis_key_update(target, item, False)
+        with target.pipeline(transaction=True) as pipeline:
+            deleted_keys = [key for key in changes.deleted if key]
+            if deleted_keys:
+                pipeline.delete(*deleted_keys)
+            for temporary_key, key, original_key, keep_expiration in staged:
+                pipeline.rename(temporary_key, key)
+                if not keep_expiration:
+                    pipeline.persist(key)
+                if original_key and original_key != key:
+                    pipeline.delete(original_key)
+            pipeline.execute()
     finally:
-        if target is not engine:
-            target.close()
+        try:
+            if temporary_keys:
+                target.delete(*temporary_keys)
+        finally:
+            if target is not engine:
+                target.close()
 
 
 def _apply_redis_key_update(target: Any, item: RedisKeyUpdate, replace_existing: bool) -> None:
+    temporary_key, key, original_key, keep_expiration = _stage_redis_key_update(
+        target, item, replace_existing
+    )
+    try:
+        with target.pipeline(transaction=True) as pipeline:
+            pipeline.rename(temporary_key, key)
+            if not keep_expiration:
+                pipeline.persist(key)
+            if original_key and original_key != key:
+                pipeline.delete(original_key)
+            pipeline.execute()
+    finally:
+        target.delete(temporary_key)
+
+
+def _stage_redis_key_update(
+    target: Any, item: RedisKeyUpdate, replace_existing: bool
+) -> tuple[str, str, str | None, bool]:
     key = item.key.strip()
     if not key:
         raise ValueError("Redis Key 不能为空")
@@ -2230,14 +2302,18 @@ def _apply_redis_key_update(target: Any, item: RedisKeyUpdate, replace_existing:
     if key_type not in {"string", "hash", "list", "set", "zset"}:
         raise ValueError("Redis 当前支持编辑 string、hash、list、set、zset 类型")
 
-    original_key = item.original_key.strip() if item.original_key else key
-    if replace_existing and original_key != key:
-        target.delete(original_key)
-
-    target.delete(key)
-    _write_redis_key_value(target, key, key_type, item.value)
-    if item.ttl is not None and item.ttl > 0:
-        target.expire(key, item.ttl)
+    original_key = (
+        (item.original_key.strip() or key) if item.original_key else key
+    ) if replace_existing else None
+    temporary_key = f"{key}:__datadjinn_tmp__:{uuid4().hex}"
+    keep_expiration = item.ttl is not None and item.ttl > 0
+    try:
+        _write_redis_key_value(target, temporary_key, key_type, item.value)
+        target.expire(temporary_key, item.ttl if keep_expiration else 3600)
+    except Exception:
+        target.delete(temporary_key)
+        raise
+    return temporary_key, key, original_key, keep_expiration
 
 
 def _write_redis_key_value(target: Any, key: str, key_type: str, value: Any) -> None:
@@ -2512,12 +2588,16 @@ def build_mysql_update_statements(
 
     for column in next_columns:
         column_name = column.name.strip()
-        current = current_column_map[column_name]
+        source_name = (column.source_name or column_name).strip()
+        current = current_column_map[source_name]
         if current.minimum is not None:
             statements.append(f"ALTER TABLE {quoted_table} DROP CHECK {preparer.quote(_min_constraint_name(table_name, column_name))}")
         if current.maximum is not None:
             statements.append(f"ALTER TABLE {quoted_table} DROP CHECK {preparer.quote(_max_constraint_name(table_name, column_name))}")
-        statements.append(f"ALTER TABLE {quoted_table} MODIFY COLUMN {_mysql_column_definition(column, preparer)}")
+        statements.append(
+            f"ALTER TABLE {quoted_table} MODIFY COLUMN "
+            f"{_mysql_column_definition(column, preparer, current.default_value)}"
+        )
 
     if current_primary_keys != next_primary_keys and next_primary_keys:
         statements.append(f"ALTER TABLE {quoted_table} ADD PRIMARY KEY ({', '.join(preparer.quote(column) for column in next_primary_keys)})")
@@ -2650,16 +2730,53 @@ def _update_sqlite_table_columns_v2(engine: Engine, table_name: str, next_column
     quoted_table = preparer.quote(table_name)
     temp_table = f"__datadjinn_tmp_{table_name}"
     quoted_temp_table = preparer.quote(temp_table)
-    quoted_columns = [preparer.quote(column.name.strip()) for column in next_columns]
-    column_definitions = [_sqlite_column_definition(column, preparer) for column in next_columns]
+    current_columns = list_columns(engine, table_name)
+    current_by_name = {column.name: column for column in current_columns}
+    column_definitions = [
+        _sqlite_column_definition(
+            column,
+            preparer,
+            current_by_name.get((column.source_name or column.name).strip()).default_value
+            if current_by_name.get((column.source_name or column.name).strip())
+            else None,
+        )
+        for column in next_columns
+    ]
     column_definitions.extend(_build_sqlite_constraints_sql(next_columns, table_name, preparer))
 
     with engine.begin() as connection:
+        dependent_objects = connection.execute(
+            text(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type IN ('index', 'trigger') AND tbl_name = :table_name "
+                "AND sql IS NOT NULL ORDER BY type, name"
+            ),
+            {"table_name": table_name},
+        ).scalars().all()
+        column_mapping = [
+            (column.name.strip(), (column.source_name or column.name).strip())
+            for column in next_columns
+            if (column.source_name or column.name).strip() in current_by_name
+        ]
         connection.execute(text(f"DROP TABLE IF EXISTS {quoted_temp_table}"))
         connection.execute(text(f"CREATE TABLE {quoted_temp_table} ({', '.join(column_definitions)})"))
-        connection.execute(text(f"INSERT INTO {quoted_temp_table} ({', '.join(quoted_columns)}) SELECT {', '.join(quoted_columns)} FROM {quoted_table}"))
+        if column_mapping:
+            target_columns = ", ".join(preparer.quote(target) for target, _ in column_mapping)
+            source_columns = ", ".join(preparer.quote(source) for _, source in column_mapping)
+            connection.execute(
+                text(
+                    f"INSERT INTO {quoted_temp_table} ({target_columns}) "
+                    f"SELECT {source_columns} FROM {quoted_table}"
+                )
+            )
+        else:
+            row_count = int(connection.execute(text(f"SELECT COUNT(*) FROM {quoted_table}")).scalar() or 0)
+            for _ in range(row_count):
+                connection.execute(text(f"INSERT INTO {quoted_temp_table} DEFAULT VALUES"))
         connection.execute(text(f"DROP TABLE {quoted_table}"))
         connection.execute(text(f"ALTER TABLE {quoted_temp_table} RENAME TO {preparer.quote(table_name)}"))
+        for statement in dependent_objects:
+            connection.execute(text(statement))
 
 
 def _update_mysql_table_columns_v2(
@@ -2750,7 +2867,12 @@ def _pg_non_constraint_indexes(engine: Engine, table_name: str, schema_name: str
     return [_db_text(row[0]).strip() for row in rows if row and row[0] is not None]
 
 
-def _build_pg_table_ddl(engine: Engine, table_name: str, schema_name: str) -> str:
+def _build_pg_table_ddl(
+    engine: Engine,
+    table_name: str,
+    schema_name: str,
+    include_foreign_keys: bool = True,
+) -> str:
     preparer = engine.dialect.identifier_preparer
     quoted_table = f"{preparer.quote(schema_name)}.{preparer.quote(table_name)}"
     columns = list_columns(engine, table_name, schema_name)
@@ -2760,13 +2882,22 @@ def _build_pg_table_ddl(engine: Engine, table_name: str, schema_name: str) -> st
     constraint_lines = [
         f"  CONSTRAINT {preparer.quote(constraint_name)} {definition}"
         for constraint_name, _constraint_type, definition in _pg_table_constraints(engine, table_name, schema_name)
-        if definition
+        if definition and (include_foreign_keys or _constraint_type != "f")
     ]
 
     column_lines: list[str] = []
     for column in columns:
         line = f"  {preparer.quote(column.name)} {column.type}"
-        if column.default_value:
+        if column.auto_increment and engine.dialect.name == "gaussdb":
+            serial_type = _gaussdb_serial_type(str(column.type))
+            if serial_type:
+                line = f"  {preparer.quote(column.name)} {serial_type}"
+            elif column.default_value:
+                line += f" DEFAULT {column.default_value}"
+        elif column.auto_increment:
+            identity_options = _postgresql_identity_options(engine, column.auto_increment_step)
+            line += f" GENERATED BY DEFAULT AS IDENTITY{identity_options}"
+        elif column.default_value:
             line += f" DEFAULT {column.default_value}"
         if not column.nullable:
             line += " NOT NULL"
@@ -2995,7 +3126,7 @@ def _update_oracle_table_columns_v2(
             connection.execute(text(statement))
 
 
-def _sqlite_column_definition(column: TableUpdateColumn, preparer) -> str:
+def _sqlite_column_definition(column: TableUpdateColumn, preparer, default_value: str | None = None) -> str:
     column_name = column.name.strip()
     if column.auto_increment:
         return f"{preparer.quote(column_name)} INTEGER PRIMARY KEY AUTOINCREMENT"
@@ -3003,10 +3134,14 @@ def _sqlite_column_definition(column: TableUpdateColumn, preparer) -> str:
     parts = [preparer.quote(column_name), column.type.strip()]
     if not column.nullable and not column.primary_key:
         parts.append("NOT NULL")
+    if default_value is not None:
+        parts.extend(["DEFAULT", default_value])
     return " ".join(parts)
 
 
-def _mysql_column_definition(column: TableUpdateColumn, preparer) -> str:
+def _mysql_column_definition(
+    column: TableUpdateColumn, preparer, default_value: str | None = None
+) -> str:
     parts = [preparer.quote(column.name.strip()), column.type.strip()]
 
     if not column.nullable or column.primary_key:
@@ -3016,6 +3151,8 @@ def _mysql_column_definition(column: TableUpdateColumn, preparer) -> str:
 
     if column.auto_increment:
         parts.append("AUTO_INCREMENT")
+    if default_value is not None:
+        parts.extend(["DEFAULT", default_value])
     comment = _column_comment_sql(column)
     if comment:
         parts.append(f"COMMENT {_sql_string(comment)}")

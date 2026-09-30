@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from sqlalchemy.engine import Engine
+from urllib3.util import Timeout
 
 from app.db.connection_manager import ConnectionManager
 from app.db.query_timeout import apply_query_timeout
-from app.db.readonly_query import _split_sql_statements, _with_limit, count_readonly_query, execute_query
+from app.db.readonly_query import _execute_mongo_statement, _parse_mongo_python_literal, _split_sql_statements, _validate_readonly_sql, _with_limit, count_readonly_query, execute_query
 from app.db.query_editing import analyze_query_column_origins, apply_query_data_changes
 from app.request_context import reset_query_timeout_seconds, set_query_timeout_seconds
 from app.schemas.connection import ConnectionRequest
@@ -18,6 +19,7 @@ from app.schemas.query import QueryDataChangeRequest, QueryRowUpdate
 class FakeClickHouseClient:
     def __init__(self) -> None:
         self.params: dict[str, str] = {}
+        self.timeout = Timeout(connect=10, read=15)
 
     def get_client_setting(self, key: str) -> str | None:
         return self.params.get(key)
@@ -102,18 +104,91 @@ FROM items;
                 self.assertNotIn("; --", limited_sql)
 
 
+class MongoFindQueryTests(unittest.TestCase):
+    def test_find_applies_filter_and_parses_json_boolean_literals(self) -> None:
+        collection = Mock()
+        cursor = MagicMock()
+        cursor.skip.return_value = cursor
+        cursor.limit.return_value = cursor
+        cursor.__iter__ = Mock(return_value=iter([{"_id": 1, "status": "open"}]))
+        collection.find.return_value = cursor
+        engine = {"app": {"orders": collection}}
+
+        response = _execute_mongo_statement(
+            engine,
+            "db.orders.find({'status': 'open', 'valid': true, 'memo': 'true'})",
+            20,
+            0,
+            "app",
+        )
+
+        collection.find.assert_called_once_with(
+            {"status": "open", "valid": True, "memo": "true"}
+        )
+        self.assertEqual(response.rows, [{"_id": 1, "status": "open"}])
+
+    def test_find_rejects_non_object_filter(self) -> None:
+        engine = {"app": {"orders": Mock()}}
+
+        with self.assertRaisesRegex(ValueError, "过滤条件对象"):
+            _execute_mongo_statement(engine, "db.orders.find([1, 2])", 20, 0, "app")
+
+    def test_mongo_literal_conversion_does_not_rewrite_words_inside_strings(self) -> None:
+        parsed = _parse_mongo_python_literal("{'text': 'true null false', 'value': null}")
+
+        self.assertEqual(parsed, {"text": "true null false", "value": None})
+
+
 class ClickHouseQueryPerformanceTests(unittest.TestCase):
     def test_timeout_uses_client_settings_without_extra_sql_round_trips(self) -> None:
         connection = FakeClickHouseConnection()
+        original_transport_timeout = connection.client.timeout
         timeout_token = set_query_timeout_seconds(900)
         try:
             with apply_query_timeout(connection):  # type: ignore[arg-type]
                 self.assertEqual(connection.client.params["max_execution_time"], "900")
+                self.assertEqual(connection.client.timeout.read_timeout, 915)
         finally:
             reset_query_timeout_seconds(timeout_token)
 
         self.assertEqual(connection.executed, [])
         self.assertNotIn("max_execution_time", connection.client.params)
+        self.assertIs(connection.client.timeout, original_transport_timeout)
+
+    def test_show_create_table_passes_readonly_validation_without_limit(self) -> None:
+        statement = _validate_readonly_sql("SHOW CREATE TABLE orders;")
+
+        self.assertEqual(statement, "SHOW CREATE TABLE orders")
+        self.assertEqual(
+            _with_limit(SimpleNamespace(dialect=SimpleNamespace(name="clickhousedb")), statement, 101),
+            statement,
+        )
+
+    def test_readonly_validation_rejects_embedded_writes_and_side_effects(self) -> None:
+        readonly_queries = [
+            "WITH items AS (SELECT 1) SELECT * FROM items",
+            "PRAGMA table_info(items)",
+            "EXPLAIN SELECT * FROM items",
+        ]
+        rejected_queries = [
+            "WITH removed AS (DELETE FROM items RETURNING *) SELECT * FROM removed",
+            "WITH items AS (SELECT 1) DELETE FROM items",
+            "EXPLAIN ANALYZE DELETE FROM items",
+            "PRAGMA journal_mode=WAL",
+            "PRAGMA journal_mode('WAL')",
+            "PRAGMA user_version(2)",
+            "SELECT * INTO OUTFILE 'items.csv' FROM items",
+            "SELECT * FROM items FOR UPDATE",
+        ]
+
+        for query in readonly_queries:
+            with self.subTest(query=query):
+                self.assertEqual(_validate_readonly_sql(query), query)
+
+        for query in rejected_queries:
+            with self.subTest(query=query):
+                with self.assertRaisesRegex(ValueError, "只允许执行只读查询"):
+                    _validate_readonly_sql(query)
 
     def test_clickhouse_engine_disables_pre_ping_and_can_switch_database_by_factory(self) -> None:
         manager = ConnectionManager()

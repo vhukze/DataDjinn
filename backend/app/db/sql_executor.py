@@ -10,6 +10,50 @@ def _is_schema_scoped_engine(engine: Engine) -> bool:
     return engine.dialect.name in {"postgresql", "gaussdb"}
 
 
+def _execute_mysql_sql_file(
+    engine: Engine, statements: list[str], database: str | None
+) -> SqlFileRunResponse:
+    success_count = 0
+    errors: list[str] = []
+    disable_foreign_key_checks = False
+
+    try:
+        with engine.connect() as connection:
+            try:
+                if database:
+                    quoted_database = engine.dialect.identifier_preparer.quote(database)
+                    connection.execute(text(f"USE {quoted_database}"))
+                    connection.execute(text("SET FOREIGN_KEY_CHECKS=0"))
+                    disable_foreign_key_checks = True
+                    connection.commit()
+
+                for statement in statements:
+                    try:
+                        with apply_query_timeout(connection):
+                            connection.execute(text(statement))
+                        connection.commit()
+                        success_count += 1
+                    except Exception as exc:
+                        connection.rollback()
+                        errors.append(str(exc))
+                        break
+            finally:
+                if disable_foreign_key_checks:
+                    try:
+                        connection.execute(text("SET FOREIGN_KEY_CHECKS=1"))
+                        connection.commit()
+                    except Exception as exc:
+                        errors.append(str(exc))
+    except Exception as exc:
+        errors.append(str(exc))
+
+    return SqlFileRunResponse(
+        success_count=success_count,
+        failed_count=max(len(statements) - success_count, 1 if errors else 0),
+        errors=errors,
+    )
+
+
 def execute_sql_file(engine: Engine, sql: str, database: str | None = None, pg_database: str | None = None) -> SqlFileRunResponse:
     statements = _split_sql_statements(sql)
 
@@ -52,6 +96,9 @@ def execute_sql_file(engine: Engine, sql: str, database: str | None = None, pg_d
                         rolled_back = True
                         raise
             else:
+                if engine.dialect.name == "mysql":
+                    return _execute_mysql_sql_file(engine, statements, database)
+
                 with engine.begin() as connection:
                     mysql_foreign_key_checks_disabled = False
                     if database:

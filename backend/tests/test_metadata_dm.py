@@ -146,7 +146,9 @@ class DamengMetadataUpdateTests(unittest.TestCase):
             patch.object(metadata_api, "update_table_columns", return_value="NEW_TABLE") as update,
             patch.object(metadata_api, "list_columns", return_value=renamed_columns) as list_updated,
             patch.object(metadata_api, "get_table_comment", return_value="") as get_comment,
-            patch.object(metadata_api.schema_versioning_service, "schedule_snapshot") as schedule_snapshot,
+            patch.object(metadata_api.database_versioning_service, "prepare_write_snapshot", return_value="snapshot-1") as prepare_snapshot,
+            patch.object(metadata_api.database_versioning_service, "complete_write_snapshot") as complete_snapshot,
+            patch.object(metadata_api.database_versioning_service, "table_snapshot_target", return_value=("APP", "OLD_TABLE", "APP", None)) as table_target,
         ):
             background_tasks = BackgroundTasks()
             response = metadata_api.update_columns(
@@ -165,9 +167,14 @@ class DamengMetadataUpdateTests(unittest.TestCase):
         )
         list_updated.assert_called_once_with(engine, "NEW_TABLE", "APP", None)
         get_comment.assert_called_once_with(engine, "NEW_TABLE", "APP", None)
-        schedule_snapshot.assert_called_once_with(
-            background_tasks, "dm-connection", "修改表结构 NEW_TABLE"
+        prepare_snapshot.assert_called_once_with(
+            "dm-connection",
+            "修改表结构 OLD_TABLE 前快照",
+            affected_tables=[("APP", "OLD_TABLE", "APP", None)],
+            capture_schema=True,
         )
+        complete_snapshot.assert_called_once_with("dm-connection", "snapshot-1", True)
+        table_target.assert_called_once_with("dm-connection", "OLD_TABLE", "APP", None)
 
     def test_renames_the_exact_source_column_and_table(self) -> None:
         engine = FakeDmEngine()

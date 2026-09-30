@@ -277,11 +277,11 @@ test('optional modules should expose independent update status and action @smoke
     fs.readFileSync(path.join(projectRoot, 'module-catalog.json'), 'utf-8')
   ) as { modules: Array<{ id: string; version: string; sha256: string }> }
 
-  expect(mainSource).toContain("version: '1.0.6'")
+  expect(mainSource).toContain("version: '1.0.8'")
   expect(mainSource).toContain('OPTIONAL_MODULE_CATALOG_URL')
   expect(mainSource).toContain('getOptionalModuleArtifacts')
   expect(mainSource).toContain('OPTIONAL_MODULE_CATALOG_CACHE_MS')
-  expect(catalog.modules.find((module) => module.id === 'mcp')).toMatchObject({ version: '1.0.6' })
+  expect(catalog.modules.find((module) => module.id === 'mcp')).toMatchObject({ version: '1.0.8' })
   expect(catalog.modules.every((module) => /^[a-f0-9]{64}$/i.test(module.sha256))).toBe(true)
   expect(catalog.modules.find((module) => module.id === 'clickhouse')).toMatchObject({ version: '1.0.0' })
   expect(catalog.modules.find((module) => module.id === 'elasticsearch')).toMatchObject({ version: '1.0.0' })
@@ -314,10 +314,10 @@ test('MCP artifact metadata should match the published module version @smoke', (
   const mcp = catalog.modules.find((module) => module.id === 'mcp')
 
   expect(mcp).toMatchObject({
-    version: '1.0.6',
-    url: 'https://github.com/vhukze/DataDjinn/releases/download/modules-v1.0.6/datadjinn-mcp-1.0.6-win-x64.zip'
+    version: '1.0.8',
+    url: 'https://github.com/vhukze/DataDjinn/releases/download/modules-v1.0.8/datadjinn-mcp-1.0.8-win-x64.zip'
   })
-  expect(mcp?.sha256).toBe('ee8a8fd25e49f2a80c64c4955507abd1cca5e58a0209aa4649c69cce93da6987')
+  expect(mcp?.sha256).toBe('a6eb763e6a3a4724af0f2b32ff8f2a7c8dcf88b51288c114de0f48267cd78438')
   expect(mainSource).toContain('OPTIONAL_MODULE_ARTIFACT_CATALOG')
 })
 

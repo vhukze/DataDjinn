@@ -2,6 +2,7 @@ import csv
 import json
 import os
 import sqlite3
+from itertools import islice
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
@@ -9,11 +10,11 @@ from uuid import uuid4
 from sqlalchemy import create_engine, inspect, text
 
 from app.db.connection_manager import _resolve_runtime_path, connection_manager
-from app.db.data_export import render_markdown_table, render_sql_inserts, write_tabular_export
-from app.db.metadata import get_object_ddl, list_schemas, list_tables
+from app.db.data_export import parse_csv_text_value, render_sql_inserts, selected_export_row, write_csv_rows, write_markdown_table_stream, write_tabular_export
+from app.db.metadata import _build_pg_table_ddl, _pg_table_constraints, get_object_ddl, list_columns, list_schemas, list_tables
 from app.db.mongo_utils import is_mongo_client, serialize_mongo_document
 from app.db.readonly_query import execute_readonly_query, preview_table
-from app.db.redis_utils import is_redis_client, redis_client_for_database, redis_scan_keys, redis_text, serialize_redis_value
+from app.db.redis_utils import is_redis_client, redis_client_for_database, redis_text, serialize_redis_value
 from app.db.sql_executor import execute_sql_file
 from app.schemas.backup import BackupRecord, ExportContent, ExportFormat, ExportScope, ResultExportRequest
 from app.schemas.connection import ConnectionRequest
@@ -100,7 +101,9 @@ def _generate_mysql_backup(engine, database: str, content: ExportContent = "sche
     return "\n".join(lines)
 
 
-def _generate_postgresql_backup(engine, database: str, schema_name: str = "public", content: ExportContent = "schema_data") -> str:
+def _generate_postgresql_backup(
+    engine, database: str, schema_name: str | None = None, content: ExportContent = "schema_data"
+) -> str:
     pg_engine = create_engine(engine.url.set(database=database), pool_pre_ping=True)
     try:
         return _generate_postgresql_backup_internal(pg_engine, schema_name, content)
@@ -108,50 +111,92 @@ def _generate_postgresql_backup(engine, database: str, schema_name: str = "publi
         pg_engine.dispose()
 
 
-def _generate_postgresql_backup_internal(engine, schema_name: str, content: ExportContent = "schema_data") -> str:
+def _generate_postgresql_backup_internal(
+    engine, schema_name: str | None = None, content: ExportContent = "schema_data"
+) -> str:
     lines: list[str] = []
     inspector = inspect(engine)
+    schemas = (
+        [schema_name]
+        if schema_name
+        else [
+            name
+            for name in inspector.get_schema_names()
+            if name != "information_schema" and not name.startswith("pg_")
+        ]
+    )
+    if not schemas:
+        raise ValueError("PostgreSQL 数据库中没有可备份的用户 schema")
 
-    with engine.connect() as connection:
-        connection.execute(text(f"SET search_path TO {_quote_identifier(engine, schema_name)}"))
-        tables = inspector.get_table_names(schema=schema_name)
+    tables_by_schema = {
+        current_schema: inspector.get_table_names(schema=current_schema)
+        for current_schema in schemas
+    }
+    for current_schema in schemas:
+        lines.append(f"CREATE SCHEMA IF NOT EXISTS {_quote_identifier(engine, current_schema)};")
 
-        for table_name in tables:
-            columns = inspector.get_columns(table_name, schema=schema_name)
-            if not columns:
-                continue
+    if content in {"schema", "schema_data"}:
+        for current_schema, table_names in tables_by_schema.items():
+            for table_name in table_names:
+                quoted_table = (
+                    f"{_quote_identifier(engine, current_schema)}."
+                    f"{_quote_identifier(engine, table_name)}"
+                )
+                ddl = _build_pg_table_ddl(
+                    engine, table_name, current_schema, include_foreign_keys=False
+                )
+                if not ddl:
+                    continue
+                lines.extend([f"DROP TABLE IF EXISTS {quoted_table} CASCADE;", ddl, ""])
 
-            col_defs: list[str] = []
-            pk_columns: list[str] = []
-            for col in columns:
-                col_def = f"{_quote_identifier(engine, col['name'])} {col['type']}"
-                if not col.get("nullable", True):
-                    col_def += " NOT NULL"
-                col_defs.append(col_def)
-                if col.get("primary_key"):
-                    pk_columns.append(col["name"])
+        for current_schema, table_names in tables_by_schema.items():
+            for table_name in table_names:
+                quoted_table = (
+                    f"{_quote_identifier(engine, current_schema)}."
+                    f"{_quote_identifier(engine, table_name)}"
+                )
+                for constraint_name, constraint_type, definition in _pg_table_constraints(
+                    engine, table_name, current_schema
+                ):
+                    if constraint_type == "f":
+                        lines.append(
+                            f"ALTER TABLE {quoted_table} ADD CONSTRAINT "
+                            f"{_quote_identifier(engine, constraint_name)} {definition};"
+                        )
+        lines.append("")
 
-            if pk_columns:
-                pk_list = ", ".join(_quote_identifier(engine, pk) for pk in pk_columns)
-                col_defs.append(f"PRIMARY KEY ({pk_list})")
-
-            quoted_table = f"{_quote_identifier(engine, schema_name)}.{_quote_identifier(engine, table_name)}"
-            if content in {"schema", "schema_data"}:
-                lines.append(f"DROP TABLE IF EXISTS {quoted_table} CASCADE;")
-                lines.append(f"CREATE TABLE {quoted_table} (\n  {',\n  '.join(col_defs)}\n);")
-                lines.append("")
-
-            if content == "schema":
-                continue
-
-            col_names = [col["name"] for col in columns]
-            result = connection.execute(text(f"SELECT * FROM {quoted_table}"))
-            column_list = ", ".join(_quote_identifier(engine, col) for col in col_names)
-            for row in result:
-                values = ", ".join(_format_value(val) for val in row)
-                lines.append(f"INSERT INTO {quoted_table} ({column_list}) VALUES ({values});")
-
-            lines.append("")
+    if content != "schema":
+        with engine.connect() as connection:
+            for current_schema, table_names in tables_by_schema.items():
+                for table_name in table_names:
+                    columns = inspector.get_columns(table_name, schema=current_schema)
+                    if not columns:
+                        continue
+                    quoted_table = (
+                        f"{_quote_identifier(engine, current_schema)}."
+                        f"{_quote_identifier(engine, table_name)}"
+                    )
+                    col_names = [col["name"] for col in columns]
+                    result = connection.execute(text(f"SELECT * FROM {quoted_table}"))
+                    column_list = ", ".join(_quote_identifier(engine, col) for col in col_names)
+                    for row in result:
+                        values = ", ".join(_format_value(val) for val in row)
+                        lines.append(f"INSERT INTO {quoted_table} ({column_list}) VALUES ({values});")
+                    qualified_regclass = (
+                        f"{_quote_identifier(engine, current_schema)}."
+                        f"{_quote_identifier(engine, table_name)}"
+                    )
+                    for column in list_columns(engine, table_name, current_schema):
+                        if not column.auto_increment:
+                            continue
+                        quoted_column = _quote_identifier(engine, column.name)
+                        sequence_sql = (
+                            "SELECT setval(pg_get_serial_sequence("
+                            f"{_format_value(qualified_regclass)}, {_format_value(column.name)}), "
+                            f"COALESCE(MAX({quoted_column}), 1), COUNT(*) > 0) FROM {quoted_table};"
+                        )
+                        lines.append(sequence_sql)
+                    lines.append("")
 
     return "\n".join(lines)
 
@@ -178,7 +223,13 @@ class BackupManager:
             backups = [backup for backup in backups if backup.connection_id == connection_id]
         return sorted(backups, key=lambda backup: backup.created_at, reverse=True)
 
-    def create_backup(self, connection_id: str, database: str | None = None, output_path: str | None = None) -> BackupRecord:
+    def create_backup(
+        self,
+        connection_id: str,
+        database: str | None = None,
+        output_path: str | None = None,
+        pg_database: str | None = None,
+    ) -> BackupRecord:
         request = connection_manager.get_connection_request(connection_id)
         engine = connection_manager.get_engine(connection_id)
         info = connection_manager._connections.get(connection_id)
@@ -186,7 +237,13 @@ class BackupManager:
             raise ValueError("连接不存在或已关闭")
 
         backup_id = f"backup_{uuid4().hex}"
-        target_database = self._target_database(request, database)
+        target_database = (
+            pg_database or request.database
+            if request.database_type == "postgresql"
+            else self._target_database(request, database)
+        )
+        if not target_database:
+            raise ValueError("备份数据库名不能为空")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_name = _safe_filename(f"{info.name}_{target_database}_{timestamp}")
 
@@ -199,10 +256,7 @@ class BackupManager:
         elif request.database_type == "mysql":
             sql = _generate_mysql_backup(engine, target_database)
         elif request.database_type == "postgresql":
-            pg_db = database or request.database
-            if not pg_db:
-                raise ValueError("PostgreSQL 备份需要指定数据库名")
-            sql = _generate_postgresql_backup(engine, pg_db, target_database if target_database != pg_db else "public")
+            sql = _generate_postgresql_backup(engine, target_database, database)
         elif request.database_type == "clickhouse":
             sql = self._export_clickhouse_sql(engine, target_database, None, "database", "schema_data")
         else:
@@ -215,6 +269,8 @@ class BackupManager:
             connection_name=info.name,
             database_type=request.database_type,
             database=target_database,
+            pg_database=target_database if request.database_type == "postgresql" else None,
+            schema_name=database if request.database_type == "postgresql" else None,
             file_path=str(file_path),
             created_at=datetime.now(),
             status="completed",
@@ -238,7 +294,10 @@ class BackupManager:
             raise ValueError("连接已关闭")
 
         sql = backup_file.read_text(encoding="utf-8")
-        result = execute_sql_file(engine, sql, record.database, None)
+        if record.database_type == "postgresql":
+            result = execute_sql_file(engine, sql, None, record.pg_database or record.database)
+        else:
+            result = execute_sql_file(engine, sql, record.database, None)
         if result.failed_count > 0:
             raise ValueError("恢复备份失败：" + "; ".join(result.errors))
 
@@ -283,6 +342,8 @@ class BackupManager:
             raise ValueError("连接已关闭")
         if request.source == "query" and request.format == "sql":
             raise ValueError("查询结果不支持导出为 SQL")
+        if request.data_scope == "all":
+            return self._export_all_result_data(engine, request)
 
         limit = request.limit if request.data_scope == "current_page" else None
         offset = request.offset if request.data_scope == "current_page" else 0
@@ -355,6 +416,149 @@ class BackupManager:
             quote_identifier=engine.dialect.identifier_preparer.quote,
         )
         return file_path
+
+    def _export_all_result_data(self, engine, request: ResultExportRequest) -> Path:
+        if request.source == "query":
+            if not request.sql or not request.sql.strip():
+                raise ValueError("没有可导出的查询语句")
+
+            def load_page(offset: int):
+                return execute_readonly_query(
+                    engine,
+                    request.sql,
+                    1000,
+                    offset,
+                    request.database,
+                    request.pg_database,
+                )
+        else:
+            if not request.table:
+                raise ValueError("没有可导出的表")
+
+            def load_page(offset: int):
+                return preview_table(
+                    engine,
+                    request.table,
+                    1000,
+                    offset,
+                    request.database,
+                    request.pg_database,
+                    request.where,
+                    request.sort_column,
+                    request.sort_direction,
+                )
+
+        first_page = load_page(0)
+        selected_columns = self._validated_columns(first_page.columns, request.columns)
+        file_path = Path(request.output_path).expanduser().resolve()
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        table_name = None
+        if request.source == "table" and request.table:
+            preparer = engine.dialect.identifier_preparer
+            quoted_table = preparer.quote(request.table)
+            table_name = (
+                f"{preparer.quote(request.database)}.{quoted_table}"
+                if request.database
+                else quoted_table
+            )
+
+        if request.format == "sql":
+            ddl = get_object_ddl(
+                engine,
+                request.table,
+                "table",
+                request.database,
+                request.pg_database,
+            ).rstrip()
+            if not ddl:
+                raise ValueError("无法读取表结构")
+            quote = engine.dialect.identifier_preparer.quote
+            with file_path.open("w", encoding="utf-8") as output:
+                output.write(ddl if ddl.endswith(";") else f"{ddl};")
+                output.write("\n\n")
+                self._write_sql_result_pages(
+                    output,
+                    load_page,
+                    first_page,
+                    selected_columns,
+                    table_name or request.table,
+                    quote,
+                )
+            return file_path
+
+        if request.format == "json":
+            with file_path.open("w", encoding="utf-8") as output:
+                output.write("[")
+                first_row = True
+                offset = 0
+                page = first_page
+                while True:
+                    for row in page.rows:
+                        if not first_row:
+                            output.write(",")
+                        first_row = False
+                        json.dump(
+                            selected_export_row(selected_columns, row),
+                            output,
+                            ensure_ascii=False,
+                        )
+                    if not page.limited or not page.rows:
+                        break
+                    offset += len(page.rows)
+                    page = load_page(offset)
+                output.write("]")
+            return file_path
+
+        if request.format == "csv":
+            offset = 0
+            page = first_page
+            append = False
+            while True:
+                write_csv_rows(file_path, selected_columns, page.rows, append=append)
+                append = True
+                if not page.limited or not page.rows:
+                    return file_path
+                offset += len(page.rows)
+                page = load_page(offset)
+
+        if request.format == "markdown":
+            with file_path.open("w", encoding="utf-8") as output:
+                offset = 0
+                page = first_page
+                include_header = True
+                while True:
+                    write_markdown_table_stream(
+                        output,
+                        selected_columns,
+                        page.rows,
+                        include_header=include_header,
+                    )
+                    include_header = False
+                    if not page.limited or not page.rows:
+                        break
+                    offset += len(page.rows)
+                    page = load_page(offset)
+            return file_path
+
+        raise ValueError(f"不支持的导出格式：{request.format}")
+
+    @staticmethod
+    def _write_sql_result_pages(
+        output,
+        load_page,
+        first_page,
+        columns: list[str],
+        table_name: str,
+        quote_identifier,
+    ) -> None:
+        offset = 0
+        page = first_page
+        while True:
+            output.write(render_sql_inserts(columns, page.rows, table_name, quote_identifier))
+            if not page.limited or not page.rows:
+                return
+            offset += len(page.rows)
+            page = load_page(offset)
 
     @staticmethod
     def _validated_columns(available: list[str], selected: list[str] | None) -> list[str]:
@@ -453,11 +657,24 @@ class BackupManager:
 
         db = client[database]
         collections = [table] if scope == "table" and table else db.list_collection_names()
-        documents_by_collection = {
-            collection: [serialize_mongo_document(document) for document in db[collection].find({})]
-            for collection in collections
-        }
-        file_path.write_text(json.dumps({"database": database, "collections": documents_by_collection}, ensure_ascii=False, indent=2), encoding="utf-8")
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        with file_path.open("w", encoding="utf-8") as output:
+            output.write('{"database":')
+            json.dump(database, output, ensure_ascii=False)
+            output.write(',"collections":{')
+            for collection_index, collection in enumerate(collections):
+                if collection_index:
+                    output.write(",")
+                json.dump(collection, output, ensure_ascii=False)
+                output.write(":[")
+                for document_index, document in enumerate(db[collection].find({})):
+                    if document_index:
+                        output.write(",")
+                    json.dump(
+                        serialize_mongo_document(document), output, ensure_ascii=False, default=str
+                    )
+                output.write("]")
+            output.write("}}")
 
     def _export_redis(self, connection_id: str, file_path: Path, database: str | None, table: str | None, scope: ExportScope) -> None:
         client = connection_manager.get_engine(connection_id)
@@ -466,26 +683,46 @@ class BackupManager:
 
         target = redis_client_for_database(client, database)
         try:
-            keys = [table] if scope == "table" and table else redis_scan_keys(target, 100000)
-            data = {}
-            for key in keys:
-                key_type = redis_text(target.type(key))
-                if key_type == "string":
-                    value = target.get(key)
-                elif key_type == "hash":
-                    value = target.hgetall(key)
-                elif key_type == "list":
-                    value = target.lrange(key, 0, -1)
-                elif key_type == "set":
-                    value = list(target.smembers(key))
-                elif key_type == "zset":
-                    value = target.zrange(key, 0, -1, withscores=True)
-                elif key_type == "stream":
-                    value = target.xrange(key)
-                else:
-                    value = None
-                data[key] = {"type": key_type, "ttl": target.ttl(key), "value": serialize_redis_value(value)}
-            file_path.write_text(json.dumps({"database": database or "current", "keys": data}, ensure_ascii=False, indent=2), encoding="utf-8")
+            keys = (table,) if scope == "table" and table else target.scan_iter(count=500)
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            with file_path.open("w", encoding="utf-8") as output:
+                output.write('{"database":')
+                json.dump(database or "current", output, ensure_ascii=False)
+                output.write(',"keys":{')
+                first = True
+                for raw_key in keys:
+                    key = redis_text(raw_key)
+                    if not first:
+                        output.write(",")
+                    first = False
+                    json.dump(key, output, ensure_ascii=False)
+                    output.write(":")
+                    key_type = redis_text(target.type(key))
+                    if key_type == "string":
+                        value = target.get(key)
+                    elif key_type == "hash":
+                        value = target.hgetall(key)
+                    elif key_type == "list":
+                        value = target.lrange(key, 0, -1)
+                    elif key_type == "set":
+                        value = list(target.smembers(key))
+                    elif key_type == "zset":
+                        value = target.zrange(key, 0, -1, withscores=True)
+                    elif key_type == "stream":
+                        value = target.xrange(key)
+                    else:
+                        value = None
+                    json.dump(
+                        {
+                            "type": key_type,
+                            "ttl": target.ttl(key),
+                            "value": serialize_redis_value(value),
+                        },
+                        output,
+                        ensure_ascii=False,
+                        default=str,
+                    )
+                output.write("}}")
         finally:
             if target is not client:
                 target.close()
@@ -510,16 +747,12 @@ class BackupManager:
             return
         if scope == "database" and request.database_type == "clickhouse":
             target_database = database or request.database or "default"
-            sql = self._export_clickhouse_sql(
-                engine,
-                target_database,
-                None,
-                scope,
-                content,
-            )
-            if not sql:
-                raise ValueError("无法生成 SQL 导出")
-            file_path.write_text(sql, encoding="utf-8")
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            with file_path.open("w", encoding="utf-8") as output:
+                if not self._export_clickhouse_sql(
+                    engine, target_database, None, scope, content, output
+                ):
+                    raise ValueError("无法生成 SQL 导出")
             return
 
         targets = self._export_table_targets(
@@ -533,46 +766,67 @@ class BackupManager:
             raise ValueError("无法生成 SQL 导出")
 
         preparer = engine.dialect.identifier_preparer
-        sections: list[str] = []
-        for _, target_schema, table_name in targets:
-            if scope == "table" or content in {"schema", "schema_data"}:
-                ddl = get_object_ddl(
-                    engine,
-                    table_name,
-                    "table",
-                    target_schema,
-                    pg_database,
-                ).rstrip()
-                if ddl:
-                    sections.append(ddl if ddl.endswith(";") else f"{ddl};")
-            if content == "schema":
-                continue
-            result = preview_table(
-                engine,
-                table_name,
-                None,
-                0,
-                target_schema,
-                pg_database,
-            )
-            selected = self._validated_columns(
-                result.columns,
-                columns if scope == "table" else None,
-            )
-            quoted_table = preparer.quote(table_name)
-            if target_schema and request.database_type != "sqlite":
-                quoted_table = f"{preparer.quote(target_schema)}.{quoted_table}"
-            inserts = render_sql_inserts(selected, result.rows, quoted_table, preparer.quote).rstrip()
-            if inserts:
-                sections.append(inserts)
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        wrote_content = False
+        with file_path.open("w", encoding="utf-8") as output:
+            for _, target_schema, table_name in targets:
+                if wrote_content:
+                    output.write("\n\n")
+                if scope == "table" or content in {"schema", "schema_data"}:
+                    ddl = get_object_ddl(
+                        engine,
+                        table_name,
+                        "table",
+                        target_schema,
+                        pg_database,
+                    ).rstrip()
+                    if ddl:
+                        output.write(ddl if ddl.endswith(";") else f"{ddl};")
+                        wrote_content = True
+                if content == "schema":
+                    continue
+                first_page = preview_table(
+                    engine, table_name, 1000, 0, target_schema, pg_database
+                )
+                selected = self._validated_columns(
+                    first_page.columns,
+                    columns if scope == "table" else None,
+                )
+                quoted_table = preparer.quote(table_name)
+                if target_schema and request.database_type != "sqlite":
+                    quoted_table = f"{preparer.quote(target_schema)}.{quoted_table}"
+                offset = 0
+                page = first_page
+                while True:
+                    inserts = render_sql_inserts(
+                        selected, page.rows, quoted_table, preparer.quote
+                    )
+                    if inserts:
+                        if wrote_content:
+                            output.write("\n\n")
+                        output.write(inserts.rstrip())
+                        wrote_content = True
+                    if not page.limited or not page.rows:
+                        break
+                    offset += len(page.rows)
+                    page = preview_table(
+                        engine, table_name, 1000, offset, target_schema, pg_database
+                    )
 
-        if not sections:
+        if not wrote_content:
             raise ValueError("无法生成 SQL 导出")
-        file_path.write_text("\n\n".join(sections) + "\n", encoding="utf-8")
 
-    def _export_clickhouse_sql(self, engine, database: str, table: str | None, scope: ExportScope, content: ExportContent) -> str:
+    def _export_clickhouse_sql(
+        self,
+        engine,
+        database: str,
+        table: str | None,
+        scope: ExportScope,
+        content: ExportContent,
+        output,
+    ) -> bool:
         tables = [table] if scope == "table" and table else []
-        lines: list[str] = []
+        wrote_content = False
 
         with engine.connect() as connection:
             if not tables:
@@ -584,9 +838,10 @@ class BackupManager:
                 if content in {"schema", "schema_data"}:
                     row = connection.execute(text(f"SHOW CREATE TABLE {quoted}")).fetchone()
                     if row and row[0]:
-                        lines.append(f"DROP TABLE IF EXISTS {quoted};")
-                        lines.append(f"{row[0]};")
-                        lines.append("")
+                        if wrote_content:
+                            output.write("\n")
+                        output.write(f"DROP TABLE IF EXISTS {quoted};\n{row[0]};\n")
+                        wrote_content = True
 
                 if content == "schema":
                     continue
@@ -598,10 +853,10 @@ class BackupManager:
                 column_list = ", ".join(_quote_identifier(engine, column) for column in columns)
                 for row in result:
                     values = ", ".join(_format_value(value) for value in row)
-                    lines.append(f"INSERT INTO {quoted} ({column_list}) VALUES ({values});")
-                lines.append("")
+                    output.write(f"INSERT INTO {quoted} ({column_list}) VALUES ({values});\n")
+                    wrote_content = True
 
-        return "\n".join(lines)
+        return wrote_content
 
     def _export_csv(self, connection_id: str, output_path: Path, database: str | None, pg_database: str | None, table: str | None, scope: ExportScope, columns: list[str] | None = None) -> None:
         engine = connection_manager.get_engine(connection_id)
@@ -613,39 +868,46 @@ class BackupManager:
             raise ValueError("未找到可导出的表")
 
         if len(targets) == 1 and output_path.suffix.lower() == ".csv":
-            _, target_schema, table_name = targets[0]
-            result = preview_table(
-                engine,
-                table_name,
-                None,
-                0,
-                target_schema,
-                pg_database,
+            label, target_schema, table_name = targets[0]
+            self._export_csv_table(
+                engine, output_path, target_schema, table_name, pg_database, columns
             )
-            selected = self._validated_columns(result.columns, columns)
-            write_tabular_export(output_path, "csv", selected, result.rows)
             return
 
         output_path.mkdir(parents=True, exist_ok=True)
         for label, target_schema, table_name in targets:
-            result = preview_table(
+            self._export_csv_table(
                 engine,
-                table_name,
-                None,
-                0,
+                output_path / f"{_safe_filename(label)}.csv",
                 target_schema,
+                table_name,
                 pg_database,
-            )
-            selected = self._validated_columns(
-                result.columns,
                 columns if len(targets) == 1 else None,
             )
-            write_tabular_export(
-                output_path / f"{_safe_filename(label)}.csv",
-                "csv",
-                selected,
-                result.rows,
+
+    def _export_csv_table(
+        self,
+        engine,
+        output_path: Path,
+        target_schema: str | None,
+        table_name: str,
+        pg_database: str | None,
+        columns: list[str] | None,
+    ) -> None:
+        offset = 0
+        append = False
+        selected: list[str] | None = None
+        while True:
+            result = preview_table(
+                engine, table_name, 1000, offset, target_schema, pg_database
             )
+            if selected is None:
+                selected = self._validated_columns(result.columns, columns)
+            write_csv_rows(output_path, selected, result.rows, append=append)
+            append = True
+            offset += len(result.rows)
+            if not result.limited or not result.rows:
+                return
 
     def _export_structured_tables(
         self,
@@ -668,43 +930,100 @@ class BackupManager:
         if not targets:
             raise ValueError("未找到可导出的表")
 
-        exported: dict[str, tuple[list[str], list[dict[str, object]]]] = {}
-        for label, target_schema, table_name in targets:
-            result = preview_table(
-                engine,
-                table_name,
-                None,
-                0,
-                target_schema,
-                pg_database,
-            )
-            selected = self._validated_columns(
-                result.columns,
-                columns if scope == "table" else None,
-            )
-            exported[label] = (
-                selected,
-                [{column: row.get(column) for column in selected} for row in result.rows],
-            )
-
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        if export_format == "json":
-            payload = (
-                next(iter(exported.values()))[1]
-                if scope == "table" and len(exported) == 1
-                else {"tables": {name: rows for name, (_, rows) in exported.items()}}
-            )
-            output_path.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2, default=str),
-                encoding="utf-8",
-            )
-            return
+        with output_path.open("w", encoding="utf-8") as output:
+            if export_format == "json":
+                single_table = scope == "table" and len(targets) == 1
+                if single_table:
+                    output.write("[")
+                else:
+                    output.write('{"tables":{')
+                for index, (label, target_schema, table_name) in enumerate(targets):
+                    if index and not single_table:
+                        output.write(",")
+                    if not single_table:
+                        json.dump(label, output, ensure_ascii=False)
+                        output.write(":")
+                    first_page = preview_table(
+                        engine, table_name, 1000, 0, target_schema, pg_database
+                    )
+                    selected = self._validated_columns(
+                        first_page.columns, columns if scope == "table" else None
+                    )
+                    self._write_json_table_rows(
+                        output, engine, table_name, target_schema, pg_database, selected, first_page
+                    )
+                output.write("]" if single_table else "}}")
+                return
 
-        sections = [
-            f"## {table_name}\n\n{render_markdown_table(table_columns, rows)}"
-            for table_name, (table_columns, rows) in exported.items()
-        ]
-        output_path.write_text("\n".join(sections), encoding="utf-8")
+            for index, (label, target_schema, table_name) in enumerate(targets):
+                if index:
+                    output.write("\n")
+                output.write(f"## {label}\n\n")
+                first_page = preview_table(
+                    engine, table_name, 1000, 0, target_schema, pg_database
+                )
+                selected = self._validated_columns(
+                    first_page.columns, columns if scope == "table" else None
+                )
+                self._write_markdown_table_rows(
+                    output, engine, table_name, target_schema, pg_database, selected, first_page
+                )
+
+    @staticmethod
+    def _write_json_table_rows(
+        output,
+        engine,
+        table_name: str,
+        database: str | None,
+        pg_database: str | None,
+        columns: list[str],
+        first_page,
+    ) -> None:
+        first_row = True
+        offset = 0
+        page = first_page
+        while True:
+            for row in page.rows:
+                if not first_row:
+                    output.write(",")
+                first_row = False
+                json.dump(
+                    {column: row.get(column) for column in columns},
+                    output,
+                    ensure_ascii=False,
+                    default=str,
+                )
+            if not page.limited or not page.rows:
+                return
+            offset += len(page.rows)
+            page = preview_table(engine, table_name, 1000, offset, database, pg_database)
+
+    @staticmethod
+    def _write_markdown_table_rows(
+        output,
+        engine,
+        table_name: str,
+        database: str | None,
+        pg_database: str | None,
+        columns: list[str],
+        first_page,
+    ) -> None:
+        offset = 0
+        page = first_page
+        include_header = True
+        while True:
+            write_markdown_table_stream(
+                output,
+                columns,
+                ({column: row.get(column) for column in columns} for row in page.rows),
+                include_header=include_header,
+            )
+            include_header = False
+            if not page.limited or not page.rows:
+                return
+            offset += len(page.rows)
+            page = preview_table(engine, table_name, 1000, offset, database, pg_database)
 
     def _import_csv(self, connection_id: str, file_path: Path, database: str | None, pg_database: str | None, table: str) -> None:
         engine = connection_manager.get_engine(connection_id)
@@ -734,9 +1053,16 @@ class BackupManager:
             value_sql = ", ".join(f":{column}" for column in columns)
             statement = text(f"INSERT INTO {quoted_table} ({column_sql}) VALUES ({value_sql})")
             with engine.begin() as connection:
-                rows = [row for row in reader]
-                if rows:
-                    connection.execute(statement, rows)
+                while rows := list(islice(reader, 1000)):
+                    values = [
+                        {
+                            column: None if value is None else parse_csv_text_value(value)
+                            for column, value in row.items()
+                            if column is not None
+                        }
+                        for row in rows
+                    ]
+                    connection.execute(statement, values)
 
 
 backup_manager = BackupManager()

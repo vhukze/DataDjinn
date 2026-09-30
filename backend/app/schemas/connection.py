@@ -32,6 +32,7 @@ class ConnectionRequest(BaseModel):
     ssh_passphrase: str | None = None
     git_versioning_enabled: bool = False
     git_versioning_scopes: list[str] = Field(default_factory=list)
+    git_versioning_snapshot_interval_hours: int | None = Field(default=None, ge=0, le=168)
 
 
 class ConnectionInfo(BaseModel):

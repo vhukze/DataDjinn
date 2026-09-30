@@ -11,6 +11,7 @@ from app.api.git_versioning import (
     get_database_baseline,
     get_versioning_scopes,
     list_database_versions,
+    preview_database_snapshot,
     update_versioning_scopes,
 )
 from app.api.query import query
@@ -20,6 +21,7 @@ from app.git_versioning.schema_history import (
     SchemaSnapshotObject,
     SchemaVersioningService,
     contains_schema_mutation,
+    contains_write_statement,
 )
 from app.schemas.query import QueryRequest, QueryResponse
 
@@ -171,12 +173,13 @@ class SchemaVersioningServiceTests(unittest.TestCase):
         self.assertIs(get_versioning_scopes(self.connection_id), config)
         self.assertIs(
             update_versioning_scopes(
-                self.connection_id, UpdateVersioningScopesRequest(selected_scopes=["APP"])
+                self.connection_id,
+                UpdateVersioningScopesRequest(selected_scopes=["APP"], snapshot_interval_hours=12),
             ),
             config,
         )
         service.get_scope_config.assert_called_once_with(self.connection_id)
-        service.update_scope_config.assert_called_once_with(self.connection_id, ["APP"])
+        service.update_scope_config.assert_called_once_with(self.connection_id, ["APP"], 12)
 
     @patch("app.api.git_versioning.database_versioning_service")
     def test_database_versions_api_uses_database_snapshot_history(self, database_service) -> None:
@@ -188,6 +191,35 @@ class SchemaVersioningServiceTests(unittest.TestCase):
 
         self.assertEqual("commit-1", versions[0].id)
         database_service.list_versions.assert_called_once_with(self.connection_id, 20)
+
+    @patch("app.api.git_versioning.database_versioning_service")
+    def test_database_versions_api_exposes_local_sync_error(self, database_service) -> None:
+        database_service.list_local_versions.return_value = [
+            {
+                "id": "snapshot-1",
+                "message": "写入前快照",
+                "captured_at": "2026-08-19T00:00:00Z",
+                "status": "error",
+                "remote_commit_id": None,
+                "error": "网络不可用",
+            }
+        ]
+        database_service.list_versions.side_effect = ValueError("GitHub 不可用")
+
+        versions = list_database_versions(self.connection_id, 20)
+
+        self.assertEqual("remote_error", versions[0].status)
+        self.assertEqual("GitHub 不可用", versions[0].error)
+        self.assertEqual("error", versions[1].status)
+        self.assertEqual("网络不可用", versions[1].error)
+
+    @patch("app.api.git_versioning.database_versioning_service")
+    def test_database_snapshot_preview_api_forwards_connection(self, database_service) -> None:
+        preview = SimpleNamespace(tables=[], scopes=["sales"])
+        database_service.preview_snapshot.return_value = preview
+
+        self.assertIs(preview_database_snapshot(self.connection_id), preview)
+        database_service.preview_snapshot.assert_called_once_with(self.connection_id)
 
     @patch("app.api.git_versioning.github_oauth_service")
     @patch("app.api.git_versioning.database_versioning_service")
@@ -222,27 +254,55 @@ class SchemaVersioningServiceTests(unittest.TestCase):
         self.assertFalse(contains_schema_mutation("SELECT '; ALTER TABLE items ADD COLUMN ignored'"))
         self.assertFalse(contains_schema_mutation("UPDATE items SET title = 'new'"))
 
-    @patch("app.api.query.schema_versioning_service.schedule_snapshot")
+    def test_detects_writes_without_treating_queries_as_mutations(self) -> None:
+        self.assertTrue(contains_write_statement("UPDATE items SET title = 'new'"))
+        self.assertTrue(contains_write_statement("WITH selected AS (SELECT 1) DELETE FROM items"))
+        self.assertTrue(contains_write_statement("CREATE TABLE items (id INTEGER)"))
+        self.assertTrue(contains_write_statement("CALL refresh_total()"))
+        self.assertTrue(contains_write_statement("BEGIN refresh_total(); END"))
+        self.assertTrue(contains_write_statement("PRAGMA user_version = 2"))
+        self.assertTrue(contains_write_statement("EXPLAIN ANALYZE UPDATE items SET title = 'new'"))
+        self.assertTrue(contains_write_statement("WITH removed AS (DELETE FROM items RETURNING *) SELECT * FROM removed"))
+        self.assertTrue(contains_write_statement("EXPLAIN ANALYZE DELETE FROM items"))
+        self.assertTrue(contains_write_statement("SELECT * FROM items FOR UPDATE"))
+        self.assertFalse(contains_write_statement("SELECT * FROM items"))
+        self.assertFalse(contains_write_statement("-- UPDATE items\nSELECT 1"))
+        self.assertFalse(contains_write_statement("SHOW TABLES"))
+        self.assertFalse(contains_write_statement("EXPLAIN SELECT * FROM items"))
+        self.assertFalse(contains_write_statement("SET autocommit=0"))
+
+    @patch("app.api.query.database_versioning_service.complete_write_snapshot")
+    @patch("app.api.query.database_versioning_service.prepare_write_snapshot")
     @patch("app.api.query.execute_query")
     @patch("app.api.query.connection_manager.get_engine")
-    def test_sql_editor_schedules_snapshots_only_after_schema_changes(
-        self, get_engine, execute_query, schedule_snapshot
+    def test_sql_editor_captures_before_writes_but_not_queries(
+        self, get_engine, execute_query, prepare_snapshot, complete_snapshot
     ) -> None:
         get_engine.return_value = object()
         execute_query.return_value = QueryResponse(columns=[], rows=[], row_count=0, limited=False)
+        prepare_snapshot.return_value = "snapshot-1"
         background_tasks = BackgroundTasks()
 
         query(
             QueryRequest(connection_id=self.connection_id, sql="ALTER TABLE items ADD COLUMN title TEXT"),
             background_tasks,
         )
-        schedule_snapshot.assert_called_once_with(
-            background_tasks, self.connection_id, "SQL 编辑器执行结构变更"
+        prepare_snapshot.assert_called_once_with(
+            self.connection_id, "SQL 编辑器写入前快照"
         )
+        complete_snapshot.assert_called_once_with(self.connection_id, "snapshot-1", True)
 
-        schedule_snapshot.reset_mock()
+        prepare_snapshot.reset_mock()
+        complete_snapshot.reset_mock()
+        query(QueryRequest(connection_id=self.connection_id, sql="UPDATE items SET title='x'"), background_tasks)
+        prepare_snapshot.assert_called_once_with(self.connection_id, "SQL 编辑器写入前快照")
+        complete_snapshot.assert_called_once_with(self.connection_id, "snapshot-1", True)
+
+        prepare_snapshot.reset_mock()
+        complete_snapshot.reset_mock()
         query(QueryRequest(connection_id=self.connection_id, sql="SELECT * FROM items"), background_tasks)
-        schedule_snapshot.assert_not_called()
+        prepare_snapshot.assert_not_called()
+        complete_snapshot.assert_not_called()
 
     @patch("app.git_versioning.schema_history.github_oauth_service")
     @patch("app.git_versioning.schema_history.connection_manager")

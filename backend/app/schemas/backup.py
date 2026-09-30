@@ -20,6 +20,8 @@ class BackupRecord(BaseModel):
     connection_name: str
     database_type: DatabaseType
     database: str
+    pg_database: str | None = None
+    schema_name: str | None = None
     file_path: str
     created_at: datetime
     status: BackupStatus

@@ -410,11 +410,14 @@ async function ensureTreeNodeExpanded(page, key) {
   }, key)
 }
 
-async function openFixtureConnection(page) {
+async function openFixtureConnection(page, folderKey) {
   const tableGroupKey = `object-group:${fixtureConnectionId}:::table`
   for (let attempt = 0; attempt < 3; attempt += 1) {
     if (await revealTreeNode(page, tableGroupKey)) {
       return
+    }
+    if (folderKey) {
+      await ensureTreeNodeExpanded(page, folderKey)
     }
     await doubleClickTreeNode(page, `connection:${fixtureConnectionId}`)
     await page.waitForTimeout(250)
@@ -3271,16 +3274,23 @@ test.describe('workspace regression', () => {
       'datadjinn-root-item-order',
       'datadjinn-root-item-order-customized',
       'datadjinn-pinned-root-item-ids',
+      'datadjinn-connection-tree-expanded-keys',
+      'datadjinn-connection-tree-selected-keys',
+      'datadjinn-connection-tree-selected-connection-ids',
+      'datadjinn-connection-tree-selected-connection-id',
+      'datadjinn-connection-tree-selection-anchor-id',
       'datadjinn-selected-databases',
       'datadjinn-selected-schemas'
     ]
-    let originalPreferences
+    let originalMainPreferences
+    let originalServerPreferences
     let localStorageSnapshot
 
     try {
       const page = await electronApp.firstWindow()
       await waitForAppReady(page)
-      originalPreferences = await page.evaluate(() =>
+      originalMainPreferences = await page.evaluate(() => window.api.getConnectionTreePreferences())
+      originalServerPreferences = await page.evaluate(() =>
         window.api.requestJson('/preferences/connection-tree')
       )
       localStorageSnapshot = await page.evaluate((keys) =>
@@ -3290,23 +3300,30 @@ test.describe('workspace regression', () => {
 
       await page.evaluate(
         async ({ nextFolderId, nextFolderName, connectionId, keys }) => {
-          await window.api.requestJson('/preferences/connection-tree', {
-            method: 'PUT',
-            body: JSON.stringify({
-              preferences: {
-                connection_folders: [{ id: nextFolderId, name: nextFolderName }],
-                connection_folder_assignments: { [connectionId]: nextFolderId },
-                connection_folder_order: [nextFolderId],
-                root_connection_order: [],
-                root_item_order: [`folder:${nextFolderId}`],
-                root_item_order_customized: true,
-                pinned_root_item_ids: [],
-                folder_connection_order: { [nextFolderId]: [connectionId] },
-                selected_databases: { [connectionId]: ['default'] },
-                selected_schemas: {}
-              }
+          const preferences = {
+            connection_folders: [{ id: nextFolderId, name: nextFolderName }],
+            connection_folder_assignments: { [connectionId]: nextFolderId },
+            connection_folder_order: [nextFolderId],
+            root_connection_order: [],
+            root_item_order: [`folder:${nextFolderId}`],
+            root_item_order_customized: true,
+            pinned_root_item_ids: [],
+            folder_connection_order: { [nextFolderId]: [connectionId] },
+            selected_databases: { [connectionId]: ['default'] },
+            selected_schemas: {},
+            expanded_keys: [`folder:${nextFolderId}`],
+            selected_tree_keys: [`connection:${connectionId}`],
+            selected_connection_ids: [connectionId],
+            selected_connection_id: connectionId,
+            connection_selection_anchor_id: connectionId
+          }
+          await Promise.all([
+            window.api.setConnectionTreePreferences(preferences),
+            window.api.requestJson('/preferences/connection-tree', {
+              method: 'PUT',
+              body: JSON.stringify({ preferences })
             })
-          })
+          ])
           keys.forEach((key) => localStorage.removeItem(key))
         },
         { nextFolderId: folderId, nextFolderName: folderName, connectionId: fixtureConnectionId, keys: storageKeys }
@@ -3318,6 +3335,14 @@ test.describe('workspace regression', () => {
         `.resource-tree-node-title[data-tree-node-key="folder:${folderId}"]`
       )
       await expect(folderTitle).toContainText(folderName, { timeout: 15000 })
+      await expect(treeNode(page, `connection:${fixtureConnectionId}`)).toBeVisible({ timeout: 15000 })
+      await expect(
+        page.locator(
+          `.ant-tree-node-content-wrapper.ant-tree-node-selected .connection-tree-title[data-connection-id="${fixtureConnectionId}"]`
+        )
+      ).toBeVisible()
+      await folderTitle.dblclick()
+      await expect(treeNode(page, `connection:${fixtureConnectionId}`)).toBeHidden()
       const firstFolderToggleStartedAt = Date.now()
       await folderTitle.dblclick()
       await expect(treeNode(page, `connection:${fixtureConnectionId}`)).toBeVisible({ timeout: 15000 })
@@ -3337,13 +3362,16 @@ test.describe('workspace regression', () => {
         .toEqual(['default'])
     } finally {
       const page = await electronApp.firstWindow().catch(() => undefined)
-      if (page && originalPreferences) {
-        await page.evaluate(async (preferences) => {
-          await window.api.requestJson('/preferences/connection-tree', {
-            method: 'PUT',
-            body: JSON.stringify({ preferences: preferences.preferences ?? {} })
-          })
-        }, originalPreferences)
+      if (page && originalMainPreferences && originalServerPreferences) {
+        await page.evaluate(async ({ mainPreferences, serverPreferences }) => {
+          await Promise.all([
+            window.api.setConnectionTreePreferences(mainPreferences),
+            window.api.requestJson('/preferences/connection-tree', {
+              method: 'PUT',
+              body: JSON.stringify({ preferences: serverPreferences.preferences ?? {} })
+            })
+          ])
+        }, { mainPreferences: originalMainPreferences, serverPreferences: originalServerPreferences })
       }
       if (page && localStorageSnapshot) {
         await page.evaluate((snapshot) => {
@@ -3355,6 +3383,83 @@ test.describe('workspace regression', () => {
             }
           })
         }, localStorageSnapshot)
+      }
+      await electronApp.close()
+    }
+  })
+
+  test('opening a closed connection after renderer idle should show loading immediately @bug', async () => {
+    const electronApp = await launchRegressionApp()
+    let page
+    let originalMainPreferences
+    let originalServerPreferences
+    let storageSnapshot
+    const storageKeys = [
+      'datadjinn-connection-tree-expanded-keys',
+      'datadjinn-connection-tree-selected-keys',
+      'datadjinn-connection-tree-selected-connection-ids',
+      'datadjinn-connection-tree-selected-connection-id',
+      'datadjinn-connection-tree-selection-anchor-id',
+      'datadjinn-selected-databases',
+      'datadjinn-selected-schemas'
+    ]
+
+    try {
+      page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      originalMainPreferences = await page.evaluate(() => window.api.getConnectionTreePreferences())
+      originalServerPreferences = await page.evaluate(() =>
+        window.api.requestJson('/preferences/connection-tree')
+      )
+      storageSnapshot = await page.evaluate((keys) =>
+        Object.fromEntries(keys.map((key) => [key, localStorage.getItem(key)])), storageKeys)
+
+      const connectionKey = `connection:${fixtureConnectionId}`
+      await expect.poll(async () => revealTreeNode(page, connectionKey), { timeout: 15000 }).toBe(true)
+      const connectionNode = treeNode(page, connectionKey)
+      await expect(connectionNode).toHaveClass(/is-closed/)
+
+      await page.waitForTimeout(3000)
+      const startedAt = Date.now()
+      await doubleClickTreeNode(page, connectionKey)
+      const connectionTreeItem = connectionNode.locator(
+        'xpath=ancestor::*[contains(@class, "ant-tree-treenode")]'
+      )
+      await expect(connectionTreeItem.locator('.tree-node-loading-icon')).toHaveCount(0, {
+        timeout: 1500
+      })
+      await expect(page.locator('.connection-tree-icon-btn.ant-btn-loading')).toBeVisible({
+        timeout: 1500
+      })
+      expect(
+        Date.now() - startedAt,
+        '空闲后的首次双击必须先显示连接中状态，不能被选中渲染阻塞'
+      ).toBeLessThan(1500)
+      await expect(connectionNode).toHaveClass(/is-open/, { timeout: 30000 })
+    } finally {
+      if (page && originalMainPreferences && originalServerPreferences) {
+        await page.evaluate(async ({ mainPreferences, serverPreferences }) => {
+          await Promise.all([
+            window.api.setConnectionTreePreferences(mainPreferences),
+            window.api.requestJson('/preferences/connection-tree', {
+              method: 'PUT',
+              body: JSON.stringify({ preferences: serverPreferences.preferences ?? {} })
+            })
+          ])
+        }, { mainPreferences: originalMainPreferences, serverPreferences: originalServerPreferences })
+      }
+      if (page && storageSnapshot) {
+        await page.evaluate(({ snapshot }) => {
+          Object.entries(snapshot).forEach(([key, value]) => {
+            if (value === null) {
+              localStorage.removeItem(key)
+            } else {
+              localStorage.setItem(key, value)
+            }
+          })
+        }, { snapshot: storageSnapshot })
       }
       await electronApp.close()
     }
@@ -3417,7 +3522,7 @@ test.describe('workspace regression', () => {
             folder_connection_order: {},
             selected_databases: {},
             selected_schemas: {}
-          })
+          }, 0)
           localStorage.setItem('datadjinn-connection-folders', JSON.stringify(preferences.connection_folders))
           localStorage.setItem(
             'datadjinn-connection-folder-assignments',
@@ -6145,6 +6250,51 @@ test.describe('workspace regression', () => {
           allowWrite: false,
           restrictConnections: true,
           allowedConnectionIds: [fixtureConnectionId]
+        })
+      } finally {
+        await page.evaluate(
+          async ({ settings, modules }) => {
+            const mcpWasInstalled = modules.some((module) => module.id === 'mcp' && module.installed)
+            if (mcpWasInstalled) {
+              await window.api.installOptionalModule('mcp')
+            } else {
+              await window.api.uninstallOptionalModule('mcp')
+            }
+            await window.api.setMcpSettings(settings)
+          },
+          { settings: originalSettings, modules: originalModules }
+        )
+      }
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('remote MCP enabled intent should survive on a device without the MCP module @bug', async () => {
+    const electronApp = await launchRegressionApp({ aiModuleEnabled: false })
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      const originalSettings = await page.evaluate(() => window.api.getMcpSettings())
+      const originalModules = await page.evaluate(() => window.api.getOptionalModules())
+      try {
+        await page.evaluate(async () => {
+          await window.api.uninstallOptionalModule('mcp')
+          await window.api.applyAppSyncSettings({
+            mcpSettings: {
+              enabled: true,
+              allowWrite: false,
+              restrictConnections: false,
+              allowedConnectionIds: []
+            }
+          })
+        })
+        await expect.poll(() => page.evaluate(() => window.api.getMcpSettings())).toMatchObject({
+          enabled: true,
+          allowWrite: false,
+          restrictConnections: false,
+          allowedConnectionIds: []
         })
       } finally {
         await page.evaluate(
@@ -10369,41 +10519,50 @@ test.describe('workspace regression', () => {
       'datadjinn-folder-connection-order',
       'datadjinn-root-item-order',
       'datadjinn-root-item-order-customized',
-      'datadjinn-pinned-root-item-ids'
+      'datadjinn-pinned-root-item-ids',
+      'datadjinn-connection-tree-expanded-keys',
+      'datadjinn-connection-tree-selected-keys',
+      'datadjinn-connection-tree-selected-connection-ids',
+      'datadjinn-connection-tree-selected-connection-id',
+      'datadjinn-connection-tree-selection-anchor-id'
     ]
     let page
     let storageSnapshot
-    let originalPreferences
+    let originalMainPreferences
+    let originalServerPreferences
 
     try {
       page = await electronApp.firstWindow()
       attachPageConsole(page)
       await waitForAppReady(page)
       await ensureWindowSize(page)
-      originalPreferences = await page.evaluate(() =>
+      originalMainPreferences = await page.evaluate(() => window.api.getConnectionTreePreferences())
+      originalServerPreferences = await page.evaluate(() =>
         window.api.requestJson('/preferences/connection-tree')
       )
       storageSnapshot = await page.evaluate((keys) => {
         return Object.fromEntries(keys.map((key) => [key, localStorage.getItem(key)]))
       }, storageKeys)
       await page.evaluate(async (connectionId) => {
-        await window.api.requestJson('/preferences/connection-tree', {
-          method: 'PUT',
-          body: JSON.stringify({
-            preferences: {
-              connection_folders: [],
-              connection_folder_assignments: {},
-              connection_folder_order: [],
-              root_connection_order: [connectionId],
-              root_item_order: [`connection:${connectionId}`],
-              root_item_order_customized: true,
-              pinned_root_item_ids: [],
-              folder_connection_order: {},
-              selected_databases: { [connectionId]: ['default'] },
-              selected_schemas: {}
-            }
+        const preferences = {
+          connection_folders: [],
+          connection_folder_assignments: {},
+          connection_folder_order: [],
+          root_connection_order: [connectionId],
+          root_item_order: [`connection:${connectionId}`],
+          root_item_order_customized: true,
+          pinned_root_item_ids: [],
+          folder_connection_order: {},
+          selected_databases: { [connectionId]: ['default'] },
+          selected_schemas: {}
+        }
+        await Promise.all([
+          window.api.setConnectionTreePreferences(preferences),
+          window.api.requestJson('/preferences/connection-tree', {
+            method: 'PUT',
+            body: JSON.stringify({ preferences })
           })
-        })
+        ])
       }, fixtureConnectionId)
       await page.reload()
       await waitForAppReady(page)
@@ -10633,10 +10792,13 @@ test.describe('workspace regression', () => {
             selected_databases: { [connectionId]: ['default'] },
             selected_schemas: {}
           }
-          await window.api.requestJson('/preferences/connection-tree', {
-            method: 'PUT',
-            body: JSON.stringify({ preferences })
-          })
+          await Promise.all([
+            window.api.setConnectionTreePreferences(preferences),
+            window.api.requestJson('/preferences/connection-tree', {
+              method: 'PUT',
+              body: JSON.stringify({ preferences })
+            })
+          ])
           localStorage.setItem(
             'datadjinn-connection-folder-assignments',
             JSON.stringify({ [connectionId]: targetFolderId })
@@ -10657,7 +10819,7 @@ test.describe('workspace regression', () => {
       await page.reload()
       await waitForAppReady(page)
       await ensureWindowSize(page)
-      await doubleClickTreeNode(page, folderKey)
+      await ensureTreeNodeExpanded(page, folderKey)
       await expect(treeNode(page, connectionKey)).toBeVisible({ timeout: 10000 })
 
       const groupedConnectionMetrics = await treeNode(page, connectionKey).evaluate((node) => {
@@ -10674,7 +10836,7 @@ test.describe('workspace regression', () => {
       expect(groupedConnectionMetrics.contentLeft - folderMetrics.contentLeft).toBeGreaterThanOrEqual(8)
       expect(groupedConnectionMetrics.contentLeft - folderMetrics.contentLeft).toBeLessThanOrEqual(14)
 
-      await openFixtureConnection(page)
+      await openFixtureConnection(page, folderKey)
       await expect
         .poll(
           () =>
@@ -10717,13 +10879,16 @@ test.describe('workspace regression', () => {
       expect(groupedTableMetrics.contentLeft - groupedTableGroupMetrics.contentLeft).toBeGreaterThanOrEqual(22)
       expect(groupedTableMetrics.contentLeft - groupedTableGroupMetrics.contentLeft).toBeLessThanOrEqual(26)
     } finally {
-      if (page && originalPreferences) {
-        await page.evaluate(async (preferences) => {
-          await window.api.requestJson('/preferences/connection-tree', {
-            method: 'PUT',
-            body: JSON.stringify({ preferences: preferences.preferences ?? {} })
-          })
-        }, originalPreferences)
+      if (page && originalMainPreferences && originalServerPreferences) {
+        await page.evaluate(async ({ mainPreferences, serverPreferences }) => {
+          await Promise.all([
+            window.api.setConnectionTreePreferences(mainPreferences),
+            window.api.requestJson('/preferences/connection-tree', {
+              method: 'PUT',
+              body: JSON.stringify({ preferences: serverPreferences.preferences ?? {} })
+            })
+          ])
+        }, { mainPreferences: originalMainPreferences, serverPreferences: originalServerPreferences })
       }
       if (page && storageSnapshot) {
         await page.evaluate(({ snapshot }) => {
@@ -10774,6 +10939,8 @@ test.describe('workspace regression', () => {
     const electronApp = await launchRegressionApp()
     let page
     let storageSnapshot
+    let originalMainPreferences
+    let originalServerPreferences
     const storageKeys = [
       'datadjinn-connection-folders',
       'datadjinn-connection-folder-assignments',
@@ -10781,7 +10948,12 @@ test.describe('workspace regression', () => {
       'datadjinn-folder-connection-order',
       'datadjinn-root-item-order',
       'datadjinn-root-item-order-customized',
-      'datadjinn-pinned-root-item-ids'
+      'datadjinn-pinned-root-item-ids',
+      'datadjinn-connection-tree-expanded-keys',
+      'datadjinn-connection-tree-selected-keys',
+      'datadjinn-connection-tree-selected-connection-ids',
+      'datadjinn-connection-tree-selected-connection-id',
+      'datadjinn-connection-tree-selection-anchor-id'
     ]
 
     try {
@@ -10791,6 +10963,19 @@ test.describe('workspace regression', () => {
       await ensureWindowSize(page)
       storageSnapshot = await page.evaluate((keys) =>
         Object.fromEntries(keys.map((key) => [key, localStorage.getItem(key)])), storageKeys)
+      originalMainPreferences = await page.evaluate(() => window.api.getConnectionTreePreferences())
+      originalServerPreferences = await page.evaluate(() =>
+        window.api.requestJson('/preferences/connection-tree')
+      )
+      await page.evaluate(async () => {
+        await Promise.all([
+          window.api.setConnectionTreePreferences({}, 0),
+          window.api.requestJson('/preferences/connection-tree', {
+            method: 'PUT',
+            body: JSON.stringify({ preferences: {} })
+          })
+        ])
+      })
       await page.evaluate(
         ({ nextFolderId, firstId, secondId, thirdId }) => {
           localStorage.setItem(
@@ -10877,6 +11062,17 @@ test.describe('workspace regression', () => {
         thirdConnectionId
       ])
     } finally {
+      if (page && originalMainPreferences && originalServerPreferences) {
+        await page.evaluate(async ({ mainPreferences, serverPreferences }) => {
+          await Promise.all([
+            window.api.setConnectionTreePreferences(mainPreferences),
+            window.api.requestJson('/preferences/connection-tree', {
+              method: 'PUT',
+              body: JSON.stringify({ preferences: serverPreferences.preferences ?? {} })
+            })
+          ])
+        }, { mainPreferences: originalMainPreferences, serverPreferences: originalServerPreferences })
+      }
       if (page && storageSnapshot) {
         await page.evaluate(({ snapshot }) => {
           Object.entries(snapshot).forEach(([key, value]) => {
@@ -11039,7 +11235,12 @@ test.describe('workspace regression', () => {
       'datadjinn-root-connection-order',
       'datadjinn-root-item-order',
       'datadjinn-root-item-order-customized',
-      'datadjinn-pinned-root-item-ids'
+      'datadjinn-pinned-root-item-ids',
+      'datadjinn-connection-tree-expanded-keys',
+      'datadjinn-connection-tree-selected-keys',
+      'datadjinn-connection-tree-selected-connection-ids',
+      'datadjinn-connection-tree-selected-connection-id',
+      'datadjinn-connection-tree-selection-anchor-id'
     ]
 
     try {
@@ -11127,7 +11328,7 @@ test.describe('workspace regression', () => {
       await page.reload()
       await waitForAppReady(page)
       await ensureWindowSize(page)
-      await doubleClickTreeNode(page, `folder:${resolvedFolderId}`)
+      await ensureTreeNodeExpanded(page, `folder:${resolvedFolderId}`)
       await expect(treeNode(page, connectionKey)).toBeVisible({ timeout: 10000 })
       await expect
         .poll(
@@ -11998,6 +12199,53 @@ test.describe('workspace regression', () => {
           iconFilter: expect.stringContaining('drop-shadow'),
           iconTransform: expect.not.stringMatching(/^none$/)
         })
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('refreshing a dirty preview should restore the last database value @smoke @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      attachPageConsole(page)
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      await openFixtureTable(page, largeTableName)
+
+      const activeResult = page.locator('.workspace-tab-panels .workspace-active-content')
+      const refreshButton = activeResult.locator('.table-toolbar-inline-actions [aria-label="刷新"]')
+      const saveButton = activeResult.locator('.table-toolbar-inline-actions [aria-label="提交"]')
+      const editableTarget = await activeResult.evaluate((node) => {
+        const cell = node.querySelector<HTMLElement>('.editable-cell[data-cell-key]')
+        if (!(cell instanceof HTMLElement)) {
+          return null
+        }
+        const rect = cell.getBoundingClientRect()
+        return {
+          originalText: cell.textContent ?? '',
+          x: rect.x + rect.width / 2,
+          y: rect.y + rect.height / 2
+        }
+      })
+      expect(editableTarget).not.toBeNull()
+
+      await page.mouse.dblclick(editableTarget.x, editableTarget.y)
+      const inlineEditor = activeResult.locator('.editable-cell-dom-input')
+      await expect(inlineEditor).toBeVisible({ timeout: 10000 })
+      await inlineEditor.fill(`${editableTarget.originalText}__refresh_pending__`)
+      await activeResult.locator('.result-status').click()
+      await expect(saveButton).toHaveClass(/is-pending-save/, { timeout: 10000 })
+
+      await refreshButton.click()
+      await expect(saveButton).not.toHaveClass(/is-pending-save/, { timeout: 15000 })
+      await expect
+        .poll(async () =>
+          activeResult.locator('.editable-cell[data-cell-key]').first().textContent()
+        )
+        .toBe(editableTarget.originalText)
     } finally {
       await electronApp.close()
     }

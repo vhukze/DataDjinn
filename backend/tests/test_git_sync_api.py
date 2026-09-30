@@ -8,13 +8,16 @@ from fastapi import HTTPException
 
 from app.api.git_sync import (
     SYNC_PAYLOAD_PATH,
+    DeviceAuthorizationPollRequest,
     SyncFileStatusResponse,
     SyncFilePullRequest,
     SyncFilePushRequest,
     get_sync_file_status,
+    poll_device_authorization,
     pull_sync_file,
     push_sync_file,
 )
+from app.api.git_versioning import list_database_versions, list_table_git_versions
 from app.git_sync.github_oauth import (
     GitHubRepositoryFile,
     GitHubRepositoryWriteResult,
@@ -23,6 +26,79 @@ from app.git_sync.github_oauth import (
 
 
 class GitSyncApiTests(unittest.TestCase):
+    def test_database_version_list_marks_remote_history_unavailable_when_local_versions_exist(self) -> None:
+        local_version = {
+            "id": "local-checkpoint",
+            "message": "本机快照",
+            "captured_at": "2026-09-29T10:00:00+00:00",
+            "status": "local_only",
+            "remote_commit_id": None,
+            "error": None,
+        }
+        with (
+            patch(
+                "app.api.git_versioning.database_versioning_service.list_local_versions",
+                return_value=[local_version],
+            ),
+            patch(
+                "app.api.git_versioning.database_versioning_service.list_versions",
+                side_effect=RuntimeError("network unavailable"),
+            ),
+        ):
+            versions = list_database_versions("c1")
+
+        self.assertEqual("remote_error", versions[0].status)
+        self.assertIn("network unavailable", versions[0].error)
+        self.assertEqual("local-checkpoint", versions[1].id)
+
+    def test_table_version_list_keeps_local_history_and_marks_remote_error(self) -> None:
+        local_version = {
+            "id": "local-table-snapshot",
+            "message": "本机表快照",
+            "committed_at": "2026-09-29T10:00:00+00:00",
+            "status": "error",
+            "remote_commit_id": None,
+            "error": "offline",
+        }
+        with (
+            patch(
+                "app.api.git_versioning.database_versioning_service.list_local_table_versions",
+                return_value=[local_version],
+            ),
+            patch(
+                "app.api.git_versioning.database_versioning_service.list_table_versions",
+                side_effect=RuntimeError("network unavailable"),
+            ),
+        ):
+            versions = list_table_git_versions("c1", "items")
+
+        self.assertEqual("remote_error", versions[0]["status"])
+        self.assertEqual("local-table-snapshot", versions[1]["id"])
+
+    def test_successful_github_authorization_resumes_pending_database_snapshot_syncs(self) -> None:
+        with patch(
+            "app.api.git_sync.github_oauth_service.poll_device_authorization",
+            return_value={"status": "authorized", "auth": {"authorized": True}},
+        ), patch(
+            "app.git_versioning.database_history.database_versioning_service.resume_pending_local_syncs"
+        ) as resume_syncs:
+            result = poll_device_authorization(DeviceAuthorizationPollRequest(session_id="session-1"))
+
+        self.assertEqual("authorized", result.status)
+        resume_syncs.assert_called_once_with()
+
+    def test_pending_github_authorization_does_not_start_database_snapshot_syncs(self) -> None:
+        with patch(
+            "app.api.git_sync.github_oauth_service.poll_device_authorization",
+            return_value={"status": "pending", "interval_seconds": 5},
+        ), patch(
+            "app.git_versioning.database_history.database_versioning_service.resume_pending_local_syncs"
+        ) as resume_syncs:
+            result = poll_device_authorization(DeviceAuthorizationPollRequest(session_id="session-1"))
+
+        self.assertEqual("pending", result.status)
+        resume_syncs.assert_not_called()
+
     def test_remote_status_exposes_existing_repository_and_payload_without_passphrase(self) -> None:
         repository = GitHubSyncRepository(
             full_name="vhukze/datadjinn-sync-existing",
@@ -34,7 +110,7 @@ class GitSyncApiTests(unittest.TestCase):
             content="encrypted-payload",
         )
         with patch(
-            "app.api.git_sync.github_oauth_service.ensure_sync_repository",
+            "app.api.git_sync.github_oauth_service.find_sync_repository",
             return_value=repository,
         ), patch(
             "app.api.git_sync.github_oauth_service.read_repository_file",
@@ -46,6 +122,19 @@ class GitSyncApiTests(unittest.TestCase):
         self.assertTrue(result.exists)
         self.assertEqual(result.sha, "remote-sha")
         self.assertEqual(result.repository.full_name, repository.full_name)
+
+    def test_remote_status_without_repository_does_not_create_or_read_one(self) -> None:
+        with patch(
+            "app.api.git_sync.github_oauth_service.find_sync_repository",
+            return_value=None,
+        ), patch(
+            "app.api.git_sync.github_oauth_service.read_repository_file"
+        ) as read_repository_file:
+            result = get_sync_file_status()
+
+        self.assertFalse(result.exists)
+        self.assertIsNone(result.repository)
+        read_repository_file.assert_not_called()
 
     def test_first_pull_reports_missing_remote_payload(self) -> None:
         with patch("app.api.git_sync.github_oauth_service.read_repository_file", return_value=None):

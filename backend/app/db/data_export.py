@@ -6,7 +6,7 @@ import json
 from datetime import date, datetime, time
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable, TextIO
 
 
 def _json_value(value: Any) -> Any:
@@ -32,6 +32,34 @@ def _text_value(value: Any) -> str:
     if isinstance(normalized, (dict, list)):
         return json.dumps(normalized, ensure_ascii=False)
     return str(normalized)
+
+
+def _csv_text_value(value: Any) -> str:
+    if value is None:
+        return r"\N"
+    text_value = _text_value(value)
+    return f"\\{text_value}" if text_value.startswith("\\") else text_value
+
+
+def parse_csv_text_value(value: str) -> str | None:
+    if value == r"\N":
+        return None
+    if value.startswith("\\\\"):
+        return value[1:]
+    return value
+
+
+def write_csv_rows(
+    file_path: Path, columns: list[str], rows: Iterable[dict[str, Any]], *, append: bool = False
+) -> None:
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    mode = "a" if append else "w"
+    with file_path.open(mode, encoding="utf-8-sig" if not append else "utf-8", newline="") as output:
+        writer = csv.writer(output, lineterminator="\n")
+        if not append:
+            writer.writerow(columns)
+        for row in rows:
+            writer.writerow([_csv_text_value(row.get(column)) for column in columns])
 
 
 def _sql_value(value: Any) -> str:
@@ -66,10 +94,30 @@ def render_markdown_table(columns: list[str], rows: list[dict[str, Any]]) -> str
     return "\n".join([header, separator, *body]) + "\n"
 
 
+def write_markdown_table_stream(
+    output: TextIO,
+    columns: list[str],
+    rows: Iterable[dict[str, Any]],
+    *,
+    include_header: bool = True,
+) -> None:
+    if include_header:
+        output.write("| " + " | ".join(_markdown_value(column) for column in columns) + " |\n")
+        output.write("| " + " | ".join("---" for _ in columns) + " |\n")
+    for row in rows:
+        output.write(
+            "| " + " | ".join(_markdown_value(row.get(column)) for column in columns) + " |\n"
+        )
+
+
 def _selected_rows(
     columns: list[str], rows: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    return [{column: _json_value(row.get(column)) for column in columns} for row in rows]
+    return [selected_export_row(columns, row) for row in rows]
+
+
+def selected_export_row(columns: list[str], row: dict[str, Any]) -> dict[str, Any]:
+    return {column: _json_value(row.get(column)) for column in columns}
 
 
 def render_sql_inserts(
@@ -103,10 +151,7 @@ def write_tabular_export(
     normalized_rows = _selected_rows(columns, rows)
 
     if export_format == "csv":
-        with file_path.open("w", encoding="utf-8-sig", newline="") as output:
-            writer = csv.writer(output, lineterminator="\n")
-            writer.writerow(columns)
-            writer.writerows([_text_value(row.get(column)) for column in columns] for row in rows)
+        write_csv_rows(file_path, columns, rows)
         return
 
     if export_format == "json":

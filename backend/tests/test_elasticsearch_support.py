@@ -192,7 +192,8 @@ class ElasticsearchConnectionPersistenceTests(unittest.TestCase):
 
         client_factory.assert_called_once_with(
             hosts=[{"host": "es.internal", "port": 9243, "scheme": "https"}],
-            request_timeout=5,
+            request_timeout=15,
+            max_retries=0,
             verify_certs=True,
             api_key="encoded-api-key",
         )
@@ -239,7 +240,8 @@ class ElasticsearchConnectionPersistenceTests(unittest.TestCase):
 
         client_factory.assert_called_once_with(
             hosts=[{"host": "es.internal", "port": 9200, "scheme": "http"}],
-            request_timeout=5,
+            request_timeout=15,
+            max_retries=0,
             verify_certs=True,
         )
         self.assertTrue(client._datadjinn_elasticsearch_client)

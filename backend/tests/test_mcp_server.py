@@ -3,10 +3,14 @@ import io
 import os
 import tempfile
 import unittest
+from concurrent.futures import CancelledError, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from threading import Event, Lock
 from unittest.mock import patch
 
+from app import mcp_server
 from app.mcp_server import (
     MAX_QUERY_ROWS,
+    _run_tool,
     _configure_data_directory,
     _configure_optional_jdbc_runtime,
     _configure_stdio_encoding,
@@ -187,6 +191,39 @@ class DataDjinnMcpServerTests(unittest.TestCase):
         self.assertIn("opened automatically", tools["list_tables"]["description"])
         self.assertIn("JSON Query DSL", tools["execute_query"]["description"])
 
+    def test_mcp_open_connection_uses_the_shared_connection_manager(self) -> None:
+        connection = type("Connection", (), {
+            "connection_id": "connection_1",
+            "name": "Local DB",
+            "database_type": "mysql",
+            "host": "db.internal",
+            "port": 3306,
+            "database": "app",
+            "is_open": True,
+            "server_version": "8.0",
+        })()
+        request = {
+            "jsonrpc": "2.0",
+            "id": 22,
+            "method": "tools/call",
+            "params": {
+                "name": "open_connection",
+                "arguments": {"connection_id": "connection_1"},
+            },
+        }
+
+        with (
+            patch("app.mcp_server._load_database_runtime"),
+            patch("app.mcp_server._ensure_connection_allowed"),
+            patch("app.mcp_server.connection_manager") as manager,
+        ):
+            manager.open_connection.return_value = connection
+            response = handle_request(request)
+
+        manager.open_connection.assert_called_once_with("connection_1")
+        result = json.loads(response["result"]["content"][0]["text"])
+        self.assertEqual(result["connection_id"], "connection_1")
+
     def test_list_connections_never_returns_password_or_ssh_secrets(self) -> None:
         connection = type(
             "Connection",
@@ -279,16 +316,257 @@ class DataDjinnMcpServerTests(unittest.TestCase):
             },
         }
 
-        with patch("app.mcp_server._connection", return_value="engine") as connection, patch("app.mcp_server.execute_query", return_value=response) as execute:
+        with (
+            patch("app.mcp_server._connection", return_value="engine") as connection,
+            patch("app.git_versioning.database_history.database_versioning_service.prepare_write_snapshot", return_value=None),
+            patch("app.git_versioning.database_history.database_versioning_service.complete_write_snapshot"),
+            patch("app.mcp_server._db_execute_query", return_value=response) as execute,
+        ):
             result = handle_request(request)
 
         connection.assert_called_once_with("connection_1")
         execute.assert_called_once_with("engine", "DELETE FROM audit_log", 200, 0, "analytics", None)
         self.assertFalse(result["result"].get("isError", False))
 
+    def test_write_cte_requires_confirmation_and_prepares_a_snapshot(self) -> None:
+        self.settings["allowWrite"] = True
+        sql = "WITH removed AS (DELETE FROM audit_log RETURNING *) SELECT * FROM removed"
+        request = {
+            "jsonrpc": "2.0",
+            "id": 25,
+            "method": "tools/call",
+            "params": {
+                "name": "execute_query",
+                "arguments": {"connection_id": "connection_1", "sql": sql, "confirm_write": True},
+            },
+        }
+        response = QueryResponse(columns=[], rows=[], row_count=0, limited=False)
+
+        with (
+            patch("app.mcp_server._connection", return_value="engine"),
+            patch(
+                "app.git_versioning.database_history.database_versioning_service.prepare_write_snapshot",
+                return_value="snapshot-1",
+            ) as prepare_snapshot,
+            patch("app.git_versioning.database_history.database_versioning_service.complete_write_snapshot"),
+            patch("app.mcp_server._db_execute_query", return_value=response) as execute,
+        ):
+            result = handle_request(request)
+
+        self.assertFalse(result["result"].get("isError", False))
+        prepare_snapshot.assert_called_once_with("connection_1", "MCP 写入前快照")
+        execute.assert_called_once()
+
+    def test_show_create_table_is_readonly_without_prefix_collision(self) -> None:
+        self.assertTrue(_is_readonly_sql("SHOW CREATE TABLE orders"))
+        self.assertFalse(_is_readonly_sql("SHOWCASE orders"))
+
+    def test_mcp_database_listing_requests_lightweight_metadata(self) -> None:
+        with (
+            patch("app.mcp_server._connection", return_value="engine"),
+            patch("app.mcp_server._metadata_list_databases", return_value=["database"]) as list_databases,
+        ):
+            result = mcp_server.list_databases("connection_1")
+
+        list_databases.assert_called_once_with("engine", include_stats=False)
+        self.assertEqual(result["databases"], ["database"])
+
+    def test_same_connection_mcp_tools_are_serialized(self) -> None:
+        first_started = Event()
+        release_first = Event()
+        second_entered = Event()
+        state_lock = Lock()
+        active_calls = 0
+        max_active_calls = 0
+
+        def probe(**_: object) -> dict[str, str]:
+            nonlocal active_calls, max_active_calls
+            with state_lock:
+                active_calls += 1
+                max_active_calls = max(max_active_calls, active_calls)
+            try:
+                if not first_started.is_set():
+                    first_started.set()
+                    release_first.wait(2)
+                else:
+                    second_entered.set()
+                return {"status": "ok"}
+            finally:
+                with state_lock:
+                    active_calls -= 1
+
+        with patch.dict(mcp_server.TOOL_HANDLERS, {"probe": probe}):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                first = executor.submit(_run_tool, "probe", {"connection_id": "connection_1"})
+                self.assertTrue(first_started.wait(1))
+                second = executor.submit(_run_tool, "probe", {"connection_id": "connection_1"})
+                self.assertFalse(second_entered.wait(0.1))
+                release_first.set()
+                self.assertEqual(first.result(), {"status": "ok"})
+                self.assertEqual(second.result(), {"status": "ok"})
+
+        self.assertEqual(max_active_calls, 1)
+
+    def test_mcp_tool_applies_request_query_timeout_to_handler(self) -> None:
+        from app.request_context import get_query_timeout_seconds
+
+        def probe(**_: object) -> dict[str, int]:
+            return {"timeout": get_query_timeout_seconds()}
+
+        with patch.dict(mcp_server.TOOL_HANDLERS, {"probe": probe}):
+            result = _run_tool("probe", {"connection_id": "connection_1"})
+
+        self.assertEqual(result, {"timeout": mcp_server.MCP_QUERY_TIMEOUT_SECONDS})
+
+    def test_tool_timeout_defers_reset_without_replacing_the_connection_lock(self) -> None:
+        class TimedOutFuture:
+            def result(self, timeout: float) -> dict[str, str]:
+                raise FutureTimeoutError()
+
+            def cancel(self) -> bool:
+                return False
+
+        class FakeExecutor:
+            def submit(self, _handler: object, _name: str, _arguments: dict, control: object) -> TimedOutFuture:
+                control.try_start()
+                return TimedOutFuture()
+
+        connection_id = "timed-out-connection"
+        old_lock = mcp_server._connection_tool_lock(connection_id)
+        with (
+            patch.object(mcp_server, "_tool_executor", FakeExecutor()),
+            patch.object(mcp_server, "_reset_timed_out_connection") as reset,
+            patch.dict(mcp_server.TOOL_HANDLERS, {"probe": lambda **_: {"status": "ok"}}),
+        ):
+            response = handle_request(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 42,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "probe",
+                        "arguments": {"connection_id": connection_id},
+                    },
+                }
+            )
+            self.assertIs(mcp_server._connection_tool_lock(connection_id), old_lock)
+            self.assertIn(connection_id, mcp_server._connections_pending_reset)
+            reset.assert_not_called()
+
+            with self.assertRaisesRegex(RuntimeError, "正在释放上一次超时操作"):
+                _run_tool("probe", {"connection_id": connection_id})
+
+            mcp_server._reset_connection_if_pending(connection_id)
+
+        self.assertTrue(response["result"]["isError"])
+        self.assertIn("结束后会重置连接", response["result"]["content"][0]["text"])
+        reset.assert_called_once_with(connection_id)
+        self.assertNotIn(connection_id, mcp_server._connections_pending_reset)
+
+    def test_pending_reset_rejects_new_tool_without_reusing_the_connection(self) -> None:
+        connection_id = "pending-reset-connection"
+        with mcp_server._connection_tool_locks_guard:
+            mcp_server._connections_pending_reset.add(connection_id)
+        try:
+            with patch.dict(
+                mcp_server.TOOL_HANDLERS,
+                {"probe": lambda **_: self.fail("handler ran")},
+            ):
+                with self.assertRaisesRegex(RuntimeError, "正在释放上一次超时操作"):
+                    _run_tool("probe", {"connection_id": connection_id})
+        finally:
+            with mcp_server._connection_tool_locks_guard:
+                mcp_server._connections_pending_reset.discard(connection_id)
+
+    def test_timed_out_tool_waiting_for_lock_does_not_execute_later(self) -> None:
+        connection_id = "cancelled-queued-connection"
+        control = mcp_server._ToolCallControl()
+        self.assertEqual("queued", control.cancel())
+        with patch.dict(
+            mcp_server.TOOL_HANDLERS,
+            {"probe": lambda **_: self.fail("handler ran")},
+        ):
+            with self.assertRaises(CancelledError):
+                _run_tool("probe", {"connection_id": connection_id}, control)
+
+    def test_queued_tool_timeout_does_not_claim_connection_will_reset(self) -> None:
+        class TimedOutFuture:
+            def result(self, timeout: float) -> dict[str, str]:
+                raise FutureTimeoutError()
+
+            def cancel(self) -> bool:
+                return True
+
+        class FakeExecutor:
+            def submit(self, _handler: object, _name: str, _arguments: dict, _control: object) -> TimedOutFuture:
+                return TimedOutFuture()
+
+        connection_id = "queued-timeout-connection"
+        with (
+            patch.object(mcp_server, "_tool_executor", FakeExecutor()),
+            patch.dict(mcp_server.TOOL_HANDLERS, {"probe": lambda **_: {"status": "ok"}}),
+        ):
+            response = handle_request(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 43,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "probe",
+                        "arguments": {"connection_id": connection_id},
+                    },
+                }
+            )
+
+        self.assertTrue(response["result"]["isError"])
+        message = response["result"]["content"][0]["text"]
+        self.assertIn("尚未开始的排队调用已取消", message)
+        self.assertIn("不会重置连接", message)
+        self.assertNotIn(connection_id, mcp_server._connections_pending_reset)
+
+    def test_finished_tool_timeout_does_not_claim_it_was_cancelled_or_reset(self) -> None:
+        class TimedOutFuture:
+            def result(self, timeout: float) -> dict[str, str]:
+                raise FutureTimeoutError()
+
+            def cancel(self) -> bool:
+                return False
+
+        class FakeExecutor:
+            def submit(self, _handler: object, _name: str, _arguments: dict, control: object) -> TimedOutFuture:
+                control.try_start()
+                control.finish()
+                return TimedOutFuture()
+
+        connection_id = "finished-timeout-connection"
+        with (
+            patch.object(mcp_server, "_tool_executor", FakeExecutor()),
+            patch.dict(mcp_server.TOOL_HANDLERS, {"probe": lambda **_: {"status": "ok"}}),
+        ):
+            response = handle_request(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 44,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "probe",
+                        "arguments": {"connection_id": connection_id},
+                    },
+                }
+            )
+
+        message = response["result"]["content"][0]["text"]
+        self.assertIn("刚在超时边界结束", message)
+        self.assertNotIn("已取消", message)
+        self.assertNotIn(connection_id, mcp_server._connections_pending_reset)
+
     def test_readonly_detection_does_not_allow_mongo_or_redis_writes(self) -> None:
         self.assertTrue(_is_readonly_sql("db.orders.find({})"))
         self.assertFalse(_is_readonly_sql("db.orders.insertOne({})"))
+        self.assertFalse(_is_readonly_sql("db.orders.insertOne({}); db.orders.find({})"))
+        self.assertFalse(_is_readonly_sql("WITH removed AS (DELETE FROM items RETURNING *) SELECT * FROM removed"))
+        self.assertFalse(_is_readonly_sql("EXPLAIN ANALYZE DELETE FROM items"))
+        self.assertFalse(_is_readonly_sql("PRAGMA journal_mode=WAL"))
         self.assertTrue(_is_readonly_sql("GET session:1"))
         self.assertFalse(_is_readonly_sql("SET session:1 value"))
 
@@ -301,7 +579,7 @@ class DataDjinnMcpServerTests(unittest.TestCase):
             "params": {"name": "execute_query", "arguments": {"connection_id": "connection_1", "sql": "SELECT 1", "limit": MAX_QUERY_ROWS + 1}},
         }
 
-        with patch("app.mcp_server._connection", return_value="engine"), patch("app.mcp_server.execute_readonly_query", return_value=response) as execute:
+        with patch("app.mcp_server._connection", return_value="engine"), patch("app.mcp_server._db_execute_readonly_query", return_value=response) as execute:
             handle_request(request)
 
         execute.assert_called_once_with("engine", "SELECT 1", MAX_QUERY_ROWS, 0, None, None)

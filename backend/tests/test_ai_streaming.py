@@ -2,7 +2,7 @@ import unittest
 from typing import Any
 from unittest.mock import patch
 
-from app.ai.agent import AIConfig, AgentConfirmRequest, DatabaseAgent, PENDING_CONFIRMATIONS, PendingConfirmation, build_system_prompt, sql_hash
+from app.ai.agent import AIConfig, AgentConfirmRequest, DatabaseAgent, PENDING_CONFIRMATIONS, PendingConfirmation, build_system_prompt, claim_pending_confirmation, get_pending_confirmation, sql_hash, store_pending_confirmation
 from app.api.ai_router import confirm_agent_action
 from app.schemas.query import QueryResponse
 
@@ -50,6 +50,23 @@ class FakeAnthropicClient:
 class DatabaseAgentStreamingTests(unittest.TestCase):
     def tearDown(self) -> None:
         PENDING_CONFIRMATIONS.clear()
+
+    def test_expired_confirmation_is_removed(self) -> None:
+        PENDING_CONFIRMATIONS["expired"] = PendingConfirmation(
+            id="expired", connection_id="connection_1", expires_at=0, statement_type="DELETE", risk_level="dangerous"
+        )
+
+        self.assertIsNone(get_pending_confirmation("expired"))
+        self.assertNotIn("expired", PENDING_CONFIRMATIONS)
+
+    def test_confirmation_can_be_claimed_only_once(self) -> None:
+        pending = PendingConfirmation(
+            id="one-shot", connection_id="connection_1", statement_type="DELETE", risk_level="dangerous"
+        )
+        store_pending_confirmation(pending)
+
+        self.assertIs(claim_pending_confirmation("one-shot"), pending)
+        self.assertIsNone(claim_pending_confirmation("one-shot"))
 
     def test_list_tables_uses_explicit_database_on_current_connection(self) -> None:
         agent = DatabaseAgent(object(), AIConfig(base_url="https://example.com/v1", api_key="test", model="demo"), database="primary")
@@ -109,7 +126,12 @@ class DatabaseAgentStreamingTests(unittest.TestCase):
             captured["pg_database"] = agent.pg_database
             return QueryResponse(columns=[], rows=[], row_count=0, limited=False)
 
-        with patch("app.api.ai_router._ensure_open_engine", return_value=object()), patch.object(DatabaseAgent, "_execute_query", new=fake_execute):
+        with (
+            patch("app.api.ai_router._ensure_open_engine", return_value=object()),
+            patch("app.api.ai_router.database_versioning_service.prepare_write_snapshot", return_value=None),
+            patch("app.api.ai_router.database_versioning_service.complete_write_snapshot"),
+            patch.object(DatabaseAgent, "_execute_query", new=fake_execute),
+        ):
             result = confirm_agent_action(
                 AgentConfirmRequest(
                     connection_id="connection_1",
@@ -149,14 +171,23 @@ class DatabaseAgentStreamingTests(unittest.TestCase):
         prompt = build_system_prompt("none", "未选择上下文")
 
         self.assertIn("内置产品知识库", prompt)
-        self.assertIn("每个连接的提交历史独立保存", prompt)
         self.assertIn("右键该连接选择“版本管理”", prompt)
-        self.assertIn("首次点击“创建初始快照”会把所选范围下全部表的 DDL 和数据压缩后作为一个 Git 提交上传", prompt)
-        self.assertIn("列表只显示表数量和结构、数据变更数量等概要", prompt)
+        self.assertIn("普通单表保存、改表和指定单表导入会在写入前只将受影响表的快照保存在本机（本机快照目前不加密）", prompt)
+        self.assertIn("结构重建会迁移旧表中目标结构仍兼容的列数据", prompt)
+        self.assertIn("PostgreSQL 备份时物理数据库和 schema 分开处理", prompt)
+        self.assertIn("通过应用创建新表后，也会在后台记录该表首个结构和数据版本", prompt)
+        self.assertIn("定时全库检查点默认每天一次", prompt)
+        self.assertIn("每小时、每 6 小时、每 12 小时、每天、每周或关闭", prompt)
+        self.assertIn("GitHub 在后台按顺序同步", prompt)
+        self.assertIn("只上传结构或数据变化的表文件，并保留完整清单供整库恢复", prompt)
+        self.assertIn("其他数据库工具或应用外部发生的修改会在下次全库检查点发现", prompt)
+        self.assertIn("恢复不改表结构", prompt)
+        self.assertIn("首次创建初始快照前可预览纳管范围、表清单、数据库统计行数和存储体积参考", prompt)
+        self.assertIn("上传到 GitHub 的数据文件目前只 gzip 压缩、没有客户端加密", prompt)
+        self.assertIn("实际每表最多 100,000 行、序列化数据 50 MB，整库最多 50 MB", prompt)
         self.assertIn("逐行逐字段数据差异", prompt)
         self.assertIn("不会为此强制打开连接", prompt)
-        self.assertIn("上传使用 gzip 压缩并按变化表增量写入 Git", prompt)
-        self.assertIn("也可在二次确认后恢复该表的历史结构或数据", prompt)
+        self.assertIn("也可在二次确认后恢复该表历史结构或数据", prompt)
         self.assertNotIn("受控回退", prompt)
         self.assertIn("MySQL、ClickHouse、达梦和 Oracle 选择要纳管的数据库", prompt)
         self.assertIn("系统范围不会显示", prompt)
@@ -164,10 +195,13 @@ class DatabaseAgentStreamingTests(unittest.TestCase):
         self.assertIn("左右树形差异对比展示", prompt)
         self.assertIn("默认保留本机配置，可直接确认同步", prompt)
         self.assertIn("独立新增的连接和分组仍会保留在原父分组中", prompt)
-        self.assertIn("后续表预览保存数据只压缩并提交当前表及清单", prompt)
         self.assertIn("验证码会在 DataDjinn 设置页持续显示并支持复制", prompt)
         self.assertIn("每 15 分钟在后台同步一次", prompt)
         self.assertIn("修改同步口令", prompt)
+        self.assertIn("Git 历史中的旧提交仍可能使用旧口令解密", prompt)
+        self.assertIn("远端状态查询失败时会明确显示错误或“状态未知”", prompt)
+        self.assertIn("顶栏同步菜单和设置页", prompt)
+        self.assertIn("状态未知", prompt)
         self.assertIn("应用设置、AI 配置/API Key、连接参数、数据库密码、SSH 密码", prompt)
         self.assertIn("JDBC 驱动路径、Java 路径、SSH 私钥文件路径和界面主题属于设备配置，不会同步", prompt)
         self.assertIn("修改入口：点击应用右上角“设置”，在左侧选择“快捷键”", prompt)

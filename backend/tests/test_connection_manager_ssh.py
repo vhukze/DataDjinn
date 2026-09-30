@@ -49,6 +49,27 @@ class ConnectionManagerSshTests(unittest.TestCase):
             ssh_password="ssh-secret",
         )
 
+    def build_sqlite_request(self, name: str) -> ConnectionRequest:
+        return ConnectionRequest(
+            name=name,
+            database_type="sqlite",
+            sqlite_path=str(Path(self.temp_dir.name) / "reload.db"),
+        )
+
+    def test_manager_reloads_connections_created_or_changed_by_another_process(self) -> None:
+        mcp_manager = connection_manager_module.ConnectionManager()
+        self.assertEqual([], mcp_manager.list_connections())
+
+        created = self.manager.create_connection(self.build_sqlite_request("Created from desktop"))
+        self.assertEqual([created.connection_id], [item.connection_id for item in mcp_manager.list_connections()])
+
+        self.manager.update_connection(created.connection_id, self.build_sqlite_request("Renamed from desktop"))
+        refreshed = mcp_manager.list_connections()
+        self.assertEqual("Renamed from desktop", refreshed[0].name)
+
+        self.assertTrue(self.manager.delete_connection(created.connection_id))
+        self.assertEqual([], mcp_manager.list_connections())
+
     def test_create_and_restore_connection_preserves_ssh_credentials(self) -> None:
         created = self.manager.create_connection(self.build_ssh_request())
 
@@ -77,18 +98,28 @@ class ConnectionManagerSshTests(unittest.TestCase):
                 sqlite_path=str(Path(self.temp_dir.name) / "versioned.db"),
                 git_versioning_enabled=True,
                 git_versioning_scopes=["main"],
+                git_versioning_snapshot_interval_hours=12,
             )
         )
 
         self.assertTrue(created.git_versioning_enabled)
         self.assertTrue(self.manager.get_connection_request(created.connection_id).git_versioning_enabled)
         self.assertEqual(self.manager.get_connection_request(created.connection_id).git_versioning_scopes, ["main"])
+        self.assertEqual(
+            12,
+            self.manager.get_connection_request(created.connection_id).git_versioning_snapshot_interval_hours,
+        )
+        self.manager.update_git_versioning_scopes(created.connection_id, ["main"], 6)
 
         restored_manager = connection_manager_module.ConnectionManager()
         restored = restored_manager.list_connections()
         self.assertEqual(len(restored), 1)
         self.assertTrue(restored[0].git_versioning_enabled)
         self.assertEqual(restored_manager.get_connection_request(restored[0].connection_id).git_versioning_scopes, ["main"])
+        self.assertEqual(
+            6,
+            restored_manager.get_connection_request(restored[0].connection_id).git_versioning_snapshot_interval_hours,
+        )
 
     def test_sync_snapshot_contains_secrets_but_excludes_device_specific_paths(self) -> None:
         request = self.build_ssh_request().model_copy(
@@ -109,6 +140,7 @@ class ConnectionManagerSshTests(unittest.TestCase):
         self.assertEqual(snapshot["password"], "db-secret")
         self.assertEqual(snapshot["ssh_passphrase"], "private-key-secret")
         self.assertEqual(snapshot["git_versioning_scopes"], ["SALES"])
+        self.assertEqual(snapshot["git_versioning_snapshot_interval_hours"], 24)
         self.assertNotIn("driver_id", snapshot)
         self.assertNotIn("driver_path", snapshot)
         self.assertNotIn("ssh_private_key_path", snapshot)
@@ -229,7 +261,7 @@ class ConnectionManagerSshTests(unittest.TestCase):
         open_ssh_tunnel.assert_called_once()
         self.assertTrue(fake_tunnel.closed)
 
-    def test_mysql_and_postgresql_engines_use_short_connect_timeouts(self) -> None:
+    def test_mysql_and_postgresql_use_separate_connect_and_protocol_timeouts(self) -> None:
         mysql_request = ConnectionRequest(
             name="MySQL timeout", database_type="mysql", host="db.internal", port=3306, username="root"
         )
@@ -251,8 +283,8 @@ class ConnectionManagerSshTests(unittest.TestCase):
         timeout = connection_manager_module.DATABASE_CONNECT_TIMEOUT_SECONDS
         self.assertEqual(mysql_kwargs["connect_args"], {
             "connect_timeout": timeout,
-            "read_timeout": timeout,
-            "write_timeout": timeout,
+            "read_timeout": connection_manager_module.DATABASE_SOCKET_TIMEOUT_SECONDS,
+            "write_timeout": connection_manager_module.DATABASE_SOCKET_TIMEOUT_SECONDS,
         })
         self.assertEqual(postgresql_kwargs["connect_args"], {"connect_timeout": timeout})
 
@@ -274,8 +306,150 @@ class ConnectionManagerSshTests(unittest.TestCase):
         timeout = connection_manager_module.DATABASE_CONNECT_TIMEOUT_SECONDS
         self.assertEqual(create_engine.call_args.kwargs["connect_args"], {
             "connect_timeout": timeout,
-            "send_receive_timeout": timeout,
+            "send_receive_timeout": connection_manager_module.DATABASE_SOCKET_TIMEOUT_SECONDS,
+            "query_retries": 0,
         })
+
+    def test_database_endpoint_probe_closes_socket_after_success(self) -> None:
+        request = ConnectionRequest(
+            name="MySQL endpoint", database_type="mysql", host="db.internal", port=3306, username="root"
+        )
+        probe_socket = Mock()
+
+        with patch.object(connection_manager_module.socket, "create_connection", return_value=probe_socket) as probe:
+            self.manager._ensure_database_endpoint_reachable(request)
+
+        probe.assert_called_once_with(
+            ("db.internal", 3306),
+            timeout=connection_manager_module.DATABASE_ENDPOINT_PROBE_TIMEOUT_SECONDS,
+        )
+        probe_socket.close.assert_called_once_with()
+
+    def test_open_connection_does_not_wait_for_server_version_probe(self) -> None:
+        created = self.manager.create_connection(self.build_sqlite_request("Fast open"))
+        fake_engine = object()
+
+        with (
+            patch.object(self.manager, "_open_runtime_engine", return_value=(fake_engine, None)),
+            patch.object(self.manager, "_ping_engine"),
+            patch.object(self.manager, "_detect_server_version") as detect_version,
+        ):
+            opened = self.manager.open_connection(created.connection_id)
+
+        self.assertTrue(opened.is_open)
+        self.assertIsNone(opened.server_version)
+        detect_version.assert_not_called()
+
+    def test_jdbc_connection_login_is_bounded_and_timeout_setting_is_restored(self) -> None:
+        driver_manager = Mock()
+        driver_manager.getLoginTimeout.return_value = 0
+        jpype = Mock()
+        jpype.JClass.return_value = driver_manager
+        connect = Mock(return_value="connected")
+
+        result = connection_manager_module._connect_jdbc_with_timeout(jpype, connect)
+
+        self.assertEqual(result, "connected")
+        self.assertEqual(
+            [item.args[0] for item in driver_manager.setLoginTimeout.call_args_list],
+            [connection_manager_module.JDBC_LOGIN_TIMEOUT_SECONDS, 0],
+        )
+        connect.assert_called_once_with()
+
+    def test_jdbc_connect_timeout_url_preserves_existing_parameters(self) -> None:
+        self.assertEqual(
+            connection_manager_module._jdbc_url_with_connect_timeout("jdbc:dm://db:5236", 10_000),
+            "jdbc:dm://db:5236?connectTimeout=10000",
+        )
+        self.assertEqual(
+            connection_manager_module._jdbc_url_with_connect_timeout("jdbc:gauss://db:8000/main?ssl=true", 10),
+            "jdbc:gauss://db:8000/main?ssl=true&connectTimeout=10",
+        )
+
+    def test_mongodb_uses_distinct_connect_and_server_selection_timeouts(self) -> None:
+        request = ConnectionRequest(
+            name="Mongo timeout", database_type="mongodb", host="db.internal", port=27017
+        )
+
+        with patch.object(connection_manager_module, "MongoClient") as mongo_client:
+            self.manager._create_mongodb_client(request)
+
+        self.assertEqual(
+            mongo_client.call_args.kwargs["connectTimeoutMS"],
+            connection_manager_module.DATABASE_CONNECT_TIMEOUT_SECONDS * 1000,
+        )
+        self.assertEqual(
+            mongo_client.call_args.kwargs["serverSelectionTimeoutMS"],
+            connection_manager_module.MONGODB_SERVER_SELECTION_TIMEOUT_MS,
+        )
+
+    def test_redis_connect_and_command_timeouts_are_separate(self) -> None:
+        request = ConnectionRequest(
+            name="Redis timeout", database_type="redis", host="db.internal", port=6379
+        )
+
+        with patch.object(connection_manager_module, "Redis") as redis_client:
+            self.manager._create_redis_client(request)
+
+        self.assertEqual(
+            redis_client.call_args.kwargs["socket_connect_timeout"],
+            connection_manager_module.DATABASE_CONNECT_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(
+            redis_client.call_args.kwargs["socket_timeout"],
+            connection_manager_module.DATABASE_SOCKET_TIMEOUT_SECONDS,
+        )
+
+    def test_elasticsearch_does_not_retry_a_slow_connection(self) -> None:
+        request = ConnectionRequest(
+            name="Elasticsearch timeout",
+            database_type="elasticsearch",
+            host="db.internal",
+            port=9200,
+            es_auth_type="none",
+        )
+
+        with (
+            patch("elasticsearch.Elasticsearch") as elasticsearch,
+            patch.object(connection_manager_module, "ElasticsearchClient"),
+        ):
+            self.manager._create_elasticsearch_client(request)
+
+        self.assertEqual(
+            elasticsearch.call_args.kwargs["request_timeout"],
+            connection_manager_module.DATABASE_REQUEST_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(elasticsearch.call_args.kwargs["max_retries"], 0)
+
+    def test_dm_python_login_timeout_is_longer_than_previous_five_second_limit(self) -> None:
+        request = ConnectionRequest(
+            name="DM timeout",
+            database_type="dm",
+            host="db.internal",
+            port=5236,
+            username="SYSDBA",
+            dm_driver_id="dm-python",
+        )
+        driver = type("Driver", (), {
+            "database_type": "dm",
+            "enabled": True,
+            "driver_type": "python",
+            "path": "dmPython.pyd",
+        })()
+        dm_python = Mock()
+
+        with (
+            patch.object(connection_manager_module.driver_manager, "get_driver", return_value=driver),
+            patch.object(connection_manager_module, "_load_dm_python", return_value=dm_python),
+            patch.object(connection_manager_module, "create_engine", return_value=Mock()) as create_engine,
+        ):
+            self.manager._create_dm_engine(request)
+            create_engine.call_args.kwargs["creator"]()
+
+        self.assertEqual(
+            dm_python.connect.call_args.kwargs["login_timeout"],
+            connection_manager_module.DATABASE_CONNECT_TIMEOUT_SECONDS * 1000,
+        )
 
     def test_cancelling_a_timed_out_attempt_does_not_cancel_a_newer_open_attempt(self) -> None:
         created = self.manager.create_connection(self.build_ssh_request())

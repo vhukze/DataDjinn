@@ -14,6 +14,7 @@ import { AiModuleManager } from './ai-module'
 import { buildConnectionTransferImportDialogOptions } from './connection-transfer-dialog'
 import { extractLatestMainReleaseFromAtom } from './github-release'
 import { InstallerUpdater } from './installer-update-launcher'
+import { withAbortTimeout } from './api-request'
 import {
   movePendingOptionalModuleDirectory,
   replaceOptionalModuleDirectory,
@@ -68,6 +69,8 @@ type StoredSyncState = {
   remoteSha?: string
   lastSyncedAt?: number
   autoSyncEnabled?: boolean
+  lastSyncAttemptAt?: number
+  lastSyncError?: string | null
 }
 
 type SyncLocalState = {
@@ -76,6 +79,8 @@ type SyncLocalState = {
   remoteSha?: string
   lastSyncedAt?: number
   autoSyncEnabled?: boolean
+  lastSyncAttemptAt?: number
+  lastSyncError?: string | null
 }
 
 type OptionalModuleId =
@@ -193,10 +198,10 @@ const OPTIONAL_MODULE_CATALOG = [
 const OPTIONAL_MODULE_ARTIFACT_CATALOG: readonly OptionalModuleArtifact[] = [
   {
     id: 'mcp',
-    version: '1.0.6',
+    version: '1.0.8',
     artifact: {
-      url: 'https://github.com/vhukze/DataDjinn/releases/download/modules-v1.0.6/datadjinn-mcp-1.0.6-win-x64.zip',
-      sha256: 'ee8a8fd25e49f2a80c64c4955507abd1cca5e58a0209aa4649c69cce93da6987'
+      url: 'https://github.com/vhukze/DataDjinn/releases/download/modules-v1.0.8/datadjinn-mcp-1.0.8-win-x64.zip',
+      sha256: 'a6eb763e6a3a4724af0f2b32ff8f2a7c8dcf88b51288c114de0f48267cd78438'
     }
   },
   {
@@ -299,6 +304,9 @@ type AppStore = {
   aiConfig?: AIConfig
   aiConfigs?: AIConfigItem[]
   aiSessions?: AISession[]
+  encryptedAIConfig?: string
+  encryptedAIConfigs?: string
+  encryptedAISessions?: string
   autoCheckUpdates?: boolean
   skippedUpdateVersion?: string
   queryTimeoutMinutes?: number
@@ -449,6 +457,105 @@ const decryptLocalSyncValue = (value?: string): string | undefined => {
   return safeStorage.decryptString(Buffer.from(value, 'base64'))
 }
 
+const encryptStoredJson = (value: unknown): string => {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('当前系统无法安全保存 AI 配置和会话，请检查系统密钥服务')
+  }
+  return safeStorage.encryptString(JSON.stringify(value)).toString('base64')
+}
+
+const decryptStoredJson = <T>(value?: string): T | undefined => {
+  if (!value) {
+    return undefined
+  }
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('当前系统无法读取已加密的 AI 配置和会话，请检查系统密钥服务')
+  }
+  return JSON.parse(safeStorage.decryptString(Buffer.from(value, 'base64'))) as T
+}
+
+const getAIConfig = (): AIConfig | null => {
+  const encrypted = store.get('encryptedAIConfig')
+  if (encrypted) {
+    return decryptStoredJson<AIConfig>(encrypted) ?? null
+  }
+  const legacy = store.get('aiConfig')
+  if (!legacy) {
+    return null
+  }
+  if (safeStorage.isEncryptionAvailable()) {
+    store.set('encryptedAIConfig', encryptStoredJson(legacy))
+    store.delete('aiConfig')
+  }
+  return legacy
+}
+
+const setAIConfig = (config: AIConfig | null): AIConfig | null => {
+  if (!config) {
+    store.delete('encryptedAIConfig')
+    store.delete('aiConfig')
+    return null
+  }
+  store.set('encryptedAIConfig', encryptStoredJson(config))
+  store.delete('aiConfig')
+  return config
+}
+
+const getAIConfigs = (): AIConfigItem[] => {
+  const encrypted = store.get('encryptedAIConfigs')
+  if (encrypted) {
+    return decryptStoredJson<AIConfigItem[]>(encrypted) ?? []
+  }
+  const legacy = store.get('aiConfigs') ?? []
+  if (legacy.length > 0 && safeStorage.isEncryptionAvailable()) {
+    store.set('encryptedAIConfigs', encryptStoredJson(legacy))
+    store.delete('aiConfigs')
+  }
+  return legacy
+}
+
+const setAIConfigs = (configs: AIConfigItem[]): AIConfigItem[] => {
+  const enabledId = configs.find((config) => config.enabled)?.id
+  const nextConfigs = configs.map((config) => ({
+    ...config,
+    enabled: Boolean(enabledId && config.id === enabledId)
+  }))
+  store.set('encryptedAIConfigs', encryptStoredJson(nextConfigs))
+  store.delete('aiConfigs')
+  const activeConfig = nextConfigs.find((config) => config.enabled)
+  setAIConfig(
+    activeConfig
+      ? {
+          provider: activeConfig.provider,
+          base_url: activeConfig.base_url,
+          api_key: activeConfig.api_key,
+          model: activeConfig.model,
+          max_context_tokens: activeConfig.max_context_tokens
+        }
+      : null
+  )
+  return nextConfigs
+}
+
+const getAISessions = (): AISession[] => {
+  const encrypted = store.get('encryptedAISessions')
+  if (encrypted) {
+    return decryptStoredJson<AISession[]>(encrypted) ?? []
+  }
+  const legacy = store.get('aiSessions') ?? []
+  if (legacy.length > 0 && safeStorage.isEncryptionAvailable()) {
+    store.set('encryptedAISessions', encryptStoredJson(legacy))
+    store.delete('aiSessions')
+  }
+  return legacy
+}
+
+const setAISessions = (sessions: AISession[]): AISession[] => {
+  store.set('encryptedAISessions', encryptStoredJson(sessions))
+  store.delete('aiSessions')
+  return sessions
+}
+
 const getSyncLocalState = (): SyncLocalState => {
   const state = store.get('syncState') ?? {}
   const serializedBasePayload = decryptLocalSyncValue(state.encryptedBasePayload)
@@ -457,7 +564,9 @@ const getSyncLocalState = (): SyncLocalState => {
     basePayload: serializedBasePayload ? JSON.parse(serializedBasePayload) : undefined,
     remoteSha: state.remoteSha,
     lastSyncedAt: state.lastSyncedAt,
-    autoSyncEnabled: Boolean(state.autoSyncEnabled)
+    autoSyncEnabled: Boolean(state.autoSyncEnabled),
+    lastSyncAttemptAt: state.lastSyncAttemptAt,
+    lastSyncError: state.lastSyncError
   }
 }
 
@@ -473,7 +582,15 @@ const setSyncLocalState = (next: SyncLocalState): SyncLocalState => {
       : {}),
     ...(typeof next.remoteSha === 'string' ? { remoteSha: next.remoteSha } : {}),
     ...(typeof next.lastSyncedAt === 'number' ? { lastSyncedAt: next.lastSyncedAt } : {}),
-    ...(typeof next.autoSyncEnabled === 'boolean' ? { autoSyncEnabled: next.autoSyncEnabled } : {})
+    ...(typeof next.autoSyncEnabled === 'boolean' ? { autoSyncEnabled: next.autoSyncEnabled } : {}),
+    ...(typeof next.lastSyncAttemptAt === 'number'
+      ? { lastSyncAttemptAt: next.lastSyncAttemptAt }
+      : {}),
+    ...(typeof next.lastSyncError === 'string'
+      ? { lastSyncError: next.lastSyncError }
+      : next.lastSyncError === null
+        ? { lastSyncError: undefined }
+        : {})
   }
   store.set('syncState', stored)
   return getSyncLocalState()
@@ -483,7 +600,7 @@ const getAppSyncSettings = (): AppSyncSettings => ({
   autoCheckUpdates: store.get('autoCheckUpdates') ?? true,
   queryTimeoutMinutes: getQueryTimeoutMinutes(),
   mcpSettings: getMcpSettings(),
-  aiConfigs: store.get('aiConfigs') ?? []
+  aiConfigs: getAIConfigs()
 })
 
 const applyAppSyncSettings = (settings: Partial<AppSyncSettings>): AppSyncSettings => {
@@ -495,30 +612,11 @@ const applyAppSyncSettings = (settings: Partial<AppSyncSettings>): AppSyncSettin
   }
   if (settings.mcpSettings) {
     const mcpSettings = normalizeMcpSettings(settings.mcpSettings)
-    store.set('mcpSettings', {
-      ...mcpSettings,
-      enabled: mcpSettings.enabled && isOptionalModuleInstalled('mcp')
-    })
+    // 保留用户的启用意图；未安装扩展时只禁用本机入口，不改写共享同步配置。
+    store.set('mcpSettings', mcpSettings)
   }
   if (Array.isArray(settings.aiConfigs)) {
-    const enabledId = settings.aiConfigs.find((config) => config.enabled)?.id
-    const aiConfigs = settings.aiConfigs.map((config) => ({
-      ...config,
-      enabled: Boolean(enabledId && config.id === enabledId)
-    }))
-    store.set('aiConfigs', aiConfigs)
-    const activeConfig = aiConfigs.find((config) => config.enabled)
-    if (activeConfig) {
-      store.set('aiConfig', {
-        provider: activeConfig.provider,
-        base_url: activeConfig.base_url,
-        api_key: activeConfig.api_key,
-        model: activeConfig.model,
-        max_context_tokens: activeConfig.max_context_tokens
-      })
-    } else {
-      store.delete('aiConfig')
-    }
+    setAIConfigs(settings.aiConfigs)
   }
   return getAppSyncSettings()
 }
@@ -1101,9 +1199,6 @@ const uninstallOptionalModuleArtifact = async (moduleId: OptionalModuleArtifactI
 }
 
 const uninstallOptionalModule = async (moduleId: OptionalModuleId): Promise<OptionalModuleInfo[]> => {
-  if (moduleId === 'mcp') {
-    store.set('mcpSettings', { ...getMcpSettings(), enabled: false })
-  }
   if (moduleId === 'ai') {
     await aiModuleManager.stop()
   }
@@ -1608,6 +1703,9 @@ function createWindow(): void {
     void openSafeExternalUrl(details.url).catch(() => undefined)
     return { action: 'deny' }
   })
+  mainWindow.webContents.on('will-navigate', (event) => {
+    event.preventDefault()
+  })
 
   // HMR for renderer base on electron-vite cli.
   // Load the remote URL for development or the local html file for production.
@@ -1902,7 +2000,8 @@ app.whenReady().then(async () => {
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
 
-  ipcMain.handle('select-sql-file', async () => {
+  ipcMain.handle('select-sql-file', async (event) => {
+    ensureMainRenderer(event.sender)
     const window = BrowserWindow.getFocusedWindow()
 
     if (!window) {
@@ -1927,6 +2026,7 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('select-sqlite-file', async (event) => {
+    ensureMainRenderer(event.sender)
     const window =
       BrowserWindow.fromWebContents(event.sender) ??
       BrowserWindow.getFocusedWindow() ??
@@ -1952,7 +2052,8 @@ app.whenReady().then(async () => {
     return result.filePaths[0]
   })
 
-  ipcMain.handle('select-driver-file', async () => {
+  ipcMain.handle('select-driver-file', async (event) => {
+    ensureMainRenderer(event.sender)
     const window = BrowserWindow.getFocusedWindow()
 
     if (!window) {
@@ -1975,7 +2076,8 @@ app.whenReady().then(async () => {
     return result.filePaths[0]
   })
 
-  ipcMain.handle('select-java-directory', async () => {
+  ipcMain.handle('select-java-directory', async (event) => {
+    ensureMainRenderer(event.sender)
     const window = BrowserWindow.getFocusedWindow()
 
     if (!window) {
@@ -1994,7 +2096,8 @@ app.whenReady().then(async () => {
     return result.filePaths[0]
   })
 
-  ipcMain.handle('select-import-file', async () => {
+  ipcMain.handle('select-import-file', async (event) => {
+    ensureMainRenderer(event.sender)
     const window = BrowserWindow.getFocusedWindow()
 
     if (!window) {
@@ -2019,7 +2122,8 @@ app.whenReady().then(async () => {
 
   ipcMain.handle(
     'select-connection-transfer-import-file',
-    async (_event, source?: 'datadjinn' | 'dbeaver') => {
+    async (event, source?: 'datadjinn' | 'dbeaver') => {
+      ensureMainRenderer(event.sender)
       const window = BrowserWindow.getFocusedWindow()
 
       if (!window) {
@@ -2042,7 +2146,8 @@ app.whenReady().then(async () => {
     }
   )
 
-  ipcMain.handle('select-export-path', async (_event, format: string, defaultName?: string) => {
+  ipcMain.handle('select-export-path', async (event, format: string, defaultName?: string) => {
+    ensureMainRenderer(event.sender)
     const window = BrowserWindow.getFocusedWindow()
 
     if (!window) {
@@ -2071,7 +2176,8 @@ app.whenReady().then(async () => {
     return authorizeTextFilePath(result.filePath)
   })
 
-  ipcMain.handle('select-connection-transfer-export-path', async (_event, defaultName?: string) => {
+  ipcMain.handle('select-connection-transfer-export-path', async (event, defaultName?: string) => {
+    ensureMainRenderer(event.sender)
     const window = BrowserWindow.getFocusedWindow()
 
     if (!window) {
@@ -2106,10 +2212,12 @@ app.whenReady().then(async () => {
     return true
   })
 
-  ipcMain.handle('window:minimize', (event) =>
-    BrowserWindow.fromWebContents(event.sender)?.minimize()
-  )
+  ipcMain.handle('window:minimize', (event) => {
+    ensureMainRenderer(event.sender)
+    return BrowserWindow.fromWebContents(event.sender)?.minimize()
+  })
   ipcMain.handle('window:maximize-toggle', (event) => {
+    ensureMainRenderer(event.sender)
     const window = BrowserWindow.fromWebContents(event.sender)
     if (!window) {
       return false
@@ -2121,32 +2229,55 @@ app.whenReady().then(async () => {
     window.maximize()
     return true
   })
-  ipcMain.handle('window:close', (event) => BrowserWindow.fromWebContents(event.sender)?.close())
-  ipcMain.handle('app:get-info', () => ({
-    name: app.getName(),
-    version: app.getVersion(),
-    projectUrl: GITHUB_PROJECT_URL
-  }))
-  ipcMain.handle('app:open-project-home', async () => {
+  ipcMain.handle('window:close', (event) => {
+    ensureMainRenderer(event.sender)
+    return BrowserWindow.fromWebContents(event.sender)?.close()
+  })
+  ipcMain.handle('app:get-info', (event) => {
+    ensureMainRenderer(event.sender)
+    return {
+      name: app.getName(),
+      version: app.getVersion(),
+      projectUrl: GITHUB_PROJECT_URL
+    }
+  })
+  ipcMain.handle('app:open-project-home', async (event) => {
+    ensureMainRenderer(event.sender)
     await openSafeExternalUrl(GITHUB_PROJECT_URL)
   })
-  ipcMain.handle('app:open-external-url', async (_, rawUrl: string) => {
+  ipcMain.handle('app:open-external-url', async (event, rawUrl: string) => {
+    ensureMainRenderer(event.sender)
     await openSafeExternalUrl(rawUrl)
   })
-  ipcMain.on('app:renderer-ready', () => {
+  ipcMain.on('app:renderer-ready', (event) => {
+    ensureMainRenderer(event.sender)
     rendererStartupReady = true
     showMainWindowIfReady()
   })
-  ipcMain.handle('backend:get-status', () => backendManager.getStatus())
-  ipcMain.handle('backend:restart', () => backendManager.restart())
-  ipcMain.handle('query-settings:get', () => ({ timeoutMinutes: getQueryTimeoutMinutes() }))
-  ipcMain.handle('query-settings:set', (_, timeoutMinutes: number) => {
+  ipcMain.handle('backend:get-status', (event) => {
+    ensureMainRenderer(event.sender)
+    return backendManager.getStatus()
+  })
+  ipcMain.handle('backend:restart', (event) => {
+    ensureMainRenderer(event.sender)
+    return backendManager.restart()
+  })
+  ipcMain.handle('query-settings:get', (event) => {
+    ensureMainRenderer(event.sender)
+    return { timeoutMinutes: getQueryTimeoutMinutes() }
+  })
+  ipcMain.handle('query-settings:set', (event, timeoutMinutes: number) => {
+    ensureMainRenderer(event.sender)
     const nextTimeoutMinutes = normalizeQueryTimeoutMinutes(timeoutMinutes)
     store.set('queryTimeoutMinutes', nextTimeoutMinutes)
     return { timeoutMinutes: nextTimeoutMinutes }
   })
-  ipcMain.handle('mcp-settings:get', () => getMcpSettings())
-  ipcMain.handle('mcp-settings:set', (_, settings: Partial<McpSettings>) => {
+  ipcMain.handle('mcp-settings:get', (event) => {
+    ensureMainRenderer(event.sender)
+    return getMcpSettings()
+  })
+  ipcMain.handle('mcp-settings:set', (event, settings: Partial<McpSettings>) => {
+    ensureMainRenderer(event.sender)
     const nextSettings = normalizeMcpSettings(settings)
     if (nextSettings.enabled && !isOptionalModuleInstalled('mcp')) {
       throw new Error('请先在“设置 -> 扩展”中安装本机 MCP 服务模块')
@@ -2154,22 +2285,41 @@ app.whenReady().then(async () => {
     store.set('mcpSettings', nextSettings)
     return nextSettings
   })
-  ipcMain.handle('sync-local-state:get', () => getSyncLocalState())
-  ipcMain.handle('sync-local-state:set', (_, state: SyncLocalState) => setSyncLocalState(state))
-  ipcMain.handle('sync-local-state:clear', () => {
+  ipcMain.handle('sync-local-state:get', (event) => {
+    ensureMainRenderer(event.sender)
+    return getSyncLocalState()
+  })
+  ipcMain.handle('sync-local-state:set', (event, state: SyncLocalState) => {
+    ensureMainRenderer(event.sender)
+    return setSyncLocalState(state)
+  })
+  ipcMain.handle('sync-local-state:clear', (event) => {
+    ensureMainRenderer(event.sender)
     store.delete('syncState')
   })
-  ipcMain.handle('connection-tree-preferences:get', () => store.get('connectionTreePreferences') ?? {})
-  ipcMain.handle('connection-tree-preferences:get-meta', () => ({
+  ipcMain.handle('connection-tree-preferences:get', (event) => {
+    ensureMainRenderer(event.sender)
+    return store.get('connectionTreePreferences') ?? {}
+  })
+  ipcMain.handle('connection-tree-preferences:get-meta', (event) => {
+    ensureMainRenderer(event.sender)
+    return {
     preferences: store.get('connectionTreePreferences') ?? {},
     updatedAt: Number(store.get('connectionTreePreferencesUpdatedAt') ?? 0)
-  }))
-  ipcMain.handle('connection-tree-preferences:set', (_, preferences: unknown, updatedAt: unknown) => {
+    }
+  })
+  ipcMain.handle('connection-tree-preferences:set', (event, preferences: unknown, updatedAt: unknown) => {
+    ensureMainRenderer(event.sender)
     const nextPreferences =
       preferences && typeof preferences === 'object' && !Array.isArray(preferences)
         ? (preferences as Record<string, unknown>)
         : {}
     const nextUpdatedAt = Number(updatedAt)
+    if (nextUpdatedAt === 0) {
+      store.delete('connectionTreePreferences')
+      store.delete('connectionTreePreferencesUpdatedAt')
+      return {}
+    }
     const currentUpdatedAt = Number(store.get('connectionTreePreferencesUpdatedAt') ?? 0)
     if (Number.isFinite(nextUpdatedAt) && nextUpdatedAt < currentUpdatedAt) {
       return store.get('connectionTreePreferences') ?? {}
@@ -2178,53 +2328,60 @@ app.whenReady().then(async () => {
     store.set('connectionTreePreferencesUpdatedAt', Number.isFinite(nextUpdatedAt) ? nextUpdatedAt : Date.now())
     return nextPreferences
   })
-  ipcMain.handle('sync-app-settings:get', () => getAppSyncSettings())
-  ipcMain.handle('sync-app-settings:apply', (_, settings: Partial<AppSyncSettings>) =>
-    applyAppSyncSettings(settings)
-  )
-  ipcMain.handle('optional-modules:list', () => getOptionalModules())
-  ipcMain.handle('optional-modules:install', (_, moduleId: OptionalModuleId) => installOptionalModule(moduleId))
-  ipcMain.handle('optional-modules:install-force', (_, moduleId: OptionalModuleId) => {
+  ipcMain.handle('sync-app-settings:get', (event) => {
+    ensureMainRenderer(event.sender)
+    return getAppSyncSettings()
+  })
+  ipcMain.handle('sync-app-settings:apply', (event, settings: Partial<AppSyncSettings>) => {
+    ensureMainRenderer(event.sender)
+    return applyAppSyncSettings(settings)
+  })
+  ipcMain.handle('optional-modules:list', (event) => {
+    ensureMainRenderer(event.sender)
+    return getOptionalModules()
+  })
+  ipcMain.handle('optional-modules:install', (event, moduleId: OptionalModuleId) => {
+    ensureMainRenderer(event.sender)
+    return installOptionalModule(moduleId)
+  })
+  ipcMain.handle('optional-modules:install-force', (event, moduleId: OptionalModuleId) => {
+    ensureMainRenderer(event.sender)
     if (moduleId !== 'mcp') {
       throw new Error('仅支持强制更新 MCP 扩展')
     }
     return forceInstallMcpModule()
   })
-  ipcMain.handle('optional-modules:uninstall', (_, moduleId: OptionalModuleId) => uninstallOptionalModule(moduleId))
-  ipcMain.handle('optional-modules:launch-config', (_, moduleId: OptionalModuleId) =>
-    getOptionalModuleLaunchConfig(moduleId)
-  )
-  ipcMain.handle('ai-config:get', () => store.get('aiConfig') ?? null)
-  ipcMain.handle('ai-config:set', (_, config: AIConfig) => {
-    store.set('aiConfig', config)
-    return config
+  ipcMain.handle('optional-modules:uninstall', (event, moduleId: OptionalModuleId) => {
+    ensureMainRenderer(event.sender)
+    return uninstallOptionalModule(moduleId)
   })
-  ipcMain.handle('ai-configs:get', () => store.get('aiConfigs') ?? [])
-  ipcMain.handle('ai-configs:set', (_, configs: AIConfigItem[]) => {
-    const enabledId = configs.find((config) => config.enabled)?.id
-    const nextConfigs = configs.map((config) => ({
-      ...config,
-      enabled: Boolean(enabledId && config.id === enabledId)
-    }))
-    store.set('aiConfigs', nextConfigs)
-    const activeConfig = nextConfigs.find((config) => config.enabled)
-    if (activeConfig) {
-      store.set('aiConfig', {
-        provider: activeConfig.provider,
-        base_url: activeConfig.base_url,
-        api_key: activeConfig.api_key,
-        model: activeConfig.model,
-        max_context_tokens: activeConfig.max_context_tokens
-      })
-    } else {
-      store.delete('aiConfig')
-    }
-    return nextConfigs
+  ipcMain.handle('optional-modules:launch-config', (event, moduleId: OptionalModuleId) => {
+    ensureMainRenderer(event.sender)
+    return getOptionalModuleLaunchConfig(moduleId)
   })
-  ipcMain.handle('ai-sessions:get', () => store.get('aiSessions') ?? [])
-  ipcMain.handle('ai-sessions:set', (_, sessions: AISession[]) => {
-    store.set('aiSessions', sessions)
-    return sessions
+  ipcMain.handle('ai-config:get', (event) => {
+    ensureMainRenderer(event.sender)
+    return getAIConfig()
+  })
+  ipcMain.handle('ai-config:set', (event, config: AIConfig) => {
+    ensureMainRenderer(event.sender)
+    return setAIConfig(config)
+  })
+  ipcMain.handle('ai-configs:get', (event) => {
+    ensureMainRenderer(event.sender)
+    return getAIConfigs()
+  })
+  ipcMain.handle('ai-configs:set', (event, configs: AIConfigItem[]) => {
+    ensureMainRenderer(event.sender)
+    return setAIConfigs(configs)
+  })
+  ipcMain.handle('ai-sessions:get', (event) => {
+    ensureMainRenderer(event.sender)
+    return getAISessions()
+  })
+  ipcMain.handle('ai-sessions:set', (event, sessions: AISession[]) => {
+    ensureMainRenderer(event.sender)
+    return setAISessions(sessions)
   })
   ipcMain.handle(
     'api:stream',
@@ -2234,6 +2391,7 @@ app.whenReady().then(async () => {
       path: string,
       options?: { method?: string; headers?: Record<string, string>; body?: string }
     ) => {
+      ensureMainRenderer(event.sender)
       const sender = webContents.fromId(event.sender.id)
       const controller = new AbortController()
       streamControllers.set(streamId, controller)
@@ -2294,28 +2452,35 @@ app.whenReady().then(async () => {
     }
   )
 
-  ipcMain.handle('api:stream-cancel', (_, streamId: string) => {
+  ipcMain.handle('api:stream-cancel', (event, streamId: string) => {
+    ensureMainRenderer(event.sender)
     streamControllers.get(streamId)?.abort()
     streamControllers.delete(streamId)
   })
 
-  ipcMain.handle('update:get-settings', () => ({
+  ipcMain.handle('update:get-settings', (event) => {
+    ensureMainRenderer(event.sender)
+    return {
     autoCheckUpdates: store.get('autoCheckUpdates') ?? true,
     skippedUpdateVersion: store.get('skippedUpdateVersion') ?? null,
     mode: appUpdateMode,
     currentVersion: app.getVersion()
-  }))
+    }
+  })
 
-  ipcMain.handle('update:set-auto-check', (_, enabled: boolean) => {
+  ipcMain.handle('update:set-auto-check', (event, enabled: boolean) => {
+    ensureMainRenderer(event.sender)
     store.set('autoCheckUpdates', enabled)
     return enabled
   })
 
-  ipcMain.handle('update:skip-version', (_, version: string) => {
+  ipcMain.handle('update:skip-version', (event, version: string) => {
+    ensureMainRenderer(event.sender)
     store.set('skippedUpdateVersion', normalizeVersion(version))
   })
 
-  ipcMain.handle('update:check', async () => {
+  ipcMain.handle('update:check', async (event) => {
+    ensureMainRenderer(event.sender)
     try {
       if (appUpdateMode === 'portable') {
         const updateInfo = await checkPortableUpdate()
@@ -2354,7 +2519,8 @@ app.whenReady().then(async () => {
     }
   })
 
-  ipcMain.handle('update:download', async () => {
+  ipcMain.handle('update:download', async (event) => {
+    ensureMainRenderer(event.sender)
     if (appUpdateMode === 'portable') {
       return await downloadPortableUpdate()
     }
@@ -2363,7 +2529,8 @@ app.whenReady().then(async () => {
     return null
   })
 
-  ipcMain.handle('update:install', async () => {
+  ipcMain.handle('update:install', async (event) => {
+    ensureMainRenderer(event.sender)
     if (appUpdateMode === 'portable') {
       if (latestPortableUpdate?.downloadedPath) {
         await shell.showItemInFolder(latestPortableUpdate.downloadedPath)
@@ -2385,14 +2552,15 @@ app.whenReady().then(async () => {
     autoUpdater.quitAndInstall(installSilentlyForTest, true)
   })
 
-  ipcMain.handle('update:open-release', async (_, url?: string) => {
+  ipcMain.handle('update:open-release', async (event, url?: string) => {
+    ensureMainRenderer(event.sender)
     await openSafeExternalUrl(url || 'https://github.com/vhukze/DataDjinn/releases')
   })
 
   ipcMain.handle(
     'api:request',
     async (
-      _,
+      event,
       path: string,
       options?: {
         method?: string
@@ -2401,6 +2569,7 @@ app.whenReady().then(async () => {
         timeoutMs?: number
       }
     ) => {
+      ensureMainRenderer(event.sender)
       try {
         const routineRequest = path.match(/^\/connections\/[^/]+\/objects(?:\?.*)?$/)
         if (
@@ -2418,47 +2587,38 @@ app.whenReady().then(async () => {
           ? await ensureAiModuleForRequest()
           : await ensureBackendForRequest()
         const timeoutMs = Number(options?.timeoutMs)
-        const hasTimeout = Number.isFinite(timeoutMs) && timeoutMs > 0
-        const controller = hasTimeout ? new AbortController() : undefined
-        const timeoutId = hasTimeout
-          ? setTimeout(() => controller?.abort(), timeoutMs)
-          : undefined
-        const request = async (): Promise<Response> =>
-          await fetch(`${apiBaseUrl}${ensureApiPath(path)}`, {
-            method: options?.method,
-            headers: {
-              'Content-Type': 'application/json',
-              ...options?.headers,
-            ...(useAiModule ? aiModuleRequestHeaders() : backendRequestHeaders())
-            },
-            body: options?.body,
-            signal: controller?.signal
-          })
-        let response: Response
+        const { response, text } = await withAbortTimeout(timeoutMs, async (signal) => {
+          const request = async (): Promise<Response> =>
+            await fetch(`${apiBaseUrl}${ensureApiPath(path)}`, {
+              method: options?.method,
+              headers: {
+                'Content-Type': 'application/json',
+                ...options?.headers,
+                ...(useAiModule ? aiModuleRequestHeaders() : backendRequestHeaders())
+              },
+              body: options?.body,
+              signal
+            })
+          let response: Response
 
-        try {
-          response = await request()
-        } catch (error) {
-          if (controller?.signal.aborted) {
-            throw new Error(`请求超时（${Math.ceil(timeoutMs / 1000)} 秒）`)
+          try {
+            response = await request()
+          } catch (error) {
+            if (!isBackendNetworkError(error) || !canRetryTransientApiRequest(path, options?.method)) {
+              throw error
+            }
+            console.warn('[api] Local request failed after reaching the backend, retrying once', {
+              method: options?.method ?? 'GET',
+              path,
+              error: error instanceof Error ? error.message : String(error)
+            })
+            await waitForTransientApiRetry()
+            response = await request()
           }
-          if (!isBackendNetworkError(error) || !canRetryTransientApiRequest(path, options?.method)) {
-            throw error
-          }
-          console.warn('[api] Local request failed after reaching the backend, retrying once', {
-            method: options?.method ?? 'GET',
-            path,
-            error: error instanceof Error ? error.message : String(error)
-          })
-          await waitForTransientApiRetry()
-          response = await request()
-        } finally {
-          if (timeoutId !== undefined) {
-            clearTimeout(timeoutId)
-          }
-        }
 
-        const text = await response.text()
+          return { response, text: await response.text() }
+        })
+
         let data: { detail?: string; error_code?: string } | null = null
 
         try {

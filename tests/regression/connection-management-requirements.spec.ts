@@ -19,6 +19,21 @@ test('closed connection rows keep normal text and database icon brightness @smok
   expect(styles).not.toContain('.tree-node-closed .ant-tree-title')
 })
 
+test('main renderer refuses top-level navigation outside the application @bug', async () => {
+  const electronApp = await launchRegressionApp()
+
+  try {
+    const page = await electronApp.firstWindow()
+    await waitForAppReady(page)
+    const applicationUrl = page.url()
+
+    await page.evaluate(() => window.location.assign('https://example.com'))
+    await expect.poll(() => page.url()).toBe(applicationUrl)
+  } finally {
+    await electronApp.close()
+  }
+})
+
 function readFixtureUserDataDir() {
   const pointerPath = path.join(regressionRootDir, 'current.json')
   const pointer = JSON.parse(fs.readFileSync(pointerPath, 'utf-8'))
@@ -164,10 +179,31 @@ test('new connections can create a group and copy connection details @smoke', as
     // 新建连接选择分组后，重载 renderer，验证持久化副本恢复的是同一分组关系。
     await page.reload()
     await waitForAppReady(page)
+    const restoredTreeState = await page.evaluate(
+      async ({ targetConnectionName, targetFolderName }) => {
+        const response = await window.api.requestJson('/connections')
+        const connection = response.connections.find((item) => item.name === targetConnectionName)
+        const folders = JSON.parse(localStorage.getItem('datadjinn-connection-folders') ?? '[]')
+        const folder = folders.find((item) => item.name === targetFolderName)
+        const assignments = JSON.parse(
+          localStorage.getItem('datadjinn-connection-folder-assignments') ?? '{}'
+        )
+        return {
+          connectionId: connection?.connection_id,
+          folderId: folder?.id,
+          assignedFolderId: connection ? assignments[connection.connection_id] : undefined
+        }
+      },
+      { targetConnectionName: connectionName, targetFolderName: folderName }
+    )
+    expect(restoredTreeState.connectionId).toBeTruthy()
+    expect(restoredTreeState.assignedFolderId).toBe(restoredTreeState.folderId)
     const restoredFolderTreeItem = page.getByRole('treeitem').filter({ hasText: folderName })
     await expect(restoredFolderTreeItem).toBeVisible({ timeout: 15000 })
     await expect(restoredFolderTreeItem).toContainText('1')
-    await restoredFolderTreeItem.dblclick()
+    if (!(await connectionTitle.isVisible())) {
+      await restoredFolderTreeItem.dblclick()
+    }
     await expect(
       page
         .locator(`.resource-tree-node-title[data-tree-node-key^="connection:"]`)
@@ -495,6 +531,7 @@ test('connection Git versioning preference persists and is visible in the tree @
     ).toBeVisible()
     await expect(versionModal.getByText('请先完成 GitHub 授权，才能读取或创建该连接的版本记录。')).toBeVisible()
     await expect(versionModal.getByRole('button', { name: '创建初始快照' })).toBeDisabled()
+    await expect(page.locator('.ant-modal-confirm')).toHaveCount(0)
     await versionModal.locator('.ant-modal-close').click()
 
     await connectionTitle.click({ button: 'right' })
@@ -582,13 +619,146 @@ test('sync settings expose GitHub authorization and encrypted sync controls @smo
   }
 })
 
+test('sync status errors stay visible and do not offer repository creation @bug', async () => {
+  const electronApp = await launchRegressionApp()
+
+  try {
+    const page = await electronApp.firstWindow()
+    await waitForAppReady(page)
+    await page.evaluate(() => {
+      window.__DATADJINN_TEST_GITHUB_AUTH_STATUS__ = {
+        authorized: true,
+        login: 'test-user'
+      }
+      window.__DATADJINN_TEST_GIT_SYNC_STATUS_ERROR__ = 'GitHub 网络暂时不可用'
+    })
+
+    await page.getByRole('button', { name: '设置' }).click()
+    const settingsModal = page.locator('.settings-window-modal')
+    await settingsModal.getByText('同步与版本', { exact: true }).click()
+
+    await expect(settingsModal.getByText('无法确认 GitHub 远端同步状态')).toBeVisible()
+    await expect(settingsModal.getByRole('button', { name: '无法确认远端状态' })).toBeVisible()
+    await expect(settingsModal.getByRole('button', { name: '初始化私有同步仓库' })).toHaveCount(0)
+  } finally {
+    await electronApp.close()
+  }
+})
+
+test('GitHub authorization request errors show an unknown status @bug', async () => {
+  const electronApp = await launchRegressionApp()
+
+  try {
+    const page = await electronApp.firstWindow()
+    await waitForAppReady(page)
+    await page.evaluate(() => {
+      window.__DATADJINN_TEST_GITHUB_AUTH_STATUS_ERROR__ = 'GitHub 授权状态请求超时'
+    })
+
+    await page.getByRole('button', { name: '设置' }).click()
+    const settingsModal = page.locator('.settings-window-modal')
+    await settingsModal.getByText('同步与版本', { exact: true }).click()
+
+    await expect(settingsModal.getByText('状态未知')).toBeVisible()
+    await expect(settingsModal.getByText('无法确认 GitHub 授权状态')).toBeVisible()
+    await expect(settingsModal.getByText('未授权', { exact: true })).toHaveCount(0)
+  } finally {
+    await electronApp.close()
+  }
+})
+
+test('changing sync passphrase warns about decryptable Git history @bug', async () => {
+  const electronApp = await launchRegressionApp()
+
+  try {
+    const page = await electronApp.firstWindow()
+    await waitForAppReady(page)
+    await page.evaluate(() =>
+      window.api.setSyncLocalState({
+        passphrase: 'sync-passphrase-for-warning',
+        lastSyncedAt: Date.now(),
+        lastSyncAttemptAt: 1_700_000_000_100,
+        lastSyncError: 'GitHub 网络暂时不可用'
+      })
+    )
+    await page.reload()
+    await waitForAppReady(page)
+
+    await page.getByRole('button', { name: '设置' }).click()
+    const settingsModal = page.locator('.settings-window-modal')
+    await settingsModal.getByText('同步与版本', { exact: true }).click()
+
+    await expect(settingsModal.getByText(/Git 历史中的旧提交仍可能使用旧口令解密/)).toBeVisible()
+    await expect(settingsModal.getByText('最近一次同步未完成')).toBeVisible()
+    await expect(settingsModal.getByText(/GitHub 网络暂时不可用/)).toBeVisible()
+    await settingsModal.getByRole('button', { name: 'Close' }).click()
+    await page.getByRole('button', { name: '同步与版本' }).click()
+    await expect(page.getByRole('menuitem').filter({ hasText: '同步未完成' })).toBeVisible()
+  } finally {
+    await electronApp.close()
+  }
+})
+
+test('signing out clears the in-memory automatic sync state @bug', async () => {
+  const electronApp = await launchRegressionApp()
+
+  try {
+    const page = await electronApp.firstWindow()
+    await waitForAppReady(page)
+    await page.evaluate(async () => {
+      await window.api.setSyncLocalState({
+        passphrase: 'sync-passphrase-for-sign-out',
+        autoSyncEnabled: true,
+        lastSyncedAt: Date.now(),
+        basePayload: {
+          format: 'datadjinn-sync',
+          version: 1,
+          generated_at: new Date().toISOString(),
+          device_id: 'test-device',
+          connections: {},
+          settings: {},
+          preferences: {}
+        }
+      })
+    })
+    await page.reload()
+    await waitForAppReady(page)
+    await page.evaluate(() => {
+      window.__DATADJINN_TEST_GITHUB_AUTH_STATUS__ = {
+        authorized: true,
+        login: 'test-user'
+      }
+    })
+
+    await page.getByRole('button', { name: '设置' }).click()
+    const settingsModal = page.locator('.settings-window-modal')
+    await settingsModal.getByText('同步与版本', { exact: true }).click()
+    await expect(settingsModal.getByLabel('自动同步')).toBeChecked()
+    await settingsModal.getByRole('button', { name: '退出授权' }).click()
+
+    await expect(settingsModal.getByLabel('自动同步')).not.toBeChecked()
+    await expect(settingsModal.getByLabel('自动同步')).toBeDisabled()
+    await expect(settingsModal.getByText('尚未同步')).toBeVisible()
+  } finally {
+    const page = electronApp.windows()[0]
+    if (page) {
+      await page.evaluate(() => window.api.clearSyncLocalState()).catch(() => undefined)
+    }
+    await electronApp.close()
+  }
+})
+
 test('sync restores connections inside their remote groups @bug', async () => {
   const electronApp = await launchRegressionApp()
   let page
+  let originalTreePreferences: { preferences: Record<string, unknown>; updatedAt: number } | undefined
+  let originalSyncLocalState: Awaited<ReturnType<typeof window.api.getSyncLocalState>> | undefined
 
   try {
     page = await electronApp.firstWindow()
     await waitForAppReady(page)
+    originalTreePreferences = await page.evaluate(() => window.api.getConnectionTreePreferencesMeta())
+    originalSyncLocalState = await page.evaluate(() => window.api.getSyncLocalState())
 
     const connectionId = await page.evaluate(async () => {
       const result = await window.api.requestJson('/connections')
@@ -598,29 +768,25 @@ test('sync restores connections inside their remote groups @bug', async () => {
     await page.evaluate(async (sourceConnectionId) => {
       const syncedFolderId = 'synced-folder-from-remote'
       const secondFolderId = 'second-synced-folder-from-remote'
-      localStorage.setItem(
-        'datadjinn-connection-folders',
-        JSON.stringify([
+      const timestamp = Date.now()
+      const preferences = {
+        connection_folders: [
           { id: syncedFolderId, name: '远端同步分组' },
           { id: secondFolderId, name: '第二个同步分组' }
-        ])
-      )
-      localStorage.setItem(
-        'datadjinn-connection-folder-assignments',
-        JSON.stringify({})
-      )
-      localStorage.setItem(
-        'datadjinn-connection-folder-order',
-        JSON.stringify([secondFolderId, syncedFolderId])
-      )
-      localStorage.setItem(
-        'datadjinn-root-item-order',
-        JSON.stringify([`folder:${secondFolderId}`, `folder:${syncedFolderId}`])
-      )
-      localStorage.setItem(
-        'datadjinn-folder-connection-order',
-        JSON.stringify({})
-      )
+        ],
+        connection_folder_assignments: {},
+        connection_folder_order: [secondFolderId, syncedFolderId],
+        root_connection_order: [],
+        root_item_order: [`folder:${secondFolderId}`, `folder:${syncedFolderId}`],
+        root_item_order_customized: true,
+        pinned_root_item_ids: [],
+        folder_connection_order: {}
+      }
+      await window.api.setConnectionTreePreferences(preferences, timestamp)
+      await window.api.requestJson('/preferences/connection-tree', {
+        method: 'PUT',
+        body: JSON.stringify({ preferences, updated_at: timestamp })
+      })
       await window.api.setSyncLocalState({
         passphrase: 'remote-passphrase',
         lastSyncedAt: Date.now(),
@@ -667,15 +833,23 @@ test('sync restores connections inside their remote groups @bug', async () => {
     ).toBeVisible({ timeout: 10000 })
   } finally {
     if (page) {
-      await page.evaluate(() => {
-        ;[
-          'datadjinn-connection-folders',
-          'datadjinn-connection-folder-assignments',
-          'datadjinn-connection-folder-order',
-          'datadjinn-root-item-order',
-          'datadjinn-folder-connection-order'
-        ].forEach((key) => localStorage.removeItem(key))
-      })
+      await page
+        .evaluate(async ({ preferences, syncState }) => {
+          if (!preferences) {
+            return
+          }
+          const timestamp = Date.now()
+          await window.api.setConnectionTreePreferences(preferences, timestamp)
+          await window.api.requestJson('/preferences/connection-tree', {
+            method: 'PUT',
+            body: JSON.stringify({ preferences, updated_at: timestamp })
+          })
+          await window.api.clearSyncLocalState()
+          if (syncState) {
+            await window.api.setSyncLocalState(syncState)
+          }
+        }, { preferences: originalTreePreferences?.preferences, syncState: originalSyncLocalState })
+        .catch(() => undefined)
     }
     await electronApp.close()
   }
@@ -721,6 +895,7 @@ test('sync passphrase and baseline stay encrypted in electron store @smoke', asy
   const passphrase = `sync-passphrase-${crypto.randomUUID()}`
   const databasePassword = `database-password-${crypto.randomUUID()}`
   const aiKey = `ai-key-${crypto.randomUUID()}`
+  const aiSessionText = `ai-session-${crypto.randomUUID()}`
 
   try {
     const page = await electronApp.firstWindow()
@@ -732,6 +907,8 @@ test('sync passphrase and baseline stay encrypted in electron store @smoke', asy
           passphrase,
           remoteSha: 'test-sha',
           lastSyncedAt: 1_700_000_000_000,
+          lastSyncAttemptAt: 1_700_000_000_100,
+          lastSyncError: '上次同步失败回归信息',
           autoSyncEnabled: true,
           basePayload: {
             connections: { test: { password: databasePassword } },
@@ -747,11 +924,52 @@ test('sync passphrase and baseline stay encrypted in electron store @smoke', asy
     expect(restored.basePayload.connections.test.password).toBe(databasePassword)
     expect(restored.basePayload.settings.aiConfigs[0].api_key).toBe(aiKey)
     expect(restored.autoSyncEnabled).toBe(true)
+    expect(restored.lastSyncAttemptAt).toBe(1_700_000_000_100)
+    expect(restored.lastSyncError).toBe('上次同步失败回归信息')
+
+    const clearedSyncError = await page.evaluate(async () => {
+      await window.api.setSyncLocalState({ lastSyncError: null })
+      return window.api.getSyncLocalState()
+    })
+    expect(clearedSyncError.lastSyncError).toBeUndefined()
+
+    const aiState = await page.evaluate(
+      async ({ aiKey, aiSessionText }) => {
+        await window.api.setAIConfigs([
+          {
+            id: 'encrypted-ai-config-regression',
+            name: 'Encrypted AI config regression',
+            enabled: true,
+            provider: 'openai-compatible',
+            base_url: 'https://example.com/v1',
+            api_key: aiKey,
+            model: 'test-model'
+          }
+        ])
+        await window.api.setAISessions([
+          {
+            id: 'encrypted-ai-session-regression',
+            title: 'Encrypted AI session regression',
+            createdAt: 1,
+            updatedAt: 1,
+            messages: [{ role: 'user', content: aiSessionText }]
+          }
+        ])
+        return {
+          configs: await window.api.getAIConfigs(),
+          sessions: await window.api.getAISessions()
+        }
+      },
+      { aiKey, aiSessionText }
+    )
+    expect(aiState.configs[0].api_key).toBe(aiKey)
+    expect(aiState.sessions[0].messages[0].content).toBe(aiSessionText)
 
     const configText = fs.readFileSync(path.join(readFixtureUserDataDir(), 'config.json'), 'utf-8')
     expect(configText).not.toContain(passphrase)
     expect(configText).not.toContain(databasePassword)
     expect(configText).not.toContain(aiKey)
+    expect(configText).not.toContain(aiSessionText)
   } finally {
     const windows = electronApp.windows()
     if (windows[0]) {

@@ -30,6 +30,7 @@ from app.db.driver_manager import driver_manager
 from app.db.jdbc_bridge import load_jdbc_bridge
 from app.db import java_runtime
 from app.db.mongo_utils import MongoClient, is_mongo_client
+from app.db.query_timeout import apply_query_timeout
 from app.db.redis_utils import Redis, is_redis_client
 from app.db.elasticsearch_utils import (
     ElasticsearchClient,
@@ -84,9 +85,31 @@ def _connection_store_path() -> Path:
 
 CONNECTION_STORE_PATH = _connection_store_path()
 CRYPTPROTECT_UI_FORBIDDEN = 0x1
-SSH_GATEWAY_CONNECT_TIMEOUT_SECONDS = 5
-DATABASE_CONNECT_TIMEOUT_SECONDS = 5
+SSH_GATEWAY_CONNECT_TIMEOUT_SECONDS = 10
+DATABASE_CONNECT_TIMEOUT_SECONDS = 10
+DATABASE_ENDPOINT_PROBE_TIMEOUT_SECONDS = 3
+DATABASE_SOCKET_TIMEOUT_SECONDS = 45
+DATABASE_REQUEST_TIMEOUT_SECONDS = 15
+MONGODB_SERVER_SELECTION_TIMEOUT_MS = 15_000
+JDBC_LOGIN_TIMEOUT_SECONDS = 15
 CONNECTION_HEALTH_CHECK_INTERVAL_SECONDS = 30
+_JDBC_CONNECT_LOCK = threading.Lock()
+
+
+def _connect_jdbc_with_timeout(jpype: Any, connect: Any) -> Any:
+    driver_manager = jpype.JClass("java.sql.DriverManager")
+    with _JDBC_CONNECT_LOCK:
+        previous_timeout = driver_manager.getLoginTimeout()
+        driver_manager.setLoginTimeout(JDBC_LOGIN_TIMEOUT_SECONDS)
+        try:
+            return connect()
+        finally:
+            driver_manager.setLoginTimeout(previous_timeout)
+
+
+def _jdbc_url_with_connect_timeout(jdbc_url: str, timeout: int) -> str:
+    separator = "&" if "?" in jdbc_url else "?"
+    return f"{jdbc_url}{separator}connectTimeout={timeout}"
 
 
 def _jvm_candidates_from_java_executable(java_executable: str | None) -> list[Path]:
@@ -539,6 +562,7 @@ class StoredConnection(BaseModel):
     encrypted_ssh_passphrase: str | None = None
     git_versioning_enabled: bool = False
     git_versioning_scopes: list[str] = Field(default_factory=list)
+    git_versioning_snapshot_interval_hours: int = Field(default=24, ge=0, le=168)
 
 
 @dataclass
@@ -630,6 +654,7 @@ class ConnectionManager:
         self._opening_connection_attempts: dict[str, str] = {}
         self._cancelled_open_attempts: set[tuple[str, str]] = set()
         self._connection_open_lock = threading.RLock()
+        self._connection_store_signature: tuple[int, int] | None = None
         self._load_stored_connections()
 
     def test_connection(self, request: ConnectionRequest) -> None:
@@ -674,9 +699,12 @@ class ConnectionManager:
         return info
 
     def list_connections(self) -> list[ConnectionInfo]:
-        return list(self._connections.values())
+        self._refresh_stored_connections_if_changed()
+        with self._connection_open_lock:
+            return list(self._connections.values())
 
     def export_sync_connections(self) -> dict[str, dict[str, Any]]:
+        self._refresh_stored_connections_if_changed()
         return {
             connection_id: self._request_from_stored(stored).model_dump(
                 exclude={
@@ -769,6 +797,7 @@ class ConnectionManager:
         return self.list_connections()
 
     def get_connection_request(self, connection_id: str) -> ConnectionRequest:
+        self._refresh_stored_connections_if_changed()
         stored = self._stored_connections.get(connection_id)
 
         if stored is None:
@@ -801,9 +830,11 @@ class ConnectionManager:
             ssh_passphrase=self._decrypt_stored_secret(stored, "ssh_passphrase", stored.encrypted_ssh_passphrase),
             git_versioning_enabled=stored.git_versioning_enabled,
             git_versioning_scopes=stored.git_versioning_scopes,
+            git_versioning_snapshot_interval_hours=stored.git_versioning_snapshot_interval_hours,
         )
 
     def get_password(self, connection_id: str) -> str:
+        self._refresh_stored_connections_if_changed()
         stored = self._stored_connections.get(connection_id)
 
         if stored is None:
@@ -817,7 +848,9 @@ class ConnectionManager:
         return password
 
     def get_engine(self, connection_id: str) -> Engine | MongoClient | Redis | ElasticsearchClient | None:
-        return self._engines.get(connection_id)
+        self._refresh_stored_connections_if_changed()
+        with self._connection_open_lock:
+            return self._engines.get(connection_id)
 
     def ensure_connection_healthy(
         self,
@@ -896,6 +929,7 @@ class ConnectionManager:
         return self.get_engine(connection_id) is not None
 
     def delete_connection(self, connection_id: str) -> bool:
+        self._refresh_stored_connections_if_changed()
         stored = self._stored_connections.pop(connection_id, None)
 
         if stored is None:
@@ -913,11 +947,43 @@ class ConnectionManager:
         return True
 
     def _load_stored_connections(self) -> None:
-        if not CONNECTION_STORE_PATH.exists():
+        stored_connections = self._read_stored_connections()
+        if stored_connections is None:
             return
 
-        data = json.loads(CONNECTION_STORE_PATH.read_text(encoding="utf-8"))
-        for item in data.get("connections", []):
+        self._replace_stored_connections(stored_connections)
+        self._connection_store_signature = self._connection_store_file_signature()
+
+    def _connection_store_file_signature(self) -> tuple[int, int]:
+        try:
+            stat = CONNECTION_STORE_PATH.stat()
+        except FileNotFoundError:
+            return (0, 0)
+        except OSError:
+            return (-1, -1)
+        return (stat.st_mtime_ns, stat.st_size)
+
+    def _read_stored_connections(self) -> dict[str, StoredConnection] | None:
+        if not CONNECTION_STORE_PATH.exists():
+            return {}
+
+        try:
+            data = json.loads(CONNECTION_STORE_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("暂时无法读取已保存连接，保留当前内存连接：%s", exc)
+            return None
+
+        if not isinstance(data, dict):
+            logger.warning("已保存连接文件格式无效，保留当前内存连接")
+            return None
+
+        items = data.get("connections", [])
+        if not isinstance(items, list):
+            logger.warning("已保存连接列表格式无效，保留当前内存连接")
+            return None
+
+        stored_connections: dict[str, StoredConnection] = {}
+        for item in items:
             try:
                 stored = StoredConnection.model_validate(item)
             except (ValidationError, TypeError, ValueError) as exc:
@@ -929,9 +995,68 @@ class ConnectionManager:
                     exc,
                 )
                 continue
-            self._stored_connections[stored.connection_id] = stored
-            info = self._connection_info(stored.connection_id, self._request_from_stored(stored), stored, is_open=False)
-            self._connections[stored.connection_id] = info
+            stored_connections[stored.connection_id] = stored
+        return stored_connections
+
+    def _refresh_stored_connections_if_changed(self) -> None:
+        signature = self._connection_store_file_signature()
+        if signature == self._connection_store_signature:
+            return
+
+        stored_connections = self._read_stored_connections()
+        if stored_connections is None:
+            return
+
+        self._replace_stored_connections(stored_connections)
+        self._connection_store_signature = self._connection_store_file_signature()
+
+    def _replace_stored_connections(self, stored_connections: dict[str, StoredConnection]) -> None:
+        resources_to_dispose: list[
+            tuple[Engine | MongoClient | Redis | ElasticsearchClient | None, SshTunnelHandle | None]
+        ] = []
+        with self._connection_open_lock:
+            previous_connections = self._stored_connections
+            changed_ids = {
+                connection_id
+                for connection_id in previous_connections.keys() & stored_connections.keys()
+                if previous_connections[connection_id] != stored_connections[connection_id]
+            }
+            removed_ids = set(previous_connections) - set(stored_connections)
+            invalidated_ids = changed_ids | removed_ids
+
+            for connection_id in invalidated_ids:
+                resources_to_dispose.append(
+                    (
+                        self._engines.pop(connection_id, None),
+                        self._ssh_tunnels.pop(connection_id, None),
+                    )
+                )
+                self._connection_health_checked_at.pop(connection_id, None)
+                self._reconnectable_connection_ids.discard(connection_id)
+
+            self._stored_connections = stored_connections
+            self._unavailable_secret_fields = {
+                connection_id: fields
+                for connection_id, fields in self._unavailable_secret_fields.items()
+                if connection_id in stored_connections and connection_id not in changed_ids
+            }
+            self._connections = {
+                connection_id: self._connection_info(
+                    connection_id,
+                    self._request_from_stored(stored),
+                    stored,
+                    is_open=connection_id in self._engines,
+                    server_version=(
+                        self._connections[connection_id].server_version
+                        if connection_id in self._connections
+                        else None
+                    ),
+                )
+                for connection_id, stored in stored_connections.items()
+            }
+
+        for engine, tunnel in resources_to_dispose:
+            self._dispose_connection_resources(engine, tunnel)
 
     def _request_from_stored(self, stored: StoredConnection) -> ConnectionRequest:
         return ConnectionRequest(
@@ -961,10 +1086,11 @@ class ConnectionManager:
             ssh_passphrase=self._decrypt_stored_secret(stored, "ssh_passphrase", stored.encrypted_ssh_passphrase),
             git_versioning_enabled=stored.git_versioning_enabled,
             git_versioning_scopes=stored.git_versioning_scopes,
+            git_versioning_snapshot_interval_hours=stored.git_versioning_snapshot_interval_hours,
         )
 
     def update_git_versioning_scopes(
-        self, connection_id: str, scopes: list[str]
+        self, connection_id: str, scopes: list[str], snapshot_interval_hours: int | None = None
     ) -> ConnectionRequest:
         stored = self._stored_connections.get(connection_id)
         if stored is None:
@@ -973,7 +1099,12 @@ class ConnectionManager:
         normalized_scopes = list(
             dict.fromkeys(scope.strip() for scope in scopes if isinstance(scope, str) and scope.strip())
         )
-        updated = stored.model_copy(update={"git_versioning_scopes": normalized_scopes})
+        update_values: dict[str, Any] = {"git_versioning_scopes": normalized_scopes}
+        if snapshot_interval_hours is not None:
+            if not 0 <= snapshot_interval_hours <= 168:
+                raise ValueError("全库快照间隔必须为 0 到 168 小时")
+            update_values["git_versioning_snapshot_interval_hours"] = snapshot_interval_hours
+        updated = stored.model_copy(update=update_values)
         self._stored_connections[connection_id] = updated
         previous_info = self._connections.get(connection_id)
         self._connections[connection_id] = self._connection_info(
@@ -1012,6 +1143,7 @@ class ConnectionManager:
     def open_connection(
         self, connection_id: str, open_attempt_id: str | None = None
     ) -> ConnectionInfo:
+        self._refresh_stored_connections_if_changed()
         stored = self._stored_connections.get(connection_id)
 
         if stored is None:
@@ -1029,13 +1161,24 @@ class ConnectionManager:
             engine, tunnel = self._open_runtime_engine(request)
             self._raise_if_open_attempt_cancelled(connection_id, open_attempt_id)
             self._ping_engine(engine)
-            server_version = self._detect_server_version(engine)
             self._raise_if_open_attempt_cancelled(connection_id, open_attempt_id)
 
+            should_detect_server_version = False
             with self._connection_open_lock:
                 self._raise_if_open_attempt_cancelled(connection_id, open_attempt_id)
                 old_engine = self._engines.get(connection_id)
                 old_tunnel = self._ssh_tunnels.get(connection_id)
+                previous_info = self._connections.get(connection_id)
+                should_detect_server_version = (
+                    previous_info is None or previous_info.server_version is None
+                ) and request.database_type in {
+                    "dm",
+                    "gaussdb",
+                    "oracle",
+                    "redis",
+                    "elasticsearch",
+                    "clickhouse",
+                }
                 self._engines[connection_id] = engine
                 self._reconnectable_connection_ids.discard(connection_id)
                 if tunnel is not None:
@@ -1043,11 +1186,17 @@ class ConnectionManager:
                 else:
                     self._ssh_tunnels.pop(connection_id, None)
                 info = self._connection_info(
-                    connection_id, request, stored, is_open=True, server_version=server_version
+                    connection_id,
+                    request,
+                    stored,
+                    is_open=True,
+                    server_version=previous_info.server_version if previous_info else None,
                 )
                 self._connections[connection_id] = info
                 self._connection_health_checked_at[connection_id] = time.monotonic()
             self._dispose_connection_resources(old_engine, old_tunnel)
+            if should_detect_server_version:
+                self._schedule_server_version_detection(connection_id, request, engine)
             return info
         except Exception:
             self._dispose_connection_resources(engine, tunnel)
@@ -1061,6 +1210,7 @@ class ConnectionManager:
     def close_connection(
         self, connection_id: str, open_attempt_id: str | None = None
     ) -> ConnectionInfo:
+        self._refresh_stored_connections_if_changed()
         stored = self._stored_connections.get(connection_id)
 
         if stored is None:
@@ -1088,7 +1238,10 @@ class ConnectionManager:
     def _save_stored_connections(self) -> None:
         CONNECTION_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
         data = {"connections": [connection.model_dump() for connection in self._stored_connections.values()]}
-        CONNECTION_STORE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary_path = CONNECTION_STORE_PATH.with_name(f"{CONNECTION_STORE_PATH.name}.tmp")
+        temporary_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary_path.replace(CONNECTION_STORE_PATH)
+        self._connection_store_signature = self._connection_store_file_signature()
 
     def _ping_engine(self, engine: Engine | MongoClient | Redis | ElasticsearchClient) -> None:
         if is_elasticsearch_client(engine):
@@ -1103,7 +1256,8 @@ class ConnectionManager:
             return
 
         with engine.connect() as connection:
-            connection.execute(text("SELECT 1 FROM DUAL" if engine.dialect.name in {"dm", "dmPython", "oracle"} else "SELECT 1"))
+            with apply_query_timeout(connection):
+                connection.execute(text("SELECT 1 FROM DUAL" if engine.dialect.name in {"dm", "dmPython", "oracle"} else "SELECT 1"))
 
     def _dispose_engine(self, engine: Engine | MongoClient | Redis | ElasticsearchClient) -> None:
         if is_mongo_client(engine) or is_redis_client(engine) or is_elasticsearch_client(engine):
@@ -1126,6 +1280,45 @@ class ConnectionManager:
             self._dispose_engine(engine)
         self._dispose_tunnel(tunnel)
 
+    def _schedule_server_version_detection(
+        self,
+        connection_id: str,
+        request: ConnectionRequest,
+        expected_engine: Engine | MongoClient | Redis | ElasticsearchClient,
+    ) -> None:
+        def detect() -> None:
+            probe_engine: Engine | MongoClient | Redis | ElasticsearchClient | None = None
+            probe_tunnel: SshTunnelHandle | None = None
+            try:
+                probe_engine, probe_tunnel = self._open_runtime_engine(request)
+                server_version = self._detect_server_version(probe_engine)
+                if not server_version:
+                    return
+
+                with self._connection_open_lock:
+                    if self._engines.get(connection_id) is not expected_engine:
+                        return
+                    stored = self._stored_connections.get(connection_id)
+                    if stored is None:
+                        return
+                    self._connections[connection_id] = self._connection_info(
+                        connection_id,
+                        self._request_from_stored(stored),
+                        stored,
+                        is_open=True,
+                        server_version=server_version,
+                    )
+            except Exception as exc:
+                logger.debug("后台读取数据库版本失败：connection_id=%s error=%s", connection_id, exc)
+            finally:
+                self._dispose_connection_resources(probe_engine, probe_tunnel)
+
+        threading.Thread(
+            target=detect,
+            name=f"datadjinn-version-{connection_id[:8]}",
+            daemon=True,
+        ).start()
+
     def _open_runtime_engine(self, request: ConnectionRequest) -> tuple[Engine | MongoClient | Redis | ElasticsearchClient, SshTunnelHandle | None]:
         runtime_request = request.model_copy(deep=True)
         tunnel: SshTunnelHandle | None = None
@@ -1141,10 +1334,55 @@ class ConnectionManager:
             })
 
         try:
+            if tunnel is None:
+                self._ensure_database_endpoint_reachable(runtime_request)
             return self._create_engine(runtime_request), tunnel
         except Exception:
             self._dispose_tunnel(tunnel)
             raise
+
+    def _ensure_database_endpoint_reachable(self, request: ConnectionRequest) -> None:
+        if request.database_type == "sqlite" or not request.host:
+            return
+
+        if request.database_type == "clickhouse":
+            port, _ = _resolve_clickhouse_port(request.port)
+        elif isinstance(request.port, int):
+            port = request.port
+        else:
+            port_text = str(request.port or "").strip()
+            port = int(port_text) if port_text.isdigit() else None
+
+        if port is None:
+            return
+
+        probe_socket: socket.socket | None = None
+        try:
+            probe_socket = socket.create_connection(
+                (request.host, port), timeout=DATABASE_ENDPOINT_PROBE_TIMEOUT_SECONDS
+            )
+        except TimeoutError as exc:
+            raise RuntimeError(
+                f"无法连接到数据库（{request.host}:{port}）：网络连接超时。请检查地址、端口、防火墙或 VPN。"
+            ) from exc
+        except OSError as exc:
+            error_code = getattr(exc, "winerror", None) or getattr(exc, "errno", None)
+            if error_code in {10061, 111}:
+                raise RuntimeError(
+                    f"无法连接到数据库（{request.host}:{port}）：目标主机拒绝连接。请确认数据库服务已启动并监听该端口。"
+                ) from exc
+            if error_code in {10060, 110}:
+                raise RuntimeError(
+                    f"无法连接到数据库（{request.host}:{port}）：网络连接超时。请检查地址、端口、防火墙或 VPN。"
+                ) from exc
+            if error_code in {10065, 113}:
+                raise RuntimeError(
+                    f"无法连接到数据库（{request.host}:{port}）：网络不可达。请检查路由、VPN 或局域网连接。"
+                ) from exc
+            raise RuntimeError(f"无法连接到数据库（{request.host}:{port}）：{exc}") from exc
+        finally:
+            if probe_socket is not None:
+                probe_socket.close()
 
     def _uses_ssh_tunnel(self, request: ConnectionRequest | StoredConnection) -> bool:
         return request.database_type != "sqlite" and bool(request.ssh_enabled)
@@ -1343,8 +1581,8 @@ class ConnectionManager:
             pool_pre_ping=True,
             connect_args={
                 "connect_timeout": DATABASE_CONNECT_TIMEOUT_SECONDS,
-                "read_timeout": DATABASE_CONNECT_TIMEOUT_SECONDS,
-                "write_timeout": DATABASE_CONNECT_TIMEOUT_SECONDS,
+                "read_timeout": DATABASE_SOCKET_TIMEOUT_SECONDS,
+                "write_timeout": DATABASE_SOCKET_TIMEOUT_SECONDS,
             },
         )
 
@@ -1384,7 +1622,8 @@ class ConnectionManager:
         kwargs = {
             "host": request.host,
             "port": request.port,
-            "serverSelectionTimeoutMS": 5000,
+            "connectTimeoutMS": DATABASE_CONNECT_TIMEOUT_SECONDS * 1000,
+            "serverSelectionTimeoutMS": MONGODB_SERVER_SELECTION_TIMEOUT_MS,
         }
 
         if request.username:
@@ -1418,8 +1657,8 @@ class ConnectionManager:
             username=request.username or None,
             password=request.password or None,
             db=database,
-            socket_connect_timeout=3,
-            socket_timeout=3,
+            socket_connect_timeout=DATABASE_CONNECT_TIMEOUT_SECONDS,
+            socket_timeout=DATABASE_SOCKET_TIMEOUT_SECONDS,
             retry_on_timeout=False,
             health_check_interval=0,
         )
@@ -1444,7 +1683,8 @@ class ConnectionManager:
                 "port": int(request.port),
                 "scheme": "https" if request.es_use_ssl else "http",
             }],
-            "request_timeout": DATABASE_CONNECT_TIMEOUT_SECONDS,
+            "request_timeout": DATABASE_REQUEST_TIMEOUT_SECONDS,
+            "max_retries": 0,
             "verify_certs": bool(request.es_verify_certs),
         }
         if auth_type == "api_key":
@@ -1485,7 +1725,8 @@ class ConnectionManager:
             pool_pre_ping=False,
             connect_args={
                 "connect_timeout": DATABASE_CONNECT_TIMEOUT_SECONDS,
-                "send_receive_timeout": DATABASE_CONNECT_TIMEOUT_SECONDS,
+                "send_receive_timeout": DATABASE_SOCKET_TIMEOUT_SECONDS,
+                "query_retries": 0,
             },
         )
         setattr(
@@ -1527,6 +1768,7 @@ class ConnectionManager:
                     password=request.password or "",
                     host=request.host,
                     port=request.port,
+                    login_timeout=DATABASE_CONNECT_TIMEOUT_SECONDS * 1000,
                 )
 
             url = URL.create("dm+dmPython", username=request.username, host=request.host, port=request.port)
@@ -1560,7 +1802,17 @@ class ConnectionManager:
                 raise RuntimeError("JDBC 桥接模块无法加载，请在“设置 -> 扩展”中重新安装 JDBC 桥接模块。") from exc
 
             def connect_jdbc():
-                connection = jaydebeapi.connect("dm.jdbc.driver.DmDriver", jdbc_url, [request.username, request.password or ""], str(jdbc_path))
+                connection = _connect_jdbc_with_timeout(
+                    jpype,
+                    lambda: jaydebeapi.connect(
+                        "dm.jdbc.driver.DmDriver",
+                        _jdbc_url_with_connect_timeout(
+                            jdbc_url, DATABASE_CONNECT_TIMEOUT_SECONDS * 1000
+                        ),
+                        [request.username, request.password or ""],
+                        str(jdbc_path),
+                    ),
+                )
                 _set_jdbc_autocommit(connection, False)
                 return DmJdbcConnectionAdapter(connection)
 
@@ -1625,7 +1877,15 @@ class ConnectionManager:
             raise RuntimeError("JDBC 桥接模块无法加载，请在“设置 -> 扩展”中重新安装 JDBC 桥接模块。") from exc
 
         def connect_jdbc():
-            connection = jaydebeapi.connect(driver_class, jdbc_url, [request.username, request.password or ""], str(jdbc_path))
+            connection = _connect_jdbc_with_timeout(
+                jpype,
+                lambda: jaydebeapi.connect(
+                    driver_class,
+                    _jdbc_url_with_connect_timeout(jdbc_url, DATABASE_CONNECT_TIMEOUT_SECONDS),
+                    [request.username, request.password or ""],
+                    str(jdbc_path),
+                ),
+            )
             _set_jdbc_autocommit(connection, False)
             return DmJdbcConnectionAdapter(connection)
 
@@ -1701,7 +1961,8 @@ class ConnectionManager:
         if _is_clickhouse_engine(engine) or engine.dialect.name == "gaussdb":
             try:
                 with engine.connect() as connection:
-                    version = connection.execute(text("SELECT version()")).scalar()
+                    with apply_query_timeout(connection):
+                        version = connection.execute(text("SELECT version()")).scalar()
                     return str(version) if version is not None else None
             except Exception:
                 return None
@@ -1715,7 +1976,8 @@ class ConnectionManager:
             for sql in sql_candidates:
                 try:
                     with engine.connect() as connection:
-                        row = connection.execute(text(sql)).first()
+                        with apply_query_timeout(connection):
+                            row = connection.execute(text(sql)).first()
                         if row and row[0] is not None:
                             return str(row[0])
                 except Exception:
@@ -1734,7 +1996,8 @@ class ConnectionManager:
         for sql in sql_candidates:
             try:
                 with engine.connect() as connection:
-                    row = connection.execute(text(sql)).first()
+                    with apply_query_timeout(connection):
+                        row = connection.execute(text(sql)).first()
 
                     if row and row[0] is not None:
                         return str(row[0])
@@ -1764,6 +2027,7 @@ class ConnectionManager:
 
     def _stored_connection(self, connection_id: str, request: ConnectionRequest) -> StoredConnection:
         normalized_private_key_path = None
+        existing = self._stored_connections.get(connection_id)
         if request.ssh_private_key_path:
             normalized_private_key_path = str(Path(request.ssh_private_key_path).expanduser().resolve())
 
@@ -1795,6 +2059,11 @@ class ConnectionManager:
             encrypted_ssh_passphrase=_encrypt_password(request.ssh_passphrase) if request.ssh_enabled else None,
             git_versioning_enabled=bool(request.git_versioning_enabled),
             git_versioning_scopes=list(dict.fromkeys(request.git_versioning_scopes)),
+            git_versioning_snapshot_interval_hours=(
+                request.git_versioning_snapshot_interval_hours
+                if request.git_versioning_snapshot_interval_hours is not None
+                else existing.git_versioning_snapshot_interval_hours if existing else 24
+            ),
         )
 
     def _display_database(self, request: ConnectionRequest) -> str:

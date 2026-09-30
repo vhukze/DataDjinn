@@ -1,5 +1,16 @@
 import type { DatabaseType } from './data-sources'
 
+export type ConnectionTreePreferencesCandidate = {
+  preferences: Record<string, unknown>
+  updatedAt: number
+  exists?: boolean
+}
+
+export type ConnectionTreePreferencesSelection = {
+  preferences: Record<string, unknown>
+  source: 'stored' | 'server' | 'local'
+}
+
 export const STORAGE_DB = 'datadjinn-selected-databases'
 export const STORAGE_SCHEMA = 'datadjinn-selected-schemas'
 export const STORAGE_CONNECTION_FOLDERS = 'datadjinn-connection-folders'
@@ -8,6 +19,14 @@ export const STORAGE_CONNECTION_FOLDER_ORDER = 'datadjinn-connection-folder-orde
 export const STORAGE_ROOT_CONNECTION_ORDER = 'datadjinn-root-connection-order'
 export const STORAGE_ROOT_ITEM_ORDER = 'datadjinn-root-item-order'
 export const STORAGE_FOLDER_CONNECTION_ORDER = 'datadjinn-folder-connection-order'
+export const STORAGE_CONNECTION_TREE_EXPANDED_KEYS = 'datadjinn-connection-tree-expanded-keys'
+export const STORAGE_CONNECTION_TREE_SELECTED_KEYS = 'datadjinn-connection-tree-selected-keys'
+export const STORAGE_CONNECTION_TREE_SELECTED_CONNECTION_IDS =
+  'datadjinn-connection-tree-selected-connection-ids'
+export const STORAGE_CONNECTION_TREE_SELECTED_CONNECTION_ID =
+  'datadjinn-connection-tree-selected-connection-id'
+export const STORAGE_CONNECTION_TREE_SELECTION_ANCHOR_ID =
+  'datadjinn-connection-tree-selection-anchor-id'
 export const STORAGE_QUERY_WORKSPACES = 'datadjinn-query-workspaces'
 export const STORAGE_SHORTCUT_SETTINGS = 'datadjinn-shortcut-settings'
 
@@ -37,6 +56,55 @@ export const readPersistedJson = <T>(key: string, fallback: T): T => {
   } catch {
     return fallback
   }
+}
+
+export const hasMeaningfulConnectionTreePreferences = (
+  candidate: Record<string, unknown>
+): boolean =>
+  Object.values(candidate).some((value) => {
+    if (Array.isArray(value)) {
+      return value.length > 0
+    }
+    if (value && typeof value === 'object') {
+      return Object.keys(value).length > 0
+    }
+    if (typeof value === 'string') {
+      return value.length > 0
+    }
+    if (typeof value === 'number') {
+      return Number.isFinite(value)
+    }
+    return value === true
+  })
+
+export const hasPersistedConnectionTreePreferences = (
+  candidate: ConnectionTreePreferencesCandidate | undefined
+): boolean =>
+  Boolean(candidate && Object.keys(candidate.preferences).length > 0)
+
+export const selectConnectionTreePreferences = (
+  stored: ConnectionTreePreferencesCandidate | undefined,
+  server: ConnectionTreePreferencesCandidate | undefined,
+  local: Record<string, unknown>
+): ConnectionTreePreferencesSelection => {
+  const storedIsMeaningful = hasPersistedConnectionTreePreferences(stored)
+  const serverIsMeaningful = hasPersistedConnectionTreePreferences(server)
+
+  if (storedIsMeaningful && serverIsMeaningful && stored && server) {
+    return stored.updatedAt >= server.updatedAt
+      ? { preferences: stored.preferences, source: 'stored' }
+      : { preferences: server.preferences, source: 'server' }
+  }
+
+  if (storedIsMeaningful && stored) {
+    return { preferences: stored.preferences, source: 'stored' }
+  }
+
+  if (serverIsMeaningful && server) {
+    return { preferences: server.preferences, source: 'server' }
+  }
+
+  return { preferences: local, source: 'local' }
 }
 
 export const mergeOrderedIds = (availableIds: string[], preferredIds: string[]): string[] => {

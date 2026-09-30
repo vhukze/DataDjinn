@@ -6,8 +6,10 @@ from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from openai import OpenAI
 
-from app.ai.agent import AIChatRequest, AICompactRequest, AICompactResponse, AIConfig, AIContextStatsRequest, AIContextStatsResponse, AIMessage, AIPingRequest, AIPingResponse, AgentConfirmRequest, AnthropicMessagesClient, DatabaseAgent, PENDING_CONFIRMATIONS, build_context_stats, build_system_prompt, sql_hash
+from app.ai.agent import AIChatRequest, AICompactRequest, AICompactResponse, AIConfig, AIContextStatsRequest, AIContextStatsResponse, AIMessage, AIPingRequest, AIPingResponse, AgentConfirmRequest, AnthropicMessagesClient, DatabaseAgent, build_context_stats, build_system_prompt, claim_pending_confirmation, get_pending_confirmation, remove_pending_confirmation, sql_hash
 from app.db.backup_manager import backup_manager
+from app.git_versioning.database_history import database_versioning_service
+from app.git_versioning.schema_history import contains_write_statement
 from app.db.connection_manager import connection_manager
 from app.db.error_utils import friendly_error
 
@@ -115,12 +117,12 @@ def context_stats(request: AIContextStatsRequest) -> AIContextStatsResponse:
 
 @router.post("/confirm")
 def confirm_agent_action(request: AgentConfirmRequest) -> dict[str, Any]:
-    pending = PENDING_CONFIRMATIONS.get(request.confirmation_id)
+    pending = get_pending_confirmation(request.confirmation_id)
     if pending is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="确认请求不存在或已过期")
 
     if not request.approved:
-        PENDING_CONFIRMATIONS.pop(request.confirmation_id, None)
+        remove_pending_confirmation(request.confirmation_id)
         return {"approved": False, "message": "已取消执行"}
 
     if pending.connection_id != request.connection_id:
@@ -134,8 +136,24 @@ def confirm_agent_action(request: AgentConfirmRequest) -> dict[str, Any]:
         if pending.action == "restore_backup":
             if not pending.backup_id:
                 raise ValueError("恢复备份确认内容缺少备份 ID")
-            result = backup_manager.restore_backup(pending.backup_id)
-            PENDING_CONFIRMATIONS.pop(request.confirmation_id, None)
+            backup_record = backup_manager._backups.get(pending.backup_id)
+            if backup_record is None or backup_record.connection_id != request.connection_id:
+                raise ValueError("备份不属于当前连接")
+            if claim_pending_confirmation(request.confirmation_id) is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="确认请求不存在或已过期")
+            snapshot_id = database_versioning_service.prepare_write_snapshot(
+                request.connection_id, "AI 恢复数据库备份前快照"
+            )
+            try:
+                result = backup_manager.restore_backup(pending.backup_id)
+            except Exception:
+                database_versioning_service.complete_write_snapshot(
+                    request.connection_id, snapshot_id, False
+                )
+                raise
+            database_versioning_service.complete_write_snapshot(
+                request.connection_id, snapshot_id, True
+            )
             return {"approved": True, "message": "恢复完成", "executed": True, "action": "restore_backup", "backup": result.model_dump(mode="json")}
 
         if not pending.sql or not pending.sql_hash:
@@ -144,9 +162,26 @@ def confirm_agent_action(request: AgentConfirmRequest) -> dict[str, Any]:
         validation = agent._validate_sql(pending.sql, readonly=False)
         if validation["risk_level"] != pending.risk_level or sql_hash(pending.sql) != pending.sql_hash:
             raise ValueError("确认内容与待执行 SQL 不一致")
-        result = agent._execute_query(pending.sql, readonly=False)
-        PENDING_CONFIRMATIONS.pop(request.confirmation_id, None)
+        if claim_pending_confirmation(request.confirmation_id) is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="确认请求不存在或已过期")
+        snapshot_id = None
+        if contains_write_statement(pending.sql):
+            snapshot_id = database_versioning_service.prepare_write_snapshot(
+                request.connection_id, "AI SQL 执行前快照"
+            )
+        try:
+            result = agent._execute_query(pending.sql, readonly=False)
+        except Exception:
+            database_versioning_service.complete_write_snapshot(
+                request.connection_id, snapshot_id, False
+            )
+            raise
+        database_versioning_service.complete_write_snapshot(
+            request.connection_id, snapshot_id, True
+        )
         return {"approved": True, "message": "执行完成", "executed": True, "sql": pending.sql, "result": result.model_dump()}
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
 

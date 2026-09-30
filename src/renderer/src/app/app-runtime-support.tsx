@@ -1,6 +1,11 @@
 import { Button, Checkbox, Flex, Input, Modal, Popover, Space, Tag } from 'antd'
 import { DatabaseOutlined } from '@ant-design/icons'
-import type { BackendStatus, GitHubDeviceAuthorization, GitHubDeviceAuthorizationPoll } from './app-model'
+import type {
+  BackendStatus,
+  GitHubAuthStatus,
+  GitHubDeviceAuthorization,
+  GitHubDeviceAuthorizationPoll
+} from './app-model'
 import type { ConnectionInfo } from './connection-model'
 import type { DatabaseType } from './data-sources'
 import type { DatabaseTreeNode } from './tree-model'
@@ -21,8 +26,8 @@ import { useWorkspaceStore } from './workspace-store'
 
 export const RESOURCE_TREE_ITEM_HEIGHT = 30
 export const SSH_TEST_REQUEST_TIMEOUT_MS = 10_000
-export const DATABASE_CONNECTION_REQUEST_TIMEOUT_MS = 10_000
-export const JDBC_DATABASE_CONNECTION_REQUEST_TIMEOUT_MS = 30_000
+export const DATABASE_CONNECTION_REQUEST_TIMEOUT_MS = 45_000
+export const JDBC_DATABASE_CONNECTION_REQUEST_TIMEOUT_MS = 60_000
 
 export const getDatabaseConnectionRequestTimeoutMs = (databaseType: DatabaseType): number =>
   databaseType === 'dm' || databaseType === 'gaussdb'
@@ -88,6 +93,8 @@ export type GitSyncLocalState = {
   remoteSha?: string
   lastSyncedAt?: number
   autoSyncEnabled?: boolean
+  lastSyncAttemptAt?: number
+  lastSyncError?: string | null
 }
 
 export type GitSyncFileStatus = {
@@ -100,6 +107,9 @@ export type SchemaVersionInfo = {
   id: string
   message: string
   committed_at?: string | null
+  status?: 'prepared' | 'pending' | 'synced' | 'error' | 'local_only' | 'discarded' | 'remote_error' | null
+  remote_commit_id?: string | null
+  error?: string | null
 }
 
 export type SchemaSnapshot = {
@@ -155,6 +165,24 @@ export type VersioningScopeConfig = {
   scope_kind: 'database' | 'schema' | 'single'
   available_scopes: string[]
   selected_scopes: string[]
+  snapshot_interval_hours: number
+}
+
+export type DatabaseSnapshotTablePreview = {
+  scope: string
+  table_name: string
+  estimated_row_count?: number | null
+  estimated_storage_size_bytes?: number | null
+}
+
+export type DatabaseSnapshotPreview = {
+  scopes: string[]
+  tables: DatabaseSnapshotTablePreview[]
+  estimated_row_count?: number | null
+  estimated_storage_size_bytes?: number | null
+  max_rows_per_table: number
+  max_table_snapshot_bytes: number
+  max_database_snapshot_bytes: number
 }
 
 export const getSyncDeviceId = (): string => {
@@ -268,6 +296,9 @@ export type ConnectionTransferTestWindow = typeof window & {
 export type GitHubDeviceFlowTestWindow = typeof window & {
   __DATADJINN_TEST_GITHUB_DEVICE_AUTHORIZATION__?: GitHubDeviceAuthorization
   __DATADJINN_TEST_GITHUB_DEVICE_POLL__?: GitHubDeviceAuthorizationPoll
+  __DATADJINN_TEST_GITHUB_AUTH_STATUS__?: GitHubAuthStatus
+  __DATADJINN_TEST_GITHUB_AUTH_STATUS_ERROR__?: string
+  __DATADJINN_TEST_GIT_SYNC_STATUS_ERROR__?: string
 }
 
 type TreeSelectorPopoverProps = {
@@ -450,6 +481,14 @@ export const STORAGE_ROOT_ITEM_ORDER = 'datadjinn-root-item-order'
 export const STORAGE_ROOT_ITEM_ORDER_CUSTOMIZED = 'datadjinn-root-item-order-customized'
 export const STORAGE_PINNED_ROOT_ITEM_IDS = 'datadjinn-pinned-root-item-ids'
 export const STORAGE_FOLDER_CONNECTION_ORDER = 'datadjinn-folder-connection-order'
+export const STORAGE_CONNECTION_TREE_EXPANDED_KEYS = 'datadjinn-connection-tree-expanded-keys'
+export const STORAGE_CONNECTION_TREE_SELECTED_KEYS = 'datadjinn-connection-tree-selected-keys'
+export const STORAGE_CONNECTION_TREE_SELECTED_CONNECTION_IDS =
+  'datadjinn-connection-tree-selected-connection-ids'
+export const STORAGE_CONNECTION_TREE_SELECTED_CONNECTION_ID =
+  'datadjinn-connection-tree-selected-connection-id'
+export const STORAGE_CONNECTION_TREE_SELECTION_ANCHOR_ID =
+  'datadjinn-connection-tree-selection-anchor-id'
 export const STORAGE_QUERY_WORKSPACES = 'datadjinn-query-workspaces'
 export const STORAGE_SHORTCUT_SETTINGS = 'datadjinn-shortcut-settings'
 export const RESOURCE_PANEL_MIN_WIDTH = 304

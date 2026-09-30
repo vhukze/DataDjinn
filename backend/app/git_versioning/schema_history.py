@@ -42,6 +42,35 @@ def contains_schema_mutation(sql: str) -> bool:
     return False
 
 
+def contains_write_statement(sql: str) -> bool:
+    import sqlparse
+
+    from app.db.readonly_query import _split_sql_statements
+
+    readonly_types = {"SELECT", "WITH", "SHOW", "EXPLAIN", "DESCRIBE", "DESC", "PRAGMA"}
+    session_types = {"SET", "USE"}
+    for statement in _split_sql_statements(sql):
+        parsed_statement = sqlparse.parse(statement)[0]
+        parsed_type = parsed_statement.get_type().upper()
+        normalized = re.sub(
+            r"^(?:\s|--[^\n]*\n|/\*.*?\*/)*", "", statement, flags=re.DOTALL
+        )
+        first_keyword = re.match(r"^([A-Za-z]+)\b", normalized)
+        first_keyword_value = first_keyword.group(1).upper() if first_keyword else ""
+        if first_keyword_value in readonly_types or parsed_type in readonly_types:
+            from app.db.readonly_query import _validate_readonly_sql
+
+            try:
+                _validate_readonly_sql(statement)
+                continue
+            except ValueError:
+                return True
+        if first_keyword_value in session_types:
+            continue
+        return True
+    return False
+
+
 class SchemaSnapshotObject(BaseModel):
     scope: str | None = None
     name: str
@@ -64,6 +93,9 @@ class SchemaVersionInfo(BaseModel):
     id: str
     message: str
     committed_at: str | None = None
+    status: str | None = None
+    remote_commit_id: str | None = None
+    error: str | None = None
 
 
 class SchemaSnapshotResult(BaseModel):
@@ -76,6 +108,7 @@ class VersioningScopeConfig(BaseModel):
     scope_kind: Literal["database", "schema", "single"]
     available_scopes: list[str] = Field(default_factory=list)
     selected_scopes: list[str] = Field(default_factory=list)
+    snapshot_interval_hours: int = Field(default=24, ge=0, le=168)
 
 
 class SchemaVersioningService:
@@ -179,6 +212,7 @@ class SchemaVersioningService:
                 scope_kind=scope_kind,
                 available_scopes=["main"],
                 selected_scopes=["main"],
+                snapshot_interval_hours=getattr(request, "git_versioning_snapshot_interval_hours", 24),
             )
         available_scopes = self._list_available_scopes(engine, request.database_type)
         available_by_key = {scope.casefold(): scope for scope in available_scopes}
@@ -191,14 +225,24 @@ class SchemaVersioningService:
             scope_kind=scope_kind,
             available_scopes=available_scopes,
             selected_scopes=list(dict.fromkeys(selected_scopes)),
+            snapshot_interval_hours=getattr(request, "git_versioning_snapshot_interval_hours", 24),
         )
 
     def update_scope_config(
-        self, connection_id: str, selected_scopes: list[str]
+        self,
+        connection_id: str,
+        selected_scopes: list[str],
+        snapshot_interval_hours: int | None = None,
     ) -> VersioningScopeConfig:
         config = self.get_scope_config(connection_id)
+        if snapshot_interval_hours is not None and not 0 <= snapshot_interval_hours <= 168:
+            raise ValueError("全库快照间隔必须为 0 到 168 小时")
+        interval_hours = snapshot_interval_hours if snapshot_interval_hours is not None else config.snapshot_interval_hours
         if config.scope_kind == "single":
-            return config
+            connection_manager.update_git_versioning_scopes(
+                connection_id, config.selected_scopes, interval_hours
+            )
+            return config.model_copy(update={"snapshot_interval_hours": interval_hours})
         available_by_key = {scope.casefold(): scope for scope in config.available_scopes}
         normalized_scopes: list[str] = []
         for scope in selected_scopes:
@@ -208,8 +252,15 @@ class SchemaVersioningService:
                 raise ValueError(f"不能纳管不存在或系统范围：{normalized_scope or '空值'}")
             if available_scope not in normalized_scopes:
                 normalized_scopes.append(available_scope)
-        connection_manager.update_git_versioning_scopes(connection_id, normalized_scopes)
-        return config.model_copy(update={"selected_scopes": normalized_scopes})
+        connection_manager.update_git_versioning_scopes(
+            connection_id, normalized_scopes, interval_hours
+        )
+        return config.model_copy(
+            update={
+                "selected_scopes": normalized_scopes,
+                "snapshot_interval_hours": interval_hours,
+            }
+        )
 
     def get_version(self, connection_id: str, version_id: str) -> SchemaSnapshot:
         self._ensure_versioning_enabled(connection_id)

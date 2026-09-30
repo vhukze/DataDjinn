@@ -1,6 +1,7 @@
 import ast
 import fnmatch
 import json
+import re
 from datetime import date, datetime, time
 from itertools import islice
 from decimal import Decimal
@@ -8,7 +9,7 @@ from typing import Any
 
 import sqlparse
 from sqlalchemy import Engine, quoted_name, text
-from sqlparse.tokens import Comment, Punctuation
+from sqlparse.tokens import Comment, DML, Punctuation
 
 from app.db.gaussdb import execute_gaussdb_database_ddl, is_gaussdb_database_ddl
 from app.db.mongo_utils import is_mongo_client, mongo_default_database, serialize_mongo_document
@@ -18,7 +19,8 @@ from app.db.elasticsearch_utils import is_elasticsearch_client, json_document, r
 from app.schemas.query import QueryResponse
 from app.db.query_editing import analyze_query_column_origins
 
-READONLY_TYPES = {"SELECT", "WITH"}
+READONLY_TYPES = {"SELECT", "WITH", "SHOW", "EXPLAIN", "DESCRIBE", "DESC", "PRAGMA"}
+LIMITABLE_READONLY_TYPES = {"SELECT", "WITH"}
 INTERNAL_PAGING_COLUMNS = {"DATADJINN_RN"}
 
 
@@ -90,14 +92,14 @@ def _read_sql_large_object(value: Any) -> Any:
     return value
 
 
-def _serialize_sql_value(value: Any) -> Any:
+def _serialize_sql_value(value: Any, preserve_sql_types: bool = False) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
 
     if hasattr(value, "getSubString") or hasattr(value, "read"):
         expanded = _read_sql_large_object(value)
         if expanded is not value:
-            return _serialize_sql_value(expanded)
+            return _serialize_sql_value(expanded, preserve_sql_types)
 
     if isinstance(value, datetime):
         return value.isoformat(sep=" ")
@@ -106,22 +108,32 @@ def _serialize_sql_value(value: Any) -> Any:
         return value.isoformat()
 
     if isinstance(value, Decimal):
-        return float(value)
+        return value if preserve_sql_types else float(value)
 
-    if isinstance(value, bytes):
-        return value.hex()
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        binary_value = bytes(value)
+        return binary_value if preserve_sql_types else binary_value.hex()
 
     if isinstance(value, (list, tuple)):
-        return [_serialize_sql_value(item) for item in value]
+        return [_serialize_sql_value(item, preserve_sql_types) for item in value]
 
     if isinstance(value, dict):
-        return {str(key): _serialize_sql_value(item) for key, item in value.items()}
+        return {str(key): _serialize_sql_value(item, preserve_sql_types) for key, item in value.items()}
 
     return str(value)
 
 
-def _query_rows(raw_rows: list[Any], columns: list[tuple[Any, str]]) -> list[dict[str, Any]]:
-    return [{column_name: _serialize_sql_value(row[column]) for column, column_name in columns if column in row} for row in raw_rows]
+def _query_rows(
+    raw_rows: list[Any], columns: list[tuple[Any, str]], preserve_sql_types: bool = False
+) -> list[dict[str, Any]]:
+    return [
+        {
+            column_name: _serialize_sql_value(row[column], preserve_sql_types)
+            for column, column_name in columns
+            if column in row
+        }
+        for row in raw_rows
+    ]
 
 
 def execute_readonly_query(engine: Engine, sql: str, limit: int | None, offset: int = 0, database: str | None = None, pg_database: str | None = None) -> QueryResponse:
@@ -160,8 +172,11 @@ def execute_readonly_query(engine: Engine, sql: str, limit: int | None, offset: 
             response = _execute_on_connection_with_context(engine, statement, limit, offset, database)
         else:
             response = _execute_limited_query(engine, statement, limit, offset)
-        response.column_origins = analyze_query_column_origins(
-            engine, statement, response.columns, database, pg_database
+        statement_type = sqlparse.parse(statement)[0].get_type().upper()
+        response.column_origins = (
+            analyze_query_column_origins(engine, statement, response.columns, database, pg_database)
+            if statement_type in LIMITABLE_READONLY_TYPES
+            else {}
         )
         return response
     finally:
@@ -201,6 +216,9 @@ def count_readonly_query(
 
     try:
         statement = _validate_readonly_sql(sql)
+        statement_type = sqlparse.parse(statement)[0].get_type().upper()
+        if statement_type not in LIMITABLE_READONLY_TYPES:
+            raise ValueError("只有 SELECT / WITH 查询支持统计总行数")
         alias_separator = " " if engine.dialect.name == "oracle" else " AS "
         count_sql = (
             "SELECT COUNT(*) AS __datadjinn_total_count FROM "
@@ -294,12 +312,19 @@ def _mongo_response_from_documents(documents: list[dict[str, Any]], limited: boo
     return QueryResponse(columns=columns, rows=documents, row_count=len(documents), limited=limited)
 
 
-def _preview_mongo_collection(engine: Engine, collection_name: str, limit: int | None, offset: int, database_name: str | None = None) -> QueryResponse:
+def _preview_mongo_collection(
+    engine: Engine,
+    collection_name: str,
+    limit: int | None,
+    offset: int,
+    database_name: str | None = None,
+    filter_document: dict[str, Any] | None = None,
+) -> QueryResponse:
     target_db = database_name or mongo_default_database(engine)
     if not target_db:
         raise ValueError("请选择 MongoDB 数据库")
 
-    cursor = engine[target_db][collection_name].find({}).skip(offset)
+    cursor = engine[target_db][collection_name].find(filter_document or {}).skip(offset)
     if limit is not None:
         cursor = cursor.limit(limit + 1)
     raw_documents = [serialize_mongo_document(document) for document in cursor]
@@ -555,11 +580,13 @@ def _execute_mongo_statement(engine: Engine, statement: str, limit: int | None, 
         raise ValueError("MongoDB 当前支持 db.<collection>.find({...}) 查询、db.createCollection(\"collection\") 创建集合、insertOne/insertMany 插入文档")
 
     if ".find" in statement:
-        collection_name = statement.removeprefix("db.").split(".find", 1)[0].strip()
-        if not collection_name:
-            raise ValueError("无法识别 MongoDB 集合名称")
-
-        return _preview_mongo_collection(engine, collection_name, limit, offset, target_db)
+        collection_name, raw_filter = _parse_mongo_collection_method_args(statement, "find")
+        filter_document = _parse_mongo_python_literal(raw_filter) if raw_filter else {}
+        if not isinstance(filter_document, dict):
+            raise ValueError("MongoDB find 参数必须是过滤条件对象")
+        return _preview_mongo_collection(
+            engine, collection_name, limit, offset, target_db, filter_document
+        )
 
     if statement.startswith("db.createCollection"):
         collection_name = _parse_mongo_create_collection_name(statement)
@@ -660,7 +687,16 @@ def _parse_mongo_quoted_name(value: str) -> str:
 
 def _parse_mongo_python_literal(value: str) -> Any:
     try:
-        return ast.literal_eval(value.replace("null", "None").replace("true", "True").replace("false", "False"))
+        parsed = ast.parse(value, mode="eval")
+
+        class MongoLiteralNames(ast.NodeTransformer):
+            def visit_Name(self, node: ast.Name) -> ast.AST:
+                literal_values = {"null": None, "true": True, "false": False}
+                if node.id not in literal_values:
+                    return node
+                return ast.copy_location(ast.Constant(value=literal_values[node.id]), node)
+
+        return ast.literal_eval(MongoLiteralNames().visit(parsed))
     except (SyntaxError, ValueError) as exc:
         raise ValueError("MongoDB 文档参数必须是可解析的对象字面量，字符串键和值请使用引号") from exc
 
@@ -684,7 +720,13 @@ def _execute_on_connection_with_context(engine: Engine, sql: str, limit: int | N
         with apply_query_timeout(connection):
             result = connection.execute(text(limited_sql))
             columns = _visible_result_columns(result.keys())
-            raw_rows = result.mappings().fetchall()
+            mappings = result.mappings()
+            statement_type = sqlparse.parse(sql)[0].get_type().upper()
+            raw_rows = (
+                mappings.fetchall()
+                if limit is None or statement_type in LIMITABLE_READONLY_TYPES
+                else mappings.fetchmany(limit + 1)
+            )
 
     limited = limit is not None and len(raw_rows) > limit
     visible_rows = raw_rows if limit is None else raw_rows[:limit]
@@ -703,6 +745,7 @@ def preview_table(
     where: str | None = None,
     sort_column: str | None = None,
     sort_direction: str | None = None,
+    preserve_sql_types: bool = False,
 ) -> QueryResponse:
     if is_elasticsearch_client(engine):
         return _preview_elasticsearch_index(
@@ -723,7 +766,10 @@ def preview_table(
 
             engine = create_engine(engine.url.set(database=pg_database), pool_pre_ping=True)
             try:
-                return _preview_table_impl(engine, table_name, limit, offset, database_name, where, sort_column, sort_direction)
+                return _preview_table_impl(
+                    engine, table_name, limit, offset, database_name, where, sort_column, sort_direction,
+                    preserve_sql_types,
+                )
             finally:
                 engine.dispose()
 
@@ -731,11 +777,17 @@ def preview_table(
         if callable(factory):
             next_engine = factory(pg_database)
             try:
-                return _preview_table_impl(next_engine, table_name, limit, offset, database_name, where, sort_column, sort_direction)
+                return _preview_table_impl(
+                    next_engine, table_name, limit, offset, database_name, where, sort_column, sort_direction,
+                    preserve_sql_types,
+                )
             finally:
                 next_engine.dispose()
 
-    return _preview_table_impl(engine, table_name, limit, offset, database_name, where, sort_column, sort_direction)
+    return _preview_table_impl(
+        engine, table_name, limit, offset, database_name, where, sort_column, sort_direction,
+        preserve_sql_types,
+    )
 
 
 def _preview_table_impl(
@@ -747,6 +799,7 @@ def _preview_table_impl(
     where: str | None = None,
     sort_column: str | None = None,
     sort_direction: str | None = None,
+    preserve_sql_types: bool = False,
 ) -> QueryResponse:
     from app.db.metadata import list_columns
 
@@ -769,7 +822,7 @@ def _preview_table_impl(
             primary_key_columns = []
     order_sql = _build_preview_order_sql(engine, resolved_sort_column, resolved_sort_direction, primary_key_columns)
     query = f"SELECT * FROM {quoted_table}{f' WHERE {where_sql}' if where_sql else ''}{order_sql}"
-    result = _execute_limited_query(engine, query, limit, offset)
+    result = _execute_limited_query(engine, query, limit, offset, preserve_sql_types)
     result.total_count = _resolve_preview_total_count(result, limit, offset, engine, quoted_table, where_sql)
     result.sort_column = resolved_sort_column or (primary_key_columns[0] if len(primary_key_columns) == 1 else None)
     result.sort_direction = resolved_sort_direction or ("ascend" if primary_key_columns else None)
@@ -906,18 +959,26 @@ def _count_preview_rows(engine: Engine, quoted_table: str, where_sql: str) -> in
         return None
 
 
-def _execute_limited_query(engine: Engine, sql: str, limit: int | None, offset: int = 0) -> QueryResponse:
+def _execute_limited_query(
+    engine: Engine, sql: str, limit: int | None, offset: int = 0, preserve_sql_types: bool = False
+) -> QueryResponse:
     limited_sql = sql if limit is None else _with_limit(engine, sql, limit + 1, offset)
 
     with engine.connect() as connection:
         with apply_query_timeout(connection):
             result = connection.execute(text(limited_sql))
             columns = _visible_result_columns(result.keys())
-            raw_rows = result.mappings().fetchall()
+            mappings = result.mappings()
+            statement_type = sqlparse.parse(sql)[0].get_type().upper()
+            raw_rows = (
+                mappings.fetchall()
+                if limit is None or statement_type in LIMITABLE_READONLY_TYPES
+                else mappings.fetchmany(limit + 1)
+            )
 
     limited = limit is not None and len(raw_rows) > limit
     visible_rows = raw_rows if limit is None else raw_rows[:limit]
-    rows = _query_rows(visible_rows, columns)
+    rows = _query_rows(visible_rows, columns, preserve_sql_types)
 
     return QueryResponse(columns=[column_name for _, column_name in columns], rows=rows, row_count=len(rows), limited=limited)
 
@@ -1026,15 +1087,70 @@ def _validate_single_sql(sql: str) -> str:
 def _validate_readonly_sql(sql: str) -> str:
     statement = sqlparse.parse(_validate_single_sql(sql))[0]
     statement_type = statement.get_type().upper()
+    if statement_type == "UNKNOWN":
+        statement_type = next(
+            (
+                token.value.upper()
+                for token in statement.flatten()
+                if not token.is_whitespace and token.ttype not in Comment
+            ),
+            "UNKNOWN",
+        )
 
     if statement_type not in READONLY_TYPES:
         raise ValueError("只允许执行只读查询")
+
+    tokens = [
+        token
+        for token in statement.flatten()
+        if not token.is_whitespace and token.ttype not in Comment
+    ]
+    if any(token.ttype in DML and token.normalized in {"INSERT", "UPDATE", "DELETE", "REPLACE"} for token in tokens):
+        raise ValueError("只允许执行只读查询")
+
+    normalized_tokens = [token.normalized.upper() for token in tokens]
+    if "INTO" in normalized_tokens:
+        raise ValueError("只允许执行只读查询")
+    if any(
+        normalized_tokens[index] == "FOR"
+        and normalized_tokens[index + 1] in {"UPDATE", "SHARE", "KEY"}
+        for index in range(len(normalized_tokens) - 1)
+    ):
+        raise ValueError("只允许执行只读查询")
+
+    if statement_type == "PRAGMA":
+        match = re.match(r"(?is)^\s*PRAGMA\s+(?:[A-Za-z_]\w*\s*\.\s*)?([A-Za-z_]\w*)\b(.*)$", str(statement))
+        readonly_pragmas = {
+            "application_id", "cache_size", "collation_list", "compile_options", "data_version",
+            "database_list", "freelist_count", "foreign_key_check", "foreign_key_list", "foreign_keys",
+            "function_list", "index_info", "index_list", "index_xinfo", "integrity_check", "journal_mode",
+            "module_list", "page_count", "page_size", "pragma_list", "query_only", "quick_check",
+            "recursive_triggers", "schema_version", "table_info", "table_list", "table_xinfo", "user_version",
+        }
+        parameterized_readonly_pragmas = {
+            "foreign_key_check", "foreign_key_list", "index_info", "index_list", "index_xinfo",
+            "integrity_check", "quick_check", "table_info", "table_list", "table_xinfo",
+        }
+        if not match or match.group(1).lower() not in readonly_pragmas:
+            raise ValueError("只允许执行只读查询")
+        pragma_name = match.group(1).lower()
+        pragma_arguments = match.group(2).strip()
+        if "=" in pragma_arguments:
+            raise ValueError("只允许执行只读查询")
+        if pragma_arguments and (
+            pragma_name not in parameterized_readonly_pragmas
+            or not re.fullmatch(r"\([^;]*\)", pragma_arguments)
+        ):
+            raise ValueError("只允许执行只读查询")
 
     return str(statement).strip()
 
 
 def _with_limit(engine: Engine, sql: str, limit: int, offset: int = 0) -> str:
     parsed = sqlparse.parse(sql)
+
+    if parsed and parsed[0].get_type().upper() not in LIMITABLE_READONLY_TYPES:
+        return sql
 
     if parsed and any(token.normalized == "LIMIT" for token in parsed[0].flatten()):
         return sql

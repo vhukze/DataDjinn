@@ -2,8 +2,8 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 
 from app.db.connection_manager import connection_manager
 from app.db.error_utils import friendly_error
-from app.data_versioning_runtime import schedule_data_snapshot
-from app.git_versioning.schema_history import contains_schema_mutation, schema_versioning_service
+from app.git_versioning.database_history import database_versioning_service
+from app.git_versioning.schema_history import contains_write_statement, schema_versioning_service
 from app.db.mongo_utils import is_mongo_client
 from app.db.redis_utils import is_redis_client
 from app.db.metadata import apply_redis_data_changes, apply_table_data_changes, create_database, create_oracle_user, create_schema, create_table, drop_database, drop_db_object, ensure_ddl_terminator, get_object_ddl, get_sequence_detail, get_table_comment, list_columns, list_databases, list_db_objects, list_schemas, list_tables, list_versionable_tables, update_table_columns
@@ -35,7 +35,11 @@ def create_database_endpoint(
     if engine is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="连接已关闭，请先打开连接")
 
+    snapshot_id = None
     try:
+        snapshot_id = database_versioning_service.prepare_write_snapshot(
+            connection_id, "创建数据库前结构快照", affected_tables=[], capture_schema=True
+        )
         if engine.dialect.name == "oracle":
             if not request.password:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Oracle 新建用户必须填写密码")
@@ -43,11 +47,13 @@ def create_database_endpoint(
         else:
             created = create_database(engine, request.name)
     except ValueError as exc:
+        database_versioning_service.complete_write_snapshot(connection_id, snapshot_id, False)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
     except Exception as exc:
+        database_versioning_service.complete_write_snapshot(connection_id, snapshot_id, False)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=friendly_error(exc)) from exc
 
-    schema_versioning_service.schedule_snapshot(background_tasks, connection_id, f"创建数据库 {created.name}")
+    database_versioning_service.complete_write_snapshot(connection_id, snapshot_id, True)
     return DatabaseCreateResponse(name=created.name, message="创建成功")
 
 
@@ -60,14 +66,20 @@ def delete_database_endpoint(
     if engine is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="连接已关闭，请先打开连接")
 
+    snapshot_id = None
     try:
+        snapshot_id = database_versioning_service.prepare_write_snapshot(
+            connection_id, f"删除数据库 {database_name} 前快照"
+        )
         drop_database(engine, database_name)
     except ValueError as exc:
+        database_versioning_service.complete_write_snapshot(connection_id, snapshot_id, False)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
     except Exception as exc:
+        database_versioning_service.complete_write_snapshot(connection_id, snapshot_id, False)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=friendly_error(exc)) from exc
 
-    schema_versioning_service.schedule_snapshot(background_tasks, connection_id, f"删除数据库 {database_name}")
+    database_versioning_service.complete_write_snapshot(connection_id, snapshot_id, True)
     return {"message": "数据库删除成功"}
 
 
@@ -88,13 +100,23 @@ def create_schema_endpoint(connection_id: str, request: DatabaseCreateRequest, d
     if engine is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="连接已关闭，请先打开连接")
 
+    snapshot_id = None
     try:
+        snapshot_id = database_versioning_service.prepare_write_snapshot(
+            connection_id,
+            f"创建模式 {request.name} 前结构快照",
+            affected_tables=[],
+            capture_schema=True,
+        )
         create_schema(engine, database or engine.url.database or "postgres", request.name)
     except ValueError as exc:
+        database_versioning_service.complete_write_snapshot(connection_id, snapshot_id, False)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
     except Exception as exc:
+        database_versioning_service.complete_write_snapshot(connection_id, snapshot_id, False)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=friendly_error(exc)) from exc
 
+    database_versioning_service.complete_write_snapshot(connection_id, snapshot_id, True)
     return DatabaseCreateResponse(name=request.name, message="模式创建成功")
 
 
@@ -139,7 +161,15 @@ def create_table_endpoint(
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=friendly_error(exc)) from exc
 
-    schema_versioning_service.schedule_snapshot(background_tasks, connection_id, f"创建表 {request.name}")
+    database_versioning_service.schedule_table_snapshot(
+        background_tasks,
+        connection_id,
+        request.name,
+        request.database,
+        request.pg_database,
+        "创建表后快照",
+        capture_schema=True,
+    )
     return TableCreateResponse(name=request.name, message="创建成功")
 
 
@@ -220,6 +250,7 @@ def execute_routine_endpoint(
     engine = connection_manager.get_engine(connection_id)
     if engine is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="连接已关闭，请先打开连接")
+    snapshot_id = None
     try:
         parameters = list_routine_parameters(
             engine,
@@ -233,7 +264,10 @@ def execute_routine_endpoint(
         ]
         if unknown_names:
             raise ValueError(f"存储过程参数不存在：{', '.join(unknown_names)}")
-        return execute_routine(
+        snapshot_id = database_versioning_service.prepare_write_snapshot(
+            connection_id, f"执行存储过程 {object_name} 前快照"
+        )
+        response = execute_routine(
             engine,
             object_name,
             parameters,
@@ -241,9 +275,13 @@ def execute_routine_endpoint(
             request.database,
             request.pg_database,
         )
+        database_versioning_service.complete_write_snapshot(connection_id, snapshot_id, True)
+        return response
     except ValueError as exc:
+        database_versioning_service.complete_write_snapshot(connection_id, snapshot_id, False)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
     except Exception as exc:
+        database_versioning_service.complete_write_snapshot(connection_id, snapshot_id, False)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=friendly_error(exc)) from exc
 
 
@@ -276,14 +314,27 @@ def delete_object_endpoint(
     if engine is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="连接已关闭，请先打开连接")
 
+    snapshot_id = None
     try:
+        snapshot_id = database_versioning_service.prepare_write_snapshot(
+            connection_id,
+            f"删除 {type} {object_name} 前快照",
+            affected_tables=(
+                [database_versioning_service.table_snapshot_target(connection_id, object_name, database, pg_database)]
+                if type.casefold() == "table"
+                else []
+            ),
+            capture_schema=True,
+        )
         drop_db_object(engine, object_name, type, database, pg_database)
     except ValueError as exc:
+        database_versioning_service.complete_write_snapshot(connection_id, snapshot_id, False)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
     except Exception as exc:
+        database_versioning_service.complete_write_snapshot(connection_id, snapshot_id, False)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=friendly_error(exc)) from exc
 
-    schema_versioning_service.schedule_snapshot(background_tasks, connection_id, f"删除{type} {object_name}")
+    database_versioning_service.complete_write_snapshot(connection_id, snapshot_id, True)
     return {"message": "对象删除成功"}
 
 
@@ -344,21 +395,26 @@ def update_table_data(
     if engine is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="连接已关闭，请先打开连接")
 
+    snapshot_id = None
     try:
+        snapshot_id = database_versioning_service.prepare_write_snapshot(
+            connection_id,
+            f"保存表格 {table_name} 前快照",
+            affected_tables=[
+                database_versioning_service.table_snapshot_target(
+                    connection_id, table_name, database, pg_database
+                )
+            ],
+        )
         apply_table_data_changes(engine, table_name, request, database, pg_database)
     except ValueError as exc:
+        database_versioning_service.complete_write_snapshot(connection_id, snapshot_id, False)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
     except Exception as exc:
+        database_versioning_service.complete_write_snapshot(connection_id, snapshot_id, False)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=friendly_error(exc)) from exc
 
-    schedule_data_snapshot(
-        background_tasks,
-        connection_id,
-        table_name,
-        database,
-        pg_database,
-        "保存表格数据",
-    )
+    database_versioning_service.complete_write_snapshot(connection_id, snapshot_id, True)
     return preview_table(engine, table_name, limit, offset, database, pg_database, where, sort_column, sort_direction)
 
 
@@ -396,7 +452,18 @@ def update_columns(
     if engine is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="连接已关闭，请先打开连接")
 
+    snapshot_id = None
     try:
+        snapshot_id = database_versioning_service.prepare_write_snapshot(
+            connection_id,
+            f"修改表结构 {table_name} 前快照",
+            affected_tables=[
+                database_versioning_service.table_snapshot_target(
+                    connection_id, table_name, database, pg_database
+                )
+            ],
+            capture_schema=True,
+        )
         updated_table_name = update_table_columns(
             engine,
             table_name,
@@ -407,13 +474,13 @@ def update_columns(
             request.table_name,
         )
     except ValueError as exc:
+        database_versioning_service.complete_write_snapshot(connection_id, snapshot_id, False)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
     except Exception as exc:
+        database_versioning_service.complete_write_snapshot(connection_id, snapshot_id, False)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=friendly_error(exc)) from exc
 
-    schema_versioning_service.schedule_snapshot(
-        background_tasks, connection_id, f"修改表结构 {updated_table_name}"
-    )
+    database_versioning_service.complete_write_snapshot(connection_id, snapshot_id, True)
     return ColumnsResponse(
         columns=list_columns(engine, updated_table_name, database, pg_database),
         table_comment=get_table_comment(engine, updated_table_name, database, pg_database),
@@ -437,14 +504,21 @@ def run_sql_file(
         if not stored or not stored.database:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="MySQL 连接未指定默认数据库时，请选择目标数据库")
 
+    snapshot_id = None
     try:
-        response = execute_sql_file(engine, request.sql, request.database, request.pg_database)
-        if response.success_count > 0 and contains_schema_mutation(request.sql):
-            schema_versioning_service.schedule_snapshot(
-                background_tasks, connection_id, "运行 SQL 文件执行结构变更"
+        if contains_write_statement(request.sql):
+            snapshot_id = database_versioning_service.prepare_write_snapshot(
+                connection_id, "SQL 文件执行前快照"
             )
+        response = execute_sql_file(engine, request.sql, request.database, request.pg_database)
+        if response.success_count > 0:
+            database_versioning_service.complete_write_snapshot(connection_id, snapshot_id, True)
+        else:
+            database_versioning_service.complete_write_snapshot(connection_id, snapshot_id, False)
         return response
     except ValueError as exc:
+        database_versioning_service.complete_write_snapshot(connection_id, snapshot_id, False)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=friendly_error(exc)) from exc
     except Exception as exc:
+        database_versioning_service.complete_write_snapshot(connection_id, snapshot_id, False)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=friendly_error(exc)) from exc

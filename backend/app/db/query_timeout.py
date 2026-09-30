@@ -36,13 +36,21 @@ def apply_query_timeout(connection: Connection) -> Iterator[None]:
             raw_connection = connection.connection.driver_connection
             client = raw_connection.client
             previous_timeout = client.get_client_setting("max_execution_time")
+            previous_transport_timeout = getattr(client, "timeout", None)
             client.set_client_setting("max_execution_time", seconds)
+            if previous_transport_timeout is not None:
+                client.timeout = type(previous_transport_timeout)(
+                    connect=previous_transport_timeout.connect_timeout,
+                    read=seconds + 15,
+                )
 
             def restore_clickhouse_timeout() -> None:
                 if previous_timeout is None:
                     client.params.pop("max_execution_time", None)
                 else:
                     client.set_client_setting("max_execution_time", previous_timeout)
+                if previous_transport_timeout is not None:
+                    client.timeout = previous_transport_timeout
 
             cleanup = restore_clickhouse_timeout
     except Exception:
