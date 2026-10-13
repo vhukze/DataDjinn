@@ -206,10 +206,10 @@ const OPTIONAL_MODULE_ARTIFACT_CATALOG: readonly OptionalModuleArtifact[] = [
   },
   {
     id: 'ai',
-    version: '1.0.1',
+    version: '1.0.2',
     artifact: {
-      url: 'https://github.com/vhukze/DataDjinn/releases/download/ai-v1.0.1/datadjinn-ai-1.0.1-win-x64.zip',
-      sha256: '7b51f8b10604b001564c37b5f87286937358b859007a1b5079772f4b824ab5c4'
+      url: 'https://github.com/vhukze/DataDjinn/releases/download/ai-v1.0.2/datadjinn-ai-1.0.2-win-x64.zip',
+      sha256: 'f54118c25257ce4e4b45608ee2b29d6854bf9962526a8b1fe9c90811e75e17b5'
     }
   },
   {

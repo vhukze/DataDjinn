@@ -11,9 +11,16 @@ JDBC_RUNTIME_ENV = "DATADJINN_JDBC_RUNTIME_PATH"
 
 def _runtime_python_path() -> Path | None:
     configured_path = os.environ.get(JDBC_RUNTIME_ENV, "").strip()
-    if not configured_path:
-        return None
-    return Path(configured_path).expanduser() / "python"
+    if configured_path:
+        return Path(configured_path).expanduser() / "python"
+
+    # 独立 AI 进程只接收用户数据目录；复用主程序已安装的桥接模块。
+    data_dir = os.environ.get("DATADJINN_DATA_DIR", "").strip()
+    if data_dir:
+        runtime_path = Path(data_dir).expanduser() / "modules" / "jdbc-runtime" / "current"
+        if (runtime_path / "runtime.json").is_file():
+            return runtime_path / "python"
+    return None
 
 
 def load_jdbc_bridge() -> tuple[ModuleType, ModuleType]:

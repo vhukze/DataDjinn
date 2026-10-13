@@ -17,7 +17,7 @@ VENDORED_JPYPE_PATH = BACKEND_DIR / "vendor" / "jpype15"
 if VENDORED_JPYPE_PATH.exists():
     sys.path.insert(0, str(VENDORED_JPYPE_PATH))
 
-app = FastAPI(title="DataDjinn AI Module", version="1.0.1")
+app = FastAPI(title="DataDjinn AI Module", version="1.0.2")
 
 
 @app.middleware("http")

@@ -14,6 +14,11 @@ class AiModuleEntrypointTests(unittest.TestCase):
         self.assertIn("已有 Elasticsearch 连接不会阻止 AI 扩展启动", prompt)
         self.assertIn("AI 扩展可独立在线更新", prompt)
 
+    def test_global_prompt_describes_shared_jdbc_runtime(self) -> None:
+        prompt = build_system_prompt("none", "未选择上下文")
+        self.assertIn("复用本机已安装的 JDBC 桥接模块与驱动配置", prompt)
+        self.assertIn("仅安装 AI 扩展不能替代尚未安装的 JDBC", prompt)
+
     def test_product_knowledge_keeps_interface_theme_on_the_current_device(self) -> None:
         knowledge = get_product_knowledge()
 
