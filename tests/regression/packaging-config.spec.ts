@@ -330,9 +330,14 @@ test('AI artifact metadata should match the published module version @smoke', ()
   const ai = catalog.modules.find((module) => module.id === 'ai')
 
   expect(ai).toMatchObject({
-    version: '1.0.0',
-    url: 'https://github.com/vhukze/DataDjinn/releases/download/modules-v1.0.0/datadjinn-ai-1.0.0-win-x64.zip'
+    version: '1.0.1',
+    url: 'https://github.com/vhukze/DataDjinn/releases/download/ai-v1.0.1/datadjinn-ai-1.0.1-win-x64.zip'
   })
+  const builder = fs.readFileSync(path.join(projectRoot, 'backend/scripts/build_ai_module.py'), 'utf-8')
+  expect(builder).toContain('"--hidden-import", "elasticsearch"')
+  expect(builder).toContain('"--collect-submodules", "elastic_transport"')
+  expect(mainSource).toContain(ai!.url)
+  expect(mainSource).toContain(catalog.modules.find((module) => module.id === 'ai')!.version)
   expect(mainSource).toContain('OPTIONAL_MODULE_ARTIFACT_CATALOG')
 })
 

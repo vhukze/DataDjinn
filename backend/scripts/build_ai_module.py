@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 import sys
 import zipfile
 from pathlib import Path
@@ -14,9 +13,9 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = BACKEND_DIR.parent
 VENDOR_JPYPE_DIR = BACKEND_DIR / "vendor" / "jpype15"
 DIST_DIR = BACKEND_DIR / "dist" / "modules"
-BUILD_DIR = BACKEND_DIR / "build" / "ai-module"
 MODULE_NAME = "datadjinn-ai"
-MODULE_VERSION = os.environ.get("DATADJINN_AI_MODULE_VERSION", "1.0.0")
+MODULE_VERSION = os.environ.get("DATADJINN_AI_MODULE_VERSION", "1.0.1")
+BUILD_DIR = BACKEND_DIR / "build" / f"ai-module-{MODULE_VERSION}"
 MODULE_ROOT = DIST_DIR / f"{MODULE_NAME}-{MODULE_VERSION}-win-x64"
 ARCHIVE_PATH = DIST_DIR / f"{MODULE_NAME}-{MODULE_VERSION}-win-x64.zip"
 PYINSTALLER_DATA_SEPARATOR = ";" if sys.platform == "win32" else ":"
@@ -50,10 +49,9 @@ def main() -> None:
         raise RuntimeError("AI 模块当前仅生成 Windows x64 包")
     if not _is_complete_vendor_jpype_dir(VENDOR_JPYPE_DIR):
         raise RuntimeError(f"JPype vendor 不完整：{VENDOR_JPYPE_DIR}")
-    if MODULE_ROOT.exists():
-        shutil.rmtree(MODULE_ROOT)
-    if ARCHIVE_PATH.exists():
-        ARCHIVE_PATH.unlink()
+    for target in (MODULE_ROOT, ARCHIVE_PATH, DIST_DIR / MODULE_NAME, BUILD_DIR):
+        if target.exists():
+            raise RuntimeError(f"构建目标已存在，请使用新的版本或输出目录：{target}")
 
     DIST_DIR.mkdir(parents=True, exist_ok=True)
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
@@ -64,8 +62,6 @@ def main() -> None:
         "run_ai_module.py",
         "--name", MODULE_NAME,
         "--onedir",
-        "--clean",
-        "--noconfirm",
         "--distpath", str(DIST_DIR),
         "--workpath", str(BUILD_DIR),
         "--specpath", str(BUILD_DIR),
@@ -76,6 +72,9 @@ def main() -> None:
         "--hidden-import", "redis",
         "--hidden-import", "clickhouse_connect",
         "--collect-submodules", "clickhouse_connect",
+        "--hidden-import", "elasticsearch",
+        "--collect-submodules", "elasticsearch",
+        "--collect-submodules", "elastic_transport",
         "--hidden-import", "oracledb",
         "--collect-submodules", "oracledb",
         "--hidden-import", "jaydebeapi",

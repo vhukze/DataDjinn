@@ -6,8 +6,14 @@ from fastapi.testclient import TestClient
 
 from app.main import app as core_app
 from app.ai.product_knowledge import get_product_knowledge
+from app.ai.agent import build_system_prompt
 from run_ai_module import app as ai_module_app
 class AiModuleEntrypointTests(unittest.TestCase):
+    def test_global_prompt_describes_ai_extension_update(self) -> None:
+        prompt = build_system_prompt("none", "未选择上下文")
+        self.assertIn("已有 Elasticsearch 连接不会阻止 AI 扩展启动", prompt)
+        self.assertIn("AI 扩展可独立在线更新", prompt)
+
     def test_product_knowledge_keeps_interface_theme_on_the_current_device(self) -> None:
         knowledge = get_product_knowledge()
 
