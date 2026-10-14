@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -63,12 +64,31 @@ class ConnectionManagerSshTests(unittest.TestCase):
         created = self.manager.create_connection(self.build_sqlite_request("Created from desktop"))
         self.assertEqual([created.connection_id], [item.connection_id for item in mcp_manager.list_connections()])
 
+        previous_stat = self.connection_store_path.stat()
         self.manager.update_connection(created.connection_id, self.build_sqlite_request("Renamed from desktop"))
+        # Fast atomic replacements can share both size and mtime on Windows.
+        os.utime(self.connection_store_path, ns=(previous_stat.st_atime_ns, previous_stat.st_mtime_ns))
+        self.assertEqual(previous_stat.st_size, self.connection_store_path.stat().st_size)
         refreshed = mcp_manager.list_connections()
         self.assertEqual("Renamed from desktop", refreshed[0].name)
 
         self.assertTrue(self.manager.delete_connection(created.connection_id))
         self.assertEqual([], mcp_manager.list_connections())
+
+    def test_an_update_during_reload_is_not_cached_as_the_snapshot_just_read(self) -> None:
+        created = self.manager.create_connection(self.build_sqlite_request("Initial"))
+        reader = connection_manager_module.ConnectionManager()
+        self.manager.update_connection(created.connection_id, self.build_sqlite_request("First update"))
+        read_snapshot = reader._read_stored_connections
+
+        def read_then_replace():
+            snapshot = read_snapshot()
+            self.manager.update_connection(created.connection_id, self.build_sqlite_request("Second update"))
+            return snapshot
+
+        with patch.object(reader, "_read_stored_connections", side_effect=read_then_replace):
+            self.assertEqual("First update", reader.list_connections()[0].name)
+        self.assertEqual("Second update", reader.list_connections()[0].name)
 
     def test_create_and_restore_connection_preserves_ssh_credentials(self) -> None:
         created = self.manager.create_connection(self.build_ssh_request())

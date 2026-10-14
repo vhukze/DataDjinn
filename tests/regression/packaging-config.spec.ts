@@ -94,6 +94,17 @@ test('release workflow should publish installer and portable packages after pack
   expect(workflow.jobs.build.steps).toContainEqual(
     expect.objectContaining({ run: 'npm run test:update:installed' })
   )
+  const steps = workflow.jobs.build.steps
+  const jdbcPreparation = steps.findIndex((step) => step.run === 'npm run build:module:jdbc')
+  const backendTests = steps.findIndex((step) => step.name === 'Run backend unit tests')
+  expect(jdbcPreparation).toBeGreaterThanOrEqual(0)
+  expect(jdbcPreparation).toBeLessThan(backendTests)
+  const loadingVerification = steps.findIndex((step) => step.name === 'Verify packaged table loading and native double click')
+  expect(loadingVerification).toBeGreaterThan(steps.findIndex((step) => step.name === 'Build packages'))
+  expect(steps[loadingVerification].run).toContain('DATADJINN_REGRESSION_EXECUTABLE')
+  expect(steps[loadingVerification].run).toContain('opening a table should show its tab and loading state')
+  expect(steps[loadingVerification].run).toContain('double clicking the right edge')
+  expect(loadingVerification).toBeLessThan(steps.findIndex((step) => step.run === 'npm run test:update:installed'))
 })
 
 test('main app update feed should ignore extension-only releases @smoke', () => {

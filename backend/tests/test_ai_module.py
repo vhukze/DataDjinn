@@ -20,6 +20,7 @@ class AiModuleEntrypointTests(unittest.TestCase):
         prompt = build_system_prompt("none", "未选择上下文")
         self.assertIn("连接树后台计算表大小时保留已经展开的字段节点", prompt)
         self.assertIn("树节点悬停和选中时保持位置不变", prompt)
+        self.assertIn("文件大小和修改时间相同", prompt)
         self.assertIn("仅更新大小统计", prompt)
 
     def test_global_prompt_describes_ai_extension_update(self) -> None:

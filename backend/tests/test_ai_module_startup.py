@@ -77,7 +77,7 @@ class AiModuleStartupTests(unittest.TestCase):
                 {"id": "fixture", "name": "JDBC fixture", "database_type": "dm",
                  "driver_type": "jdbc", "path": str(jar), "enabled": True},
             ]}), encoding="utf-8")
-            java_home = PROJECT_ROOT / "backend/dist/modules/datadjinn-jre-17.0.20+8-win-x64/jre"
+            java_home = Path(shutil.which("javac")).resolve().parent.parent
             (data_dir / "jdbc_runtime.json").write_text(json.dumps({"enabled": True,
                 "java_home": str(java_home)}), encoding="utf-8")
             connections = json.loads(store.read_text(encoding="utf-8"))

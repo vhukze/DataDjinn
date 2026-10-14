@@ -654,7 +654,7 @@ class ConnectionManager:
         self._opening_connection_attempts: dict[str, str] = {}
         self._cancelled_open_attempts: set[tuple[str, str]] = set()
         self._connection_open_lock = threading.RLock()
-        self._connection_store_signature: tuple[int, int] | None = None
+        self._connection_store_signature: tuple[int, int, int, int] | None = None
         self._load_stored_connections()
 
     def test_connection(self, request: ConnectionRequest) -> None:
@@ -947,21 +947,23 @@ class ConnectionManager:
         return True
 
     def _load_stored_connections(self) -> None:
+        signature = self._connection_store_file_signature()
         stored_connections = self._read_stored_connections()
         if stored_connections is None:
             return
 
         self._replace_stored_connections(stored_connections)
-        self._connection_store_signature = self._connection_store_file_signature()
+        self._connection_store_signature = signature
 
-    def _connection_store_file_signature(self) -> tuple[int, int]:
+    def _connection_store_file_signature(self, path: Path | None = None) -> tuple[int, int, int, int]:
         try:
-            stat = CONNECTION_STORE_PATH.stat()
+            stat = (path or CONNECTION_STORE_PATH).stat()
         except FileNotFoundError:
-            return (0, 0)
+            return (0, 0, 0, 0)
         except OSError:
-            return (-1, -1)
-        return (stat.st_mtime_ns, stat.st_size)
+            return (-1, -1, -1, -1)
+        # Atomic replacements may keep size and mtime. File identity still changes.
+        return (stat.st_mtime_ns, stat.st_size, stat.st_dev, stat.st_ino)
 
     def _read_stored_connections(self) -> dict[str, StoredConnection] | None:
         if not CONNECTION_STORE_PATH.exists():
@@ -1008,7 +1010,9 @@ class ConnectionManager:
             return
 
         self._replace_stored_connections(stored_connections)
-        self._connection_store_signature = self._connection_store_file_signature()
+        # Do not label an older read with a newer file's signature if a writer
+        # replaced the file while the snapshot was being loaded.
+        self._connection_store_signature = signature
 
     def _replace_stored_connections(self, stored_connections: dict[str, StoredConnection]) -> None:
         resources_to_dispose: list[
@@ -1240,8 +1244,9 @@ class ConnectionManager:
         data = {"connections": [connection.model_dump() for connection in self._stored_connections.values()]}
         temporary_path = CONNECTION_STORE_PATH.with_name(f"{CONNECTION_STORE_PATH.name}.tmp")
         temporary_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        signature = self._connection_store_file_signature(temporary_path)
         temporary_path.replace(CONNECTION_STORE_PATH)
-        self._connection_store_signature = self._connection_store_file_signature()
+        self._connection_store_signature = signature
 
     def _ping_engine(self, engine: Engine | MongoClient | Redis | ElasticsearchClient) -> None:
         if is_elasticsearch_client(engine):
