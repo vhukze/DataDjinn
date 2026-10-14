@@ -2376,6 +2376,52 @@ test.describe('workspace regression', () => {
     }
   })
 
+  test('background update failures should preserve table interactions @bug', async () => {
+    test.skip(!process.env.DATADJINN_REGRESSION_EXECUTABLE, '验证正式包的启动后台更新')
+    const electronApp = await launchRegressionApp()
+    try {
+      await electronApp.evaluate(() => {
+        const { NsisUpdater } = process.mainModule.require('electron-updater')
+        globalThis.__backgroundUpdateCalls = 0
+        NsisUpdater.prototype.checkForUpdates = function () {
+          globalThis.__backgroundUpdateCalls++
+          const error = new Error('update metadata unavailable for regression')
+          this.emit('error', error)
+          return Promise.reject(error)
+        }
+        const originalFetch = globalThis.fetch
+        globalThis.fetch = async (url, options) => {
+          if (String(url).startsWith('https://api.github.com/repos/vhukze/DataDjinn/releases?')) {
+            return new Response(JSON.stringify([{
+              tag_name: 'v99.0.0', published_at: '2026-10-14T00:00:00Z',
+              name: 'DataDjinn v99.0.0', assets: []
+            }]), { headers: { 'Content-Type': 'application/json' } })
+          }
+          return originalFetch(url, options)
+        }
+      })
+      const page = await electronApp.firstWindow()
+      await page.evaluate(() => window.api.setAutoCheckUpdates(true))
+      await waitForAppReady(page)
+      await expect.poll(() => electronApp.evaluate(() => globalThis.__backgroundUpdateCalls)).toBe(1)
+      await waitForBrowserIdle(page)
+      await expect(page.getByText('update metadata unavailable for regression')).toHaveCount(0)
+      await openFixtureConnection(page)
+      await openFixtureTable(page, smallTableName)
+      const whereField = page.locator('.workspace-active-content .preview-where-field input')
+      await whereField.fill('id = 2')
+      await whereField.press('Enter')
+      await expect(page.locator('.workspace-active-content .result-table .ant-table-tbody')).toContainText('beta')
+      await expect(page.locator('.workspace-active-content .result-table .ant-table-row')).toHaveCount(1)
+      // A manual check still reports the same failure to the user.
+      await page.evaluate(() => window.api.checkForUpdates().catch(() => undefined))
+      await expect(page.getByText('update metadata unavailable for regression')).toBeVisible()
+      await page.evaluate(() => window.api.setAutoCheckUpdates(false))
+    } finally {
+      await electronApp.close()
+    }
+  })
+
   test('double clicking the right edge of an unselected table row should open it @bug', async () => {
     const electronApp = await launchRegressionApp()
     try {
@@ -2391,8 +2437,27 @@ test.describe('workspace regression', () => {
       await row.hover()
       await page.waitForTimeout(200)
       const box = await row.boundingBox()
+      await page.evaluate(() => {
+        globalThis.__rightEdgeEvents = []
+        for (const type of ['mousedown', 'mouseup', 'click', 'dblclick']) {
+          document.addEventListener(type, (event) => {
+            const target = event.target as Element
+            const title = target.closest('.ant-tree-node-content-wrapper')?.querySelector('[data-tree-node-key]')
+            globalThis.__rightEdgeEvents.push({
+              type,
+              key: title?.getAttribute('data-tree-node-key'),
+              className: target.className,
+              x: event.clientX,
+              y: event.clientY
+            })
+          }, true)
+        }
+      })
       await page.mouse.move(box.x + box.width - 0.25, box.y + box.height / 2)
       await page.mouse.click(box.x + box.width - 0.25, box.y + box.height / 2, { clickCount: 2, delay: 120 })
+      console.log('[right-edge-click]', JSON.stringify({ box, ...await page.evaluate(() => ({
+        dpr: devicePixelRatio, events: globalThis.__rightEdgeEvents
+      })) }))
       const selectedBox = await row.boundingBox()
       expect(selectedBox.x, 'selection must not shift the row between the two clicks').toBe(box.x)
       expect(selectedBox.width).toBe(box.width)
@@ -2686,8 +2751,33 @@ test.describe('workspace regression', () => {
         globalThis.__DATADJINN_TEST_REQUEST_DELAY_MS = 1500
       })
       const whereField = page.locator('.workspace-active-content .preview-where-field input')
+      await whereField.evaluate((input: HTMLInputElement) => {
+        globalThis.__whereKeyEvents = []
+        for (const type of ['keydown', 'beforeinput', 'input', 'focusin', 'focusout']) {
+          document.addEventListener(type, (event) => {
+            globalThis.__whereKeyEvents.push({
+              type, key: event.key, value: event.target.value, className: event.target.className,
+              composing: event.isComposing, sameInput: event.target === input
+            })
+          }, true)
+        }
+      })
       await whereField.fill("name = 'unterminated")
+      console.log('[where-before-enter]', JSON.stringify(await whereField.evaluate((input: HTMLInputElement) => ({
+        value: input.value, start: input.selectionStart, end: input.selectionEnd,
+        options: document.querySelector('.preview-where-suggestions')?.textContent,
+        active: document.activeElement?.tagName, hasFocus: document.hasFocus(),
+        events: globalThis.__whereKeyEvents
+      }))))
       await whereField.press('Enter')
+      console.log('[where-after-enter]', JSON.stringify(await whereField.evaluate((input: HTMLInputElement) => ({
+        value: input.value, start: input.selectionStart, end: input.selectionEnd,
+        options: document.querySelector('.preview-where-suggestions')?.textContent,
+        loading: Boolean(document.querySelector('.workspace-tab-loading')),
+        error: document.querySelector('.result-inline-alert')?.textContent,
+        active: document.activeElement?.tagName, hasFocus: document.hasFocus(),
+        events: globalThis.__whereKeyEvents
+      }))))
       await expect(page.locator('.workspace-tab-loading .ant-spin')).toBeVisible()
       await expect(page.locator('.workspace-active-content .ant-spin')).toHaveCount(1)
       await expect(page.locator('.workspace-active-content .result-table .ant-table-tbody')).toContainText('alpha')

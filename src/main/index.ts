@@ -12,7 +12,7 @@ import icon from '../../resources/icon.ico?asset'
 import { backendManager } from './backend'
 import { AiModuleManager } from './ai-module'
 import { buildConnectionTransferImportDialogOptions } from './connection-transfer-dialog'
-import { extractLatestMainReleaseFromAtom } from './github-release'
+import { selectLatestPublishedMainRelease } from './github-release'
 import { InstallerUpdater } from './installer-update-launcher'
 import { withAbortTimeout } from './api-request'
 import {
@@ -277,6 +277,8 @@ type GitHubRelease = {
   body?: string
   html_url?: string
   published_at?: string
+  draft?: boolean
+  prerelease?: boolean
   assets?: UpdateAsset[]
 }
 
@@ -336,7 +338,7 @@ const MAX_QUERY_TIMEOUT_MINUTES = 120
 const GITHUB_PROJECT_URL = 'https://github.com/vhukze/DataDjinn'
 const OPTIONAL_MODULE_CATALOG_URL =
   'https://raw.githubusercontent.com/vhukze/DataDjinn/main/module-catalog.json'
-const GITHUB_RELEASES_ATOM_URL = `${GITHUB_PROJECT_URL}/releases.atom`
+const GITHUB_RELEASES_API_URL = 'https://api.github.com/repos/vhukze/DataDjinn/releases'
 const GITHUB_RELEASE_DOWNLOAD_URL = 'https://github.com/vhukze/DataDjinn/releases/download'
 const appUpdateMode = process.env.PORTABLE_EXECUTABLE_DIR ? 'portable' : 'installer'
 let latestPortableUpdate: UpdateInfo | null = null
@@ -1360,34 +1362,21 @@ const getOptionalModuleArtifacts = async (): Promise<readonly OptionalModuleArti
 }
 
 const fetchLatestRelease = async (): Promise<GitHubRelease> => {
-  const response = await fetch(GITHUB_RELEASES_ATOM_URL, { headers: githubHeaders, cache: 'no-store' })
-
-  if (!response.ok) {
-    throw new Error(`检查更新失败：HTTP ${response.status}`)
+  // The Atom feed also lists bare Git tags, including candidates without assets.
+  // The releases API describes actual publications and their uploaded assets.
+  for (let page = 1; ; page++) {
+    const response = await fetch(`${GITHUB_RELEASES_API_URL}?per_page=100&page=${page}`, {
+      headers: githubHeaders, cache: 'no-store'
+    })
+    if (!response.ok) {
+      throw new Error(`检查更新失败：HTTP ${response.status}`)
+    }
+    const releases = await response.json() as GitHubRelease[]
+    const release = selectLatestPublishedMainRelease(releases)
+    if (release) return release
+    if (releases.length < 100) break
   }
-
-  const feed = await response.text()
-  const release = extractLatestMainReleaseFromAtom(feed)
-  if (!release) {
-    throw new Error('检查更新失败：没有找到主程序正式版本发布')
-  }
-  const version = normalizeVersion(release.tagName)
-  return {
-    tag_name: release.tagName,
-    name: release.name,
-    body: release.body,
-    html_url: `${GITHUB_PROJECT_URL}/releases/tag/${release.tagName}`,
-    assets: [
-      {
-        name: `DataDjinn-${version}-setup.exe`,
-        browser_download_url: `${GITHUB_RELEASE_DOWNLOAD_URL}/${release.tagName}/DataDjinn-${version}-setup.exe`
-      },
-      {
-        name: `DataDjinn-${version}-win.zip`,
-        browser_download_url: `${GITHUB_RELEASE_DOWNLOAD_URL}/${release.tagName}/DataDjinn-${version}-win.zip`
-      }
-    ]
-  }
+  throw new Error('检查更新失败：没有找到主程序正式版本发布')
 }
 
 const configureInstallerUpdateFeed = (release: GitHubRelease): void => {
@@ -1441,6 +1430,7 @@ const checkForUpdatesInBackground = async (): Promise<void> => {
 
     const release = await fetchLatestRelease()
     latestInstallerUpdate = releaseToUpdateInfo(release)
+    if (!latestInstallerUpdate.available) return
     configureInstallerUpdateFeed(release)
     await autoUpdater.checkForUpdates()
   } catch {
@@ -1672,7 +1662,9 @@ autoUpdater.on('update-downloaded', (info) => {
 })
 
 autoUpdater.on('error', (error) => {
-  sendUpdateEvent('update:error', error.message)
+  if (!backgroundUpdateCheckRunning) {
+    sendUpdateEvent('update:error', error.message)
+  }
 })
 
 function createWindow(): void {

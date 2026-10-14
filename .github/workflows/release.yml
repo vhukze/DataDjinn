@@ -74,6 +74,9 @@ jobs:
       - name: Run Electron regression tests
         run: npm run test:regression:smoke -- --grep-invert=@bug
 
+      - name: Verify table interactions before packaging
+        run: npx playwright test -c playwright.regression.config.js tests/regression/workspace-regression.spec.ts --grep "opening a table should show its tab and loading state|double clicking the right edge|background update failures"
+
       - name: Build packages
         run: ${{ matrix.build_command }}
 
@@ -84,10 +87,18 @@ jobs:
         shell: pwsh
         run: |
           $env:DATADJINN_REGRESSION_EXECUTABLE = (Resolve-Path dist/win-unpacked/DataDjinn.exe).Path
-          npx playwright test -c playwright.regression.config.js tests/regression/workspace-regression.spec.ts --grep "opening a table should show its tab and loading state|double clicking the right edge"
+          npx playwright test -c playwright.regression.config.js tests/regression/workspace-regression.spec.ts --grep "opening a table should show its tab and loading state|double clicking the right edge|background update failures"
 
       - name: Verify real installed update and relaunch
         run: npm run test:update:installed
+
+      - name: Upload failed regression diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failed-regression-${{ matrix.label }}
+          path: test-results/
+          if-no-files-found: ignore
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4

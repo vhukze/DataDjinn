@@ -9,6 +9,12 @@ from app.ai.product_knowledge import get_product_knowledge
 from app.ai.agent import build_system_prompt
 from run_ai_module import app as ai_module_app
 class AiModuleEntrypointTests(unittest.TestCase):
+    def test_global_prompt_describes_published_updates_and_background_errors(self) -> None:
+        prompt = build_system_prompt("none", "未选择上下文")
+        self.assertIn("仅识别已正式发布的主程序版本", prompt)
+        self.assertIn("后台检查失败不会弹窗打断操作", prompt)
+        self.assertIn("手动检查失败时会显示错误", prompt)
+
     def test_global_prompt_describes_connection_opening_and_initial_table_loading(self) -> None:
         prompt = build_system_prompt("none", "未选择上下文")
         self.assertIn("只展开连接这一层", prompt)

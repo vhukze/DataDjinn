@@ -105,6 +105,10 @@ test('release workflow should publish installer and portable packages after pack
   expect(steps[loadingVerification].run).toContain('opening a table should show its tab and loading state')
   expect(steps[loadingVerification].run).toContain('double clicking the right edge')
   expect(loadingVerification).toBeLessThan(steps.findIndex((step) => step.run === 'npm run test:update:installed'))
+  const sourceVerification = steps.findIndex((step) => step.name === 'Verify table interactions before packaging')
+  expect(sourceVerification).toBeGreaterThan(steps.findIndex((step) => step.name === 'Run Electron regression tests'))
+  expect(sourceVerification).toBeLessThan(steps.findIndex((step) => step.name === 'Build packages'))
+  expect(steps).toContainEqual(expect.objectContaining({ name: 'Upload failed regression diagnostics', if: 'failure()', uses: 'actions/upload-artifact@v4' }))
 })
 
 test('main app update feed should ignore extension-only releases @smoke', () => {
@@ -115,9 +119,8 @@ test('main app update feed should ignore extension-only releases @smoke', () => 
     'utf-8'
   )
 
-  expect(mainSource).toContain('const GITHUB_RELEASES_ATOM_URL')
-  expect(mainSource).toContain('releases.atom')
-  expect(mainSource).toContain('extractLatestMainReleaseFromAtom(feed)')
+  expect(mainSource).toContain('const GITHUB_RELEASES_API_URL')
+  expect(mainSource).toContain('selectLatestPublishedMainRelease(releases)')
   expect(mainSource).toContain("from './github-release'")
   expect(mainSource).toContain('没有找到主程序正式版本发布')
   expect(mainSource).toContain('configureInstallerUpdateFeed(release)')
@@ -195,6 +198,26 @@ test('GitHub release atom parser keeps main release notes and skips module relea
     name: 'DataDjinn v0.3.12',
     body: '<h1>DataDjinn v0.3.12</h1>\n<ul>\n<li>修复在线更新</li>\n</ul>'
   })
+})
+
+test('update discovery excludes unpublished tags, drafts, prereleases and extension releases @smoke', () => {
+  const filename = path.join(__dirname, '..', '..', 'src', 'main', 'github-release.ts')
+  const source = fs.readFileSync(filename, 'utf-8')
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 }
+  }).outputText
+  const releaseModule = new Module(filename)
+  releaseModule._compile(compiled, filename)
+  const { selectLatestPublishedMainRelease } = releaseModule.exports as typeof import('../../src/main/github-release')
+  const published = { tag_name: 'v0.3.19', published_at: '2026-09-30T00:37:20Z', assets: [{ name: 'latest.yml' }] }
+  expect(selectLatestPublishedMainRelease([
+    { tag_name: 'v0.3.20' },
+    { tag_name: 'v0.3.21', draft: true, published_at: '2026-10-14' },
+    { tag_name: 'v0.3.22', prerelease: true, published_at: '2026-10-14' },
+    { tag_name: 'ai-v1.0.2', published_at: '2026-10-13' },
+    published
+  ])).toBe(published)
+  expect(selectLatestPublishedMainRelease([{ tag_name: 'v0.3.20' }])).toBeUndefined()
 })
 
 test('a transient API fetch failure should not restart a healthy backend @smoke', () => {

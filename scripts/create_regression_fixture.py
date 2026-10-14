@@ -171,6 +171,9 @@ def main() -> int:
     db_path = run_dir / "regression-fixture.sqlite"
     build_fixture_db(db_path)
     write_connections(run_dir, db_path)
+    (run_dir / "config.json").write_text(
+        json.dumps({"autoCheckUpdates": False}), encoding="utf-8"
+    )
     (root_dir / "current.json").write_text(
         json.dumps({"current_user_data_dir": str(run_dir)}, ensure_ascii=False, indent=2),
         encoding="utf-8",

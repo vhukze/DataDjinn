@@ -6,6 +6,17 @@ export type AtomRelease = {
 
 const MAIN_RELEASE_TAG_PATTERN = /^v\d+(?:\.\d+){2,3}(?:[-+].*)?$/i
 
+export const selectLatestPublishedMainRelease = <T extends {
+  tag_name: string
+  draft?: boolean
+  prerelease?: boolean
+  published_at?: string
+}>(releases: T[]): T | undefined =>
+  releases.find((release) =>
+    MAIN_RELEASE_TAG_PATTERN.test(release.tag_name) &&
+    !release.draft && !release.prerelease && Boolean(release.published_at)
+  )
+
 const decodeXmlEntities = (value: string): string =>
   value.replace(/&(#x[0-9a-f]+|#\d+|amp|apos|quot|lt|gt);/gi, (entity, token: string) => {
     const normalized = token.toLowerCase()
