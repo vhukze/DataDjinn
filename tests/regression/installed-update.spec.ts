@@ -50,6 +50,18 @@ test('installed application downloads, installs, relaunches and preserves settin
     requested.push(pathname)
     if (pathname.endsWith('/releases.atom')) {
       res.end(`<feed><entry><title>DataDjinn v${version}</title><link href="https://github.com/vhukze/DataDjinn/releases/tag/v${version}"/><content type="html">安装更新通用验证</content></entry></feed>`)
+    } else if (pathname === '/repos/vhukze/DataDjinn/releases') {
+      res.setHeader('content-type', 'application/json')
+      res.end(JSON.stringify([{
+        tag_name: `v${version}`, name: `DataDjinn v${version}`,
+        body: '安装更新通用验证', published_at: '2026-10-14T00:00:00Z',
+        draft: false, prerelease: false,
+        html_url: `https://github.com/vhukze/DataDjinn/releases/tag/v${version}`,
+        assets: [{
+          name: `DataDjinn-${version}-setup.exe`,
+          browser_download_url: `https://github.com/vhukze/DataDjinn/releases/download/v${version}/DataDjinn-${version}-setup.exe`
+        }]
+      }]))
     } else if (pathname.endsWith('/latest.yml')) {
       res.end(metadata)
     } else if (pathname.endsWith(`/DataDjinn-${version}-setup.exe`)) {
@@ -72,7 +84,7 @@ test('installed application downloads, installs, relaunches and preserves settin
       const original = global.fetch
       global.fetch = (input, options) => {
         const url = new URL(String(input))
-        return original(url.hostname === 'github.com' ? origin + url.pathname + url.search : input, options)
+        return original(['github.com', 'api.github.com'].includes(url.hostname) ? origin + url.pathname + url.search : input, options)
       }
       session.fromPartition('electron-updater').webRequest.onBeforeRequest({ urls: ['https://github.com/*'] }, (details, callback) => {
         const url = new URL(details.url)
