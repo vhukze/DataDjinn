@@ -1,7 +1,7 @@
 import { DownOutlined, LoadingOutlined, UpOutlined } from '@ant-design/icons'
 import { Alert, Button, Menu, Tree, Typography } from 'antd'
 import type { MenuProps } from 'antd'
-import { memo, useCallback, useLayoutEffect, useRef, useState } from 'react'
+import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Key, MutableRefObject, RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import ReactBitsDock from '../components/ui/ReactBitsDock'
@@ -255,6 +255,8 @@ const ResourceTreePanel = memo(
 
     const clearPendingTreeSelection = useCallback(() => {}, [])
 
+    const treeExpandedKeys = useMemo(() => [...expandedKeys], [expandedKeys, treeData])
+
     const commitTreeSelection = useCallback(
       (node: DatabaseTreeNode, nativeEvent?: MouseEvent) => {
         // 分组不是可操作资源，避免仅为选中分组而触发 App 级焦点和 AI 上下文重算。
@@ -285,6 +287,99 @@ const ResourceTreePanel = memo(
       },
       [captureTreeScrollPosition, setExpandedKeys]
     )
+
+    const activateTreeNode = (event: MouseEvent, node: DatabaseTreeNode): void => {
+      clearPendingTreeSelection()
+      const startedAt = performance.now()
+      const treeNode = node as DatabaseTreeNode
+      if (treeNode.kind === 'connection' && treeNode.connectionId) {
+        const connection = getConnection(treeNode.connectionId)
+        if (connection && !connection.is_open) {
+          console.info('[perf][tree] open-connection-request', {
+            key: treeNode.key,
+            duration: Number((performance.now() - startedAt).toFixed(2))
+          })
+          void openConnectionById(treeNode.connectionId)
+          window.requestAnimationFrame(() => {
+            commitTreeSelection(treeNode, event)
+          })
+          return
+        }
+      }
+
+      const isPreviewableTreeNode =
+        (treeNode.kind === 'table' || treeNode.kind === 'db-object') &&
+        Boolean(treeNode.connectionId && treeNode.tableName) &&
+        (treeNode.objectType === 'table' || treeNode.objectType === 'view')
+      const previewObjectType: 'table' | 'view' | undefined =
+        treeNode.objectType === 'table' || treeNode.objectType === 'view'
+          ? treeNode.objectType
+          : undefined
+      if (
+        isPreviewableTreeNode &&
+        treeNode.connectionId &&
+        treeNode.tableName &&
+        previewObjectType
+      ) {
+        const connection = getConnection(treeNode.connectionId)
+        if (connection?.database_type !== 'redis') {
+          void previewTable(
+            treeNode.connectionId,
+            treeNode.tableName,
+            treeNode.databaseName,
+            treeNode.pgDatabaseName,
+            previewDefaultLimit,
+            1,
+            '',
+            previewObjectType
+          )
+        }
+      }
+
+      commitTreeSelection(treeNode, event)
+      if (treeNode.kind === 'database' || treeNode.kind === 'pg-schema') {
+        activateAIContextFromNode(treeNode)
+      }
+      if (
+        treeNode.kind === 'database' &&
+        treeNode.connectionId &&
+        treeNode.databaseName &&
+        getConnection(treeNode.connectionId)?.database_type === 'redis'
+      ) {
+        console.info('[perf][tree] open-redis-db', {
+          key: treeNode.key,
+          database: treeNode.databaseName,
+          duration: Number((performance.now() - startedAt).toFixed(2))
+        })
+        activateAIContextFromNode(treeNode)
+        void openRedisDatabaseBrowser(treeNode.connectionId, treeNode.databaseName)
+        return
+      }
+      if (isPreviewableTreeNode) {
+        activateAIContextFromNode(treeNode)
+        const connection = getConnection(treeNode.connectionId)
+        if (connection?.database_type === 'redis') {
+          void openRedisDatabaseBrowser(
+            treeNode.connectionId!,
+            treeNode.databaseName ?? getDefaultDatabaseName(connection) ?? 'db0'
+          )
+        }
+        return
+      }
+      if (treeNode.kind === 'connection' && treeNode.connectionId) {
+        console.info('[perf][tree] toggle-connection', {
+          key: treeNode.key,
+          duration: Number((performance.now() - startedAt).toFixed(2))
+        })
+        toggleOrLoadTreeNode(treeNode)
+        return
+      }
+      console.info('[perf][tree] toggle-node', {
+        key: treeNode.key,
+        duration: Number((performance.now() - startedAt).toFixed(2))
+      })
+      toggleOrLoadTreeNode(treeNode)
+    }
 
     return (
       <>
@@ -320,7 +415,9 @@ const ResourceTreePanel = memo(
                 }}
               />
               <span className="tree-search-counter" aria-live="polite">
-                {treeSearchMatchCount === 0 ? '0/0' : `${treeSearchMatchIndex + 1}/${treeSearchMatchCount}`}
+                {treeSearchMatchCount === 0
+                  ? '0/0'
+                  : `${treeSearchMatchIndex + 1}/${treeSearchMatchCount}`}
               </span>
               <Button
                 className="tree-search-nav-btn"
@@ -407,14 +504,11 @@ const ResourceTreePanel = memo(
                     return
                   }
                   const folderId = connectionFolderAssignments[draggedConnectionId]
-                  draggingConnectionIdsRef.current = (selectedConnectionIds.includes(
-                    draggedConnectionId
-                  )
-                    ? selectedConnectionIds
-                    : [draggedConnectionId]
-                  ).filter(
-                    (connectionId) => connectionFolderAssignments[connectionId] === folderId
-                  )
+                  draggingConnectionIdsRef.current = (
+                    selectedConnectionIds.includes(draggedConnectionId)
+                      ? selectedConnectionIds
+                      : [draggedConnectionId]
+                  ).filter((connectionId) => connectionFolderAssignments[connectionId] === folderId)
                   draggingConnectionFolderIdRef.current = folderId
                 }}
                 onDragOver={({ event }) => {
@@ -425,11 +519,10 @@ const ResourceTreePanel = memo(
                     const draggedConnectionId = draggedConnectionElement?.dataset.connectionId
                     if (draggedConnectionId) {
                       const folderId = connectionFolderAssignments[draggedConnectionId]
-                      draggingConnectionIdsRef.current = (selectedConnectionIds.includes(
-                        draggedConnectionId
-                      )
-                        ? selectedConnectionIds
-                        : [draggedConnectionId]
+                      draggingConnectionIdsRef.current = (
+                        selectedConnectionIds.includes(draggedConnectionId)
+                          ? selectedConnectionIds
+                          : [draggedConnectionId]
                       ).filter(
                         (connectionId) => connectionFolderAssignments[connectionId] === folderId
                       )
@@ -500,12 +593,13 @@ const ResourceTreePanel = memo(
                   )
                 }}
                 treeData={treeData}
-                expandedKeys={expandedKeys}
+                expandedKeys={treeExpandedKeys}
                 titleRender={(node) => renderTreeTitle(node as DatabaseTreeNode)}
                 selectedKeys={selectedTreeKeys}
                 onExpand={(keys, info) => {
                   const node = info.node as DatabaseTreeNode
                   if (node.key && treeLoadingKeysRef.current.has(node.key as Key)) {
+                    setExpandedKeysPreservingScrollPosition(keys)
                     return
                   }
                   if (
@@ -566,105 +660,7 @@ const ResourceTreePanel = memo(
                 }}
                 onDrop={handleTreeDrop as never}
                 onDoubleClick={(event, node) => {
-                  clearPendingTreeSelection()
-                  const startedAt = performance.now()
-                  const treeNode = node as DatabaseTreeNode
-                  if (treeNode.kind === 'connection' && treeNode.connectionId) {
-                    const connection = getConnection(treeNode.connectionId)
-                    if (connection && !connection.is_open) {
-                      console.info('[perf][tree] open-connection-request', {
-                        key: treeNode.key,
-                        duration: Number((performance.now() - startedAt).toFixed(2))
-                      })
-                      void openConnectionById(treeNode.connectionId).then((openedConnection) => {
-                        if (
-                          openedConnection?.is_open &&
-                          openedConnection.database_type !== 'sqlite'
-                        ) {
-                          toggleOrLoadTreeNode({
-                            ...treeNode,
-                            closed: false,
-                            childrenLoaded: false,
-                            isLeaf: false
-                          })
-                        }
-                      })
-                      window.requestAnimationFrame(() => {
-                        commitTreeSelection(treeNode, event.nativeEvent)
-                      })
-                      return
-                    }
-                  }
-
-                  commitTreeSelection(treeNode, event.nativeEvent)
-                  if (treeNode.kind === 'database' || treeNode.kind === 'pg-schema') {
-                    activateAIContextFromNode(treeNode)
-                  }
-                  if (
-                    treeNode.kind === 'database' &&
-                    treeNode.connectionId &&
-                    treeNode.databaseName &&
-                    getConnection(treeNode.connectionId)?.database_type === 'redis'
-                  ) {
-                    console.info('[perf][tree] open-redis-db', {
-                      key: treeNode.key,
-                      database: treeNode.databaseName,
-                      duration: Number((performance.now() - startedAt).toFixed(2))
-                    })
-                    activateAIContextFromNode(treeNode)
-                    void openRedisDatabaseBrowser(treeNode.connectionId, treeNode.databaseName)
-                    return
-                  }
-                  if (
-                    (treeNode.kind === 'table' || treeNode.kind === 'db-object') &&
-                    treeNode.connectionId &&
-                    treeNode.tableName &&
-                    (treeNode.objectType === 'table' || treeNode.objectType === 'view')
-                  ) {
-                    activateAIContextFromNode(treeNode)
-                    const connection = getConnection(treeNode.connectionId)
-                    if (connection?.database_type === 'redis') {
-                      void openRedisDatabaseBrowser(
-                        treeNode.connectionId,
-                        treeNode.databaseName ?? getDefaultDatabaseName(connection) ?? 'db0'
-                      )
-                    } else {
-                      const connectionId = treeNode.connectionId
-                      const tableName = treeNode.tableName
-                      const objectType: 'table' | 'view' = treeNode.objectType
-                      console.info('[perf][tree] preview-table-request', {
-                        key: treeNode.key,
-                        table: tableName,
-                        duration: Number((performance.now() - startedAt).toFixed(2))
-                      })
-                      requestAnimationFrame(() => {
-                        void previewTable(
-                          connectionId,
-                          tableName,
-                          treeNode.databaseName,
-                          treeNode.pgDatabaseName,
-                          previewDefaultLimit,
-                          1,
-                          '',
-                          objectType
-                        )
-                      })
-                    }
-                    return
-                  }
-                  if (treeNode.kind === 'connection' && treeNode.connectionId) {
-                    console.info('[perf][tree] toggle-connection', {
-                      key: treeNode.key,
-                      duration: Number((performance.now() - startedAt).toFixed(2))
-                    })
-                    toggleOrLoadTreeNode(treeNode)
-                    return
-                  }
-                  console.info('[perf][tree] toggle-node', {
-                    key: treeNode.key,
-                    duration: Number((performance.now() - startedAt).toFixed(2))
-                  })
-                  toggleOrLoadTreeNode(treeNode)
+                  activateTreeNode(event.nativeEvent, node as DatabaseTreeNode)
                 }}
               />
             )}

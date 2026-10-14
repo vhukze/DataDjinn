@@ -53,19 +53,23 @@ export const getVisibleConnectionIdsFromTree = (
   expandedKeys: React.Key[]
 ): string[] => {
   const result: string[] = []
-  for (const node of treeData) {
-    if (node.kind === 'connection' && node.connectionId) {
-      result.push(node.connectionId)
-      continue
-    }
-    if (node.kind === 'folder' && node.folderId && expandedKeys.includes(node.key as React.Key)) {
-      for (const child of node.children ?? []) {
-        if (child.kind === 'connection' && child.connectionId) {
-          result.push(child.connectionId)
-        }
+  const visit = (nodes: DatabaseTreeNode[], parentVisible: boolean): void => {
+    for (const node of nodes) {
+      const visible =
+        parentVisible && (node.kind !== 'folder' || expandedKeys.includes(node.key as React.Key))
+      if (!visible) {
+        continue
+      }
+      if (node.kind === 'connection' && node.connectionId) {
+        result.push(node.connectionId)
+        continue
+      }
+      if (node.children?.length) {
+        visit(node.children as DatabaseTreeNode[], visible)
       }
     }
   }
+  visit(treeData, true)
   return result
 }
 
@@ -108,6 +112,7 @@ type TreeRuntimeDeps = {
   setTreeData: React.Dispatch<React.SetStateAction<DatabaseTreeNode[]>>
   treeDataRef: MutableRefObject<DatabaseTreeNode[]>
   treeLoadingKeysRef: MutableRefObject<Set<React.Key>>
+  treeOperationVersionRef?: MutableRefObject<Record<string, number>>
   expandedKeysRef: MutableRefObject<React.Key[]>
   setExpandedKeys: React.Dispatch<React.SetStateAction<React.Key[]>>
   captureTreeScrollPosition?: () => () => void
@@ -153,6 +158,12 @@ export type TreeRuntimeApi = {
 }
 
 export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
+  const getTreeOperationVersion = (connectionId: string): number =>
+    deps.treeOperationVersionRef?.current[connectionId] ?? 0
+
+  const isTreeOperationCurrent = (connectionId: string, version: number): boolean =>
+    getTreeOperationVersion(connectionId) === version
+
   const buildConnectionNode = (connection: ConnectionInfo): DatabaseTreeNode =>
     buildTreeConnectionNode(connection, deps.connectionTypeIcons)
 
@@ -244,24 +255,19 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
     }
 
     const groupKey = `object-group:${connectionId}:${pgDatabaseName ?? ''}:${databaseName ?? ''}:table`
-    const clearLoadingState = (children: DatabaseTreeNode[]): DatabaseTreeNode[] =>
-      children.map((child) =>
-        child.kind === 'table' ? { ...child, sizeLoading: false } : child
-      )
     const cacheGeneration = getObjectGroupCacheGeneration(connectionId)
-    let statsPromise: Promise<void>
-    statsPromise = deps
-      .requestJson<{ objects: DbObjectInfo[] }>(
-        `${tableObjectRequestPath(connectionId, databaseName, pgDatabaseName)}&include_stats=true`
-      )
-      .then(({ objects }) => {
-        if (getObjectGroupCacheGeneration(connectionId) !== cacheGeneration) {
-          return
-        }
-        const statsByName = new Map(objects.map((object) => [object.name, object]))
-        const nextChildren = initialChildren.map((child) => {
+    const applyTableStats = (objects?: DbObjectInfo[]): void => {
+      if (getObjectGroupCacheGeneration(connectionId) !== cacheGeneration) {
+        return
+      }
+      const statsByName = objects && new Map(objects.map((object) => [object.name, object]))
+      const updateStats = (children: DatabaseTreeNode[]): DatabaseTreeNode[] =>
+        children.map((child) => {
           if (child.kind !== 'table' || !child.tableName) {
             return child
+          }
+          if (!statsByName) {
+            return { ...child, sizeLoading: false }
           }
           const stats = statsByName.get(child.tableName)
           return {
@@ -274,25 +280,32 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
             sizeLoading: false
           }
         })
-        objectGroupChildrenCache.set(cacheKey, nextChildren)
-        deps.setTreeData((current) => {
-          const next = updateTreeNode(current, groupKey, nextChildren)
-          deps.treeDataRef.current = next
-          return next
-        })
-      })
-      .catch(() => {
-        if (getObjectGroupCacheGeneration(connectionId) !== cacheGeneration) {
-          return
+      objectGroupChildrenCache.set(
+        cacheKey,
+        updateStats(objectGroupChildrenCache.get(cacheKey) ?? initialChildren)
+      )
+      deps.setTreeData((current) => {
+        const currentGroup = collectTreeNodesByKey(current).get(groupKey)
+        if (!currentGroup?.children) {
+          return current
         }
-        const nextChildren = clearLoadingState(initialChildren)
-        objectGroupChildrenCache.set(cacheKey, nextChildren)
-        deps.setTreeData((current) => {
-          const next = updateTreeNode(current, groupKey, nextChildren)
-          deps.treeDataRef.current = next
-          return next
-        })
+        // 大小统计只更新当前节点的统计字段，不能用请求前的快照清除已加载的列。
+        const next = updateTreeNode(
+          current,
+          groupKey,
+          updateStats(currentGroup.children as DatabaseTreeNode[])
+        )
+        deps.treeDataRef.current = next
+        return next
       })
+    }
+    let statsPromise: Promise<void>
+    statsPromise = deps
+      .requestJson<{ objects: DbObjectInfo[] }>(
+        `${tableObjectRequestPath(connectionId, databaseName, pgDatabaseName)}&include_stats=true`
+      )
+      .then(({ objects }) => applyTableStats(objects))
+      .catch(() => applyTableStats())
       .finally(() => {
         if (tableStatsPromiseCache.get(cacheKey) === statsPromise) {
           tableStatsPromiseCache.delete(cacheKey)
@@ -361,7 +374,11 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
     }
 
     const requestPromise = (async () => {
-      const path = deps.withPgDatabase(`/connections/${connectionId}/objects`, databaseName, pgDatabaseName)
+      const path = deps.withPgDatabase(
+        `/connections/${connectionId}/objects`,
+        databaseName,
+        pgDatabaseName
+      )
       const requestStartedAt = performance.now()
       const data = await deps.requestJson<{ objects: DbObjectInfo[] }>(
         `${path}${databaseName || pgDatabaseName ? '&' : '?'}type=${objectType}`
@@ -438,6 +455,7 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
     databaseName: string,
     selectedSchemaOverride?: string[]
   ): Promise<DatabaseTreeNode[]> => {
+    const operationVersion = getTreeOperationVersion(connection.connection_id)
     if (connection.database_type === 'redis') {
       return []
     }
@@ -452,6 +470,10 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
       const nextSelected = currentSelected
         ? filterPersistedTreeValues(currentSelected, schemaNames)
         : schemaNames
+
+      if (!isTreeOperationCurrent(connection.connection_id, operationVersion)) {
+        return []
+      }
 
       deps.setAllSchemas((current) => ({ ...current, [selectorKey]: schemaNames }))
       deps.setSelectedSchemas((current) => {
@@ -478,6 +500,7 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
     connection: ConnectionInfo,
     selectedDatabaseOverride?: string[]
   ): Promise<DatabaseTreeNode[]> => {
+    const operationVersion = getTreeOperationVersion(connection.connection_id)
     // Elasticsearch 没有数据库层级，索引组直接挂在连接节点下。
     if (connection.database_type === 'elasticsearch') {
       const objectGroups = await preloadObjectGroupNodes(
@@ -486,6 +509,10 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
         undefined,
         connection.database_type
       )
+      if (!isTreeOperationCurrent(connection.connection_id, operationVersion)) {
+        return objectGroups
+      }
+
       deps.setAllDatabases((current) => ({ ...current, [connection.connection_id]: [] }))
       deps.setTreeData((current) => {
         const next = updateTreeNode(current, `connection:${connection.connection_id}`, objectGroups)
@@ -504,6 +531,10 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
     const nextSelected = currentSelected
       ? filterPersistedTreeValues(currentSelected, dbNames)
       : getDefaultSelectedDatabases(connection, dbNames, data.databases)
+
+    if (!isTreeOperationCurrent(connection.connection_id, operationVersion)) {
+      return []
+    }
 
     deps.setAllDatabases((current) => ({ ...current, [connection.connection_id]: dbNames }))
     deps.setSelectedDatabases((current) => {
@@ -609,6 +640,9 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
     }
 
     const key = node.key as React.Key
+    const operationVersion = node.connectionId
+      ? getTreeOperationVersion(node.connectionId)
+      : undefined
     const restoreTreeScrollPosition = deps.captureTreeScrollPosition?.()
     const cachedChildren = getCachedObjectGroupChildren(node)
 
@@ -625,7 +659,12 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
       })
       if (node.objectType === 'table' && cachedChildren.some((child) => child.sizeLoading)) {
         loadTableStats(
-          objectGroupCacheKey(node.connectionId!, node.objectType, node.databaseName, node.pgDatabaseName),
+          objectGroupCacheKey(
+            node.connectionId!,
+            node.objectType,
+            node.databaseName,
+            node.pgDatabaseName
+          ),
           node.connectionId!,
           node.databaseName,
           node.pgDatabaseName,
@@ -646,6 +685,13 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
     deps.notifyTreeLoadingStateChanged()
     try {
       const children = await loadChildrenForNode(node)
+      if (
+        node.connectionId &&
+        operationVersion !== undefined &&
+        !isTreeOperationCurrent(node.connectionId, operationVersion)
+      ) {
+        return
+      }
       console.info('[perf][tree-runtime] load-children-resolved', {
         key,
         kind: node.kind,
@@ -678,20 +724,29 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
           )
         }
       }
-      if (expand && !deps.expandedKeysRef.current.includes(key)) {
-        deps.expandedKeysRef.current = [...deps.expandedKeysRef.current, key]
-        deps.setExpandedKeys(deps.expandedKeysRef.current)
-      }
+      // 展开在请求前提交；响应不能覆盖用户等待期间的收起操作。
       console.info('[perf][tree-runtime] load-children-committed', {
         key,
         kind: node.kind,
         duration: Number((performance.now() - startedAt).toFixed(2))
       })
     } catch (error) {
-      deps.showError(error instanceof Error ? error.message : '加载树节点失败')
+      if (
+        !node.connectionId ||
+        operationVersion === undefined ||
+        isTreeOperationCurrent(node.connectionId, operationVersion)
+      ) {
+        deps.showError(error instanceof Error ? error.message : '加载树节点失败')
+      }
     } finally {
-      deps.treeLoadingKeysRef.current.delete(node.key)
-      deps.notifyTreeLoadingStateChanged()
+      if (
+        !node.connectionId ||
+        operationVersion === undefined ||
+        isTreeOperationCurrent(node.connectionId, operationVersion)
+      ) {
+        deps.treeLoadingKeysRef.current.delete(node.key)
+        deps.notifyTreeLoadingStateChanged()
+      }
       restoreTreeScrollPosition?.()
     }
   }
@@ -710,6 +765,9 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
     databaseName?: string,
     pgDatabaseName?: string
   ): Promise<void> => {
+    const operationVersion = getTreeOperationVersion(connection.connection_id)
+    const canCommit = (): boolean =>
+      isTreeOperationCurrent(connection.connection_id, operationVersion)
     const connectionKey = `connection:${connection.connection_id}`
     const nextExpandedKeys = new Set(deps.expandedKeysRef.current.map(String))
     nextExpandedKeys.add(connectionKey)
@@ -734,6 +792,9 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
         ? Array.from(new Set([...currentSelectedDatabases, requiredDatabase]))
         : currentSelectedDatabases
       const connectionChildren = await preloadConnectionTree(connection, selectedDatabaseOverride)
+      if (!canCommit()) {
+        return
+      }
       if (connectionChildren.length > 0) {
         updateTreeNodeSnapshot(connectionKey, connectionChildren)
       }
@@ -752,6 +813,9 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
         pgDatabaseName,
         selectedSchemaOverride
       )
+      if (!canCommit()) {
+        return
+      }
       updateTreeNodeSnapshot(databaseKey, schemaChildren)
 
       if (databaseName) {
@@ -763,12 +827,18 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
           pgDatabaseName,
           connection.database_type
         )
+        if (!canCommit()) {
+          return
+        }
         updateTreeNodeSnapshot(schemaKey, objectGroupChildren)
       }
     } else if (databaseName && connection.database_type !== 'redis') {
       const databaseKey = `database:${connection.connection_id}:${databaseName}`
       nextExpandedKeys.add(databaseKey)
       const databaseChildren = await preloadDatabaseChildren(connection, databaseName)
+      if (!canCommit()) {
+        return
+      }
       updateTreeNodeSnapshot(databaseKey, databaseChildren)
     }
 
@@ -788,14 +858,17 @@ export const createTreeRuntime = (deps: TreeRuntimeDeps): TreeRuntimeApi => {
     if (!node.key || !isLoadableTreeNode(node)) {
       return
     }
-    if (deps.treeLoadingKeysRef.current.has(node.key as React.Key)) {
-      return
-    }
-
     const key = node.key as React.Key
     const restoreTreeScrollPosition = deps.captureTreeScrollPosition?.()
     if (deps.expandedKeysRef.current.includes(key)) {
       collapseTreeNode(node)
+      return
+    }
+
+    if (deps.treeLoadingKeysRef.current.has(key)) {
+      deps.expandedKeysRef.current = [...deps.expandedKeysRef.current, key]
+      deps.setExpandedKeys(deps.expandedKeysRef.current)
+      restoreTreeScrollPosition?.()
       return
     }
 

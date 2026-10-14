@@ -357,6 +357,9 @@ const testRoutineNames = (process.env.DATADJINN_TEST_ROUTINE_NAMES ?? '')
   .map((name) => name.trim())
   .filter(Boolean)
 const skipSplashWindow = process.env.DATADJINN_SKIP_SPLASH === '1'
+const hideRegressionWindows = Boolean(
+  testUserDataDir && process.env.DATADJINN_TEST_SHOW_WINDOW !== '1'
+)
 const useCiRegressionScale = Boolean(testUserDataDir && process.env.CI)
 const requestedTestWindowHeight = Number.parseInt(
   process.env.DATADJINN_TEST_WINDOW_HEIGHT ?? '',
@@ -390,10 +393,12 @@ const showMainWindowIfReady = (): void => {
     return
   }
 
-  if (!mainWindowRef.isVisible()) {
-    mainWindowRef.show()
+  if (!hideRegressionWindows) {
+    if (!mainWindowRef.isVisible()) {
+      mainWindowRef.show()
+    }
+    mainWindowRef.focus()
   }
-  mainWindowRef.focus()
   closeSplashWindow()
 }
 
@@ -402,10 +407,12 @@ const showMainWindowForStartupFailure = (): void => {
     return
   }
 
-  if (!mainWindowRef.isVisible()) {
-    mainWindowRef.show()
+  if (!hideRegressionWindows) {
+    if (!mainWindowRef.isVisible()) {
+      mainWindowRef.show()
+    }
+    mainWindowRef.focus()
   }
-  mainWindowRef.focus()
   closeSplashWindow()
 }
 
@@ -1677,6 +1684,7 @@ function createWindow(): void {
     width: testUserDataDir ? windowWidth : Math.min(windowWidth, width),
     height: testUserDataDir ? windowHeight : Math.min(windowHeight, height),
     show: false,
+    skipTaskbar: hideRegressionWindows,
     frame: false,
     title: 'DataDjinn',
     titleBarStyle: 'hidden',
@@ -1684,7 +1692,11 @@ function createWindow(): void {
     icon,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false
+      sandbox: false,
+      // Hidden native windows run at 1 FPS on Windows. Offscreen rendering
+      // keeps test animations and input responsive without showing the window.
+      offscreen: hideRegressionWindows,
+      backgroundThrottling: !hideRegressionWindows
     }
   })
   mainWindowRef = mainWindow
@@ -1740,7 +1752,9 @@ function createSplashWindow(): void {
     backgroundColor: '#00000000',
     icon,
     webPreferences: {
-      sandbox: false
+      sandbox: false,
+      offscreen: hideRegressionWindows,
+      backgroundThrottling: !hideRegressionWindows
     }
   })
 
@@ -1941,7 +1955,9 @@ function createSplashWindow(): void {
       splashWindow.destroy()
       return
     }
-    splashWindow.show()
+    if (!hideRegressionWindows) {
+      splashWindow.show()
+    }
   })
 }
 
@@ -1967,7 +1983,7 @@ async function showMainWindowAfterStartup(): Promise<void> {
   } catch {
     // 主窗口内继续展示启动/错误状态
   } finally {
-    if (mainWindowRef && !mainWindowRef.isDestroyed()) {
+    if (!hideRegressionWindows && mainWindowRef && !mainWindowRef.isDestroyed()) {
       mainWindowRef.show()
       mainWindowRef.focus()
     }

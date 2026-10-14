@@ -48,6 +48,17 @@ class FakeAnthropicClient:
 
 
 class DatabaseAgentStreamingTests(unittest.TestCase):
+    def test_system_prompt_describes_column_completion_and_table_loading_without_context(self) -> None:
+        prompt = build_system_prompt("none", "未选择上下文")
+
+        self.assertIn("直接输入字段名前缀", prompt)
+        self.assertIn("表名或别名加点后的字段提示", prompt)
+        self.assertIn("按 Ctrl+Space 重试", prompt)
+        self.assertIn("双击表会先打开工作页并显示加载状态", prompt)
+        self.assertIn("数据读取完成或失败后结束加载", prompt)
+        self.assertIn("统一显示一个加载图标", prompt)
+        self.assertIn("加载期间仍可双击展开、收起", prompt)
+
     def tearDown(self) -> None:
         PENDING_CONFIRMATIONS.clear()
 

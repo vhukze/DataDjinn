@@ -13,10 +13,12 @@ from app.schemas.metadata import ColumnInfo, DbObjectInfo, TableUpdateColumn, Ta
 class FakeConnection:
     def __init__(self) -> None:
         self.statements: list[str] = []
+        self.parameters: list[object | None] = []
         self.results: list[FakeResult] = []
 
     def execute(self, statement: object, _parameters: object | None = None) -> "FakeResult":
         self.statements.append(str(statement))
+        self.parameters.append(_parameters)
         return self.results.pop(0) if self.results else FakeResult()
 
 
@@ -272,6 +274,63 @@ class DamengMetadataUpdateTests(unittest.TestCase):
                 'COMMENT ON TABLE "APP"."ORDERS" IS \'表新注释\'',
             ],
         )
+
+    def test_list_columns_normalizes_unquoted_lowercase_table_name_for_catalog(self) -> None:
+        for dialect_name in ("dm", "dmPython", "oracle"):
+            with self.subTest(dialect=dialect_name):
+                engine = FakeDmEngine()
+                engine.dialect.name = dialect_name
+                engine.connection.results = (
+                    [FakeResult() for _ in range(4)] if dialect_name == "oracle"
+                    else [FakeResult(), FakeResult()]
+                )
+                if dialect_name == "oracle":
+                    engine.connection.results.extend([FakeResult(), FakeResult()])
+                engine.connection.results.extend([
+                    FakeResult(rows=[("CODE", "字段注释")]),
+                    FakeResult(rows=[("CODE", "VARCHAR(32)", "Y", 0, None, None, None)]),
+                ])
+
+                columns = metadata_module.list_columns(engine, "alert", "app")  # type: ignore[arg-type]
+
+                self.assertEqual(["CODE"], [column.name for column in columns])
+                self.assertEqual("字段注释", columns[0].comment)
+                self.assertEqual(
+                    {"schema_name": "APP", "table_name": "ALERT"},
+                    engine.connection.parameters[-1],
+                )
+
+    def test_list_columns_returns_empty_when_no_catalog_name_matches(self) -> None:
+        for dialect_name in ("dm", "dmPython", "oracle"):
+            with self.subTest(dialect=dialect_name):
+                engine = FakeDmEngine()
+                engine.dialect.name = dialect_name
+
+                self.assertEqual([], metadata_module.list_columns(engine, "missing", "APP"))  # type: ignore[arg-type]
+                names = [params["table_name"] for params in engine.connection.parameters]
+                self.assertEqual({"missing", "MISSING"}, set(names))
+                self.assertEqual(8 if dialect_name == "oracle" else 4, len(names))
+
+    def test_list_columns_preserves_case_sensitive_catalog_table_names(self) -> None:
+        for dialect_name in ("dm", "dmPython", "oracle"):
+            with self.subTest(dialect=dialect_name):
+                engine = FakeDmEngine()
+                engine.dialect.name = dialect_name
+                if dialect_name == "oracle":
+                    engine.connection.results = [FakeResult(), FakeResult()]
+                engine.connection.results.extend([
+                    FakeResult(rows=[("CODE", "字段注释")]),
+                    FakeResult(rows=[("CODE", "VARCHAR(32)", "Y", 0, None, None, None)]),
+                ])
+
+                columns = metadata_module.list_columns(engine, "MixedCase", "APP")  # type: ignore[arg-type]
+
+                self.assertEqual(["CODE"], [column.name for column in columns])
+                self.assertEqual("字段注释", columns[0].comment)
+                self.assertTrue(all(
+                    params == {"schema_name": "APP", "table_name": "MixedCase"}
+                    for params in engine.connection.parameters
+                ))
 
 
 if __name__ == "__main__":

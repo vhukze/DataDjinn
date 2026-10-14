@@ -9,6 +9,10 @@ type TreeRefreshOptions = {
   selectedDatabaseOverride?: string[]
   getConnection: (connectionId?: string) => ConnectionInfo | undefined
   expandedKeysRef: MutableRefObject<React.Key[]>
+  operationVersion: number
+  isOperationCurrent: (connectionId: string, version: number) => boolean
+  treeLoadingKeysRef: MutableRefObject<Set<React.Key>>
+  notifyTreeLoadingStateChanged: () => void
   preloadConnectionTree: (
     connection: ConnectionInfo,
     selectedDatabaseOverride?: string[]
@@ -24,6 +28,10 @@ type TreeRefreshOptions = {
 type DatabaseRefreshOptions = {
   connectionId: string
   databaseName: string
+  operationVersion: number
+  isOperationCurrent: (connectionId: string, version: number) => boolean
+  treeLoadingKeysRef: MutableRefObject<Set<React.Key>>
+  notifyTreeLoadingStateChanged: () => void
   selectedSchemaOverride?: string[]
   getConnection: (connectionId?: string) => ConnectionInfo | undefined
   preloadDatabaseChildren: (
@@ -58,6 +66,10 @@ export const refreshConnectionTreeNode = ({
   setTreeData,
   setExpandedKeys,
   setConnectionTreeLoadingText,
+  operationVersion,
+  isOperationCurrent,
+  treeLoadingKeysRef,
+  notifyTreeLoadingStateChanged,
   showError,
   onUpdated
 }: TreeRefreshOptions): void => {
@@ -67,6 +79,9 @@ export const refreshConnectionTreeNode = ({
   }
 
   void (async () => {
+    const loadingKey = `connection:${connectionId}`
+    treeLoadingKeysRef.current.add(loadingKey)
+    notifyTreeLoadingStateChanged()
     setConnectionTreeLoadingText(connectionId, '正在刷新连接...')
     try {
       const connectionKey = `connection:${connectionId}`
@@ -75,6 +90,9 @@ export const refreshConnectionTreeNode = ({
         const selectedNames = new Set(
           databaseNodes.map((node) => node.databaseName).filter(Boolean)
         )
+        if (!isOperationCurrent(connectionId, operationVersion)) {
+          return
+        }
         setExpandedKeys((current) => {
           // Resolve this when the request completes so a folder expanded while loading is kept.
           const stillExpanded = current.map(String).filter((key) => {
@@ -98,6 +116,9 @@ export const refreshConnectionTreeNode = ({
         return
       }
 
+      if (!isOperationCurrent(connectionId, operationVersion)) {
+        return
+      }
       setTreeData((current) =>
         current.map((node) => {
           if (node.key === connectionKey) {
@@ -109,9 +130,15 @@ export const refreshConnectionTreeNode = ({
       )
       onUpdated?.()
     } catch (error) {
-      showError(error instanceof Error ? error.message : '刷新连接失败')
+      if (isOperationCurrent(connectionId, operationVersion)) {
+        showError(error instanceof Error ? error.message : '刷新连接失败')
+      }
     } finally {
-      setConnectionTreeLoadingText(connectionId)
+      if (isOperationCurrent(connectionId, operationVersion)) {
+        treeLoadingKeysRef.current.delete(loadingKey)
+        notifyTreeLoadingStateChanged()
+        setConnectionTreeLoadingText(connectionId)
+      }
     }
   })()
 }
@@ -124,6 +151,10 @@ export const refreshDatabaseTreeNode = ({
   preloadDatabaseChildren,
   setTreeData,
   setConnectionTreeLoadingText,
+  operationVersion,
+  isOperationCurrent,
+  treeLoadingKeysRef,
+  notifyTreeLoadingStateChanged,
   showError,
   onUpdated
 }: DatabaseRefreshOptions): void => {
@@ -133,6 +164,9 @@ export const refreshDatabaseTreeNode = ({
   }
 
   void (async () => {
+    const loadingKey = `database:${connectionId}:${databaseName}`
+    treeLoadingKeysRef.current.add(loadingKey)
+    notifyTreeLoadingStateChanged()
     setConnectionTreeLoadingText(connectionId, '正在加载表列表...')
     try {
       const children = await preloadDatabaseChildren(
@@ -140,14 +174,23 @@ export const refreshDatabaseTreeNode = ({
         databaseName,
         selectedSchemaOverride
       )
+      if (!isOperationCurrent(connectionId, operationVersion)) {
+        return
+      }
       setTreeData((current) =>
         updateTreeNode(current, `database:${connectionId}:${databaseName}`, children)
       )
       onUpdated?.()
     } catch (error) {
-      showError(error instanceof Error ? error.message : '加载表列表失败')
+      if (isOperationCurrent(connectionId, operationVersion)) {
+        showError(error instanceof Error ? error.message : '加载表列表失败')
+      }
     } finally {
-      setConnectionTreeLoadingText(connectionId)
+      if (isOperationCurrent(connectionId, operationVersion)) {
+        treeLoadingKeysRef.current.delete(loadingKey)
+        notifyTreeLoadingStateChanged()
+        setConnectionTreeLoadingText(connectionId)
+      }
     }
   })()
 }

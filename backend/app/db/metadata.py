@@ -1559,6 +1559,8 @@ def list_columns(engine: Engine, table_name: str, database_name: str | None = No
                 ),
                 {"schema_name": schema_name, "table_name": table_name},
             ).fetchall()
+        if not rows and table_name != table_name.upper():
+            return list_columns(engine, table_name.upper(), database_name, pg_database)
         primary_keys = {str(row[0]) for row in rows if row[3] == 1}
         return [
             ColumnInfo(
@@ -1605,6 +1607,8 @@ def list_columns(engine: Engine, table_name: str, database_name: str | None = No
                 ),
                 {"schema_name": schema_name, "table_name": table_name},
             ).fetchall()
+        if not rows and table_name != table_name.upper():
+            return list_columns(engine, table_name.upper(), database_name, pg_database)
         columns: list[ColumnInfo] = []
         for row in rows:
             column_name = str(row[0])

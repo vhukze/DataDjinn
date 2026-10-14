@@ -1,5 +1,5 @@
 import { UnorderedListOutlined } from '@ant-design/icons'
-import { Alert, Dropdown, Flex, Menu, Spin, Typography } from 'antd'
+import { Alert, Dropdown, Flex, Menu, Typography } from 'antd'
 import type { MenuProps } from 'antd'
 import type { MessageInstance } from 'antd/es/message/interface'
 import type { ColumnsType, TableRef } from 'antd/es/table'
@@ -304,6 +304,7 @@ const ResultTablePanel = memo(
   }: ResultTablePanelProps): ReactNode {
     const active = useWorkspaceStore((state) => state.activeTabKey === tab.key)
     const hasMultiStatementResults = tab.multiStatementResults !== undefined
+    const hasResult = Boolean(tab.result)
     const tableBodyHostRef = useRef<HTMLDivElement | null>(null)
     const [tableScrollY, setTableScrollY] = useState(320)
     const [tableViewportWidth, setTableViewportWidth] = useState(0)
@@ -410,7 +411,7 @@ const ResultTablePanel = memo(
         return
       }
       holder.scrollTop = savedScrollTop
-    }, [refs, tab.key, tab.tableRenderVersion])
+    }, [hasResult, refs, tab.key, tab.tableRenderVersion])
 
     useEffect(() => {
       const savedScrollLeft = refs.tableScrollLeftRefs.current[tab.key]
@@ -476,7 +477,7 @@ const ResultTablePanel = memo(
           delete refs.tableScrollRestoreLocks.current[tab.key]
         }
       }
-    }, [refs, tab.key, tab.tableRenderVersion])
+    }, [hasResult, refs, tab.key, tab.tableRenderVersion])
 
     useEffect(() => {
       const container = tableBodyHostRef.current
@@ -504,9 +505,9 @@ const ResultTablePanel = memo(
       })
 
       return () => observer.disconnect()
-    }, [refs, scheduleRenderedCellSelectionSync, tab.key, tab.tableRenderVersion])
+    }, [hasResult, refs, scheduleRenderedCellSelectionSync, tab.key, tab.tableRenderVersion])
 
-    useEffect(() => {
+    useLayoutEffect(() => {
       if (!active) {
         return
       }
@@ -562,6 +563,7 @@ const ResultTablePanel = memo(
       }
     }, [
       active,
+      hasResult,
       tab.key,
       tab.kind,
       tab.loading,
@@ -2794,6 +2796,7 @@ const ResultTablePanel = memo(
       displayedColumns,
       columnWidths,
       columnFilters,
+      tableViewportWidth,
       tab.key,
       tab.kind,
       tab.sortState?.column,
@@ -2952,15 +2955,11 @@ const ResultTablePanel = memo(
             onClose={() => updateWorkspaceTab(tab.key, { error: undefined })}
           />
         )}
-        {hasMultiStatementResults || tab.resultKind === 'command' || tab.resultKind === 'error' ? null : (
+        {!hasResult || hasMultiStatementResults || tab.resultKind === 'command' || tab.resultKind === 'error' ? null : (
           <div
             className={`result-table-content${tab.kind === 'query' ? ' query-result-table-content' : ''}`}
+            aria-busy={active && tab.loading}
           >
-            {active && tab.loading && (
-              <div className="result-table-loading-overlay">
-                <Spin size="large" />
-              </div>
-            )}
             <ResultTableBodyView
               key={`${tab.key}:${tab.tableRenderVersion ?? 0}`}
               tabKey={tab.key}

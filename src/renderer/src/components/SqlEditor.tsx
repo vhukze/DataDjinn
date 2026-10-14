@@ -151,6 +151,7 @@ const COMMON_KEYWORDS = [
   'INSERT',
   'INSERT INTO',
   'UPDATE',
+  'SET',
   'DELETE',
   'CREATE',
   'ALTER',
@@ -357,6 +358,17 @@ const getCompletionMode = (text: string): 'table' | 'column' | 'all' => {
 
   const latest = candidates[0]?.keyword
   if (latest && TABLE_CONTEXT_KEYWORDS.includes(latest)) {
+    const tableReferenceCompleted = new RegExp(
+      `\\b${latest}\\s+(?:` +
+        '(?:`[^`]+`|"[^"]+"|\\[[^\\]]+\\]|[A-Za-z_][\\w$]*)' +
+        `)(?:\\s*\\.\\s*(?:` +
+        '(?:`[^`]+`|"[^"]+"|\\[[^\\]]+\\]|[A-Za-z_][\\w$]*)' +
+        `)){0,2}\\s*$`,
+      'i'
+    )
+    if (tableReferenceCompleted.test(text)) {
+      return 'all'
+    }
     return 'table'
   }
   if (latest && COLUMN_CONTEXT_KEYWORDS.includes(latest)) {
@@ -364,6 +376,9 @@ const getCompletionMode = (text: string): 'table' | 'column' | 'all' => {
   }
   return 'all'
 }
+
+const isColumnCompletionContext = (text: string): boolean =>
+  /\b(?:SELECT|WHERE|ON|ORDER BY|GROUP BY|HAVING|SET)\b[\s\S]*$/i.test(text)
 
 const isRoutineCallContext = (text: string): boolean => /\b(?:CALL|EXEC(?:UTE)?)\s+[^\s;()]*$/i.test(text)
 
@@ -393,7 +408,7 @@ const getStatementTableReferences = (statementText: string): StatementTableRefer
   const references: StatementTableReference[] = []
   const identifier = '(?:`[^`]+`|"[^"]+"|\\[[^\\]]+\\]|[A-Za-z_][\\w$]*)'
   const pattern = new RegExp(
-    `\\b(?:FROM|JOIN)\\s+(${identifier}(?:\\s*\\.\\s*${identifier}){0,2})(?:\\s+(?:AS\\s+)?([A-Za-z_][\\w$]*))?`,
+    `\\b(?:FROM|JOIN|UPDATE)\\s+(${identifier}(?:\\s*\\.\\s*${identifier}){0,2})(?:\\s+(?:AS\\s+)?([A-Za-z_][\\w$]*))?`,
     'gi'
   )
 
@@ -852,6 +867,7 @@ function SqlEditor({
         }
         const textBefore = getTextBeforePosition(model, position)
         const mode = getCompletionMode(textBefore)
+        const columnContext = isColumnCompletionContext(textBefore)
         const routineCallContext = isRoutineCallContext(textBefore)
         const qualifier = getDotQualifier(textBefore)
         const statementTables = getStatementTableReferences(
@@ -880,20 +896,22 @@ function SqlEditor({
           context.tables ?? [],
           (table) => `${table.databaseName ?? ''}.${table.schemaName ?? ''}.${table.name}`
         )
-        const qualifiedTables = qualifier
-          ? tables.filter(
-              (table) => table.schemaName === qualifier || table.databaseName === qualifier
-            )
-          : tables
-        for (const table of qualifiedTables) {
-          suggestions.push({
-            label: table.name,
-            kind: monaco.languages.CompletionItemKind.Struct,
-            insertText: quoteIdentifier(table.name, context.dialect),
-            detail: [table.schemaName, table.databaseName].filter(Boolean).join('.') || '表',
-            sortText: `${tableSort}_${table.name}`,
-            range
-          })
+        if (mode === 'table' || mode === 'all') {
+          const qualifiedTables = qualifier
+            ? tables.filter(
+                (table) => table.schemaName === qualifier || table.databaseName === qualifier
+              )
+            : tables
+          for (const table of qualifiedTables) {
+            suggestions.push({
+              label: table.name,
+              kind: monaco.languages.CompletionItemKind.Struct,
+              insertText: quoteIdentifier(table.name, context.dialect),
+              detail: [table.schemaName, table.databaseName].filter(Boolean).join('.') || '表',
+              sortText: `${tableSort}_${table.name}`,
+              range
+            })
+          }
         }
 
         const loadedRoutines =
@@ -923,7 +941,9 @@ function SqlEditor({
           (tableName) => tableName
         )
         const loadedColumns =
-          mode === 'column' && referencedTableNames.length > 0 && context.loadTableColumns
+          (columnContext || mode !== 'table') &&
+          referencedTableNames.length > 0 &&
+          context.loadTableColumns
             ? await context.loadTableColumns(referencedTableNames)
             : []
         const columns = uniqueBy(
@@ -944,15 +964,17 @@ function SqlEditor({
           }
           return qualifiedTableNames.has(column.tableName.toLowerCase())
         })
-        for (const column of qualifiedColumns) {
-          suggestions.push({
-            label: column.name,
-            kind: monaco.languages.CompletionItemKind.Field,
-            insertText: quoteIdentifier(column.name, context.dialect),
-            detail: [column.tableName, column.type].filter(Boolean).join(' · ') || '字段',
-            sortText: `${columnSort}_${column.name}`,
-            range
-          })
+        if (columnContext || mode === 'column' || mode === 'all') {
+          for (const column of qualifiedColumns) {
+            suggestions.push({
+              label: column.name,
+              kind: monaco.languages.CompletionItemKind.Field,
+              insertText: quoteIdentifier(column.name, context.dialect),
+              detail: [column.tableName, column.type].filter(Boolean).join(' · ') || '字段',
+              sortText: `${columnSort}_${column.name}`,
+              range
+            })
+          }
         }
 
         return { suggestions }

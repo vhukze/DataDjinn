@@ -63,7 +63,7 @@ async function waitForAppReady(page) {
 }
 
 async function clickVisibleDropdownMenuItem(page, label) {
-  const center = await page.evaluate((expectedLabel) => {
+  const readCenter = () => page.evaluate((expectedLabel) => {
     const normalizedLabel = expectedLabel.replace(/\s+/g, '')
     const items = Array.from(
       document.querySelectorAll(
@@ -86,6 +86,8 @@ async function clickVisibleDropdownMenuItem(page, label) {
     const rect = target.getBoundingClientRect()
     return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
   }, label)
+  await expect.poll(readCenter, { message: `visible menu item should exist: ${label}` }).not.toBeNull()
+  const center = await readCenter()
   expect(center, `visible menu item should exist: ${label}`).not.toBeNull()
   await page.mouse.click(center.x, center.y)
 }
@@ -744,6 +746,116 @@ test('signing out clears the in-memory automatic sync state @bug', async () => {
     if (page) {
       await page.evaluate(() => window.api.clearSyncLocalState()).catch(() => undefined)
     }
+    await electronApp.close()
+  }
+})
+
+test('automatic sync retains new connection groups and edits made while uploading @bug', async () => {
+  const electronApp = await launchRegressionApp()
+  try {
+    const page = await electronApp.firstWindow()
+    await waitForAppReady(page)
+    const baseline = await page.evaluate(async () => ({
+      format: 'datadjinn-sync', version: 1, generated_at: new Date().toISOString(),
+      device_id: 'group-sync-fixture',
+      connections: (await window.api.requestJson('/git-sync/local/connections')).connections,
+      settings: {}, preferences: (await window.api.getConnectionTreePreferencesMeta()).preferences
+    }))
+    await electronApp.evaluate(({ ipcMain }, base) => {
+      const original = ipcMain._invokeHandlers.get('api:request')
+      globalThis.__groupSyncFixture = { uploaded: [], remote: base, holdUpload: false, release: undefined }
+      ipcMain.removeHandler('api:request')
+      ipcMain.handle('api:request', async (event, requestPath, options = {}) => {
+        if (requestPath === '/git-sync/file/pull') return { exists: true, sha: 'fixture-old', payload: globalThis.__groupSyncFixture.remote }
+        if (requestPath === '/git-sync/file' && options.method === 'PUT') {
+          globalThis.__groupSyncFixture.uploaded.push(JSON.parse(options.body).payload)
+          if (globalThis.__groupSyncFixture.holdUpload) {
+            await new Promise((resolve) => { globalThis.__groupSyncFixture.release = resolve })
+          }
+          globalThis.__groupSyncFixture.remote = JSON.parse(options.body).payload
+          return { sha: 'fixture-uploaded' }
+        }
+        return original(event, requestPath, options)
+      })
+    }, baseline)
+    await page.evaluate((basePayload) => window.api.setSyncLocalState({
+      passphrase: 'group-sync-fixture', autoSyncEnabled: true,
+      lastSyncedAt: Date.now(), basePayload
+    }), baseline)
+    await page.addInitScript(() => {
+      window.__DATADJINN_TEST_GITHUB_AUTH_STATUS__ = { authorized: true, login: 'fixture' }
+      const originalSetInterval = window.setInterval.bind(window)
+      const originalClearInterval = window.clearInterval.bind(window)
+      const callbacks = new Map()
+      window.__groupSyncTimers = callbacks
+      window.setInterval = (callback, delay, ...args) => {
+        const id = originalSetInterval(callback, delay, ...args)
+        if (delay === 15 * 60 * 1000) callbacks.set(id, callback)
+        return id
+      }
+      window.clearInterval = (id) => {
+        callbacks.delete(id)
+        return originalClearInterval(id)
+      }
+    })
+    await page.reload()
+    await waitForAppReady(page)
+    await expect.poll(() => page.evaluate(() => window.__groupSyncTimers.size)).toBe(1)
+    const createGroupedConnection = async (suffix) => {
+      const connectionName = `自动同步连接 ${suffix}`
+      const folderName = `自动同步分组 ${suffix}`
+      await page.locator('.resource-header .resource-add').click()
+      await clickVisibleDropdownMenuItem(page, 'MySQL')
+      const modal = page.locator('.connection-editor-modal')
+      await expect(modal).toBeVisible()
+      await page.evaluate(() => new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve))))
+      await modal.getByLabel(/^连接名称$/).fill(connectionName)
+      await modal.getByLabel(/^主机$/).fill('127.0.0.1')
+      await modal.getByLabel(/^用户名$/).fill('fixture')
+      await modal.getByRole('button', { name: '新建分组' }).click()
+      await modal.getByLabel('新分组名称').fill(folderName)
+      await modal.getByRole('button', { name: '添加分组' }).click()
+      await modal.getByRole('button', { name: '保存连接' }).click()
+      await expect(modal).not.toBeVisible()
+      const state = await page.evaluate(async ({ connectionName, folderName }) => {
+        const connections = (await window.api.requestJson('/connections')).connections
+        const folders = JSON.parse(localStorage.getItem('datadjinn-connection-folders') ?? '[]')
+        return { connectionId: connections.find((item) => item.name === connectionName)?.connection_id,
+          folderId: folders.find((item) => item.name === folderName)?.id }
+      }, { connectionName, folderName })
+      expect(state.connectionId).toBeTruthy()
+      expect(state.folderId).toBeTruthy()
+      return state
+    }
+    const first = await createGroupedConnection(crypto.randomUUID().slice(0, 8))
+    await page.evaluate(() => { window.dispatchEvent(new Event('blur')); window.__groupSyncTimers.values().next().value() })
+    await expect.poll(() => electronApp.evaluate(() => globalThis.__groupSyncFixture.uploaded.length)).toBe(1)
+    const uploaded = await electronApp.evaluate(() => globalThis.__groupSyncFixture.uploaded[0])
+    expect(uploaded.preferences.connection_folder_assignments[first.connectionId]).toBe(first.folderId)
+    await expect.poll(() => page.evaluate(() => window.__groupSyncTimers.size)).toBe(1)
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await expect.poll(() => page.evaluate((id) => JSON.parse(localStorage.getItem('datadjinn-connection-folder-assignments') ?? '{}')[id], first.connectionId)).toBe(first.folderId)
+
+    await electronApp.evaluate(() => { globalThis.__groupSyncFixture.holdUpload = true })
+    await page.evaluate(() => window.__groupSyncTimers.values().next().value())
+    await expect.poll(() => electronApp.evaluate(() => Boolean(globalThis.__groupSyncFixture.release))).toBe(true)
+    const second = await createGroupedConnection(crypto.randomUUID().slice(0, 8))
+    await electronApp.evaluate(() => globalThis.__groupSyncFixture.release())
+    await expect.poll(() => page.evaluate(() => window.__groupSyncTimers.size)).toBe(1)
+    await expect.poll(() => page.evaluate((id) => JSON.parse(localStorage.getItem('datadjinn-connection-folder-assignments') ?? '{}')[id], second.connectionId)).toBe(second.folderId)
+    const connections = await page.evaluate(() => window.api.requestJson('/connections'))
+    expect(connections.connections.some((item) => item.connection_id === second.connectionId)).toBe(true)
+    expect((await page.evaluate(() => window.api.getSyncLocalState())).lastSyncError).toContain('本机连接或设置已变化')
+    await electronApp.evaluate(() => { globalThis.__groupSyncFixture.holdUpload = false })
+    await page.evaluate(() => window.__groupSyncTimers.values().next().value())
+    await expect.poll(() => electronApp.evaluate(() => globalThis.__groupSyncFixture.uploaded.length)).toBe(3)
+    await expect.poll(() => page.evaluate(() => window.__groupSyncTimers.size)).toBe(1)
+    const resumed = await electronApp.evaluate(() => globalThis.__groupSyncFixture.uploaded[2])
+    expect(resumed.preferences.connection_folder_assignments[first.connectionId]).toBe(first.folderId)
+    expect(resumed.preferences.connection_folder_assignments[second.connectionId]).toBe(second.folderId)
+    expect((await page.evaluate(() => window.api.getSyncLocalState())).lastSyncError).toBeFalsy()
+    await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+  } finally {
     await electronApp.close()
   }
 })

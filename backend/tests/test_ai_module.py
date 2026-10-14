@@ -9,6 +9,19 @@ from app.ai.product_knowledge import get_product_knowledge
 from app.ai.agent import build_system_prompt
 from run_ai_module import app as ai_module_app
 class AiModuleEntrypointTests(unittest.TestCase):
+    def test_global_prompt_describes_connection_opening_and_initial_table_loading(self) -> None:
+        prompt = build_system_prompt("none", "未选择上下文")
+        self.assertIn("只展开连接这一层", prompt)
+        self.assertIn("不自动恢复上次会话的子节点展开状态", prompt)
+        self.assertIn("首次数据返回前不渲染空表格或单独的行号列", prompt)
+        self.assertIn("真实空结果仍显示字段表头", prompt)
+
+    def test_global_prompt_describes_preserving_expanded_tree_columns(self) -> None:
+        prompt = build_system_prompt("none", "未选择上下文")
+        self.assertIn("连接树后台计算表大小时保留已经展开的字段节点", prompt)
+        self.assertIn("树节点悬停和选中时保持位置不变", prompt)
+        self.assertIn("仅更新大小统计", prompt)
+
     def test_global_prompt_describes_ai_extension_update(self) -> None:
         prompt = build_system_prompt("none", "未选择上下文")
         self.assertIn("已有 Elasticsearch 连接不会阻止 AI 扩展启动", prompt)
@@ -18,6 +31,11 @@ class AiModuleEntrypointTests(unittest.TestCase):
         prompt = build_system_prompt("none", "未选择上下文")
         self.assertIn("复用本机已安装的 JDBC 桥接模块与驱动配置", prompt)
         self.assertIn("仅安装 AI 扩展不能替代尚未安装的 JDBC", prompt)
+
+    def test_global_prompt_describes_preserving_edits_during_background_sync(self) -> None:
+        prompt = build_system_prompt("none", "未选择上下文")
+        self.assertIn("后台自动同步读取本机最新连接与分组归属", prompt)
+        self.assertIn("不会用上传前的旧快照覆盖本机", prompt)
 
     def test_product_knowledge_keeps_interface_theme_on_the_current_device(self) -> None:
         knowledge = get_product_knowledge()

@@ -1,5 +1,5 @@
-import { Input, Tabs } from 'antd'
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Input, Spin, Tabs } from 'antd'
+import { memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { WorkspaceTab } from './workspace-model'
 import { useWorkspaceStore } from './workspace-store'
 
@@ -36,7 +36,22 @@ function WorkspaceTabContentInner({
   if (!fullTab) {
     return null
   }
-  return <>{renderWorkspaceTabRef.current(fullTab, active)}</>
+  return (
+    <>
+      {active && fullTab.loading && (
+        <div className="workspace-tab-loading" role="status" aria-label="正在加载">
+          <Spin size="large" />
+        </div>
+      )}
+      <Suspense fallback={active && !fullTab.loading ? (
+        <div className="workspace-tab-loading" role="status" aria-label="正在加载">
+          <Spin size="large" />
+        </div>
+      ) : null}>
+        {renderWorkspaceTabRef.current(fullTab, active)}
+      </Suspense>
+    </>
+  )
 }
 
 const WorkspaceTabContent = memo(WorkspaceTabContentInner) as (props: {

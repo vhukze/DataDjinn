@@ -69,6 +69,7 @@ import {
   useCallback,
   useDeferredValue,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -345,7 +346,16 @@ const TableDesignerPanel = lazy(() => import('./app/table-designer-panel'))
 const ResultTablePanel = lazy(() => import('./app/result-table-panel'))
 
 const getPersistedConnectionTreeExpandedKeys = (keys: React.Key[]): string[] =>
-  keys.map((key) => String(key)).filter((key) => key.startsWith('folder:'))
+  Array.from(new Set(keys.map((key) => String(key)).filter(Boolean)))
+
+const getGitSyncContentKey = (payload: GitSyncPayload): string =>
+  JSON.stringify(
+    { connections: payload.connections, settings: payload.settings, preferences: payload.preferences },
+    (_key, value) =>
+      value && typeof value === 'object' && !Array.isArray(value)
+        ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)))
+        : value
+  )
 
 function App(): React.JSX.Element {
   const [form] = Form.useForm<ConnectionFormValues>()
@@ -361,9 +371,10 @@ function App(): React.JSX.Element {
   })
   const [healthLoading, setHealthLoading] = useState(false)
   const [connections, setConnections] = useState<ConnectionInfo[]>([])
-  const [selectedConnectionId, setSelectedConnectionId] = useState<string | undefined>(() =>
-    readPersistedJson<string | null>(STORAGE_CONNECTION_TREE_SELECTED_CONNECTION_ID, null) ??
-    undefined
+  const [selectedConnectionId, setSelectedConnectionId] = useState<string | undefined>(
+    () =>
+      readPersistedJson<string | null>(STORAGE_CONNECTION_TREE_SELECTED_CONNECTION_ID, null) ??
+      undefined
   )
   const [connectionsInitialized, setConnectionsInitialized] = useState(false)
   const [startupUiReady, setStartupUiReady] = useState(false)
@@ -373,7 +384,9 @@ function App(): React.JSX.Element {
   const [selectedTreeKeys, setSelectedTreeKeys] = useState<React.Key[]>(() =>
     readPersistedJson<string[]>(STORAGE_CONNECTION_TREE_SELECTED_KEYS, [])
   )
-  const [connectionSelectionAnchorId, setConnectionSelectionAnchorId] = useState<string | undefined>(
+  const [connectionSelectionAnchorId, setConnectionSelectionAnchorId] = useState<
+    string | undefined
+  >(
     () =>
       readPersistedJson<string | null>(STORAGE_CONNECTION_TREE_SELECTION_ANCHOR_ID, null) ??
       undefined
@@ -383,16 +396,11 @@ function App(): React.JSX.Element {
     readPersistedJson<string[]>(STORAGE_CONNECTION_TREE_EXPANDED_KEYS, [])
   )
   const expandedKeysRef = useRef<React.Key[]>(expandedKeys)
-  const setExpandedKeys = useCallback(
-    (value: React.SetStateAction<React.Key[]>) => {
-      setExpandedKeysState((current) => {
-        const next = typeof value === 'function' ? value(current) : value
-        expandedKeysRef.current = next
-        return next
-      })
-    },
-    []
-  )
+  const setExpandedKeys = useCallback((value: React.SetStateAction<React.Key[]>) => {
+    const next = typeof value === 'function' ? value(expandedKeysRef.current) : value
+    expandedKeysRef.current = next
+    setExpandedKeysState(next)
+  }, [])
   const [connectionTreeLoading, setConnectionTreeLoading] = useState<Record<string, string>>({})
   const [treeLoadingVersion, setTreeLoadingVersion] = useState(0)
   const [connectionModalOpen, setConnectionModalOpen] = useState(false)
@@ -575,11 +583,14 @@ function App(): React.JSX.Element {
   const [gitSyncRemoteExists, setGitSyncRemoteExists] = useState(false)
   const [gitSyncRemoteStatusError, setGitSyncRemoteStatusError] = useState<string>()
   const [gitSyncBaseline, setGitSyncBaseline] = useState<GitSyncPayload>()
-  const gitSyncRestoreTargetRef = useRef<{
-    connectionIds: Set<string>
-    folderIds: Set<string>
-    assignments: Record<string, string>
-  } | undefined>(undefined)
+  const gitSyncRestoreTargetRef = useRef<
+    | {
+        connectionIds: Set<string>
+        folderIds: Set<string>
+        assignments: Record<string, string>
+      }
+    | undefined
+  >(undefined)
   const gitSyncAssignmentRecoveryRef = useRef<string | undefined>(undefined)
   const [gitSyncAutoEnabled, setGitSyncAutoEnabled] = useState(false)
   const [gitSyncConflicts, setGitSyncConflicts] = useState<GitSyncConflict[]>([])
@@ -621,8 +632,7 @@ function App(): React.JSX.Element {
   const [versioningSnapshotIntervalDraft, setVersioningSnapshotIntervalDraft] = useState(24)
   const [versioningScopesLoading, setVersioningScopesLoading] = useState(false)
   const [versioningScopesSaving, setVersioningScopesSaving] = useState(false)
-  const versioningScopeLabel =
-    versioningScopeConfig?.scope_kind === 'database' ? '数据库' : '模式'
+  const versioningScopeLabel = versioningScopeConfig?.scope_kind === 'database' ? '数据库' : '模式'
   const hasConfiguredVersioningScope =
     versioningScopeConfig?.scope_kind === 'single' ||
     Boolean(versioningScopeConfig && versioningScopeConfig.selected_scopes.length > 0)
@@ -838,7 +848,9 @@ function App(): React.JSX.Element {
 
     const gitSyncRestoreTarget = gitSyncRestoreTargetRef.current
     if (gitSyncRestoreTarget) {
-      const currentConnectionIds = new Set(connections.map((connection) => connection.connection_id))
+      const currentConnectionIds = new Set(
+        connections.map((connection) => connection.connection_id)
+      )
       const currentFolderIds = new Set(connectionFolders.map((folder) => folder.id))
       const connectionsReady = [...gitSyncRestoreTarget.connectionIds].every((connectionId) =>
         currentConnectionIds.has(connectionId)
@@ -858,8 +870,8 @@ function App(): React.JSX.Element {
             currentConnectionIds.has(connectionId) && currentFolderIds.has(folderId)
         )
       )
-      const expectedAssignmentEntries = Object.entries(expectedAssignments).sort(([left], [right]) =>
-        left.localeCompare(right)
+      const expectedAssignmentEntries = Object.entries(expectedAssignments).sort(
+        ([left], [right]) => left.localeCompare(right)
       )
       const currentAssignmentEntries = Object.entries(currentAssignments).sort(([left], [right]) =>
         left.localeCompare(right)
@@ -888,7 +900,20 @@ function App(): React.JSX.Element {
       if (value.startsWith('folder:')) {
         return validFolderIds.has(value.slice('folder:'.length))
       }
-      return [...validConnectionIds].some((connectionId) => value.includes(`:${connectionId}:`))
+      const connectionScopedPrefixes = [
+        'database:',
+        'pg-schema:',
+        'object-group:',
+        'table:',
+        'db-object:',
+        'column:'
+      ]
+      const prefix = connectionScopedPrefixes.find((item) => value.startsWith(item))
+      if (!prefix) {
+        return false
+      }
+      const connectionId = value.slice(prefix.length).split(':', 1)[0]
+      return Boolean(connectionId) && validConnectionIds.has(connectionId)
     }
 
     setConnectionFolderAssignments((current) => {
@@ -1014,8 +1039,6 @@ function App(): React.JSX.Element {
     if (gitSyncAssignmentRecoveryRef.current === recoveryKey) {
       return
     }
-    gitSyncAssignmentRecoveryRef.current = recoveryKey
-
     const preferences = gitSyncBaseline.preferences
     const rawAssignments = preferences.connection_folder_assignments
     if (!rawAssignments || typeof rawAssignments !== 'object' || Array.isArray(rawAssignments)) {
@@ -1035,7 +1058,10 @@ function App(): React.JSX.Element {
           )
           .map((folder) => folder.id)
       : []
-    if (baselineFolders.length === 0 || baselineFolders.some((folderId) => !currentFolderIds.has(folderId))) {
+    if (
+      baselineFolders.length === 0 ||
+      baselineFolders.some((folderId) => !currentFolderIds.has(folderId))
+    ) {
       return
     }
 
@@ -1049,6 +1075,7 @@ function App(): React.JSX.Element {
       )
     )
     if (Object.keys(recoveredAssignments).length === 0) {
+      gitSyncAssignmentRecoveryRef.current = recoveryKey
       return
     }
 
@@ -1059,6 +1086,7 @@ function App(): React.JSX.Element {
       )
     )
     if (Object.keys(currentAssignments).length > 0) {
+      gitSyncAssignmentRecoveryRef.current = recoveryKey
       return
     }
 
@@ -1080,6 +1108,7 @@ function App(): React.JSX.Element {
         )
       )
     }
+    gitSyncAssignmentRecoveryRef.current = recoveryKey
   }, [
     connectionFolderAssignments,
     connectionFolders,
@@ -1191,7 +1220,65 @@ function App(): React.JSX.Element {
   const rowSelectionAnchorRefs = useRef<Record<string, string | undefined>>({})
   const rowSelectionDraftRefs = useRef<Record<string, React.Key[] | undefined>>({})
   const treeLoadingKeysRef = useRef<Set<React.Key>>(new Set())
+  const invalidateObjectGroupCacheRef = useRef<(connectionId: string) => void>(() => undefined)
   const connectionOpenAttemptRefs = useRef<Record<string, string | undefined>>({})
+  const connectionTreeOperationVersionRef = useRef<Record<string, number>>({})
+  const connectionTreeOperationRef = useRef<
+    Record<
+      string,
+      { kind: 'open' | 'close' | 'refresh' | 'database-refresh'; version: number } | undefined
+    >
+  >({})
+  const clearConnectionTreeLoadingKeys = useCallback((connectionId: string): boolean => {
+    const connectionScopedPrefixes = [
+      `connection:${connectionId}`,
+      `database:${connectionId}:`,
+      `pg-schema:${connectionId}:`,
+      `object-group:${connectionId}:`,
+      `table:${connectionId}:`,
+      `db-object:${connectionId}:`,
+      `column:${connectionId}:`
+    ]
+    let changed = false
+    for (const key of treeLoadingKeysRef.current) {
+      const value = String(key)
+      if (
+        connectionScopedPrefixes.some((prefix) => value === prefix || value.startsWith(prefix)) ||
+        value.includes(`:${connectionId}:`)
+      ) {
+        treeLoadingKeysRef.current.delete(key)
+        changed = true
+      }
+    }
+    if (changed) {
+      setTreeLoadingVersion((current) => current + 1)
+    }
+    return changed
+  }, [])
+  const beginConnectionTreeOperation = useCallback(
+    (connectionId: string, kind: 'open' | 'close' | 'refresh' | 'database-refresh'): number => {
+      const version = (connectionTreeOperationVersionRef.current[connectionId] ?? 0) + 1
+      connectionTreeOperationVersionRef.current[connectionId] = version
+      connectionTreeOperationRef.current[connectionId] = { kind, version }
+      clearConnectionTreeLoadingKeys(connectionId)
+      return version
+    },
+    [clearConnectionTreeLoadingKeys]
+  )
+  const isConnectionTreeOperationCurrent = useCallback(
+    (connectionId: string, version: number): boolean =>
+      connectionTreeOperationVersionRef.current[connectionId] === version,
+    []
+  )
+  const clearConnectionTreeOperation = useCallback(
+    (connectionId: string, version: number): void => {
+      const current = connectionTreeOperationRef.current[connectionId]
+      if (current?.version === version) {
+        connectionTreeOperationRef.current[connectionId] = undefined
+      }
+    },
+    []
+  )
   const dragOverFolderTargetRef = useRef<
     { folderId: string; zone: 'before' | 'after' } | undefined
   >(undefined)
@@ -1319,9 +1406,7 @@ function App(): React.JSX.Element {
         testWindow.__DATADJINN_TEST_GITHUB_AUTH_STATUS__ ??
         (await requestJson<GitHubAuthStatus>('/git-sync/auth/status'))
     } catch (error) {
-      setGitHubAuthStatusError(
-        error instanceof Error ? error.message : '无法检查 GitHub 授权状态'
-      )
+      setGitHubAuthStatusError(error instanceof Error ? error.message : '无法检查 GitHub 授权状态')
       return
     }
     setGitHubAuthStatus(auth)
@@ -1545,7 +1630,10 @@ function App(): React.JSX.Element {
     const confirmed = await new Promise<boolean>((resolve) => {
       Modal.confirm({
         title: '恢复整个纳管范围的数据？',
-        content: '将用“' + version.message + '”覆盖当前纳管范围内所有表的数据；不会改动表结构。当前数据会先在本机留档。若期间改过表结构，请先恢复对应结构。此操作无法通过本次恢复自动撤销。',
+        content:
+          '将用“' +
+          version.message +
+          '”覆盖当前纳管范围内所有表的数据；不会改动表结构。当前数据会先在本机留档。若期间改过表结构，请先恢复对应结构。此操作无法通过本次恢复自动撤销。',
         okText: '确认恢复整库数据',
         cancelText: '取消',
         okButtonProps: { danger: true },
@@ -1583,13 +1671,15 @@ function App(): React.JSX.Element {
           title: '估算行数',
           dataIndex: 'estimated_row_count',
           width: 120,
-          render: (value: number | null | undefined) => value == null ? '暂无统计' : '约 ' + value.toLocaleString('zh-CN')
+          render: (value: number | null | undefined) =>
+            value == null ? '暂无统计' : '约 ' + value.toLocaleString('zh-CN')
         },
         {
           title: '存储体积参考',
           dataIndex: 'estimated_storage_size_bytes',
           width: 140,
-          render: (value: number | null | undefined) => value == null ? '暂无估算' : ((value / (1024 * 1024)).toFixed(2) + ' MB')
+          render: (value: number | null | undefined) =>
+            value == null ? '暂无估算' : (value / (1024 * 1024)).toFixed(2) + ' MB'
         }
       ]
       const confirmed = await new Promise<boolean>((resolve) => {
@@ -1606,16 +1696,32 @@ function App(): React.JSX.Element {
                 showIcon
                 message="快照包含所选范围内全部表的结构和当前全部行数据，不只是 DDL。当前数据文件只压缩、未客户端加密；请勿对含敏感数据的生产库创建快照。"
                 description={
-                  '上传目标：' + (gitHubAuthStatus.repository_full_name ?? '当前授权的 GitHub 私有仓库') +
-                  '。每表限制 ' + preview.max_rows_per_table.toLocaleString('zh-CN') + ' 行、' +
-                  Math.round(preview.max_table_snapshot_bytes / (1024 * 1024)) + ' MB；整库数据限制 ' +
-                  Math.round(preview.max_database_snapshot_bytes / (1024 * 1024)) + ' MB，超过限制时写入也会被阻止。'
+                  '上传目标：' +
+                  (gitHubAuthStatus.repository_full_name ?? '当前授权的 GitHub 私有仓库') +
+                  '。每表限制 ' +
+                  preview.max_rows_per_table.toLocaleString('zh-CN') +
+                  ' 行、' +
+                  Math.round(preview.max_table_snapshot_bytes / (1024 * 1024)) +
+                  ' MB；整库数据限制 ' +
+                  Math.round(preview.max_database_snapshot_bytes / (1024 * 1024)) +
+                  ' MB，超过限制时写入也会被阻止。'
                 }
               />
               <Typography.Text>
-                {'纳管范围：' + preview.scopes.join('、') + '；表数：' + preview.tables.length +
-                  '；估算行数：' + (preview.estimated_row_count == null ? '部分数据库无法提供统计' : '约 ' + preview.estimated_row_count.toLocaleString('zh-CN')) +
-                  '；数据库存储体积参考：' + (preview.estimated_storage_size_bytes == null ? '部分数据库无法估算' : '约 ' + (preview.estimated_storage_size_bytes / (1024 * 1024)).toFixed(2) + ' MB') +
+                {'纳管范围：' +
+                  preview.scopes.join('、') +
+                  '；表数：' +
+                  preview.tables.length +
+                  '；估算行数：' +
+                  (preview.estimated_row_count == null
+                    ? '部分数据库无法提供统计'
+                    : '约 ' + preview.estimated_row_count.toLocaleString('zh-CN')) +
+                  '；数据库存储体积参考：' +
+                  (preview.estimated_storage_size_bytes == null
+                    ? '部分数据库无法估算'
+                    : '约 ' +
+                      (preview.estimated_storage_size_bytes / (1024 * 1024)).toFixed(2) +
+                      ' MB') +
                   '。体积参考不等同于快照上传体积。'}
               </Typography.Text>
               <Table<DatabaseSnapshotPreview['tables'][number]>
@@ -1734,7 +1840,10 @@ function App(): React.JSX.Element {
       const details = await requestJson<{ changes_sql: string }>(
         `/git-versioning/connections/${target.connectionId}/tables/${encodeURIComponent(target.tableName)}/versions/${version.id}/details${query}`
       )
-      setTableGitDetails({ title: `${version.message} · 变更 SQL`, sql: details.changes_sql || '-- 本次提交没有记录 SQL' })
+      setTableGitDetails({
+        title: `${version.message} · 变更 SQL`,
+        sql: details.changes_sql || '-- 本次提交没有记录 SQL'
+      })
     } catch (error) {
       showError(error instanceof Error ? error.message : '加载提交详情失败')
     } finally {
@@ -1821,7 +1930,8 @@ function App(): React.JSX.Element {
     const confirmed = await new Promise<boolean>((resolve) => {
       Modal.confirm({
         title: '恢复历史表结构？',
-        content: '这会删除并重建当前表结构，可能影响现有数据。建议先恢复结构，再按需恢复数据。确认继续吗？',
+        content:
+          '这会删除并重建当前表结构，可能影响现有数据。建议先恢复结构，再按需恢复数据。确认继续吗？',
         okText: '确认恢复结构',
         cancelText: '取消',
         okButtonProps: { danger: true },
@@ -1850,7 +1960,7 @@ function App(): React.JSX.Element {
       return
     }
     let disposed = false
-  const pollGitTasks = async (): Promise<void> => {
+    const pollGitTasks = async (): Promise<void> => {
       const running: GitSnapshotTask[] = []
       for (const connection of connections.filter((item) => item.git_versioning_enabled)) {
         try {
@@ -1883,7 +1993,9 @@ function App(): React.JSX.Element {
 
   const cancelGitSnapshotTask = async (taskId: string): Promise<void> => {
     try {
-      await requestJson<GitSnapshotTask>(`/git-versioning/tasks/${taskId}/cancel`, { method: 'POST' })
+      await requestJson<GitSnapshotTask>(`/git-versioning/tasks/${taskId}/cancel`, {
+        method: 'POST'
+      })
       messageApi.info('已请求停止 Git 后台任务')
     } catch (error) {
       showError(error instanceof Error ? error.message : '停止 Git 后台任务失败')
@@ -1927,9 +2039,12 @@ function App(): React.JSX.Element {
 
   const initializeGitHubSyncRepository = async (): Promise<void> => {
     try {
-      const repository = await requestJson<{ full_name: string; html_url: string }>('/git-sync/repository', {
-        method: 'POST'
-      })
+      const repository = await requestJson<{ full_name: string; html_url: string }>(
+        '/git-sync/repository',
+        {
+          method: 'POST'
+        }
+      )
       setGitHubAuthStatus((current) => ({
         ...current,
         repository_full_name: repository.full_name,
@@ -1953,9 +2068,7 @@ function App(): React.JSX.Element {
   const mcpModuleInstalled = optionalModules.some(
     (module) => module.id === 'mcp' && module.installed
   )
-  const aiModuleInstalled = optionalModules.some(
-    (module) => module.id === 'ai' && module.installed
-  )
+  const aiModuleInstalled = optionalModules.some((module) => module.id === 'ai' && module.installed)
   const jdbcModuleInstalled = optionalModules.some(
     (module) => module.id === 'jdbc' && module.installed
   )
@@ -1992,7 +2105,9 @@ function App(): React.JSX.Element {
     if (installingOptionalModuleId) {
       return false
     }
-    const isUpdate = optionalModules.some((module) => module.id === moduleId && module.updateAvailable)
+    const isUpdate = optionalModules.some(
+      (module) => module.id === moduleId && module.updateAvailable
+    )
     setInstallingOptionalModuleId(moduleId)
     try {
       const updatedModules = await window.api.installOptionalModule(moduleId)
@@ -2122,10 +2237,7 @@ function App(): React.JSX.Element {
   const normalizeRequestError = (error: unknown): ApiRequestError => {
     let message = error instanceof Error ? error.message : String(error || '操作失败')
     const code =
-      error &&
-      typeof error === 'object' &&
-      'code' in error &&
-      typeof error.code === 'string'
+      error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
         ? error.code
         : undefined
     message = message
@@ -2150,6 +2262,14 @@ function App(): React.JSX.Element {
     async <T,>(path: string, options?: ApiRequestOptions): Promise<T> => {
       if (backendStatus.state !== 'online' || !backendStatus.apiBaseUrl) {
         throw new Error(backendStatus.message ?? '后端服务正在恢复，请稍后再试')
+      }
+
+      const testRequestDelayMs = Number(
+        (globalThis as typeof globalThis & { __DATADJINN_TEST_REQUEST_DELAY_MS?: unknown })
+          .__DATADJINN_TEST_REQUEST_DELAY_MS
+      )
+      if (Number.isFinite(testRequestDelayMs) && testRequestDelayMs > 0) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, testRequestDelayMs))
       }
 
       try {
@@ -2220,9 +2340,14 @@ function App(): React.JSX.Element {
         return pending
       }
 
+      const operationVersion = beginConnectionTreeOperation(connectionId, 'open')
       const reconnect = requestJsonRaw<ConnectionInfo>(`/connections/${connectionId}/open`, {
         method: 'POST'
       }).then((connection) => {
+        if (!isConnectionTreeOperationCurrent(connectionId, operationVersion)) {
+          return
+        }
+        invalidateObjectGroupCacheRef.current(connectionId)
         setConnections((current) =>
           current.map((item) => (item.connection_id === connectionId ? connection : item))
         )
@@ -2233,6 +2358,7 @@ function App(): React.JSX.Element {
       reconnectingConnectionsRef.current[connectionId] = reconnect
       void reconnect
         .finally(() => {
+          clearConnectionTreeOperation(connectionId, operationVersion)
           if (reconnectingConnectionsRef.current[connectionId] === reconnect) {
             delete reconnectingConnectionsRef.current[connectionId]
           }
@@ -2240,7 +2366,12 @@ function App(): React.JSX.Element {
         .catch(() => undefined)
       return reconnect
     },
-    [requestJsonRaw]
+    [
+      beginConnectionTreeOperation,
+      clearConnectionTreeOperation,
+      isConnectionTreeOperationCurrent,
+      requestJsonRaw
+    ]
   )
 
   const requestJson = useCallback(
@@ -2275,10 +2406,7 @@ function App(): React.JSX.Element {
 
   const persistConnectionTreePreferences = useCallback(
     (preferences: Record<string, unknown>): Promise<unknown[]> => {
-      const updatedAt = Math.max(
-        Date.now(),
-        connectionTreePreferencesWriteVersionRef.current + 1
-      )
+      const updatedAt = Math.max(Date.now(), connectionTreePreferencesWriteVersionRef.current + 1)
       connectionTreePreferencesWriteVersionRef.current = updatedAt
       return Promise.all([
         window.api.setConnectionTreePreferences(preferences, updatedAt),
@@ -2336,11 +2464,11 @@ function App(): React.JSX.Element {
               primaryKey: column.primary_key
             }))
           )
-          .catch(() => [])
           .then((columns) => {
             completionColumnCacheRef.current[cacheKey] = columns
             return columns
           })
+          .catch(() => [])
           .finally(() => {
             delete completionColumnRequestRef.current[cacheKey]
           })
@@ -2368,7 +2496,9 @@ function App(): React.JSX.Element {
       return pending
     }
 
-    const databaseQuery = tab.databaseName ? `?database=${encodeURIComponent(tab.databaseName)}` : ''
+    const databaseQuery = tab.databaseName
+      ? `?database=${encodeURIComponent(tab.databaseName)}`
+      : ''
     const request = requestJson<{ objects: DbObjectInfo[] }>(
       `/connections/${tab.connectionId}/objects${databaseQuery}${databaseQuery ? '&' : '?'}type=procedure`
     )
@@ -2455,7 +2585,8 @@ function App(): React.JSX.Element {
       : connection.name
     const currentFolderId = connectionFolderAssignments[connection.connection_id]
     const isPinnedRootConnection =
-      !currentFolderId && pinnedRootItemIds.includes(rootConnectionOrderId(connection.connection_id))
+      !currentFolderId &&
+      pinnedRootItemIds.includes(rootConnectionOrderId(connection.connection_id))
     const connectionDropZone =
       dragOverConnectionTarget?.connectionId === connection.connection_id
         ? dragOverConnectionTarget.zone
@@ -2511,11 +2642,10 @@ function App(): React.JSX.Element {
           data-tree-node-key={String(node.key)}
           onDragStart={() => {
             const folderId = connectionFolderAssignments[connection.connection_id]
-            draggingConnectionIdsRef.current = (selectedConnectionIds.includes(
-              connection.connection_id
-            )
-              ? selectedConnectionIds
-              : [connection.connection_id]
+            draggingConnectionIdsRef.current = (
+              selectedConnectionIds.includes(connection.connection_id)
+                ? selectedConnectionIds
+                : [connection.connection_id]
             ).filter((connectionId) => connectionFolderAssignments[connectionId] === folderId)
             draggingConnectionFolderIdRef.current = folderId
           }}
@@ -2713,8 +2843,7 @@ function App(): React.JSX.Element {
         return
       }
       setTreeSearchMatchIndex(
-        (current) =>
-          (current + offset + treeSearchMatches.length) % treeSearchMatches.length
+        (current) => (current + offset + treeSearchMatches.length) % treeSearchMatches.length
       )
     },
     [treeSearchMatches.length]
@@ -2779,9 +2908,7 @@ function App(): React.JSX.Element {
       folderOrder: connectionFolderOrder,
       folderConnectionOrder,
       rootItemOrder:
-        rootItemOrderCustomized && rootItemOrder.length > 0
-          ? rootItemOrder
-          : defaultRootItemOrder,
+        rootItemOrderCustomized && rootItemOrder.length > 0 ? rootItemOrder : defaultRootItemOrder,
       pinnedRootItemIds,
       rootFolderOrderId,
       rootConnectionOrderId,
@@ -2803,64 +2930,16 @@ function App(): React.JSX.Element {
     connectionFolderAssignments,
     rootItemOrder,
     rootItemOrderCustomized,
+    connectionFolderOrder,
     pinnedRootItemIds,
     folderConnectionOrder
   ])
-
-  useEffect(() => {
-    const treeNodesByKey = collectTreeNodesByKey(treeData)
-    if (treeNodesByKey.size === 0) {
-      return
-    }
-
-    setExpandedKeys((current) => {
-      const next = current.filter((key) => {
-        const node = treeNodesByKey.get(String(key))
-        if (!node || node.closed || node.isLeaf) {
-          return false
-        }
-        if (node.kind === 'folder') {
-          return true
-        }
-        return Boolean(node.childrenLoaded || node.children?.length)
-      })
-
-      return current.length === next.length && current.every((item, index) => item === next[index])
-        ? current
-        : next
-    })
-  }, [treeData])
-
-  useEffect(() => {
-    const closedConnectionIds = new Set(
-      connections
-        .filter((connection) => !connection.is_open)
-        .map((connection) => connection.connection_id)
-    )
-    if (closedConnectionIds.size === 0) {
-      return
-    }
-
-    setExpandedKeys((current) => {
-      const next = current.filter((key) => {
-        const value = String(key)
-        for (const connectionId of closedConnectionIds) {
-          if (value === `connection:${connectionId}` || value.includes(`:${connectionId}:`)) {
-            return false
-          }
-        }
-        return true
-      })
-      return current.length === next.length && current.every((item, index) => item === next[index])
-        ? current
-        : next
-    })
-  }, [connections])
 
   const refreshConnectionNode = (
     connectionId: string,
     selectedDatabaseOverride?: string[]
   ): void => {
+    const operationVersion = beginConnectionTreeOperation(connectionId, 'refresh')
     treeRuntime.invalidateObjectGroupCache(connectionId)
     const restoreTreeScrollPosition = captureResourceTreeScrollPosition()
     refreshConnectionTreeNode({
@@ -2868,6 +2947,12 @@ function App(): React.JSX.Element {
       selectedDatabaseOverride,
       getConnection,
       expandedKeysRef,
+      operationVersion,
+      isOperationCurrent: isConnectionTreeOperationCurrent,
+      treeLoadingKeysRef,
+      notifyTreeLoadingStateChanged: () => {
+        setTreeLoadingVersion((current) => current + 1)
+      },
       preloadConnectionTree,
       buildConnectionNode,
       setTreeData,
@@ -2883,6 +2968,7 @@ function App(): React.JSX.Element {
     databaseName: string,
     selectedSchemaOverride?: string[]
   ): void => {
+    const operationVersion = beginConnectionTreeOperation(connectionId, 'database-refresh')
     treeRuntime.invalidateObjectGroupCache(connectionId)
     const restoreTreeScrollPosition = captureResourceTreeScrollPosition()
     refreshDatabaseTreeNode({
@@ -2890,6 +2976,12 @@ function App(): React.JSX.Element {
       databaseName,
       selectedSchemaOverride,
       getConnection,
+      operationVersion,
+      isOperationCurrent: isConnectionTreeOperationCurrent,
+      treeLoadingKeysRef,
+      notifyTreeLoadingStateChanged: () => {
+        setTreeLoadingVersion((current) => current + 1)
+      },
       preloadDatabaseChildren,
       setTreeData,
       setConnectionTreeLoadingText,
@@ -2904,36 +2996,6 @@ function App(): React.JSX.Element {
         return Object.fromEntries(Object.entries(current).filter(([id]) => id !== connectionId))
       }
       return { ...current, [connectionId]: text }
-    })
-  }
-
-  const setConnectionTreeNodeLoading = (
-    connectionId: string,
-    loading: boolean,
-    isOpenOverride?: boolean
-  ): void => {
-    const connectionKey = `connection:${connectionId}`
-    const visit = (nodes: DatabaseTreeNode[]): DatabaseTreeNode[] =>
-      nodes.map((node) => {
-        if (node.key === connectionKey) {
-          return {
-            ...node,
-            isLeaf: loading
-              ? false
-              : !(isOpenOverride ?? getConnection(connectionId)?.is_open)
-          }
-        }
-        if (!node.children?.length) {
-          return node
-        }
-        const children = visit(node.children as DatabaseTreeNode[])
-        return children === node.children ? node : { ...node, children }
-      })
-
-    setTreeData((current) => {
-      const next = visit(current)
-      treeDataRef.current = next
-      return next
     })
   }
 
@@ -3010,7 +3072,10 @@ function App(): React.JSX.Element {
         { id: folderId, name: nextName, parentId: creatingFolderParentId }
       ])
       if (!creatingFolderParentId) {
-        setConnectionFolderOrder((current) => [...current.filter((id) => id !== folderId), folderId])
+        setConnectionFolderOrder((current) => [
+          ...current.filter((id) => id !== folderId),
+          folderId
+        ])
       }
       setExpandedKeys((current) =>
         Array.from(
@@ -3038,7 +3103,8 @@ function App(): React.JSX.Element {
 
     Modal.confirm({
       title: `删除分组“${folder.name}”`,
-      content: '删除后，里面的连接会自动移回根目录，子分组会提升到当前层级，不会删除连接本身。是否继续？',
+      content:
+        '删除后，里面的连接会自动移回根目录，子分组会提升到当前层级，不会删除连接本身。是否继续？',
       okText: '删除',
       okButtonProps: { danger: true },
       cancelText: '取消',
@@ -3145,7 +3211,10 @@ function App(): React.JSX.Element {
     }
     // 分组调整必须在当前事件内写入全部三处。不能只依赖 React effect，
     // 否则关闭应用或覆盖安装时可能在 effect 执行前丢失映射。
-    localStorage.setItem(STORAGE_CONNECTION_FOLDERS, JSON.stringify(nextTreePreferences.connection_folders))
+    localStorage.setItem(
+      STORAGE_CONNECTION_FOLDERS,
+      JSON.stringify(nextTreePreferences.connection_folders)
+    )
     localStorage.setItem(
       STORAGE_CONNECTION_FOLDER_ASSIGNMENTS,
       JSON.stringify(nextTreePreferences.connection_folder_assignments)
@@ -3158,7 +3227,10 @@ function App(): React.JSX.Element {
       STORAGE_ROOT_CONNECTION_ORDER,
       JSON.stringify(nextTreePreferences.root_connection_order)
     )
-    localStorage.setItem(STORAGE_ROOT_ITEM_ORDER, JSON.stringify(nextTreePreferences.root_item_order))
+    localStorage.setItem(
+      STORAGE_ROOT_ITEM_ORDER,
+      JSON.stringify(nextTreePreferences.root_item_order)
+    )
     localStorage.setItem(
       STORAGE_ROOT_ITEM_ORDER_CUSTOMIZED,
       String(nextTreePreferences.root_item_order_customized)
@@ -3432,7 +3504,11 @@ function App(): React.JSX.Element {
     return undefined
   }
 
-  const allowTreeDrop = ({ dragNode, dropNode, dropPosition }: {
+  const allowTreeDrop = ({
+    dragNode,
+    dropNode,
+    dropPosition
+  }: {
     dragNode: unknown
     dropNode: unknown
     dropPosition: number
@@ -3453,9 +3529,9 @@ function App(): React.JSX.Element {
     const targetConnectionId = targetNode.connectionId
     return Boolean(
       draggedConnectionId &&
-        targetConnectionId &&
-        connectionFolderAssignments[draggedConnectionId] ===
-          connectionFolderAssignments[targetConnectionId]
+      targetConnectionId &&
+      connectionFolderAssignments[draggedConnectionId] ===
+        connectionFolderAssignments[targetConnectionId]
     )
   }
 
@@ -3573,9 +3649,10 @@ function App(): React.JSX.Element {
     }
 
     const draggedConnectionFolderId = connectionFolderAssignments[draggedConnectionId]
-    const movingConnectionIds = (selectedConnectionIds.includes(draggedConnectionId)
-      ? selectedConnectionIds
-      : [draggedConnectionId]
+    const movingConnectionIds = (
+      selectedConnectionIds.includes(draggedConnectionId)
+        ? selectedConnectionIds
+        : [draggedConnectionId]
     ).filter(
       (connectionId) => connectionFolderAssignments[connectionId] === draggedConnectionFolderId
     )
@@ -3639,7 +3716,6 @@ function App(): React.JSX.Element {
         return
       }
     }
-
   }
 
   const updateWorkspaceTab = useCallback((key: string, patch: Partial<WorkspaceTab>): void => {
@@ -3989,11 +4065,7 @@ function App(): React.JSX.Element {
     inlineCellEditorRefs.current[tabKey] = undefined
   }
 
-  const closeEditingCell = (
-    tabKey: string,
-    displayValue?: string,
-    restoreFocus = false
-  ): void => {
+  const closeEditingCell = (tabKey: string, displayValue?: string, restoreFocus = false): void => {
     closeInlineCellEditor(tabKey, displayValue)
     if (restoreFocus) {
       tableBodyRefs.current[tabKey]?.focus()
@@ -4026,8 +4098,7 @@ function App(): React.JSX.Element {
         return
       }
       const originalEntry = current.batchOriginalValues?.find(
-        ({ rowKey, column }) =>
-          `${rowKey}:${column}` === batchHost.dataset.cellKey
+        ({ rowKey, column }) => `${rowKey}:${column}` === batchHost.dataset.cellKey
       )
       if (originalEntry) {
         batchHost.textContent = cellDisplayText(originalEntry.value)
@@ -4038,10 +4109,7 @@ function App(): React.JSX.Element {
     suppressInlineEditorCommitRefs.current[tabKey] = undefined
   }
 
-  const commitInlineCellEditor = (
-    tabKey: string,
-    options?: { restoreFocus?: boolean }
-  ): void => {
+  const commitInlineCellEditor = (tabKey: string, options?: { restoreFocus?: boolean }): void => {
     const current = inlineCellEditorRefs.current[tabKey]
     if (!current || committingEditingCellRefs.current[tabKey]) {
       return
@@ -4664,9 +4732,6 @@ function App(): React.JSX.Element {
   useEffect(() => {
     allDatabasesRef.current = allDatabases
   }, [allDatabases])
-  useEffect(() => {
-    expandedKeysRef.current = expandedKeys
-  }, [expandedKeys])
   const loadedCompletionIndex = useMemo(() => {
     const index = new Map<
       string,
@@ -5089,7 +5154,7 @@ function App(): React.JSX.Element {
         ? JSON.stringify({ index: tableName, query: { match_all: {} } }, null, 2)
         : connection?.database_type === 'mongodb' || connection?.database_type === 'redis'
           ? quoteTableName(connectionId, tableName, databaseName)
-        : `select * from ${quoteTableName(connectionId, tableName, databaseName)} limit 1000;`
+          : `select * from ${quoteTableName(connectionId, tableName, databaseName)} limit 1000;`
     openQueryWorkspace(sql, `${tableName} 查询`, connectionId, databaseName, pgDatabaseName)
   }
 
@@ -5137,12 +5202,12 @@ function App(): React.JSX.Element {
 
     if (!ensureConnectionOpen(editingConnectionId)) {
       return
-  }
+    }
 
-  setTableEditorLoading(true)
-  const updatedTableName = editingTableName.trim()
+    setTableEditorLoading(true)
+    const updatedTableName = editingTableName.trim()
 
-  try {
+    try {
       const data = await requestJson<ColumnsResponse>(
         withPgDatabase(
           `/connections/${editingConnectionId}/tables/${encodeURIComponent(editingOriginalTableName)}/columns`,
@@ -5495,7 +5560,8 @@ function App(): React.JSX.Element {
         ? [
             {
               key: 'select',
-              label: connection?.database_type === 'elasticsearch' ? '生成查询 DSL' : '生成 SELECT 查询'
+              label:
+                connection?.database_type === 'elasticsearch' ? '生成查询 DSL' : '生成 SELECT 查询'
             }
           ]
         : []),
@@ -5511,7 +5577,9 @@ function App(): React.JSX.Element {
       ...(canPreview && connection?.database_type !== 'elasticsearch'
         ? [{ key: 'export', label: '导出', icon: <FileAddOutlined /> }]
         : []),
-      ...(connection?.database_type !== 'mongodb' && connection?.database_type !== 'redis' && connection?.database_type !== 'elasticsearch'
+      ...(connection?.database_type !== 'mongodb' &&
+      connection?.database_type !== 'redis' &&
+      connection?.database_type !== 'elasticsearch'
         ? [{ key: 'import', label: '导入', icon: <ImportOutlined /> }]
         : []),
       ...(objectType === 'procedure'
@@ -5616,7 +5684,9 @@ function App(): React.JSX.Element {
             }
           ]
         : [{ key: 'open', label: '打开连接', icon: <PlayCircleOutlined />, disabled: loading }]),
-      ...(connection.database_type === 'redis' || connection.database_type === 'sqlite' || connection.database_type === 'elasticsearch'
+      ...(connection.database_type === 'redis' ||
+      connection.database_type === 'sqlite' ||
+      connection.database_type === 'elasticsearch'
         ? []
         : [
             {
@@ -5625,7 +5695,9 @@ function App(): React.JSX.Element {
               icon: <PlusOutlined />
             }
           ]),
-      ...(connection.database_type !== 'mongodb' && connection.database_type !== 'redis' && connection.database_type !== 'elasticsearch'
+      ...(connection.database_type !== 'mongodb' &&
+      connection.database_type !== 'redis' &&
+      connection.database_type !== 'elasticsearch'
         ? [{ key: 'run-sql', label: '运行 SQL 文件', icon: <PlayCircleOutlined /> }]
         : []),
       ...(connection.git_versioning_enabled &&
@@ -5838,7 +5910,10 @@ function App(): React.JSX.Element {
             }
           }}
         >
-          <span className={`folder-title-icon${isExpanded ? ' is-expanded' : ''}`} aria-hidden="true">
+          <span
+            className={`folder-title-icon${isExpanded ? ' is-expanded' : ''}`}
+            aria-hidden="true"
+          >
             {isExpanded ? <FolderOpenOutlined /> : <FolderOutlined />}
           </span>
           <span className={`table-tree-title${loading ? ' is-loading' : ''}`}>
@@ -5983,11 +6058,7 @@ function App(): React.JSX.Element {
         </span>
         <span className="tree-node-actions">
           {node.sizeLoading ? (
-            <LoadingOutlined
-              spin
-              className="tree-size-loading-icon"
-              title="正在计算占用大小"
-            />
+            <LoadingOutlined spin className="tree-size-loading-icon" title="正在计算占用大小" />
           ) : node.sizeDisplay ? (
             <span
               className="tree-size-badge"
@@ -6098,9 +6169,7 @@ function App(): React.JSX.Element {
         .forEach((element) => element.classList.remove('column-select-button-runtime-selected'))
       if (selectedColumn) {
         container
-          .querySelectorAll<HTMLElement>(
-            `[data-column-key="${CSS.escape(selectedColumn)}"]`
-          )
+          .querySelectorAll<HTMLElement>(`[data-column-key="${CSS.escape(selectedColumn)}"]`)
           .forEach((element) => element.classList.remove('column-selected-runtime'))
       }
     })
@@ -6125,9 +6194,7 @@ function App(): React.JSX.Element {
         .querySelectorAll<HTMLElement>('.column-select-button-runtime-selected')
         .forEach((element) => element.classList.remove('column-select-button-runtime-selected'))
       container
-        .querySelectorAll<HTMLElement>(
-          `[data-column-key="${CSS.escape(selectedColumn)}"]`
-        )
+        .querySelectorAll<HTMLElement>(`[data-column-key="${CSS.escape(selectedColumn)}"]`)
         .forEach((element) => {
           element.classList.add('column-selected-runtime')
           element
@@ -6137,9 +6204,7 @@ function App(): React.JSX.Element {
             .forEach((cell) => cell.classList.add('column-selected-runtime-inner'))
         })
       container
-        .querySelectorAll<HTMLElement>(
-          `[data-column-button="${CSS.escape(selectedColumn)}"]`
-        )
+        .querySelectorAll<HTMLElement>(`[data-column-button="${CSS.escape(selectedColumn)}"]`)
         .forEach((element) => element.classList.add('column-select-button-runtime-selected'))
     })
   }
@@ -6427,7 +6492,6 @@ function App(): React.JSX.Element {
   }
 
   const renderResultTable = (tab: WorkspaceTab): React.ReactNode => (
-    <Suspense fallback={<div className="deferred-modal-loading">正在加载数据表格...</div>}>
       <ResultTablePanel
         tab={tab}
         searchState={getImmediateTableSearchState(tab)}
@@ -6475,7 +6539,6 @@ function App(): React.JSX.Element {
         onOpenTableGitHistory={(currentTab) => void openTableGitHistory(currentTab)}
         tableSearchShortcut={shortcutSettings.table_search}
       />
-    </Suspense>
   )
 
   const renderResultTableRef = useRef(renderResultTable)
@@ -6553,7 +6616,9 @@ function App(): React.JSX.Element {
           databaseQuery ? '&' : '?'
         }type=procedure`
         const [tableResult, routineResult] = await Promise.allSettled([
-          requestJson<{ tables: TableInfo[] }>(`/connections/${connectionId}/tables${databaseQuery}`),
+          requestJson<{ tables: TableInfo[] }>(
+            `/connections/${connectionId}/tables${databaseQuery}`
+          ),
           requestJson<{ objects: DbObjectInfo[] }>(routinePath)
         ])
         if (tableResult.status === 'fulfilled') {
@@ -6619,6 +6684,7 @@ function App(): React.JSX.Element {
         setTreeData,
         treeDataRef,
         treeLoadingKeysRef,
+        treeOperationVersionRef: connectionTreeOperationVersionRef,
         expandedKeysRef,
         setExpandedKeys,
         captureTreeScrollPosition: captureResourceTreeScrollPosition,
@@ -6630,9 +6696,39 @@ function App(): React.JSX.Element {
       }),
     [withPgDatabase, isSchemaScopedType, captureResourceTreeScrollPosition]
   )
+  invalidateObjectGroupCacheRef.current = treeRuntime.invalidateObjectGroupCache
+
+  useEffect(() => {
+    if (!connectionsInitialized) {
+      return
+    }
+
+    const nodesByKey = collectTreeNodesByKey(treeData)
+    for (const expandedKey of expandedKeys) {
+      const node = nodesByKey.get(String(expandedKey))
+      if (!node?.connectionId || node.kind === 'folder' || node.closed) {
+        continue
+      }
+      const connection = getConnection(node.connectionId)
+      if (
+        !connection?.is_open ||
+        node.isLeaf ||
+        !isLoadableTreeNode(node, connection.database_type) ||
+        isTreeNodeChildrenLoaded(node) ||
+        treeLoadingKeysRef.current.has(node.key as React.Key)
+      ) {
+        continue
+      }
+      void treeRuntime.reloadNodeChildren({ ...node, isLeaf: false }, true)
+    }
+  }, [connections, connectionsInitialized, expandedKeys, getConnection, treeData, treeRuntime])
 
   const ensureDatabasesLoaded = useCallback(
-    async (connectionId: string, connectionOverride?: ConnectionInfo): Promise<void> => {
+    async (
+      connectionId: string,
+      connectionOverride?: ConnectionInfo,
+      operationVersion?: number
+    ): Promise<void> => {
       const connection = connectionOverride ?? getConnection(connectionId)
       if (!connection?.is_open || allDatabases[connectionId]) {
         return
@@ -6642,13 +6738,20 @@ function App(): React.JSX.Element {
         const data = await requestJson<{ databases: DatabaseInfo[] }>(
           `/connections/${connectionId}/databases`
         )
+        if (
+          (connectionOverride && !connectionOverride.is_open) ||
+          (operationVersion !== undefined &&
+            !isConnectionTreeOperationCurrent(connectionId, operationVersion))
+        ) {
+          return
+        }
         const dbNames = data.databases.map((d) => d.name)
         setAllDatabases((current) => ({ ...current, [connectionId]: dbNames }))
       } catch {
         // ignore
       }
     },
-    [allDatabases, getConnection, requestJson]
+    [allDatabases, getConnection, isConnectionTreeOperationCurrent, requestJson]
   )
 
   const ensureSchemasLoaded = useCallback(
@@ -6832,7 +6935,8 @@ function App(): React.JSX.Element {
         ? response.updated_at
         : 0
     const storedUpdatedAt =
-      typeof storedPreferences?.updatedAt === 'number' && Number.isFinite(storedPreferences.updatedAt)
+      typeof storedPreferences?.updatedAt === 'number' &&
+      Number.isFinite(storedPreferences.updatedAt)
         ? storedPreferences.updatedAt
         : 0
     const stringArray = (value: unknown): string[] =>
@@ -6847,9 +6951,7 @@ function App(): React.JSX.Element {
         : {}
     const stringArrayRecord = (value: unknown): Record<string, string[]> =>
       value && typeof value === 'object' && !Array.isArray(value)
-        ? Object.fromEntries(
-            Object.entries(value).map(([key, item]) => [key, stringArray(item)])
-          )
+        ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, stringArray(item)]))
         : {}
 
     const localTreePreferences = {
@@ -6876,12 +6978,15 @@ function App(): React.JSX.Element {
     )
     const serverHasDurableTreePreferences = hasPersistedConnectionTreePreferences(
       response
-        ? { preferences: response.preferences ?? {}, updatedAt: serverUpdatedAt, exists: response.exists }
+        ? {
+            preferences: response.preferences ?? {},
+            updatedAt: serverUpdatedAt,
+            exists: response.exists
+          }
         : undefined
     )
-    const localHasMeaningfulTreePreferences = hasMeaningfulConnectionTreePreferences(
-      localTreePreferences
-    )
+    const localHasMeaningfulTreePreferences =
+      hasMeaningfulConnectionTreePreferences(localTreePreferences)
     const shouldMigrateLegacyPreferences =
       !storedHasDurableTreePreferences &&
       !serverHasDurableTreePreferences &&
@@ -6893,7 +6998,11 @@ function App(): React.JSX.Element {
         ? { preferences: storedTreePreferences, updatedAt: storedUpdatedAt }
         : undefined,
       response
-        ? { preferences: response.preferences ?? {}, updatedAt: serverUpdatedAt, exists: response.exists }
+        ? {
+            preferences: response.preferences ?? {},
+            updatedAt: serverUpdatedAt,
+            exists: response.exists
+          }
         : undefined,
       localTreePreferences
     )
@@ -6944,9 +7053,7 @@ function App(): React.JSX.Element {
       setSelectedDatabases(restoredSelectedDatabases)
       setSelectedSchemas(restoredSelectedSchemas)
       if (Object.hasOwn(preferences, 'expanded_keys')) {
-        const restoredExpandedKeys = stringArray(preferences.expanded_keys).filter((key) =>
-          key.startsWith('folder:')
-        )
+        const restoredExpandedKeys = stringArray(preferences.expanded_keys)
         expandedKeysRef.current = restoredExpandedKeys
         setExpandedKeys(restoredExpandedKeys)
       }
@@ -7027,7 +7134,9 @@ function App(): React.JSX.Element {
 
   const buildLocalGitSyncPayload = async (): Promise<GitSyncPayload> => {
     const [connectionSnapshot, appSettings] = await Promise.all([
-      requestJson<{ connections: Record<string, Record<string, unknown>> }>('/git-sync/local/connections'),
+      requestJson<{ connections: Record<string, Record<string, unknown>> }>(
+        '/git-sync/local/connections'
+      ),
       window.api.getAppSyncSettings()
     ])
     return {
@@ -7063,6 +7172,11 @@ function App(): React.JSX.Element {
       }
     }
   }
+
+  const buildLocalGitSyncPayloadRef = useRef(buildLocalGitSyncPayload)
+  useLayoutEffect(() => {
+    buildLocalGitSyncPayloadRef.current = buildLocalGitSyncPayload
+  })
 
   const applyGitSyncPayload = async (payload: GitSyncPayload): Promise<void> => {
     const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -7101,6 +7215,9 @@ function App(): React.JSX.Element {
     })
     // 先让连接列表进入 React 状态，再恢复分组归属，避免连接归属清理逻辑误删远端映射。
     await loadConnections()
+    Object.keys(payload.connections).forEach((connectionId) => {
+      invalidateObjectGroupCacheRef.current(connectionId)
+    })
     await window.api.applyAppSyncSettings(payload.settings as never)
     // 主题属于本机界面偏好，不能被另一台设备或旧同步基线静默覆盖。
     if (isRecord(preferences.shortcut_settings)) {
@@ -7197,12 +7314,23 @@ function App(): React.JSX.Element {
     payload: GitSyncPayload,
     passphrase: string,
     remoteSha?: string,
-    silent = false
+    silent = false,
+    expectedLocal?: GitSyncPayload
   ): Promise<void> => {
+    const localSnapshot = expectedLocal ?? (await buildLocalGitSyncPayloadRef.current())
+    const ensureLocalSnapshotCurrent = async (): Promise<void> => {
+      const current = await buildLocalGitSyncPayloadRef.current()
+      if (getGitSyncContentKey(current) !== getGitSyncContentKey(localSnapshot)) {
+        throw new Error('同步期间本机连接或设置已变化，已保留最新修改，请重新同步')
+      }
+    }
+    await ensureLocalSnapshotCurrent()
     const pushed = await requestJson<{ sha: string }>('/git-sync/file', {
       method: 'PUT',
       body: JSON.stringify({ passphrase, payload, remote_sha: remoteSha })
     })
+    // 网络响应可能晚于新建/移动连接；不能用上传前的快照回写本机。
+    await ensureLocalSnapshotCurrent()
     await applyGitSyncPayload(payload)
     const syncedAt = Date.now()
     await window.api.setSyncLocalState({
@@ -7229,15 +7357,18 @@ function App(): React.JSX.Element {
     options?: { silent?: boolean }
   ): Promise<boolean> => {
     const [local, localState, pulled] = await Promise.all([
-      buildLocalGitSyncPayload(),
+      buildLocalGitSyncPayloadRef.current(),
       window.api.getSyncLocalState() as Promise<GitSyncLocalState>,
-      requestJson<{ exists: boolean; sha?: string; payload?: GitSyncPayload }>('/git-sync/file/pull', {
-        method: 'POST',
-        body: JSON.stringify({ passphrase: readPassphrase })
-      })
+      requestJson<{ exists: boolean; sha?: string; payload?: GitSyncPayload }>(
+        '/git-sync/file/pull',
+        {
+          method: 'POST',
+          body: JSON.stringify({ passphrase: readPassphrase })
+        }
+      )
     ])
     if (!pulled.exists || !pulled.payload) {
-      await finishGitSync(local, writePassphrase, undefined, options?.silent)
+      await finishGitSync(local, writePassphrase, undefined, options?.silent, local)
       return true
     }
 
@@ -7259,7 +7390,7 @@ function App(): React.JSX.Element {
       setGitSyncPendingPassphrase(writePassphrase)
       return false
     }
-    await finishGitSync(merged.payload, writePassphrase, pulled.sha, options?.silent)
+    await finishGitSync(merged.payload, writePassphrase, pulled.sha, options?.silent, local)
     return true
   }
 
@@ -7302,7 +7433,9 @@ function App(): React.JSX.Element {
         lastSyncAttemptAt: attemptAt,
         lastSyncError: null
       })
-      const synchronized = await synchronizeGitPayload(passphrase, passphrase, { silent: automatic })
+      const synchronized = await synchronizeGitPayload(passphrase, passphrase, {
+        silent: automatic
+      })
       if (!synchronized) {
         const conflictError = '发现同步冲突，需要手动处理后才能完成同步'
         setGitSyncLastError(conflictError)
@@ -7313,8 +7446,7 @@ function App(): React.JSX.Element {
       setGitSyncLastError(syncError)
       try {
         await window.api.setSyncLocalState({ lastSyncError: syncError })
-      } catch {
-      }
+      } catch {}
       if (!automatic) {
         showError(syncError)
       }
@@ -7322,6 +7454,11 @@ function App(): React.JSX.Element {
       setGitSyncBusy(false)
     }
   }
+
+  const startGitSyncRef = useRef(startGitSync)
+  useLayoutEffect(() => {
+    startGitSyncRef.current = startGitSync
+  })
 
   const setGitSyncAutoSyncEnabled = async (enabled: boolean): Promise<void> => {
     const state = await window.api.setSyncLocalState({ autoSyncEnabled: enabled })
@@ -7364,7 +7501,10 @@ function App(): React.JSX.Element {
   }
 
   const resolveGitSyncConflicts = async (): Promise<void> => {
-    if (!gitSyncPendingPayload || gitSyncConflicts.some((item) => !gitSyncConflictChoices[item.key])) {
+    if (
+      !gitSyncPendingPayload ||
+      gitSyncConflicts.some((item) => !gitSyncConflictChoices[item.key])
+    ) {
       messageApi.warning('请为每项冲突选择保留本机或远程配置')
       return
     }
@@ -7925,11 +8065,7 @@ function App(): React.JSX.Element {
     const gitVersioning = {
       git_versioning_enabled: Boolean(values.git_versioning_enabled),
       git_versioning_scopes: Array.from(
-        new Set(
-          (values.git_versioning_scopes ?? [])
-            .map((scope) => scope.trim())
-            .filter(Boolean)
-        )
+        new Set((values.git_versioning_scopes ?? []).map((scope) => scope.trim()).filter(Boolean))
       )
     }
     if (values.database_type === 'sqlite') {
@@ -9114,20 +9250,30 @@ function App(): React.JSX.Element {
     try {
       if (connectionMode === 'edit' && editingConnectionInfoId) {
         const restoreTreeScrollPosition = captureResourceTreeScrollPosition()
-        const connection = await requestJson<ConnectionInfo>(
-          `/connections/${editingConnectionInfoId}`,
-          {
-            method: 'PUT',
-            body: JSON.stringify(payload)
+        const operationVersion = beginConnectionTreeOperation(editingConnectionInfoId, 'refresh')
+        invalidateObjectGroupCacheRef.current(editingConnectionInfoId)
+        try {
+          const connection = await requestJson<ConnectionInfo>(
+            `/connections/${editingConnectionInfoId}`,
+            {
+              method: 'PUT',
+              body: JSON.stringify(payload)
+            }
+          )
+          if (!isConnectionTreeOperationCurrent(editingConnectionInfoId, operationVersion)) {
+            return
           }
-        )
-        const nextConnections = connections.map((item) =>
-          item.connection_id === connection.connection_id ? connection : item
-        )
-        setConnections(nextConnections)
-        setTreeData((current) => replaceConnectionNode(current, connection, buildConnectionNode))
-        restoreTreeScrollPosition()
-        closeConnectionModal()
+          const nextConnections = connections.map((item) =>
+            item.connection_id === connection.connection_id ? connection : item
+          )
+          setConnections(nextConnections)
+          setTreeData((current) => replaceConnectionNode(current, connection, buildConnectionNode))
+          restoreTreeScrollPosition()
+          closeConnectionModal()
+        } finally {
+          clearConnectionTreeLoadingKeys(editingConnectionInfoId)
+          clearConnectionTreeOperation(editingConnectionInfoId, operationVersion)
+        }
         return
       }
 
@@ -9198,8 +9344,14 @@ function App(): React.JSX.Element {
         JSON.stringify(nextConnectionFolderAssignments)
       )
       localStorage.setItem(STORAGE_ROOT_CONNECTION_ORDER, JSON.stringify(nextRootConnectionOrder))
-      localStorage.setItem(STORAGE_ROOT_ITEM_ORDER, JSON.stringify(nextTreePreferences.root_item_order))
-      localStorage.setItem(STORAGE_FOLDER_CONNECTION_ORDER, JSON.stringify(nextFolderConnectionOrder))
+      localStorage.setItem(
+        STORAGE_ROOT_ITEM_ORDER,
+        JSON.stringify(nextTreePreferences.root_item_order)
+      )
+      localStorage.setItem(
+        STORAGE_FOLDER_CONNECTION_ORDER,
+        JSON.stringify(nextFolderConnectionOrder)
+      )
       localStorage.setItem(
         STORAGE_CONNECTION_TREE_EXPANDED_KEYS,
         JSON.stringify(nextTreePreferences.expanded_keys)
@@ -9263,6 +9415,7 @@ function App(): React.JSX.Element {
     setConnections((current) =>
       current.map((item) => (item.connection_id === connectionId ? updated : item))
     )
+    invalidateObjectGroupCacheRef.current(connectionId)
     setTreeData((current) => replaceConnectionNode(current, updated, buildConnectionNode))
     return updated
   }
@@ -9272,20 +9425,19 @@ function App(): React.JSX.Element {
     savedConnection?: ConnectionInfo,
     options: { preloadTree?: boolean; timeoutMs?: number } = {}
   ): Promise<ConnectionInfo | undefined> => {
+    const activeOperation = connectionTreeOperationRef.current[connectionId]
+    if (activeOperation?.kind === 'open' || activeOperation?.kind === 'close') {
+      return undefined
+    }
     const openAttemptId = crypto.randomUUID()
+    const operationVersion = beginConnectionTreeOperation(connectionId, 'open')
+    invalidateObjectGroupCacheRef.current(connectionId)
     connectionOpenAttemptRefs.current[connectionId] = openAttemptId
     const isCurrentOpenAttempt = (): boolean =>
-      connectionOpenAttemptRefs.current[connectionId] === openAttemptId
-    const connectionTreeKey = `connection:${connectionId}`
+      connectionOpenAttemptRefs.current[connectionId] === openAttemptId &&
+      isConnectionTreeOperationCurrent(connectionId, operationVersion)
     const treeLoadingStartedAt = performance.now()
     const minimumTreeLoadingDurationMs = 180
-    let openedConnectionIsOpen: boolean | undefined
-    const wasTreeLoading = treeLoadingKeysRef.current.has(connectionTreeKey)
-    treeLoadingKeysRef.current.add(connectionTreeKey)
-    if (!wasTreeLoading) {
-      setTreeLoadingVersion((current) => current + 1)
-    }
-    setConnectionTreeNodeLoading(connectionId, true)
     setConnectionTreeLoadingText(connectionId, '正在打开连接...')
     try {
       await waitForUiCommit()
@@ -9295,7 +9447,10 @@ function App(): React.JSX.Element {
         !currentConnection.has_password &&
         currentConnection.database_type !== 'sqlite' &&
         currentConnection.database_type !== 'redis' &&
-        !(currentConnection.database_type === 'elasticsearch' && currentConnection.es_auth_type !== 'basic')
+        !(
+          currentConnection.database_type === 'elasticsearch' &&
+          currentConnection.es_auth_type !== 'basic'
+        )
       ) {
         openConnectionPasswordPrompt(currentConnection, '当前连接未保存密码，请输入密码后重试')
         return undefined
@@ -9313,8 +9468,6 @@ function App(): React.JSX.Element {
       if (!isCurrentOpenAttempt()) {
         return undefined
       }
-      openedConnectionIsOpen = connection.is_open
-
       setConnections((current) =>
         current.map((c) => (c.connection_id === connectionId ? connection : c))
       )
@@ -9331,7 +9484,23 @@ function App(): React.JSX.Element {
 
       const connKey = `connection:${connectionId}`
       setExpandedKeys((current) => {
-        const next = current.includes(connKey) ? current : [...current, connKey]
+        // 打开连接只展开第一层。历史子节点 key 会触发恢复 effect 继续加载库表，
+        // 必须在连接与树数据提交的同一次更新中清除，不能等异步加载结束再收起。
+        const descendantPrefixes = [
+          'database',
+          'pg-schema',
+          'tables-root',
+          'object-group',
+          'table',
+          'db-object',
+          'column'
+        ].map((kind) => `${kind}:${connectionId}:`)
+        const next = current.filter(
+          (key) => !descendantPrefixes.some((prefix) => String(key).startsWith(prefix))
+        )
+        if (!next.includes(connKey)) {
+          next.push(connKey)
+        }
         expandedKeysRef.current = next
         return next
       })
@@ -9341,7 +9510,7 @@ function App(): React.JSX.Element {
       }
 
       if (connection.database_type === 'sqlite') {
-        await ensureDatabasesLoaded(connectionId, connection)
+        await ensureDatabasesLoaded(connectionId, connection, operationVersion)
         if (!isCurrentOpenAttempt()) {
           return undefined
         }
@@ -9391,10 +9560,9 @@ function App(): React.JSX.Element {
       }
       if (isCurrentOpenAttempt()) {
         connectionOpenAttemptRefs.current[connectionId] = undefined
-        treeLoadingKeysRef.current.delete(connectionTreeKey)
-        setTreeLoadingVersion((current) => current + 1)
-        setConnectionTreeNodeLoading(connectionId, false, openedConnectionIsOpen)
+        clearConnectionTreeLoadingKeys(connectionId)
         setConnectionTreeLoadingText(connectionId)
+        clearConnectionTreeOperation(connectionId, operationVersion)
       }
     }
   }
@@ -9427,7 +9595,13 @@ function App(): React.JSX.Element {
     connectionId: string,
     options: { silent?: boolean } = {}
   ): Promise<void> => {
+    const activeOperation = connectionTreeOperationRef.current[connectionId]
+    if (activeOperation?.kind === 'close') {
+      return
+    }
     const openAttemptId = connectionOpenAttemptRefs.current[connectionId]
+    const operationVersion = beginConnectionTreeOperation(connectionId, 'close')
+    invalidateObjectGroupCacheRef.current(connectionId)
     connectionOpenAttemptRefs.current[connectionId] = undefined
     setConnectionTreeLoadingText(connectionId)
     try {
@@ -9438,6 +9612,9 @@ function App(): React.JSX.Element {
           method: 'POST'
         }
       )
+      if (!isConnectionTreeOperationCurrent(connectionId, operationVersion)) {
+        return
+      }
       setConnections((current) =>
         current.map((c) => (c.connection_id === connectionId ? connection : c))
       )
@@ -9454,19 +9631,16 @@ function App(): React.JSX.Element {
       setTreeContextMenu((current) =>
         current?.node.connectionId === connectionId ? null : current
       )
-      setExpandedKeys((keys) => {
-        const next = keys.filter(
-          (k) =>
-            !String(k).startsWith(`connection:${connectionId}`) &&
-            !String(k).includes(`:${connectionId}:`)
-        )
-        expandedKeysRef.current = next
-        return next
-      })
       setTreeData((current) => replaceConnectionNode(current, connection, buildConnectionNode))
     } catch (err) {
-      if (!options.silent) {
+      if (!options.silent && isConnectionTreeOperationCurrent(connectionId, operationVersion)) {
         showError(err instanceof Error ? err.message : '关闭连接失败')
+      }
+    } finally {
+      if (isConnectionTreeOperationCurrent(connectionId, operationVersion)) {
+        clearConnectionTreeLoadingKeys(connectionId)
+        setConnectionTreeLoadingText(connectionId)
+        clearConnectionTreeOperation(connectionId, operationVersion)
       }
     }
   }
@@ -9483,20 +9657,32 @@ function App(): React.JSX.Element {
       centered: true,
       maskClosable: false,
       onOk: async () => {
-        await requestJson<{ success: boolean }>(`/connections/${connectionId}`, {
-          method: 'DELETE'
-        })
-        const nextConnections = connections.filter((item) => item.connection_id !== connectionId)
-        setConnections(nextConnections)
-        setSelectedConnectionId((current) =>
-          current === connectionId ? nextConnections[0]?.connection_id : current
-        )
-        setSelectedConnectionIds((current) => current.filter((id) => id !== connectionId))
-        setSelectedTreeKeys((current) =>
-          current.filter((key) => key !== `connection:${connectionId}`)
-        )
-        setWorkspaceTabs((current) => current.filter((tab) => tab.connectionId !== connectionId))
-        refreshTree(nextConnections)
+        const operationVersion = beginConnectionTreeOperation(connectionId, 'close')
+        invalidateObjectGroupCacheRef.current(connectionId)
+        try {
+          await requestJson<{ success: boolean }>(`/connections/${connectionId}`, {
+            method: 'DELETE'
+          })
+          if (!isConnectionTreeOperationCurrent(connectionId, operationVersion)) {
+            return
+          }
+          const nextConnections = connections.filter((item) => item.connection_id !== connectionId)
+          setConnections(nextConnections)
+          setSelectedConnectionId((current) =>
+            current === connectionId ? nextConnections[0]?.connection_id : current
+          )
+          setSelectedConnectionIds((current) => current.filter((id) => id !== connectionId))
+          setSelectedTreeKeys((current) =>
+            current.filter((key) => key !== `connection:${connectionId}`)
+          )
+          setWorkspaceTabs((current) => current.filter((tab) => tab.connectionId !== connectionId))
+          refreshTree(nextConnections)
+        } finally {
+          clearConnectionTreeLoadingKeys(connectionId)
+          clearConnectionTreeOperation(connectionId, operationVersion)
+          delete connectionTreeOperationVersionRef.current[connectionId]
+          delete connectionOpenAttemptRefs.current[connectionId]
+        }
       }
     })
   }
@@ -10423,7 +10609,9 @@ function App(): React.JSX.Element {
         ? Object.keys(tab.selectedRowKeyMap)
         : (tab.selectedRowKeys ?? []).map(String))
     const currentRowKeys = new Set((tab.editRows ?? []).map((row) => row.__rowKey))
-    const selected = new Set(selectedRowKeys.map(String).filter((rowKey) => currentRowKeys.has(rowKey)))
+    const selected = new Set(
+      selectedRowKeys.map(String).filter((rowKey) => currentRowKeys.has(rowKey))
+    )
     if (selected.size === 0) {
       return
     }
@@ -10605,7 +10793,6 @@ function App(): React.JSX.Element {
     const isCurrentPreviewRequest = (): boolean =>
       previewRequestVersionRefs.current[tabKey] === previewRequestVersion
     const existingPreviewTab = getWorkspaceTabs().find((tab) => tab.key === tabKey)
-    const tabExists = Boolean(existingPreviewTab)
     clearInlineCellEditor(tabKey)
     delete rowSelectionDraftRefs.current[tabKey]
     delete selectedRowRefs.current[tabKey]
@@ -10616,10 +10803,11 @@ function App(): React.JSX.Element {
     startTransition(() => {
       setSelectedConnectionId(connectionId)
     })
-    if (tabExists) {
-      setWorkspaceTabsAndActiveTabKey(
-        (current) =>
-          current.map((tab) =>
+    setWorkspaceTabsAndActiveTabKey(
+      (current) => {
+        const existingTab = current.find((tab) => tab.key === tabKey)
+        if (existingTab) {
+          return current.map((tab) =>
             tab.key === tabKey
               ? {
                   ...tab,
@@ -10637,10 +10825,32 @@ function App(): React.JSX.Element {
                   columnFilterOptions: undefined
                 }
               : tab
-          ),
-        tabKey
-      )
-    }
+          )
+        }
+
+        return [
+          ...current,
+          {
+            key: tabKey,
+            title: databaseName ? `${databaseName}.${tableName}` : tableName,
+            kind: 'preview' as const,
+            connectionId,
+            databaseName,
+            pgDatabaseName,
+            tableName,
+            objectType,
+            sql: '',
+            limit,
+            page,
+            where: whereCondition,
+            loading: true,
+            error: undefined,
+            tableRenderVersion: 1
+          }
+        ]
+      },
+      tabKey
+    )
 
     try {
       const effectiveSortState = sortState !== undefined ? sortState : existingPreviewTab?.sortState
@@ -10700,7 +10910,7 @@ function App(): React.JSX.Element {
             selectedRowKeys: [],
             selectedRowKeyMap: {},
             columnFilterOptions: undefined,
-            tableRenderVersion: tabExists
+            tableRenderVersion: existingPreviewTab
               ? (current.find((tab) => tab.key === tabKey)?.tableRenderVersion ?? 0) + 1
               : 1,
             sortState: effectiveSortState
@@ -10735,38 +10945,40 @@ function App(): React.JSX.Element {
         tabKey,
         duration: Number((performance.now() - previewStartedAt).toFixed(2))
       })
-      if (tabExists) {
-        updateWorkspaceTab(tabKey, {
-          loading: false,
-          error: err instanceof Error ? err.message : '加载表数据失败'
-        })
-      } else {
-        startTransition(() => {
-          setWorkspaceTabsAndActiveTabKey(
-            (current) => [
-              ...current,
-              {
-                key: tabKey,
-                title: databaseName ? `${databaseName}.${tableName}` : tableName,
-                kind: 'preview',
-                connectionId,
-                databaseName,
-                pgDatabaseName,
-                tableName,
-                objectType,
-                sql: '',
-                limit,
-                page,
-                where: whereCondition,
-                loading: false,
-                error: err instanceof Error ? err.message : '加载表数据失败',
-                tableRenderVersion: 1
-              }
-            ],
-            tabKey
-          )
-        })
-      }
+      const error = err instanceof Error ? err.message : '加载表数据失败'
+      startTransition(() => {
+        setWorkspaceTabsAndActiveTabKey(
+          (current) => {
+            const currentTab = current.find((tab) => tab.key === tabKey)
+            if (!currentTab) {
+              return [
+                ...current,
+                {
+                  key: tabKey,
+                  title: databaseName ? `${databaseName}.${tableName}` : tableName,
+                  kind: 'preview' as const,
+                  connectionId,
+                  databaseName,
+                  pgDatabaseName,
+                  tableName,
+                  objectType,
+                  sql: '',
+                  limit,
+                  page,
+                  where: whereCondition,
+                  loading: false,
+                  error,
+                  tableRenderVersion: 1
+                }
+              ]
+            }
+            return current.map((tab) =>
+              tab.key === tabKey ? { ...tab, loading: false, error } : tab
+            )
+          },
+          tabKey
+        )
+      })
     }
   }
 
@@ -11312,7 +11524,8 @@ function App(): React.JSX.Element {
       const currentConnection = getConnectionRef.current(tab.connectionId)
       updateWorkspaceTab(tab.key, {
         loading: true,
-        queryExecutionPhase: currentConnection?.is_open === false ? 'opening-connection' : 'executing',
+        queryExecutionPhase:
+          currentConnection?.is_open === false ? 'opening-connection' : 'executing',
         error: undefined,
         resultVisible: true,
         resultCollapsed: false,
@@ -11707,14 +11920,36 @@ function App(): React.JSX.Element {
     }
 
     void checkHealth(true)
-    void (async () => {
+    let cancelled = false
+    let retryTimer: number | undefined
+    let attempt = 0
+    const loadStartupTree = async (): Promise<void> => {
+      if (cancelled) {
+        return
+      }
       try {
         await loadConnectionTreePreferences()
         await loadConnections()
+        attempt = 0
       } catch {
-        // Keep the legacy local cache intact if the backend is temporarily unavailable.
+        if (cancelled) {
+          return
+        }
+        const delay = Math.min(1000 * 2 ** attempt, 10000)
+        attempt += 1
+        retryTimer = window.setTimeout(() => {
+          retryTimer = undefined
+          void loadStartupTree()
+        }, delay)
       }
-    })()
+    }
+    void loadStartupTree()
+    return () => {
+      cancelled = true
+      if (retryTimer !== undefined) {
+        window.clearTimeout(retryTimer)
+      }
+    }
   }, [backendStatus.state, backendStatus.apiBaseUrl])
 
   useEffect(() => {
@@ -11726,7 +11961,12 @@ function App(): React.JSX.Element {
   }, [backendStatus.state, backendStatus.apiBaseUrl])
 
   useEffect(() => {
-    if (!gitSyncAutoEnabled || !gitHubAuthStatus.authorized || !gitSyncLastSyncedAt || gitSyncBusy) {
+    if (
+      !gitSyncAutoEnabled ||
+      !gitHubAuthStatus.authorized ||
+      !gitSyncLastSyncedAt ||
+      gitSyncBusy
+    ) {
       return
     }
 
@@ -11736,8 +11976,8 @@ function App(): React.JSX.Element {
         return
       }
       const state = (await window.api.getSyncLocalState()) as GitSyncLocalState
-      if (state.passphrase) {
-        await startGitSync({ automatic: true, passphrase: state.passphrase })
+      if (!cancelled && state.passphrase) {
+        await startGitSyncRef.current({ automatic: true, passphrase: state.passphrase })
       }
     }
     const timer = window.setInterval(() => void synchronizeInBackground(), AUTO_SYNC_INTERVAL_MS)
@@ -12046,7 +12286,9 @@ function App(): React.JSX.Element {
     const connectionNames: Record<string, string> = Object.fromEntries(
       connections.map((connection) => [connection.connection_id, connection.name])
     )
-    for (const [connectionId, payload] of Object.entries(gitSyncPendingPayload?.connections ?? {})) {
+    for (const [connectionId, payload] of Object.entries(
+      gitSyncPendingPayload?.connections ?? {}
+    )) {
       if (typeof payload.name === 'string' && !connectionNames[connectionId]) {
         connectionNames[connectionId] = payload.name
       }
@@ -12072,7 +12314,10 @@ function App(): React.JSX.Element {
           if (!folderNames[item.id]) {
             folderNames[item.id] = item.name
           }
-          if (!folderParents[item.id] && typeof (folder as { parentId?: unknown }).parentId === 'string') {
+          if (
+            !folderParents[item.id] &&
+            typeof (folder as { parentId?: unknown }).parentId === 'string'
+          ) {
             folderParents[item.id] = (folder as { parentId: string }).parentId
           }
         }
@@ -12145,7 +12390,9 @@ function App(): React.JSX.Element {
                             />
                           </Flex>
                           <Progress percent={task.percent} size="small" showInfo />
-                          <Typography.Text type="secondary" ellipsis>{task.detail}</Typography.Text>
+                          <Typography.Text type="secondary" ellipsis>
+                            {task.detail}
+                          </Typography.Text>
                         </div>
                       ))}
                     </div>
@@ -12242,8 +12489,20 @@ function App(): React.JSX.Element {
                   }
                   setAiPanelOpen((open) => !open)
                 }}
-                title={!aiModuleInstalled ? '安装 AI 助手模块' : aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'}
-                aria-label={!aiModuleInstalled ? '安装 AI 助手模块' : aiPanelOpen ? '关闭 AI 侧栏' : '打开 AI 侧栏'}
+                title={
+                  !aiModuleInstalled
+                    ? '安装 AI 助手模块'
+                    : aiPanelOpen
+                      ? '关闭 AI 侧栏'
+                      : '打开 AI 侧栏'
+                }
+                aria-label={
+                  !aiModuleInstalled
+                    ? '安装 AI 助手模块'
+                    : aiPanelOpen
+                      ? '关闭 AI 侧栏'
+                      : '打开 AI 侧栏'
+                }
               />
               <Button
                 className="theme-toggle-btn"
@@ -12751,8 +13010,12 @@ function App(): React.JSX.Element {
           onLoadSchemaVersions={(connectionId) => void loadSchemaVersions(connectionId)}
           onCreateSchemaSnapshot={(connectionId) => void createSchemaSnapshot(connectionId)}
           onViewSchemaVersion={viewSchemaVersion}
-          onRestoreDatabaseVersion={(connectionId, version) => void restoreDatabaseVersion(connectionId, version)}
-          onRetrySnapshotSync={(connectionId, version) => void retryDatabaseSnapshotSync(connectionId, version)}
+          onRestoreDatabaseVersion={(connectionId, version) =>
+            void restoreDatabaseVersion(connectionId, version)
+          }
+          onRetrySnapshotSync={(connectionId, version) =>
+            void retryDatabaseSnapshotSync(connectionId, version)
+          }
           versioningScopeConfig={versioningScopeConfig}
           versioningScopesLoading={versioningScopesLoading}
           versioningScopesSaving={versioningScopesSaving}
@@ -12766,23 +13029,34 @@ function App(): React.JSX.Element {
         />
         <Modal
           open={Boolean(tableGitHistoryTarget)}
-          title={tableGitHistoryTarget ? `${tableGitHistoryTarget.tableName} · Git 提交记录` : 'Git 提交记录'}
+          title={
+            tableGitHistoryTarget
+              ? `${tableGitHistoryTarget.tableName} · Git 提交记录`
+              : 'Git 提交记录'
+          }
           footer={null}
           onCancel={() => setTableGitHistoryTarget(undefined)}
           width={760}
           {...FAST_MODAL_PROPS}
         >
           {tableGitHistoryLoading ? (
-            <Flex justify="center" className="deferred-modal-loading"><Spin /></Flex>
+            <Flex justify="center" className="deferred-modal-loading">
+              <Spin />
+            </Flex>
           ) : tableGitHistory.length === 0 ? (
             <Space direction="vertical">
-              <Typography.Text type="secondary">该表还没有数据库快照提交记录。请先在“版本管理”中创建一次初始快照，之后表数据和结构变更会自动提交。</Typography.Text>
+              <Typography.Text type="secondary">
+                该表还没有数据库快照提交记录。请先在“版本管理”中创建一次初始快照，之后表数据和结构变更会自动提交。
+              </Typography.Text>
               {tableGitHistoryTarget ? (
-                <Button type="primary" onClick={() => {
-                  const connectionId = tableGitHistoryTarget.connectionId
-                  setTableGitHistoryTarget(undefined)
-                  void openSchemaVersionModal(connectionId)
-                }}>
+                <Button
+                  type="primary"
+                  onClick={() => {
+                    const connectionId = tableGitHistoryTarget.connectionId
+                    setTableGitHistoryTarget(undefined)
+                    void openSchemaVersionModal(connectionId)
+                  }}
+                >
                   前往创建初始快照
                 </Button>
               ) : null}
@@ -12794,26 +13068,79 @@ function App(): React.JSX.Element {
                   type="warning"
                   showIcon
                   message="远端版本历史暂不可用"
-                  description={tableGitHistory.find((version) => version.status === 'remote_error')?.error}
+                  description={
+                    tableGitHistory.find((version) => version.status === 'remote_error')?.error
+                  }
                 />
               ) : null}
-              {tableGitHistory.filter((version) => version.status !== 'remote_error').map((version) => (
-                <div key={version.id} className="schema-versioning-entry">
-                  <Space direction="vertical" size={0}>
-                    <Typography.Text strong>{version.message}</Typography.Text>
-                    {version.status ? <Tag color={version.status === 'error' || version.status === 'local_only' ? 'warning' : 'processing'}>{version.status === 'local_only' ? '仅本机' : version.status === 'error' ? '同步失败 · 本机保留' : '正在同步'}</Tag> : null}
-                    <Typography.Text type="secondary">
-                      {version.id.slice(0, 7)}{version.committed_at ? ` · ${new Date(version.committed_at).toLocaleString()}` : ''}
-                    </Typography.Text>
-                  </Space>
-                  <Space size={4}>
-                    {!version.status ? <Button size="small" loading={tableGitActionVersion === version.id} onClick={() => void openTableGitDetails(version)}>SQL</Button> : null}
-                    {!version.status ? <Button size="small" loading={tableGitActionVersion === version.id} onClick={() => void openTableGitDiff(version)}>差异</Button> : null}
-                    {!version.status ? <Button size="small" danger loading={tableGitActionVersion === version.id} onClick={() => void restoreTableGitStructure(version)}>恢复结构</Button> : null}
-                    <Button size="small" danger loading={tableGitActionVersion === version.id} onClick={() => void restoreTableGitVersion(version)}>恢复数据</Button>
-                  </Space>
-                </div>
-              ))}
+              {tableGitHistory
+                .filter((version) => version.status !== 'remote_error')
+                .map((version) => (
+                  <div key={version.id} className="schema-versioning-entry">
+                    <Space direction="vertical" size={0}>
+                      <Typography.Text strong>{version.message}</Typography.Text>
+                      {version.status ? (
+                        <Tag
+                          color={
+                            version.status === 'error' || version.status === 'local_only'
+                              ? 'warning'
+                              : 'processing'
+                          }
+                        >
+                          {version.status === 'local_only'
+                            ? '仅本机'
+                            : version.status === 'error'
+                              ? '同步失败 · 本机保留'
+                              : '正在同步'}
+                        </Tag>
+                      ) : null}
+                      <Typography.Text type="secondary">
+                        {version.id.slice(0, 7)}
+                        {version.committed_at
+                          ? ` · ${new Date(version.committed_at).toLocaleString()}`
+                          : ''}
+                      </Typography.Text>
+                    </Space>
+                    <Space size={4}>
+                      {!version.status ? (
+                        <Button
+                          size="small"
+                          loading={tableGitActionVersion === version.id}
+                          onClick={() => void openTableGitDetails(version)}
+                        >
+                          SQL
+                        </Button>
+                      ) : null}
+                      {!version.status ? (
+                        <Button
+                          size="small"
+                          loading={tableGitActionVersion === version.id}
+                          onClick={() => void openTableGitDiff(version)}
+                        >
+                          差异
+                        </Button>
+                      ) : null}
+                      {!version.status ? (
+                        <Button
+                          size="small"
+                          danger
+                          loading={tableGitActionVersion === version.id}
+                          onClick={() => void restoreTableGitStructure(version)}
+                        >
+                          恢复结构
+                        </Button>
+                      ) : null}
+                      <Button
+                        size="small"
+                        danger
+                        loading={tableGitActionVersion === version.id}
+                        onClick={() => void restoreTableGitVersion(version)}
+                      >
+                        恢复数据
+                      </Button>
+                    </Space>
+                  </div>
+                ))}
             </Space>
           )}
         </Modal>
@@ -12932,11 +13259,18 @@ function App(): React.JSX.Element {
                               GitHub 授权
                             </Typography.Title>
                             <Typography.Text type="secondary">
-                              授权后，DataDjinn 才能为应用设置、连接信息和已启用版本管理的连接建立私有同步存储。
+                              授权后，DataDjinn
+                              才能为应用设置、连接信息和已启用版本管理的连接建立私有同步存储。
                             </Typography.Text>
                           </Space>
                           <Tag
-                            color={gitHubAuthStatusError ? 'warning' : gitHubAuthStatus.authorized ? 'success' : 'default'}
+                            color={
+                              gitHubAuthStatusError
+                                ? 'warning'
+                                : gitHubAuthStatus.authorized
+                                  ? 'success'
+                                  : 'default'
+                            }
                           >
                             {gitHubAuthStatusError
                               ? '状态未知'
@@ -13028,7 +13362,10 @@ function App(): React.JSX.Element {
                             ) : gitSyncRemoteStatusError ? (
                               <Button disabled>无法确认远端状态</Button>
                             ) : (
-                              <Button type="primary" onClick={() => void initializeGitHubSyncRepository()}>
+                              <Button
+                                type="primary"
+                                onClick={() => void initializeGitHubSyncRepository()}
+                              >
                                 初始化私有同步仓库
                               </Button>
                             )}
@@ -13041,9 +13378,10 @@ function App(): React.JSX.Element {
                             <Typography.Title level={5} style={{ margin: 0 }}>
                               加密同步
                             </Typography.Title>
-                              <Typography.Text type="secondary">
-                                同步内容使用独立口令加密后保存到私有仓库。口令仅使用本机系统加密保存，不会上传到 GitHub。
-                              </Typography.Text>
+                            <Typography.Text type="secondary">
+                              同步内容使用独立口令加密后保存到私有仓库。口令仅使用本机系统加密保存，不会上传到
+                              GitHub。
+                            </Typography.Text>
                           </Space>
                           <Tag color={gitSyncLastSyncedAt ? 'success' : 'default'}>
                             {gitSyncLastSyncedAt ? '已建立同步基线' : '尚未同步'}
@@ -13099,7 +13437,9 @@ function App(): React.JSX.Element {
                                   value={gitSyncPassphraseConfirm}
                                   autoComplete="new-password"
                                   placeholder="再次输入同步口令"
-                                  onChange={(event) => setGitSyncPassphraseConfirm(event.target.value)}
+                                  onChange={(event) =>
+                                    setGitSyncPassphraseConfirm(event.target.value)
+                                  }
                                 />
                               )}
                             </>
@@ -13109,7 +13449,9 @@ function App(): React.JSX.Element {
                                 value={currentGitSyncPassphrase}
                                 autoComplete="current-password"
                                 placeholder="当前同步口令"
-                                onChange={(event) => setCurrentGitSyncPassphrase(event.target.value)}
+                                onChange={(event) =>
+                                  setCurrentGitSyncPassphrase(event.target.value)
+                                }
                                 onKeyDown={(event) => {
                                   if (event.key === 'Tab' && !event.shiftKey) {
                                     event.preventDefault()
@@ -13135,7 +13477,9 @@ function App(): React.JSX.Element {
                                 value={nextGitSyncPassphraseConfirm}
                                 autoComplete="new-password"
                                 placeholder="再次输入新同步口令"
-                                onChange={(event) => setNextGitSyncPassphraseConfirm(event.target.value)}
+                                onChange={(event) =>
+                                  setNextGitSyncPassphraseConfirm(event.target.value)
+                                }
                               />
                               <Flex justify="end" gap={8}>
                                 <Button
@@ -13159,18 +13503,26 @@ function App(): React.JSX.Element {
                               </Flex>
                             </>
                           ) : (
-                            <Flex justify="space-between" align="center" gap="middle" className="sync-passphrase-ready">
+                            <Flex
+                              justify="space-between"
+                              align="center"
+                              gap="middle"
+                              className="sync-passphrase-ready"
+                            >
                               <Typography.Text type="secondary">
-                                同步口令已使用本机系统加密保存。修改后会生成新的加密提交，但 Git 历史中的旧提交仍可能使用旧口令解密。
+                                同步口令已使用本机系统加密保存。修改后会生成新的加密提交，但 Git
+                                历史中的旧提交仍可能使用旧口令解密。
                               </Typography.Text>
-                              <Button onClick={() => setChangingGitSyncPassphrase(true)}>修改同步口令</Button>
+                              <Button onClick={() => setChangingGitSyncPassphrase(true)}>
+                                修改同步口令
+                              </Button>
                             </Flex>
                           )}
                           <Flex justify="space-between" align="center" gap="middle">
                             <Typography.Text type="secondary">
-                                {gitSyncRemoteStatusError
-                                  ? '暂时无法确认远端状态，请检查网络后重试。'
-                                  : gitSyncLastSyncedAt
+                              {gitSyncRemoteStatusError
+                                ? '暂时无法确认远端状态，请检查网络后重试。'
+                                : gitSyncLastSyncedAt
                                   ? `上次同步：${new Date(gitSyncLastSyncedAt).toLocaleString()}`
                                   : gitSyncRemoteExists
                                     ? '请输入原设备的同步口令后开始同步。'
@@ -13188,7 +13540,12 @@ function App(): React.JSX.Element {
                                 : '立即同步'}
                             </Button>
                           </Flex>
-                          <Flex justify="space-between" align="center" gap="middle" className="sync-auto-card">
+                          <Flex
+                            justify="space-between"
+                            align="center"
+                            gap="middle"
+                            className="sync-auto-card"
+                          >
                             <Space direction="vertical" size={0}>
                               <Typography.Text>自动同步</Typography.Text>
                               <Typography.Text type="secondary">
@@ -13220,27 +13577,41 @@ function App(): React.JSX.Element {
                               <Typography.Title level={5} style={{ margin: 0 }}>
                                 {module.name}
                               </Typography.Title>
-                              <Typography.Text type="secondary" className="optional-module-description">
+                              <Typography.Text
+                                type="secondary"
+                                className="optional-module-description"
+                              >
                                 {module.description}
                               </Typography.Text>
                               <Space className="optional-module-meta" size={10} wrap>
                                 <Typography.Text className="optional-module-property">
                                   版本 <strong>{module.version}</strong>
                                 </Typography.Text>
-                                {module.installedVersion && module.installedVersion !== module.version && (
-                                  <Typography.Text className="optional-module-property">
-                                    已安装版本 <strong>{module.installedVersion}</strong>
-                                  </Typography.Text>
-                                )}
+                                {module.installedVersion &&
+                                  module.installedVersion !== module.version && (
+                                    <Typography.Text className="optional-module-property">
+                                      已安装版本 <strong>{module.installedVersion}</strong>
+                                    </Typography.Text>
+                                  )}
                                 {module.installedAt && (
                                   <Typography.Text className="optional-module-property">
-                                    安装时间 <strong>{new Date(module.installedAt).toLocaleString()}</strong>
+                                    安装时间{' '}
+                                    <strong>{new Date(module.installedAt).toLocaleString()}</strong>
                                   </Typography.Text>
                                 )}
                                 {module.pendingRestartRequired && (
-                                  <Typography.Text type="warning" className="optional-module-property">
-                                    已下载版本 <strong>{module.pendingVersion ?? module.version}</strong>
-                                    {module.updateAvailable && <>，线上已有 <strong>{module.version}</strong> 可更新</>}，重启 MCP 调用方后生效
+                                  <Typography.Text
+                                    type="warning"
+                                    className="optional-module-property"
+                                  >
+                                    已下载版本{' '}
+                                    <strong>{module.pendingVersion ?? module.version}</strong>
+                                    {module.updateAvailable && (
+                                      <>
+                                        ，线上已有 <strong>{module.version}</strong> 可更新
+                                      </>
+                                    )}
+                                    ，重启 MCP 调用方后生效
                                   </Typography.Text>
                                 )}
                               </Space>
@@ -13252,12 +13623,12 @@ function App(): React.JSX.Element {
                                   module.pendingRestartRequired
                                     ? 'warning'
                                     : module.updateAvailable
-                                    ? 'processing'
-                                    : module.installed
-                                    ? 'success'
-                                    : installingOptionalModuleId === module.id
                                       ? 'processing'
-                                      : 'default'
+                                      : module.installed
+                                        ? 'success'
+                                        : installingOptionalModuleId === module.id
+                                          ? 'processing'
+                                          : 'default'
                                 }
                               >
                                 {module.pendingRestartRequired
@@ -13282,7 +13653,9 @@ function App(): React.JSX.Element {
                                       disabled={installingOptionalModuleId !== null}
                                       onClick={() => void installOptionalModule(module.id)}
                                     >
-                                      {installingOptionalModuleId === module.id ? '更新中' : `更新到 ${module.version}`}
+                                      {installingOptionalModuleId === module.id
+                                        ? '更新中'
+                                        : `更新到 ${module.version}`}
                                     </Button>
                                   )}
                                   <Button
@@ -13293,14 +13666,17 @@ function App(): React.JSX.Element {
                                     onClick={() => {
                                       Modal.confirm({
                                         title: 'MCP 正在被占用',
-                                        content: 'MCP 调用方当前正在使用旧版本。强制更新会中断当前调用并替换旧文件，是否继续？',
+                                        content:
+                                          'MCP 调用方当前正在使用旧版本。强制更新会中断当前调用并替换旧文件，是否继续？',
                                         okText: '关闭进程并更新',
                                         cancelText: '稍后处理',
                                         onOk: forceInstallMcp
                                       })
                                     }}
                                   >
-                                    {installingOptionalModuleId === module.id ? '更新中' : '立即替换'}
+                                    {installingOptionalModuleId === module.id
+                                      ? '更新中'
+                                      : '立即替换'}
                                   </Button>
                                 </Space>
                               ) : module.installed ? (
@@ -13351,7 +13727,8 @@ function App(): React.JSX.Element {
                           本机 MCP 服务
                         </Typography.Title>
                         <Typography.Text type="secondary">
-                          启用后，已配置的本机 Agent 工具才能访问 DataDjinn 保存的连接。服务不监听网络端口，关闭后会立即拒绝所有 MCP 请求。
+                          启用后，已配置的本机 Agent 工具才能访问 DataDjinn
+                          保存的连接。服务不监听网络端口，关闭后会立即拒绝所有 MCP 请求。
                         </Typography.Text>
                         {!mcpModuleInstalled && (
                           <Alert
@@ -13376,7 +13753,8 @@ function App(): React.JSX.Element {
                           <Space direction="vertical" className="full-width" size={8}>
                             <Typography.Text strong>客户端配置</Typography.Text>
                             <Typography.Text type="secondary">
-                              在 Agent 工具中新增 STDIO MCP 服务，命令无需参数，连接配置会由模块自动读取。
+                              在 Agent 工具中新增 STDIO MCP
+                              服务，命令无需参数，连接配置会由模块自动读取。
                             </Typography.Text>
                             <Flex gap={8} className="full-width">
                               <Input
@@ -13392,7 +13770,9 @@ function App(): React.JSX.Element {
                                   void navigator.clipboard
                                     .writeText(mcpLaunchConfig.command)
                                     .then(() => messageApi.success('MCP 启动命令已复制'))
-                                    .catch((error) => showError(error instanceof Error ? error.message : '复制失败'))
+                                    .catch((error) =>
+                                      showError(error instanceof Error ? error.message : '复制失败')
+                                    )
                                 }}
                               />
                             </Flex>
@@ -13651,7 +14031,8 @@ function App(): React.JSX.Element {
                           <Space direction="vertical" size={0}>
                             <Typography.Text>指定 JDBC Java 环境</Typography.Text>
                             <Typography.Text type="secondary">
-                              默认自动使用安装 JDBC 数据库支持时检测到的可用 Java；开启后可固定使用下方选择的版本。
+                              默认自动使用安装 JDBC 数据库支持时检测到的可用
+                              Java；开启后可固定使用下方选择的版本。
                             </Typography.Text>
                           </Space>
                           <Switch checked={jdbcJavaEnabled} onChange={setJdbcJavaEnabled} />
@@ -14247,9 +14628,17 @@ function App(): React.JSX.Element {
         />
         <CreateTableModal
           open={createTableModalOpen}
-          title={getConnection(createTableConnectionId)?.database_type === 'mongodb' ? '新建集合' : '新建表'}
+          title={
+            getConnection(createTableConnectionId)?.database_type === 'mongodb'
+              ? '新建集合'
+              : '新建表'
+          }
           loading={createTableLoading}
-          disabled={!newTableName.trim() || (getConnection(createTableConnectionId)?.database_type !== 'mongodb' && newTableColumns.filter((column) => column.name.trim()).length === 0)}
+          disabled={
+            !newTableName.trim() ||
+            (getConnection(createTableConnectionId)?.database_type !== 'mongodb' &&
+              newTableColumns.filter((column) => column.name.trim()).length === 0)
+          }
           onCreate={() => void createTable()}
           onClose={() => setCreateTableModalOpen(false)}
         >
@@ -14292,7 +14681,7 @@ function App(): React.JSX.Element {
                   className="database-extension-picker-item"
                   disabled={installingOptionalModuleId !== null || !optionalModulesLoaded}
                   onClick={() => handleOtherDatabaseOptionClick(item.type)}
-                  >
+                >
                   <span className="database-extension-picker-icon">{item.icon}</span>
                   <span className="database-extension-picker-name">{item.name}</span>
                   {item.jdbc && <Tag color="blue">JDBC</Tag>}
@@ -14303,7 +14692,8 @@ function App(): React.JSX.Element {
                         ? 'default'
                         : optionalModules.some(
                               (module) =>
-                                module.id === optionalModuleForDatabaseType(item.type) && module.installed
+                                module.id === optionalModuleForDatabaseType(item.type) &&
+                                module.installed
                             )
                           ? 'success'
                           : 'default'
@@ -14313,7 +14703,8 @@ function App(): React.JSX.Element {
                       ? '检查中'
                       : optionalModules.some(
                             (module) =>
-                              module.id === optionalModuleForDatabaseType(item.type) && module.installed
+                              module.id === optionalModuleForDatabaseType(item.type) &&
+                              module.installed
                           )
                         ? '已安装'
                         : '需要安装'}
@@ -14596,18 +14987,19 @@ function App(): React.JSX.Element {
                       { label: '保留远程', value: 'remote' }
                     ]}
                     onChange={(value) =>
-                      setGitSyncConflictChoices((current) =>
-                        Object.fromEntries(
-                          Object.entries({
-                            ...current,
-                            ...Object.fromEntries(
-                              group.conflicts.map((conflict) => [
-                                conflict.key,
-                                value as 'local' | 'remote'
-                              ])
-                            )
-                          })
-                        ) as Record<string, 'local' | 'remote'>
+                      setGitSyncConflictChoices(
+                        (current) =>
+                          Object.fromEntries(
+                            Object.entries({
+                              ...current,
+                              ...Object.fromEntries(
+                                group.conflicts.map((conflict) => [
+                                  conflict.key,
+                                  value as 'local' | 'remote'
+                                ])
+                              )
+                            })
+                          ) as Record<string, 'local' | 'remote'>
                       )
                     }
                   />

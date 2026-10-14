@@ -4,7 +4,8 @@ const path = require('node:path')
 const fs = require('node:fs')
 
 const projectRoot = path.resolve(__dirname, '..', '..')
-const electronEntry = path.join(projectRoot, 'out', 'main', 'index.js')
+const electronEntry =
+  process.env.DATADJINN_REGRESSION_ENTRY || path.join(projectRoot, 'out', 'main', 'index.js')
 const regressionRootDir = path.join(projectRoot, '.tmp', 'regression-user-data')
 const fixtureConnectionId = 'regression-sqlite-fixture'
 const smallTableName = 'small_items'
@@ -412,32 +413,28 @@ async function ensureTreeNodeExpanded(page, key) {
 
 async function openFixtureConnection(page, folderKey) {
   const tableGroupKey = `object-group:${fixtureConnectionId}:::table`
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    if (await revealTreeNode(page, tableGroupKey)) {
-      return
-    }
-    if (folderKey) {
-      await ensureTreeNodeExpanded(page, folderKey)
-    }
-    await doubleClickTreeNode(page, `connection:${fixtureConnectionId}`)
-    await page.waitForTimeout(250)
+  if (folderKey) {
+    await ensureTreeNodeExpanded(page, folderKey)
   }
+  const connectionKey = `connection:${fixtureConnectionId}`
+  const connection = treeNode(page, connectionKey)
+  if (!(await connection.evaluate((node) => node.classList.contains('is-open')))) {
+    await doubleClickTreeNode(page, `connection:${fixtureConnectionId}`)
+    await expect(connection).toHaveClass(/is-open/, { timeout: 30000 })
+  }
+  await ensureTreeNodeExpanded(page, connectionKey)
   await expect.poll(async () => revealTreeNode(page, tableGroupKey), { timeout: 30000 }).toBe(true)
 }
 
 async function openFixtureTable(page, tableName) {
   const targetKey = `table:${fixtureConnectionId}:::table:${tableName}`
   await openFixtureConnection(page)
-  let revealed = await revealTreeNode(page, targetKey)
-  if (!revealed) {
-    await ensureTreeNodeExpanded(page, `object-group:${fixtureConnectionId}:::table`)
-    await page.waitForTimeout(250)
-    revealed = await revealTreeNode(page, targetKey)
-  }
-  if (!revealed) {
-    await ensureTreeNodeExpanded(page, `connection:${fixtureConnectionId}`)
-    await expect.poll(async () => revealTreeNode(page, targetKey), { timeout: 15000 }).toBe(true)
-  }
+  // Opening a connection deliberately leaves the table group collapsed. Expand
+  // it before searching the virtual list, rather than scanning hidden children.
+  await ensureTreeNodeExpanded(page, `object-group:${fixtureConnectionId}:::table`)
+  await expect(page.locator(
+    `.resource-tree-node-title[data-tree-node-key^="table:${fixtureConnectionId}:::table:"]`
+  ).first()).toBeAttached({ timeout: 30000 })
   await doubleClickTreeNode(page, targetKey)
   await expect(page.locator('.workspace-tabs .ant-tabs-tab-active')).toContainText(tableName, {
     timeout: 30000
@@ -612,7 +609,22 @@ async function readStableChromeClips(page) {
   })
 }
 
-async function sampleClipHashes(page, clips, sampleCount = 6, delayMs = 70) {
+async function captureHiddenScreenshot(electronApp, page, clip) {
+  const png = await electronApp.evaluate(async ({ BrowserWindow }, { pageUrl, clip }) => {
+    const window = BrowserWindow.getAllWindows().find((item) => item.webContents.getURL() === pageUrl)
+    if (!window || window.isVisible()) {
+      throw new Error('像素采样必须使用隐藏测试窗口')
+    }
+    const image = await window.webContents.capturePage(clip, { stayHidden: true })
+    if (image.isEmpty()) {
+      throw new Error('隐藏测试窗口截图为空')
+    }
+    return image.toPNG().toString('base64')
+  }, { pageUrl: page.url(), clip })
+  return Buffer.from(png, 'base64')
+}
+
+async function sampleClipHashes(electronApp, page, clips, sampleCount = 6, delayMs = 70) {
   await page.evaluate(() => {
     const id = 'regression-visual-stability-style'
     if (document.getElementById(id)) {
@@ -632,7 +644,7 @@ async function sampleClipHashes(page, clips, sampleCount = 6, delayMs = 70) {
   // Let Chromium's compositor settle before measuring a sustained visual change.
   for (let index = 0; index < sampleCount + 2; index += 1) {
     for (const [name, clip] of clipEntries) {
-      const buffer = await page.screenshot({ clip })
+      const buffer = await captureHiddenScreenshot(electronApp, page, clip)
       if (index >= 2) {
         hashes[name].push(hashScreenshot(buffer))
       }
@@ -1042,13 +1054,27 @@ async function expectTableFillsPane(page, tableName) {
 async function clickWorkspaceTab(page, title) {
   const tab = page.locator('.workspace-tabs .ant-tabs-tab').filter({ hasText: title }).first()
   await expect(tab).toBeVisible()
-  const startedAt = Date.now()
+  // 隐藏窗口中点击等待和动画帧节流不属于应用响应；统计真实 click 到 DOM 激活提交。
+  await tab.evaluate((element) => {
+    globalThis.__workspaceTabSwitchDuration = undefined
+    element.addEventListener('click', () => {
+      const startedAt = performance.now()
+      const observer = new MutationObserver(() => {
+        if (element.classList.contains('ant-tabs-tab-active')) {
+          globalThis.__workspaceTabSwitchDuration = performance.now() - startedAt
+          observer.disconnect()
+        }
+      })
+      observer.observe(element, { attributes: true, attributeFilter: ['class'] })
+    }, { once: true, capture: true })
+  })
   await tab.click()
   await expect(page.locator('.workspace-tabs .ant-tabs-tab-active')).toContainText(title, {
     timeout: 30000
   })
   await expect(page.locator('.app-error-boundary')).toHaveCount(0)
-  return Date.now() - startedAt
+  await expect.poll(() => page.evaluate(() => globalThis.__workspaceTabSwitchDuration)).toBeDefined()
+  return page.evaluate(() => globalThis.__workspaceTabSwitchDuration)
 }
 
 async function openQueryWorkspace(page) {
@@ -1130,10 +1156,26 @@ async function moveCaretToLineEnd(page, lineNumber) {
 async function toggleTreeNode(page, key) {
   const locator = treeNode(page, key)
   await expect(locator).toBeVisible()
-  const startedAt = Date.now()
+  await locator.evaluate((element) => {
+    globalThis.__treeToggleDuration = undefined
+    element.addEventListener('dblclick', () => {
+      const startedAt = performance.now()
+      const row = element.closest('.ant-tree-treenode')
+      if (!row) throw new Error('Tree row not found')
+      const wasExpanded = row.classList.contains('ant-tree-treenode-switcher-open')
+      const observer = new MutationObserver(() => {
+        if (row.classList.contains('ant-tree-treenode-switcher-open') !== wasExpanded) {
+          globalThis.__treeToggleDuration = performance.now() - startedAt
+          observer.disconnect()
+        }
+      })
+      observer.observe(row, { attributes: true, attributeFilter: ['class'] })
+    }, { once: true, capture: true })
+  })
   await locator.dblclick()
   await expect(page.locator('.app-error-boundary')).toHaveCount(0)
-  return Date.now() - startedAt
+  await expect.poll(() => page.evaluate(() => globalThis.__treeToggleDuration)).toBeDefined()
+  return page.evaluate(() => globalThis.__treeToggleDuration)
 }
 
 async function measureModalOpenClose(page, { label, open, close, modalSelector, assertOpen }) {
@@ -1213,6 +1255,62 @@ async function measureConnectionCreateFlow(page, itemLabel) {
 }
 
 test.describe('workspace regression', () => {
+  test('regression windows should stay hidden during interactions, screenshots and renderer reload @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      const inspectWindows = () => electronApp.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows().map((window) => ({
+          visible: window.isVisible(),
+          focused: window.isFocused(),
+          backgroundThrottling: window.webContents.getBackgroundThrottling()
+        }))
+      )
+      const initialWindows = await inspectWindows()
+      expect(initialWindows.length).toBeGreaterThan(0)
+      expect(initialWindows.every((window) => !window.visible && !window.focused)).toBe(true)
+      expect(initialWindows.every((window) => !window.backgroundThrottling)).toBe(true)
+      const frameIntervals = await page.evaluate(async () => {
+        const timestamps: number[] = []
+        for (let index = 0; index < 12; index += 1) {
+          timestamps.push(await new Promise<number>((resolve) => requestAnimationFrame(resolve)))
+        }
+        return timestamps.slice(1).map((timestamp, index) => timestamp - timestamps[index])
+      })
+      expect(
+        frameIntervals.reduce((sum, interval) => sum + interval, 0) / frameIntervals.length,
+        'hidden tests must render normally instead of Windows throttling frames to 1 FPS'
+      ).toBeLessThan(100)
+
+      await electronApp.evaluate(({ BrowserWindow }) => {
+        globalThis.__regressionWindowRevealEvents = []
+        for (const window of BrowserWindow.getAllWindows()) {
+          window.on('show', () => globalThis.__regressionWindowRevealEvents.push('show'))
+          window.on('focus', () => globalThis.__regressionWindowRevealEvents.push('focus'))
+        }
+      })
+      await openFixtureTable(page, smallTableName)
+      await openQueryWorkspace(page)
+      await focusMonacoEditor(page)
+      await page.keyboard.type('select name from small_items where na')
+      await expect(page.locator('.suggest-widget.visible')).toContainText('name')
+      await page.keyboard.press('Escape')
+      for (let index = 0; index < 3; index += 1) {
+        const screenshot = await captureHiddenScreenshot(electronApp, page)
+        expect(screenshot.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a')
+        expect(screenshot.length).toBeGreaterThan(1000)
+      }
+      await page.reload()
+      await waitForAppReady(page)
+      expect((await inspectWindows()).every((window) => !window.visible && !window.focused)).toBe(true)
+      expect(await electronApp.evaluate(() => globalThis.__regressionWindowRevealEvents)).toEqual([])
+    } finally {
+      await electronApp.close()
+    }
+  })
+
   test('application should start normally when JDBC Java is disabled @bug', async () => {
     const electronApp = await launchRegressionAppWithJdbcJavaDisabled()
 
@@ -1315,6 +1413,9 @@ test.describe('workspace regression', () => {
         .windows()
         .find((window) => window.url().startsWith('data:text/html'))
       expect(splashPage).toBeDefined()
+      expect(await electronApp.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows().every((window) => !window.isVisible() && !window.isFocused())
+      )).toBe(true)
 
       const splashCard = splashPage.locator('.card')
       await expect(splashCard).toBeVisible()
@@ -1384,7 +1485,16 @@ test.describe('workspace regression', () => {
       await expectTableFillsPane(page, largeTableName)
       expect(switchToLargeMs, 'switch to large table tab is too slow').toBeLessThan(1000)
 
-      const openViewsMs = await toggleTreeNode(page, `object-group:${fixtureConnectionId}:::view`)
+      const viewGroupKey = `object-group:${fixtureConnectionId}:::view`
+      await revealTreeNode(page, viewGroupKey)
+      await treeNode(page, viewGroupKey).evaluate((element) => {
+        const row = element.closest('.ant-tree-treenode')
+        if (row?.classList.contains('ant-tree-treenode-switcher-open')) {
+          row.querySelector<HTMLElement>('.ant-tree-switcher')?.click()
+        }
+      })
+      await expect(treeNode(page, `db-object:${fixtureConnectionId}:::view:active_large_items`)).toHaveCount(0)
+      const openViewsMs = await toggleTreeNode(page, viewGroupKey)
       console.log(`[perf][tree-toggle][view-open] ${openViewsMs}`)
       await expect(
         treeNode(page, `db-object:${fixtureConnectionId}:::view:active_large_items`)
@@ -1403,7 +1513,7 @@ test.describe('workspace regression', () => {
   })
 
   test('opening a table should not repeatedly rebuild workspace and ai dock content @bug', async () => {
-    test.skip(!process.env.CI, 'pixel sampling repaints a visible local Electron window')
+    test.skip(process.env.DATADJINN_TEST_SHOW_WINDOW === '1', '像素采样仅在隐藏测试窗口中执行')
     const electronApp = await launchRegressionApp()
 
     try {
@@ -1419,7 +1529,7 @@ test.describe('workspace regression', () => {
       await openFixtureTable(page, largeTableName)
       await settlePreviewWhereChrome(page)
       const chromeClips = await readStableChromeClips(page)
-      const openTableHashes = await sampleClipHashes(page, chromeClips)
+      const openTableHashes = await sampleClipHashes(electronApp, page, chromeClips)
       await page.waitForTimeout(500)
 
       const counters = await readOpenTableRenderCounters(page)
@@ -1497,7 +1607,7 @@ test.describe('workspace regression', () => {
   })
 
   test('opening and selecting in table should not cause repeated visual mutations @bug', async () => {
-    test.skip(!process.env.CI, 'pixel sampling repaints a visible local Electron window')
+    test.skip(process.env.DATADJINN_TEST_SHOW_WINDOW === '1', '像素采样仅在隐藏测试窗口中执行')
     const electronApp = await launchRegressionApp()
 
     try {
@@ -1551,7 +1661,7 @@ test.describe('workspace regression', () => {
       await settlePreviewWhereChrome(page)
 
       const clips = await readStableChromeClips(page)
-      const hashes = await sampleClipHashes(page, clips)
+      const hashes = await sampleClipHashes(electronApp, page, clips)
 
       const counters = await readVisualMutationCounters(page)
       const aiCounters = await readAiContextStatsCounter(page)
@@ -1868,7 +1978,18 @@ test.describe('workspace regression', () => {
       await waitForAppReady(page)
       await ensureWindowSize(page)
       await openFixtureConnection(page)
-      await openFixtureTable(page, 'small_items')
+      await expect
+        .poll(async () => revealTreeNode(page, `object-group:${fixtureConnectionId}:::table`), {
+          timeout: 30000
+        })
+        .toBe(true)
+      await ensureTreeNodeExpanded(page, `object-group:${fixtureConnectionId}:::table`)
+      await expect
+        .poll(
+          async () => revealTreeNode(page, `table:${fixtureConnectionId}:::table:${smallTableName}`),
+          { timeout: 30000 }
+        )
+        .toBe(true)
       await openQueryWorkspace(page)
 
       await focusMonacoEditor(page)
@@ -1922,11 +2043,664 @@ test.describe('workspace regression', () => {
       await expect(suggestWidget).not.toContainText('description')
 
       await page.keyboard.press('Escape')
+      await page.keyboard.type('na')
+      await expect(suggestWidget).toContainText('name', { timeout: 10000 })
+      await expect(suggestWidget).not.toContainText('description')
+
+      await page.keyboard.press('Escape')
       await page.keyboard.press('Control+A')
       await page.keyboard.type('select name from small_items where ')
       await expect(suggestWidget).toContainText('id', { timeout: 10000 })
       await expect(suggestWidget).toContainText('name')
       await expect(suggestWidget).not.toContainText('description')
+
+      await page.keyboard.press('Escape')
+      await page.keyboard.press('Control+A')
+      await page.keyboard.type('update small_items se')
+      await page.keyboard.press('Control+Space')
+      await expect(suggestWidget).toContainText('SET')
+
+      await page.keyboard.press('Escape')
+      await page.keyboard.press('Control+A')
+      await page.keyboard.type('update small_items set na')
+      await page.keyboard.press('Control+Space')
+      await expect(suggestWidget).toContainText('name', { timeout: 10000 })
+
+      await page.keyboard.press('Escape')
+      await page.keyboard.press('Control+A')
+      await page.keyboard.type('update small_items set name = \'updated\' where ')
+      await page.keyboard.press('Control+Space')
+      await expect(suggestWidget).toContainText('id', { timeout: 10000 })
+      await expect(suggestWidget).toContainText('name')
+      await expect(suggestWidget).toContainText('notes')
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('Dameng SQL should complete column prefixes and retry failed metadata requests @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await electronApp.evaluate(({ ipcMain }, connectionId) => {
+        globalThis.__damengCompletionTest = { retryAllowed: false, columnRequests: 0 }
+        const originalRequest = ipcMain._invokeHandlers.get('api:request')
+        ipcMain.removeHandler('api:request')
+        ipcMain.handle('api:request', async (_event, requestPath, options = {}) => {
+          const url = new URL(requestPath, 'http://localhost')
+          const prefix = `/connections/${connectionId}`
+          if (url.pathname === `${prefix}/databases`) {
+            return { databases: [{ name: 'APP' }] }
+          }
+          if (url.pathname === `${prefix}/tables`) {
+            return { tables: [{ name: 'ALERT' }] }
+          }
+          if (url.pathname === `${prefix}/objects`) {
+            return { objects: url.searchParams.get('type') === 'table' ? [{ name: 'ALERT', type: 'table' }] : [] }
+          }
+          if (/\/tables\/(?:alert|ALERT)\/columns$/.test(url.pathname)) {
+            globalThis.__damengCompletionTest.columnRequests += 1
+            if (!globalThis.__damengCompletionTest.retryAllowed) {
+              return { __datadjinnApiError: '模拟字段元数据暂时不可用' }
+            }
+            return { columns: [
+              { name: 'ID', type: 'INTEGER', nullable: false, primary_key: true },
+              { name: 'NAME', type: 'VARCHAR(32)', nullable: true, primary_key: false }
+            ] }
+          }
+          const data = await originalRequest(_event, requestPath, options)
+          const asDameng = (connection) => connection.connection_id === connectionId
+            ? { ...connection, database_type: 'dm', database: 'APP', is_open: true }
+            : connection
+          if (url.pathname === '/connections') {
+            return { ...data, connections: data.connections.map(asDameng) }
+          }
+          return data
+        })
+      }, fixtureConnectionId)
+      await page.reload()
+      await waitForAppReady(page)
+      await page.locator(`.connection-tree-title[data-connection-id="${fixtureConnectionId}"]`).click()
+      await openQueryWorkspace(page)
+      await expect(page.locator('.query-toolbar .database-select')).toContainText('APP')
+      await focusMonacoEditor(page)
+
+      // 暂时无法读取字段，恢复后在同一工作页重试，不能留下永久的空缓存。
+      await page.keyboard.press('Control+A')
+      await page.keyboard.type('select * from alert where ')
+      const suggestWidget = page.locator('.suggest-widget.visible')
+      await expect(suggestWidget).toBeVisible()
+      await expect(suggestWidget).not.toContainText('NAME')
+
+      await page.keyboard.press('Escape')
+      await electronApp.evaluate(() => {
+        globalThis.__damengCompletionTest.retryAllowed = true
+      })
+      await page.keyboard.press('Control+Space')
+      await expect(suggestWidget).toContainText('NAME', { timeout: 10000 })
+      expect(await electronApp.evaluate(() => globalThis.__damengCompletionTest.columnRequests)).toBeGreaterThanOrEqual(2)
+      await page.keyboard.press('Escape')
+      await page.keyboard.type('na')
+      await expect(suggestWidget).toContainText('NAME', { timeout: 10000 })
+
+      await page.keyboard.press('Escape')
+      await page.keyboard.press('Control+A')
+      await page.keyboard.type('update alert set na')
+      await expect(suggestWidget).toContainText('NAME', { timeout: 10000 })
+
+      await page.keyboard.press('Escape')
+      await page.keyboard.press('Control+A')
+      await page.keyboard.type('select  from alert a')
+      await page.keyboard.press('Control+Home')
+      for (let index = 0; index < 7; index += 1) {
+        await page.keyboard.press('ArrowRight')
+      }
+      await page.keyboard.type('na')
+      await expect(suggestWidget).toContainText('NAME', { timeout: 10000 })
+      await page.keyboard.press('Escape')
+      await page.keyboard.press('Backspace')
+      await page.keyboard.press('Backspace')
+      await page.keyboard.type('a.')
+      await expect(suggestWidget).toContainText('ID', { timeout: 10000 })
+      await expect(suggestWidget).toContainText('NAME')
+      await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('native double clicks should toggle an unselected connection and table group on the first attempt @bug', async () => {
+    const electronApp = await launchRegressionApp()
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      const connectionKey = `connection:${fixtureConnectionId}`
+      const groupKey = `object-group:${fixtureConnectionId}:::table`
+      const connection = treeNode(page, connectionKey)
+      const group = treeNode(page, groupKey)
+      await ensureTreeNodeExpanded(page, connectionKey)
+      await ensureTreeNodeExpanded(page, groupKey)
+      await openFixtureTable(page, smallTableName)
+      const table = treeNode(page, `table:${fixtureConnectionId}:::table:${smallTableName}`)
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        // Each first click changes selection; the second arrives after React commits.
+        await table.click()
+        await connection.locator('.connection-tree-name').dblclick({ delay: 120 })
+        await expect(group).toBeHidden({ timeout: 1500 })
+        await connection.locator('.connection-tree-name').dblclick({ delay: 120 })
+        await expect(group).toBeVisible({ timeout: 1500 })
+        await group.dblclick({ delay: 120 })
+        await expect(table).toBeHidden({ timeout: 1500 })
+        await connection.click()
+        await group.dblclick({ delay: 120 })
+        await expect(table).toBeVisible({ timeout: 1500 })
+      }
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  for (const extraTables of [0, 300]) {
+    test(`native table double click after scrolling should open on first attempt (${extraTables ? 'virtual' : 'normal'} tree) @bug`, async () => {
+      const electronApp = await launchRegressionApp()
+      try {
+        const page = await electronApp.firstWindow()
+        await waitForAppReady(page)
+        if (extraTables) {
+          await electronApp.evaluate(({ ipcMain }, { connectionId, count }) => {
+            const originalRequest = ipcMain._invokeHandlers.get('api:request')
+            ipcMain.removeHandler('api:request')
+            ipcMain.handle('api:request', async (event, requestPath, options = {}) => {
+              const data = await originalRequest(event, requestPath, options)
+              const url = new URL(requestPath, 'http://localhost')
+              const tables = Array.from({ length: count }, (_, index) => ({
+                name: `aa_scroll_${String(index).padStart(3, '0')}`, type: 'table'
+              }))
+              if (url.pathname === `/connections/${connectionId}/tables`) {
+                return { ...data, tables: [...tables, ...data.tables] }
+              }
+              if (url.pathname === `/connections/${connectionId}/objects` && url.searchParams.get('type') === 'table') {
+                return { ...data, objects: [...tables, ...data.objects] }
+              }
+              return data
+            })
+          }, { connectionId: fixtureConnectionId, count: extraTables })
+          await page.reload()
+          await waitForAppReady(page)
+        }
+        await ensureWindowSize(page)
+        await openFixtureConnection(page)
+        await ensureTreeNodeExpanded(page, `object-group:${fixtureConnectionId}:::table`)
+        const targetKey = `table:${fixtureConnectionId}:::table:${smallTableName}`
+        const viewport = page.locator('.resource-tree-viewport')
+        const viewportBox = await viewport.boundingBox()
+        await page.mouse.move(viewportBox.x + viewportBox.width / 2, viewportBox.y + viewportBox.height / 2)
+        for (let attempt = 0; attempt < 12; attempt += 1) {
+          if (await treeNode(page, targetKey).count()) {
+            const box = await treeNode(page, targetKey).boundingBox()
+            if (box && box.y >= viewportBox.y && box.y + box.height < viewportBox.y + viewportBox.height) break
+          }
+          await page.mouse.wheel(0, extraTables ? 2400 : 400)
+          await page.waitForTimeout(150)
+        }
+        await expect(viewport).toHaveClass(extraTables ? /\bvirtual\b/ : /\bnon-virtual\b/)
+        await expect(treeNode(page, targetKey)).toBeVisible()
+        // Focus the workspace, then use the wheel to bring the target back into view.
+        // A real double click allows selection/focus updates between its two clicks.
+        await page.locator('.empty-workspace-panel').click({ position: { x: 8, y: 8 } })
+        const target = treeNode(page, targetKey).locator('.table-tree-title')
+        const box = await target.boundingBox()
+        expect(box).not.toBeNull()
+        await page.mouse.move(box.x + 15, box.y + box.height / 2)
+        await page.mouse.wheel(0, -120)
+        await page.waitForTimeout(200)
+        await page.mouse.wheel(0, 120)
+        await page.waitForTimeout(200)
+        await page.evaluate(() => {
+          globalThis.__treePointerEvents = []
+          for (const type of ['mousedown', 'click', 'dblclick']) {
+            document.addEventListener(type, (event) => {
+              const title = event.target.closest?.('[data-tree-node-key]')
+              globalThis.__treePointerEvents.push({ type, detail: event.detail,
+                key: title?.getAttribute('data-tree-node-key'),
+                scroll: document.querySelector('.ant-tree-list-holder')?.scrollTop })
+            }, true)
+          }
+        })
+        await page.mouse.move(box.x + box.width - 0.25, box.y + box.height / 2)
+        await page.waitForTimeout(200)
+        const hoverBox = await target.boundingBox()
+        await page.mouse.click(
+          hoverBox.x + hoverBox.width - 0.25,
+          hoverBox.y + hoverBox.height / 2,
+          { clickCount: 2, delay: 120 }
+        )
+        expect(await page.evaluate(() => globalThis.__treePointerEvents
+          .filter(event => event.type === 'dblclick').map(event => event.key))).toEqual([targetKey])
+        await expect(page.locator('.workspace-tabs .ant-tabs-tab-active')).toContainText(smallTableName, { timeout: 2000 })
+        await expect(page.locator('.workspace-active-content .result-table .ant-table-tbody')).toContainText('alpha')
+        // Repeat from a focused query editor and hit the table icon / unused
+        // row space as well as the name.
+        await openQueryWorkspace(page)
+        const queryTab = page.locator('.workspace-tabs .ant-tabs-tab-active')
+        const queryTitle = await queryTab.textContent()
+        for (const position of [{ x: 12, y: 16 }, { x: 100, y: 16 }, { x: 190, y: 16 }]) {
+          await focusMonacoEditor(page)
+          await page.mouse.move(box.x + 15, box.y + box.height / 2)
+          await page.mouse.wheel(0, -80)
+          await page.waitForTimeout(150)
+          await page.mouse.wheel(0, 80)
+          await page.waitForTimeout(150)
+          const row = treeNode(page, targetKey).locator('xpath=ancestor::span[contains(@class,"ant-tree-node-content-wrapper")]')
+          await row.dblclick({ delay: 120, position })
+          await expect(page.locator('.workspace-tabs .ant-tabs-tab-active')).toContainText(smallTableName, { timeout: 2000 })
+          await page.locator('.workspace-tabs .ant-tabs-tab').filter({ hasText: queryTitle.trim() }).click()
+        }
+        await expect(page.locator('.app-error-boundary')).toHaveCount(0)
+      } finally {
+        await electronApp.close()
+      }
+    })
+  }
+
+  test('virtual tree rows remain under the pointer during a double click immediately after scrolling @bug', async () => {
+    const electronApp = await launchRegressionApp()
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await electronApp.evaluate(({ ipcMain }, connectionId) => {
+        const original = ipcMain._invokeHandlers.get('api:request')
+        const objects = Array.from({ length: 600 }, (_, index) => ({
+          name: `scroll_items_${String(index).padStart(3, '0')}`, type: 'table'
+        }))
+        ipcMain.removeHandler('api:request')
+        ipcMain.handle('api:request', async (event, requestPath, options = {}) => {
+          const url = new URL(requestPath, 'http://localhost')
+          if (url.pathname === `/connections/${connectionId}/objects` && url.searchParams.get('type') === 'table') return { objects }
+          if (url.pathname === `/connections/${connectionId}/tables`) return { tables: objects }
+          if (/\/tables\/scroll_items_\d+\/(preview|columns)$/.test(url.pathname)) {
+            return original(event, requestPath.replace(/scroll_items_\d+/, 'small_items'), options)
+          }
+          return original(event, requestPath, options)
+        })
+      }, fixtureConnectionId)
+      await page.reload()
+      await waitForAppReady(page)
+      await openFixtureConnection(page)
+      await ensureTreeNodeExpanded(page, `object-group:${fixtureConnectionId}:::table`)
+      const viewport = page.locator('.resource-tree-viewport')
+      await expect(viewport).toHaveClass(/\bvirtual\b/)
+      const viewportBox = await viewport.boundingBox()
+      const x = viewportBox.x + 160
+      let y = viewportBox.y + viewportBox.height / 2
+      await page.mouse.move(x, y)
+      await page.evaluate(() => {
+        globalThis.__scrollClickEvents = []
+        document.addEventListener('click', event => globalThis.__scrollClickEvents.push({
+          key: event.target.closest?.('[data-tree-node-key]')?.getAttribute('data-tree-node-key'),
+          time: event.timeStamp,
+          scroll: document.querySelector('.ant-tree-list-holder')?.scrollTop
+        }), true)
+      })
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        await page.mouse.wheel(0, 1440)
+        // Just one frame: reproduce clicking as soon as a scrolled row is visible,
+        // rather than waiting for the virtual list's height cache to settle.
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)))
+        const target = await page.evaluate(({ x, y }) => {
+          const element = [...document.querySelectorAll('[data-tree-node-key]')]
+            .filter(e => e.getAttribute('data-tree-node-key').includes('scroll_items_'))
+            .sort((a, b) => Math.abs(a.getBoundingClientRect().y - y) - Math.abs(b.getBoundingClientRect().y - y))[0]
+          const box = element?.getBoundingClientRect()
+          return { key: element?.getAttribute('data-tree-node-key'), title: element?.textContent, y: box ? box.y + box.height / 2 : y }
+        }, { x, y })
+        y = target.y
+        expect(target.key).toMatch(/scroll_items_/)
+        await page.mouse.move(x, y)
+        await page.mouse.down()
+        await page.mouse.up()
+        await page.waitForTimeout(120)
+        const secondKey = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('[data-tree-node-key]')?.getAttribute('data-tree-node-key'), { x, y })
+        expect(secondKey, `selecting a row must not move another table under the pointer: ${JSON.stringify(await page.evaluate(() => globalThis.__scrollClickEvents.slice(-3)))}`).toBe(target.key)
+        await page.mouse.down({ clickCount: 2 })
+        await page.mouse.up({ clickCount: 2 })
+        await expect(page.locator('.workspace-tabs .ant-tabs-tab-active')).toContainText(target.title, { timeout: 2000 })
+      }
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('double clicking the right edge of an unselected table row should open it @bug', async () => {
+    const electronApp = await launchRegressionApp()
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await openFixtureConnection(page)
+      const groupKey = `object-group:${fixtureConnectionId}:::table`
+      await ensureTreeNodeExpanded(page, groupKey)
+      const key = `table:${fixtureConnectionId}:::table:${smallTableName}`
+      await expect.poll(() => revealTreeNode(page, key)).toBe(true)
+      await treeNode(page, groupKey).click()
+      const row = treeNode(page, key).locator('xpath=ancestor::span[contains(@class,"ant-tree-node-content-wrapper")]')
+      await row.hover()
+      await page.waitForTimeout(200)
+      const box = await row.boundingBox()
+      await page.mouse.move(box.x + box.width - 0.25, box.y + box.height / 2)
+      await page.mouse.click(box.x + box.width - 0.25, box.y + box.height / 2, { clickCount: 2, delay: 120 })
+      const selectedBox = await row.boundingBox()
+      expect(selectedBox.x, 'selection must not shift the row between the two clicks').toBe(box.x)
+      expect(selectedBox.width).toBe(box.width)
+      await expect(page.locator('.workspace-tabs .ant-tabs-tab-active')).toContainText(smallTableName, { timeout: 2000 })
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('single table clicks select while a native double click opens exactly once @bug', async () => {
+    const electronApp = await launchRegressionApp()
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await openFixtureConnection(page)
+      await ensureTreeNodeExpanded(page, `object-group:${fixtureConnectionId}:::table`)
+      const key = `table:${fixtureConnectionId}:::table:${smallTableName}`
+      await expect.poll(() => revealTreeNode(page, key)).toBe(true)
+      await electronApp.evaluate(({ ipcMain }) => {
+        globalThis.__treeClickPreviewRequests = 0
+        const original = ipcMain._invokeHandlers.get('api:request')
+        ipcMain.removeHandler('api:request')
+        ipcMain.handle('api:request', (event, requestPath, options = {}) => {
+          if (new URL(requestPath, 'http://localhost').pathname.endsWith('/small_items/preview')) {
+            globalThis.__treeClickPreviewRequests += 1
+          }
+          return original(event, requestPath, options)
+        })
+      })
+      const table = treeNode(page, key).locator('.table-tree-title')
+      const box = await table.boundingBox()
+      const x = box.x + 20
+      const y = box.y + box.height / 2
+      // Independent single clicks select; only a native dblclick opens the table.
+      await page.mouse.click(x, y)
+      await expect(treeNode(page, key).locator('xpath=ancestor::span[contains(@class,"ant-tree-node-content-wrapper")]')).toHaveClass(/ant-tree-node-selected/)
+      await page.mouse.click(x, y)
+      expect(await electronApp.evaluate(() => globalThis.__treeClickPreviewRequests)).toBe(0)
+      await expect(page.locator('.workspace-tabs .ant-tabs-tab-active')).toHaveCount(0)
+      await page.waitForTimeout(600)
+      await table.dblclick({ delay: 120 })
+      await expect.poll(() => electronApp.evaluate(() => globalThis.__treeClickPreviewRequests)).toBe(1)
+      await page.waitForTimeout(250)
+      expect(await electronApp.evaluate(() => globalThis.__treeClickPreviewRequests)).toBe(1)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('double clicking a table while its size finishes loading should open once @bug', async () => {
+    const electronApp = await launchRegressionApp()
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await electronApp.evaluate(({ ipcMain }, connectionId) => {
+        const original = ipcMain._invokeHandlers.get('api:request')
+        globalThis.__treeSizeTest = { previewRequests: 0, release: null }
+        ipcMain.removeHandler('api:request')
+        ipcMain.handle('api:request', async (event, requestPath, options = {}) => {
+          const url = new URL(requestPath, 'http://localhost')
+          if (url.pathname === '/connections') {
+            const data = await original(event, requestPath, options)
+            return { ...data, connections: data.connections.map(connection => connection.connection_id === connectionId
+              ? { ...connection, database_type: 'dm', database: 'APP', is_open: true } : connection) }
+          }
+          if (url.pathname === `/connections/${connectionId}/databases`) return { databases: [{ name: 'APP' }] }
+          if (url.pathname === `/connections/${connectionId}/open`) {
+            const data = await original(event, requestPath, options)
+            return { ...data, database_type: 'dm', database: 'APP', is_open: true }
+          }
+          if (url.pathname === `/connections/${connectionId}/objects` && url.searchParams.get('type') === 'table') {
+            if (url.searchParams.get('include_stats') === 'true') {
+              await new Promise(resolve => { globalThis.__treeSizeTest.release = resolve })
+              return { objects: [{ name: 'small_items', type: 'table', size_display: '128 KB', size_bytes: 131072 }] }
+            }
+            return { objects: [{ name: 'small_items', type: 'table' }] }
+          }
+          if (url.pathname.endsWith('/small_items/preview')) globalThis.__treeSizeTest.previewRequests += 1
+          return original(event, requestPath, options)
+        })
+      }, fixtureConnectionId)
+      await page.reload()
+      await waitForAppReady(page)
+      await ensureTreeNodeExpanded(page, `connection:${fixtureConnectionId}`)
+      await ensureTreeNodeExpanded(page, `database:${fixtureConnectionId}:APP`)
+      await ensureTreeNodeExpanded(page, `object-group:${fixtureConnectionId}::APP:table`)
+      const tableKey = `table:${fixtureConnectionId}::APP:table:${smallTableName}`
+      await expect.poll(() => revealTreeNode(page, tableKey)).toBe(true)
+      const table = treeNode(page, tableKey)
+      await expect(table.locator('.tree-size-loading-icon')).toBeVisible()
+      const spinnerBox = await table.locator('.tree-size-loading-icon').boundingBox()
+      const x = spinnerBox.x + spinnerBox.width / 2
+      const y = spinnerBox.y + spinnerBox.height / 2
+      await page.mouse.click(x, y)
+      await expect(table.locator('xpath=ancestor::span[contains(@class,"ant-tree-node-content-wrapper")]')).toHaveClass(/ant-tree-node-selected/)
+      await electronApp.evaluate(() => globalThis.__treeSizeTest.release())
+      await expect(table.locator('.tree-size-badge')).toContainText('128 KB')
+      // Send only the second press/release. mouse.click({ clickCount: 2 })
+      // would send two more clicks, producing three clicks in this scenario.
+      await page.mouse.down({ clickCount: 2 })
+      await page.mouse.up({ clickCount: 2 })
+      await expect(page.locator('.workspace-tabs .ant-tabs-tab-active')).toContainText(smallTableName, { timeout: 2000 })
+      await expect.poll(() => electronApp.evaluate(() => globalThis.__treeSizeTest.previewRequests)).toBe(1)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('deferred table sizes must preserve expanded columns and the double click target after scrolling @bug', async () => {
+    const electronApp = await launchRegressionApp()
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await electronApp.evaluate(({ ipcMain }, connectionId) => {
+        const original = ipcMain._invokeHandlers.get('api:request')
+        const objects = ['a_expanded', 'b_target', ...Array.from({ length: 300 }, (_, i) => `c_tail_${i}`)]
+          .map(name => ({ name, type: 'table' }))
+        globalThis.__deferredSizeColumns = { release: null, columnRequests: 0 }
+        ipcMain.removeHandler('api:request')
+        ipcMain.handle('api:request', async (event, requestPath, options = {}) => {
+          const url = new URL(requestPath, 'http://localhost')
+          if (url.pathname === '/connections') {
+            const data = await original(event, requestPath, options)
+            return { ...data, connections: data.connections.map(connection => connection.connection_id === connectionId
+              ? { ...connection, database_type: 'dm', database: 'APP', is_open: true } : connection) }
+          }
+          if (url.pathname === `/connections/${connectionId}/databases`) return { databases: [{ name: 'APP' }] }
+          if (url.pathname === `/connections/${connectionId}/open`) {
+            const data = await original(event, requestPath, options)
+            return { ...data, database_type: 'dm', database: 'APP', is_open: true }
+          }
+          if (url.pathname === `/connections/${connectionId}/objects` && url.searchParams.get('type') === 'table') {
+            if (url.searchParams.get('include_stats') === 'true') {
+              await new Promise(resolve => { globalThis.__deferredSizeColumns.release = resolve })
+              return { objects: objects.map(object => ({ ...object, size_display: '128 KB' })) }
+            }
+            return { objects }
+          }
+          if (url.pathname.endsWith('/a_expanded/columns')) {
+            globalThis.__deferredSizeColumns.columnRequests += 1
+            if (globalThis.__deferredSizeColumns.columnRequests > 1) {
+              // Real database requests may take longer than the second click.
+              await new Promise(() => {})
+            }
+            return { columns: Array.from({ length: 12 }, (_, i) => ({ name: `field_${i}`, type: 'INT', nullable: true })) }
+          }
+          if (/\/b_target\/(preview|columns)$/.test(url.pathname)) {
+            return original(event, requestPath.replace('b_target', 'small_items'), options)
+          }
+          return original(event, requestPath, options)
+        })
+      }, fixtureConnectionId)
+      await page.reload()
+      await waitForAppReady(page)
+      await ensureTreeNodeExpanded(page, `connection:${fixtureConnectionId}`)
+      await ensureTreeNodeExpanded(page, `database:${fixtureConnectionId}:APP`)
+      await ensureTreeNodeExpanded(page, `object-group:${fixtureConnectionId}::APP:table`)
+      const expandedKey = `table:${fixtureConnectionId}::APP:table:a_expanded`
+      await ensureTreeNodeExpanded(page, expandedKey)
+      await expect(page.locator('.resource-tree-viewport')).toHaveClass(/\bvirtual\b/)
+      const targetKey = `table:${fixtureConnectionId}::APP:table:b_target`
+      await expect.poll(() => revealTreeNode(page, targetKey)).toBe(true)
+      const target = treeNode(page, targetKey)
+      await expect(target.locator('.tree-size-loading-icon')).toBeVisible()
+      // Virtual scrolling and the column expansion must settle before capturing
+      // a fixed screen position for the two native clicks around the stats update.
+      await target.locator('.table-tree-title').click({ trial: true })
+      const box = await target.locator('.table-tree-title').boundingBox()
+      const x = box.x + 15
+      const y = box.y + box.height / 2
+      expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('[data-tree-node-key]')?.getAttribute('data-tree-node-key'), { x, y })).toBe(targetKey)
+      await page.mouse.move(x, y)
+      await page.mouse.click(x, y)
+      await expect(target.locator('xpath=ancestor::span[contains(@class,"ant-tree-node-content-wrapper")]')).toHaveClass(/ant-tree-node-selected/)
+      await electronApp.evaluate(() => globalThis.__deferredSizeColumns.release())
+      await expect(page.locator('.resource-tree-shell .tree-size-badge').first()).toContainText('128 KB')
+      const hitKey = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('[data-tree-node-key]')?.getAttribute('data-tree-node-key'), { x, y })
+      expect(hitKey, 'background statistics must not move the selected table away before the second click').toBe(targetKey)
+      await page.mouse.down({ clickCount: 2 })
+      await page.mouse.up({ clickCount: 2 })
+      await expect(page.locator('.workspace-tabs .ant-tabs-tab-active')).toContainText('b_target', { timeout: 2000 })
+      expect(await electronApp.evaluate(() => globalThis.__deferredSizeColumns.columnRequests)).toBe(1)
+    } finally {
+      await electronApp.close()
+    }
+  })
+
+  test('opening a table should show its tab and loading state before preview resolves @bug', async () => {
+    const electronApp = await launchRegressionApp()
+
+    try {
+      const page = await electronApp.firstWindow()
+      await waitForAppReady(page)
+      await ensureWindowSize(page)
+      await openFixtureConnection(page)
+      const tableKey = `table:${fixtureConnectionId}:::table:${smallTableName}`
+      await expect
+        .poll(async () => revealTreeNode(page, `object-group:${fixtureConnectionId}:::table`), {
+          timeout: 30000
+        })
+        .toBe(true)
+      await ensureTreeNodeExpanded(page, `object-group:${fixtureConnectionId}:::table`)
+      let tableRevealed = await revealTreeNode(page, tableKey)
+      if (!tableRevealed) {
+        await ensureTreeNodeExpanded(page, `connection:${fixtureConnectionId}`)
+        await expect
+          .poll(async () => revealTreeNode(page, tableKey), { timeout: 30000 })
+          .toBe(true)
+        tableRevealed = true
+      }
+      expect(tableRevealed).toBe(true)
+
+      // Warm the shared table component before opening a different table. A cold
+      // lazy import otherwise hides the empty grid during the first few frames.
+      await openFixtureTable(page, mediumTableName)
+      await expect(page.locator('.workspace-tab-loading')).toHaveCount(0)
+      await expect.poll(() => revealTreeNode(page, tableKey)).toBe(true)
+
+      await page.evaluate(() => {
+        ;(globalThis as typeof globalThis & { __DATADJINN_TEST_REQUEST_DELAY_MS?: number })
+          .__DATADJINN_TEST_REQUEST_DELAY_MS = 3000
+      })
+
+      // Observe the whole loading interval, including frames before the first
+      // assertion. A single DOM snapshot can miss the row-number-only grid.
+      await page.evaluate((tableName) => {
+        const probe = {
+          frames: 0,
+          gridFrames: 0,
+          duplicateSpinnerFrames: 0,
+          frameId: 0,
+          observer: undefined as MutationObserver | undefined
+        }
+        const sample = (frame = false) => {
+          const pane = document.querySelector('.workspace-active-content')
+          const title = document.querySelector('.workspace-tabs .ant-tabs-tab-active')
+          if (!title?.textContent?.includes(tableName) || !pane?.querySelector('.workspace-tab-loading')) {
+            return
+          }
+          if (frame) probe.frames++
+          if (pane.querySelector('.result-table-content, .result-table')) probe.gridFrames++
+          if (pane.querySelectorAll('.ant-spin').length > 1) probe.duplicateSpinnerFrames++
+        }
+        const nextFrame = () => {
+          sample(true)
+          probe.frameId = requestAnimationFrame(nextFrame)
+        }
+        probe.observer = new MutationObserver(() => sample())
+        probe.observer.observe(document.body, { subtree: true, childList: true, attributes: true })
+        probe.frameId = requestAnimationFrame(nextFrame)
+        globalThis.__initialTableLoadingProbe = probe
+      }, smallTableName)
+
+      const openStartedAt = Date.now()
+      await doubleClickTreeNode(page, tableKey)
+      const activePreviewTab = page.locator('.workspace-tabs .ant-tabs-tab-active')
+      await expect(activePreviewTab).toContainText(smallTableName, { timeout: 1500 })
+      await expect(page.locator('.workspace-tab-loading .ant-spin')).toBeVisible({
+        timeout: 1500
+      })
+      await expect(page.locator('.workspace-active-content .ant-spin')).toHaveCount(1)
+      expect(await page.locator('.workspace-active-content .result-table').count(),
+        'the initial loading state must not mount a row-number-only table').toBe(0)
+      await expect(page.locator('.workspace-active-content .result-table-content'),
+        'initial loading must not leave the empty table header background').toHaveCount(0)
+      await expect(page.locator('.workspace-active-content')).not.toContainText('正在加载数据表格')
+      expect(Date.now() - openStartedAt, 'table tab should open before the preview response').toBeLessThan(
+        1500
+      )
+      const loadingScreenshot = test.info().outputPath('initial-table-loading.png')
+      await page.screenshot({ path: loadingScreenshot })
+      await test.info().attach('initial table loading', { path: loadingScreenshot, contentType: 'image/png' })
+
+      await expect(
+        page.locator('.workspace-tab-loading')
+      ).toHaveCount(0, { timeout: 30000 })
+      await expect(page.locator('.workspace-active-content .result-table .ant-table-tbody')).toContainText('alpha')
+      await expect(page.locator('.workspace-active-content .result-table-content')).toHaveAttribute('aria-busy', 'false')
+      const loadingProbe = await page.evaluate(() => {
+        const probe = globalThis.__initialTableLoadingProbe
+        cancelAnimationFrame(probe.frameId)
+        probe.observer.disconnect()
+        return { frames: probe.frames, gridFrames: probe.gridFrames, duplicateSpinnerFrames: probe.duplicateSpinnerFrames }
+      })
+      console.log('[initial-table-loading]', JSON.stringify(loadingProbe))
+      expect(loadingProbe.frames, 'sample the delayed preview throughout its loading interval').toBeGreaterThan(20)
+      expect(loadingProbe.gridFrames, 'no empty grid in any loading frame or DOM update').toBe(0)
+      expect(loadingProbe.duplicateSpinnerFrames, 'only one spinner throughout initial loading').toBe(0)
+
+      await page.evaluate(() => {
+        globalThis.__DATADJINN_TEST_REQUEST_DELAY_MS = 1500
+      })
+      const whereField = page.locator('.workspace-active-content .preview-where-field input')
+      await whereField.fill("name = 'unterminated")
+      await whereField.press('Enter')
+      await expect(page.locator('.workspace-tab-loading .ant-spin')).toBeVisible()
+      await expect(page.locator('.workspace-active-content .ant-spin')).toHaveCount(1)
+      await expect(page.locator('.workspace-active-content .result-table .ant-table-tbody')).toContainText('alpha')
+      await expect(page.locator('.workspace-active-content .result-inline-alert')).toBeVisible({ timeout: 30000 })
+      await expect(page.locator('.workspace-tab-loading')).toHaveCount(0)
+      // A genuine zero-row result still has headers; it is different from a
+      // result that has not arrived yet.
+      await page.evaluate(() => { globalThis.__DATADJINN_TEST_REQUEST_DELAY_MS = 0 })
+      await whereField.fill('id < 0')
+      await whereField.press('Enter')
+      await expect(page.locator('.workspace-active-content .result-table .ant-table-thead')).toContainText('name')
+      await expect(page.locator('.workspace-active-content .result-table .ant-table-tbody .ant-table-row')).toHaveCount(0)
+      await expect(page.locator('.workspace-tab-loading')).toHaveCount(0)
       await expect(page.locator('.app-error-boundary')).toHaveCount(0)
     } finally {
       await electronApp.close()
@@ -3228,6 +4002,9 @@ test.describe('workspace regression', () => {
 
       const executeButton = page.getByRole('button', { name: /执行/i }).first()
       await executeButton.click()
+      await expect(page.locator(
+        '.workspace-active-content .result-table .editable-cell[data-cell-column-key="payload"]'
+      )).toBeVisible({ timeout: 30000 })
 
       const overflowMetrics = await page
         .locator('.workspace-tab-panels .workspace-active-content')
@@ -3387,6 +4164,96 @@ test.describe('workspace regression', () => {
       await electronApp.close()
     }
   })
+
+  for (const databaseType of ['dm', 'postgresql', 'sqlite']) {
+    test(`opening a ${databaseType} connection must not restore descendant expansion from the previous session @bug`, async () => {
+      const electronApp = await launchRegressionApp()
+      let page
+      let originalMainPreferences
+      let originalServerPreferences
+      let originalStorage
+      try {
+        page = await electronApp.firstWindow()
+        await waitForAppReady(page)
+        originalMainPreferences = await page.evaluate(() => window.api.getConnectionTreePreferences())
+        originalServerPreferences = await page.evaluate(() => window.api.requestJson('/preferences/connection-tree'))
+        originalStorage = await page.evaluate(() => Object.fromEntries(Object.keys(localStorage).map(key => [key, localStorage.getItem(key)])))
+        await electronApp.evaluate(({ ipcMain }, { connectionId, databaseType }) => {
+          const original = ipcMain._invokeHandlers.get('api:request')
+          const state = { open: false, descendantRequests: [] }
+          globalThis.__connectionExpansionTest = state
+          const patchConnection = connection => ({ ...connection, database_type: databaseType,
+            database: databaseType === 'postgresql' ? 'primary' : 'APP', has_password: true, is_open: state.open })
+          ipcMain.removeHandler('api:request')
+          ipcMain.handle('api:request', async (event, requestPath, options = {}) => {
+            const url = new URL(requestPath, 'http://localhost')
+            if (url.pathname === '/connections') {
+              const data = await original(event, requestPath, options)
+              return { ...data, connections: data.connections.map(connection => connection.connection_id === connectionId ? patchConnection(connection) : connection) }
+            }
+            if (url.pathname === `/connections/${connectionId}/open` || url.pathname === `/connections/${connectionId}/close`) {
+              state.open = url.pathname.endsWith('/open')
+              return patchConnection(await original(event, requestPath, options))
+            }
+            if (url.pathname === `/connections/${connectionId}/databases`) return { databases: [{ name: databaseType === 'postgresql' ? 'primary' : 'APP' }] }
+            if (url.pathname === `/connections/${connectionId}/schemas`) {
+              state.descendantRequests.push('schemas')
+              return { databases: [{ name: 'public' }] }
+            }
+            if (url.pathname === `/connections/${connectionId}/objects` && url.searchParams.get('type') === 'table') {
+              state.descendantRequests.push('tables')
+              return { objects: [{ name: 'small_items', type: 'table' }] }
+            }
+            return original(event, requestPath, options)
+          })
+        }, { connectionId: fixtureConnectionId, databaseType })
+        const connectionKey = `connection:${fixtureConnectionId}`
+        const databaseKey = `database:${fixtureConnectionId}:${databaseType === 'postgresql' ? 'primary' : 'APP'}`
+        const schemaKey = `pg-schema:${fixtureConnectionId}:primary:public`
+        const groupKey = `object-group:${fixtureConnectionId}:${databaseType === 'postgresql' ? 'primary:public' : databaseType === 'dm' ? ':APP' : ':'}:table`
+        const expandedKeys = [connectionKey, ...(databaseType === 'sqlite' ? [] : [databaseKey]),
+          ...(databaseType === 'postgresql' ? [schemaKey] : []), groupKey]
+        await page.evaluate(async ({ expandedKeys, connectionId, databaseType }) => {
+          const current = await window.api.getConnectionTreePreferences()
+          const preferences = { ...current, expanded_keys: expandedKeys,
+            selected_databases: { ...current?.selected_databases, [connectionId]: [databaseType === 'postgresql' ? 'primary' : 'APP'] },
+            selected_schemas: { ...current?.selected_schemas, [`${connectionId}:primary`]: ['public'] } }
+          localStorage.setItem('datadjinn-connection-tree-expanded-keys', JSON.stringify(expandedKeys))
+          await window.api.setConnectionTreePreferences(preferences)
+          await window.api.requestJson('/preferences/connection-tree', { method: 'PUT', body: JSON.stringify({ preferences }) })
+        }, { expandedKeys, connectionId: fixtureConnectionId, databaseType })
+        await page.reload()
+        await waitForAppReady(page)
+        await expect(treeNode(page, connectionKey)).toHaveClass(/is-closed/)
+        await doubleClickTreeNode(page, connectionKey)
+        await expect(treeNode(page, connectionKey)).toHaveClass(/is-open/)
+        const firstLevelKey = databaseType === 'sqlite' ? groupKey : databaseKey
+        await expect(treeNode(page, firstLevelKey)).toBeVisible()
+        await expect(treeNode(page, firstLevelKey).locator('xpath=ancestor::div[contains(@class,"ant-tree-treenode")]')).not.toHaveClass(/ant-tree-treenode-switcher-open/)
+        await page.waitForTimeout(250)
+        expect(await electronApp.evaluate(() => globalThis.__connectionExpansionTest.descendantRequests)).toEqual([])
+        await doubleClickTreeNode(page, firstLevelKey)
+        if (databaseType === 'postgresql') {
+          await expect(treeNode(page, schemaKey)).toBeVisible()
+          await doubleClickTreeNode(page, schemaKey)
+        }
+        if (databaseType !== 'sqlite') {
+          await expect(treeNode(page, groupKey)).toBeVisible()
+          await doubleClickTreeNode(page, groupKey)
+        }
+        await expect(page.locator('.resource-tree-node-title[data-tree-node-key$=":table:small_items"]')).toBeVisible()
+      } finally {
+        if (page && originalMainPreferences && originalServerPreferences) {
+          await page.evaluate(async ({ mainPreferences, serverPreferences, storage }) => {
+            await window.api.setConnectionTreePreferences(mainPreferences)
+            await window.api.requestJson('/preferences/connection-tree', { method: 'PUT', body: JSON.stringify({ preferences: serverPreferences.preferences ?? {} }) })
+            for (const [key, value] of Object.entries(storage)) localStorage.setItem(key, value)
+          }, { mainPreferences: originalMainPreferences, serverPreferences: originalServerPreferences, storage: originalStorage })
+        }
+        await electronApp.close()
+      }
+    })
+  }
 
   test('opening a closed connection after renderer idle should show loading immediately @bug', async () => {
     const electronApp = await launchRegressionApp()
@@ -9416,7 +10283,7 @@ test.describe('workspace regression', () => {
   })
 
   test('preview table chrome should stay visually stable for drag selection and toolbar actions @bug', async () => {
-    test.skip(!process.env.CI, 'pixel sampling repaints a visible local Electron window')
+    test.skip(process.env.DATADJINN_TEST_SHOW_WINDOW === '1', '像素采样仅在隐藏测试窗口中执行')
     const electronApp = await launchRegressionApp()
 
     try {
@@ -9472,7 +10339,7 @@ test.describe('workspace regression', () => {
       await waitForVisualSettle(page)
 
       let clips = await readStableChromeClips(page)
-      const dragHashes = await sampleClipHashes(page, clips)
+      const dragHashes = await sampleClipHashes(electronApp, page, clips)
       console.log(`[perf][preview-chrome][drag-hashes] ${JSON.stringify(dragHashes)}`)
       expect(
         dragHashes.tableHeader?.unique.length ?? 0,
@@ -9493,7 +10360,7 @@ test.describe('workspace regression', () => {
       ).toBeVisible({ timeout: 10000 })
       await waitForVisualSettle(page)
       clips = await readStableChromeClips(page)
-      const searchHashes = await sampleClipHashes(page, clips)
+      const searchHashes = await sampleClipHashes(electronApp, page, clips)
       console.log(`[perf][preview-chrome][search-hashes] ${JSON.stringify(searchHashes)}`)
       expect(
         searchHashes.tableHeader?.unique.length ?? 0,
@@ -9517,7 +10384,7 @@ test.describe('workspace regression', () => {
       await expect(page.locator('.ddl-preview-shell')).toBeVisible({ timeout: 10000 })
       await waitForVisualSettle(page)
       clips = await readStableChromeClips(page)
-      const ddlHashes = await sampleClipHashes(page, clips)
+      const ddlHashes = await sampleClipHashes(electronApp, page, clips)
       console.log(`[perf][preview-chrome][ddl-hashes] ${JSON.stringify(ddlHashes)}`)
       expect(
         ddlHashes.tableHeader?.unique.length ?? 0,
@@ -9537,7 +10404,7 @@ test.describe('workspace regression', () => {
   })
 
   test('clearing drag cell selection should visually settle in one frame @bug', async () => {
-    test.skip(!process.env.CI, 'pixel sampling repaints a visible local Electron window')
+    test.skip(process.env.DATADJINN_TEST_SHOW_WINDOW === '1', '像素采样仅在隐藏测试窗口中执行')
     const electronApp = await launchRegressionApp()
 
     try {
@@ -9599,7 +10466,7 @@ test.describe('workspace regression', () => {
       await page.waitForTimeout(120)
 
       await page.mouse.click(dragTargets.clearTarget.x, dragTargets.clearTarget.y)
-      const deselectHashes = await sampleClipHashes(page, { selectionArea: dragTargets.clip })
+      const deselectHashes = await sampleClipHashes(electronApp, page, { selectionArea: dragTargets.clip })
       console.log(`[perf][preview-table][deselect-hashes] ${JSON.stringify(deselectHashes)}`)
       expect(
         deselectHashes.selectionArea?.unique.length ?? 0,
@@ -11436,6 +12303,18 @@ test.describe('workspace regression', () => {
 
       const tableGroupKey = `object-group:${fixtureConnectionId}:::table`
       await expect.poll(async () => revealTreeNode(page, tableGroupKey), { timeout: 15000 }).toBe(true)
+      await page.evaluate((targetKey) => {
+        const title = document.querySelector(
+          `.resource-tree-node-title[data-tree-node-key="${CSS.escape(targetKey)}"]`
+        )
+        const row = title?.closest('.ant-tree-treenode')
+        if (row?.classList.contains('ant-tree-treenode-switcher-open')) {
+          row.querySelector<HTMLElement>('.ant-tree-switcher')?.click()
+        }
+      }, tableGroupKey)
+      await expect(page.locator(
+        `.resource-tree-node-title[data-tree-node-key^="table:${fixtureConnectionId}:::table:"]`
+      )).toHaveCount(0)
       const viewport = page.locator('.resource-tree-viewport')
       const scrollBefore = await viewport.evaluate((node) => {
         const holder = node.querySelector('.ant-tree-list-holder')
@@ -11889,6 +12768,11 @@ test.describe('workspace regression', () => {
       await waitForAppReady(page)
       await ensureWindowSize(page)
       await openFixtureConnection(page)
+      const tableGroupKey = `object-group:${fixtureConnectionId}:::table`
+      const tableKey = `table:${fixtureConnectionId}:::table:${smallTableName}`
+      const tableGroupNode = treeNode(page, tableGroupKey)
+      await ensureTreeNodeExpanded(page, tableGroupKey)
+      await expect(treeNode(page, tableKey)).toBeVisible({ timeout: 15000 })
 
       const connectionKey = `connection:${fixtureConnectionId}`
       const connectionNode = treeNode(page, connectionKey)
@@ -11916,6 +12800,24 @@ test.describe('workspace regression', () => {
       await expect(selectorBadge).toHaveCount(0)
       await expect(page.locator('.tree-selector-popover')).toHaveCount(0)
       await expect(connectionNode).toHaveClass(/is-closed/, { timeout: 15000 })
+      await expect
+        .poll(() =>
+          tableGroupNode.evaluate((node) =>
+            node.closest('.ant-tree-treenode')?.classList.contains('ant-tree-treenode-switcher-open') ??
+            false
+          )
+        )
+        .toBe(true)
+
+      await doubleClickTreeNode(page, connectionKey)
+      await expect(connectionNode).toHaveClass(/is-open/, { timeout: 30000 })
+      await expect(tableGroupNode).toBeVisible()
+      await expect(tableGroupNode.locator(
+        'xpath=ancestor::div[contains(@class,"ant-tree-treenode")]'
+      )).not.toHaveClass(/ant-tree-treenode-switcher-open/)
+      await expect(treeNode(page, tableKey)).toHaveCount(0)
+      await ensureTreeNodeExpanded(page, tableGroupKey)
+      await expect(treeNode(page, tableKey)).toBeVisible({ timeout: 15000 })
     } finally {
       await electronApp.close()
     }
